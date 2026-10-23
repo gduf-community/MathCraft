@@ -93,6 +93,28 @@ endpoint so the default LlamaIndex pipeline can index and retrieve without any
 external credentials — the end-to-end test creates a knowledge base, uploads a
 document, waits for indexing and asserts retrieved passages.
 
+## Known limitations
+
+These are environment or scope facts, not open bugs.
+
+1. **Network-dependent connector paths are unverified.** GitHub sources, web
+   sources, and the remote Kiwix / IMA / WeKnora / LightRAG-server connectors
+   are implemented and their failure paths are tested (a refused address must
+   answer promptly with a readable error and must not register a knowledge base
+   that pretends to work). Their happy paths need outbound network or the
+   external service, neither of which exists in the extraction environment.
+2. **Only the default engine is indexed end-to-end.** The test suite indexes
+   with LlamaIndex against a fake embedding endpoint. Every engine resolves to
+   its own pipeline class and flips from `configured: false` to `true` when its
+   extra is installed, but a real GraphRAG / LightRAG / PageIndex index has not
+   been built here.
+3. **Isolated document extraction needs a real temp directory.** Parsing runs
+   PDFs through a worker subprocess; in a sandbox that forbids subprocess pipes
+   the parser reports a failure rather than falling back silently. Run the
+   service outside such a sandbox for PDF ingestion.
+4. **No authentication, by design.** Bind to loopback or front it with a
+   gateway.
+
 ## Known quirks kept from upstream
 
 These are deliberate: the extraction preserves behaviour rather than refactoring
