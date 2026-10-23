@@ -67,6 +67,33 @@ def embedding_server() -> str:
             "usage": {"prompt_tokens": 1, "total_tokens": 1},
         }
 
+    @app.get("/v1/models")
+    async def models() -> dict:
+        return {
+            "object": "list",
+            "data": [
+                {"id": "fake-embed", "object": "model"},
+                {"id": "gpt-test", "object": "model"},
+            ],
+        }
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(payload: dict) -> dict:
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": payload.get("model", "gpt-test"),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        }
+
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
