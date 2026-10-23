@@ -12,8 +12,6 @@ from math_q_agent.services.keypool import primary_api_key
 from math_q_agent.services.voice.config import (
     AUTH_API_KEY_HEADER,
     AUTH_BEARER,
-    AUTH_TOKEN,
-    DEFAULT_MAX_INPUT_CHARS,
     STT_BASE64_JSON,
     STT_MULTIPART,
 )

@@ -5251,11 +5251,6 @@ class KnowledgeQueryRequest(BaseModel):
 def _query_modes_for(provider: str) -> list[str]:
     """Retrieval modes an engine accepts; empty means a single default path."""
 
-    try:
-        from math_q_agent.services.rag.pipelines import graphrag as _graphrag_pkg  # noqa: F401
-    except Exception:
-        pass
-
     modes: list[str] = []
     if provider == "graphrag":
         try:

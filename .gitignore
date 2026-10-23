@@ -23,3 +23,9 @@ tests/.data-home/
 
 # Local overrides
 .env
+
+# Scratch directories created during extraction experiments
+.probe/
+.probe2/
+pytest-cache-files-*/
+

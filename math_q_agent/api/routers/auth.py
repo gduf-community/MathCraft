@@ -16,10 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket
 
-from math_q_agent.multi_user.context import (
-    get_current_user,
-    user_from_token_payload,
-)
+from math_q_agent.multi_user.context import get_current_user
 from math_q_agent.multi_user.models import LOCAL_ADMIN_ID, LOCAL_ADMIN_USERNAME
 
 router = APIRouter()
