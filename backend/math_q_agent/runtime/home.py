@@ -6,7 +6,12 @@ import os
 from pathlib import Path
 
 MATH_Q_HOME_ENV = "MATH_Q_HOME"
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+# Source checkout: <repo>/backend/math_q_agent/runtime/home.py, so the package's
+# parent is ``backend`` and the repository root is one level above it. Installed
+# wheels keep the package's parent (site-packages) as the reference root.
+_PACKAGE_DIR = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = _PACKAGE_DIR.parent
+PACKAGE_ROOT = _SOURCE_ROOT.parent if _SOURCE_ROOT.name == "backend" else _SOURCE_ROOT
 
 
 def validate_runtime_home(home: str | Path) -> None:

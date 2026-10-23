@@ -26,13 +26,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SOURCE_ROOT = REPO_ROOT / "backend"
 PACKAGE_NAME = "math_q_agent"
-CODE_ROOT = PACKAGE_ROOT / PACKAGE_NAME
+CODE_ROOT = SOURCE_ROOT / PACKAGE_NAME
 
 
 def module_name_for(path: Path) -> str:
-    rel = path.relative_to(PACKAGE_ROOT).with_suffix("")
+    rel = path.relative_to(SOURCE_ROOT).with_suffix("")
     parts = list(rel.parts)
     if parts[-1] == "__init__":
         parts.pop()

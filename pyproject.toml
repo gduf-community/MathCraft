@@ -111,9 +111,10 @@ dev = [
 
 [tool.setuptools]
 include-package-data = true
+package-dir = {"" = "backend"}
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["backend"]
 include = ["math_q_agent*"]
 
 [tool.setuptools.package-data]
@@ -128,6 +129,6 @@ math_q_agent = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["backend/tests"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
