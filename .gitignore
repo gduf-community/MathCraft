@@ -1,31 +1,41 @@
-# Python
+# --- Python ---------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.egg-info/
 build/
 dist/
+.eggs/
 
-# Environment / tooling
+# --- Virtual environments & package-manager caches -------------------------
 .venv/
+venv/
 .uv-cache/
 .uvtmp/
-.tmp/
-.localdata/
+pip-wheel-metadata/
+
+# --- Test & tool caches ----------------------------------------------------
 .pytest_cache/
+pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.scratch-*.json
 
-# Local runtime data (never commit a knowledge base or a model key)
+# --- Local runtime data ----------------------------------------------------
+# Never commit a knowledge base, an index, a log, or a model key.
 data/
-.run/
-.run2/
+.run*/
+.coldstart/
+.localdata/
+.tmp/
+.probe*/
+
+# Test fixtures written during a run (rebuilt by the fixtures themselves).
 tests/.data-home/
+tests/.sources/
 
-# Local overrides
+# --- Local overrides -------------------------------------------------------
 .env
-
-# Scratch directories created during extraction experiments
-.probe/
-.probe2/
-pytest-cache-files-*/
-
+*.local
