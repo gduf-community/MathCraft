@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environment / tooling
+.venv/
+.uv-cache/
+.uvtmp/
+.tmp/
+.localdata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime data (never commit a knowledge base or a model key)
+data/
+.run/
+.run2/
+tests/.data-home/
+
+# Local overrides
+.env
