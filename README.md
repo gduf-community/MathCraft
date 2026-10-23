@@ -80,6 +80,19 @@ There is none. Every request is served as the local admin, `/api/auth/status`
 reports `single_user: true`, and CORS is permissive by default. Bind to
 loopback or put the service behind your own gateway.
 
+## Testing
+
+```bash
+uv pip install --python .venv/Scripts/python.exe pytest pytest-asyncio
+.venv/Scripts/python.exe -m pytest tests -q
+```
+
+The suite drives the real ASGI app through `TestClient` against a throwaway data
+root (`tests/.data-home`). It starts a fake OpenAI-compatible `/embeddings`
+endpoint so the default LlamaIndex pipeline can index and retrieve without any
+external credentials — the end-to-end test creates a knowledge base, uploads a
+document, waits for indexing and asserts retrieved passages.
+
 ## Known quirks kept from upstream
 
 These are deliberate: the extraction preserves behaviour rather than refactoring
