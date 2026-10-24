@@ -1,7 +1,12 @@
-# MathCraft — 知识库与模型配置后端
+# MathCraft — 数学智能体全栈项目
 
-MathCraft 是一个独立的 FastAPI 服务，只对外提供两件事：知识库（创建、上传、解析、索引、检索、索引进度）与模型配置（提供方、模型、嵌入/重排角色、任务分配、连通性测试、解析引擎设置）。发行包名称为 `MathCraft`；为保持现有调用兼容，Python 导入名和 CLI 模块名仍为 `math_q_agent`。
-它从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。
+## 项目说明
+
+MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目。后端提供知识库管理、文档解析、索引检索、模型配置和出题服务；前端提供题目生成、题目预览、组卷和参数配置等交互界面。
+
+项目包含两套后端能力：`math_q_agent` 提供知识库与模型配置 API，`backend` 根目录下的出题服务提供文档入库、检索和题目生成 API；`frontend` 是与出题服务配套的 React 应用。后端与前端可以分别启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
+
+`math_q_agent` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。
 
 ## 目录结构
 
@@ -17,8 +22,12 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── .env.example                  # 环境变量样例
 ├── .gitignore                    # 忽略虚拟环境、运行时数据、缓存与 .env
 ├── backend/                      # Python 后端，详细结构见 backend/README.md
-├── docs/                         # API 文档与设计资料
+│   └── README.md                 # 后端目录结构与职责说明
+├── docs/                         # API 文档、设计资料与项目流程文档
+│   ├── api.md                    # HTTP API 参考
+│   └── 智能体出题工作流程.docx  # 出题流程说明
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
+│   └── README.md                 # 前端目录结构与开发命令
 └── tools/                        # 仓库维护脚本
 ```
 
