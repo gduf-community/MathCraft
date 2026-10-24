@@ -19,6 +19,7 @@ frontend/
 │   ├── store/                # 全局应用状态与上下文
 │   ├── styles/               # 全局样式
 │   ├── types/                # 前端 TypeScript 类型
+│   ├── vite-env.d.ts         # Vite 环境变量类型声明
 │   ├── App.tsx               # 应用根组件
 │   ├── constants.ts          # 前端常量
 │   └── main.tsx              # Vite 入口
