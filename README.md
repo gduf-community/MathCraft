@@ -48,13 +48,18 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   │   │   └── *.py              # 连接器、凭证、密钥池、provider 注册表、文件 IO
 │   │   ├── tools/                # 工具层入口（RAG 检索、网页抓取）
 │   │   └── utils/                # 通用工具：文档抽取/校验、JSON、密钥文件、网络
-│   └── tests/                    # pytest 套件：真实 ASGI 应用 + 假嵌入端点
-│       ├── conftest.py           # 独立数据根、假 /embeddings 服务、TestClient
-│       └── test_*.py             # 契约、引擎、解析、连接器、进度等用例
+│   ├── riddleme/                 # 出题智能体服务（独立 FastAPI 进程，python -m riddleme）
+│   │   ├── api/                  # kb（上传/清单/检索）/ generate（参数出题）/ chat（对话出题）路由
+│   │   ├── services/             # 多格式解析、按题号切片、Chroma 检索、DeepSeek 出题、对话槽位状态机
+│   │   └── schemas/              # 与前端对齐的 Question 模型（公式为 $...$ LaTeX）
+│   ├── scripts/                  # 出题服务命令行工具：入库 / 检索 / 出题 / 对话联测
+│   ├── tests/                    # pytest 套件：真实 ASGI 应用 + 假嵌入端点
+│   │   ├── conftest.py           # 独立数据根、假 /embeddings 服务、TestClient
+│   │   └── test_*.py             # 契约、引擎、解析、连接器、进度等用例
 ├── docs/
 │   └── api.md                    # HTTP API 参考：端点表、参数与 curl 示例
-├── frontend/                     # 预留前端工程目录（当前无代码）
-│   └── .gitkeep                  # 仅用于占位，使空目录进入版本库
+├── frontend/                     # 出题智能体前端（React 19 + Vite + Tailwind v4）
+│   └── src/                      # 页面组件、api 适配层（httpAdapter/mock 可切换）、全局状态
 └── tools/                        # 仓库维护脚本
     ├── closure.py                # 静态导入闭包与悬空引用分析
     └── gen_api_docs.py           # 由 openapi.json 生成 docs/api.md
@@ -162,6 +167,31 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 1. 在 `/api/settings` 至少登记一个对话模型与一个嵌入模型（默认 `llamaindex` 流水线依赖嵌入）。
 2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。
 3. 之后即可建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
+
+### 6. 出题智能体（RiddleMe）前端与服务
+
+`backend/riddleme/` 是独立于 math_q_agent 的出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+
+```powershell
+# 1) 安装出题服务依赖（向量检索走本地 Ollama + Chroma）
+uv pip install --python .venv/Scripts/python.exe -e ".[question]"
+
+# 2) 配置环境变量：复制 .env.example 到 backend/.env，填写 DEEPSEEK_API_KEY 等
+#    riddleme 通过 pydantic-settings 读取 backend/.env，与 math_q_agent 互不影响
+
+# 3) 上传文档并入库（支持文字版 PDF / docx / xlsx / md，扫描版 PDF 需接入 OCR 引擎）
+.venv\Scripts\python.exe backend\scripts\upload.py 导数与微分_50题练习卷.pdf --kb kb-math
+
+# 4) 启动出题服务（接口文档 http://127.0.0.1:8000/docs）
+.venv\Scripts\python.exe -m riddleme
+
+# 5) 前端开发服务（另开终端，/api 代理到 8000）
+cd frontend
+npm install
+npm run dev
+```
+
+前端生产构建 `npm run build` 产出 `frontend/dist`；`.github/workflows/deploy.yml` 提供手动触发的 GitHub Pages 部署，仓库在 Settings → Pages 启用后即可使用。检索与出题的命令行测试脚本位于 `backend/scripts/`。出题服务使用的 DeepSeek 密钥只写入 `backend/.env`，严禁提交。
 
 ## 数据目录
 
