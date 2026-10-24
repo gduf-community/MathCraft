@@ -37,3 +37,6 @@ npm run dev
 npm run build
 npm run preview
 ```
+
+开发服务器从仓库根目录的 `.env` 读取 `FRONTEND_HOST`、`FRONTEND_PORT`，并将 `/api` 请求代理到
+`QUESTION_BACKEND_HOST` / `QUESTION_BACKEND_PORT`。部署构建时可设置 `VITE_API_BASE_URL` 指向出题服务的 API 根地址。

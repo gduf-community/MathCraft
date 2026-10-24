@@ -75,7 +75,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 ### 2. 启动知识库与模型配置服务
 
 ```powershell
-.venv\Scripts\python.exe -m math_q_agent --port 8001
+.venv\Scripts\python.exe -m math_q_agent
 ```
 
 这里的 Python 模块名仍是 `math_q_agent`，用于保持导入和启动兼容；服务对外名称是 `MathCraft`，健康检查和 API 文档都会显示 `MathCraft`。
@@ -95,12 +95,13 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 ### 3. 环境变量（可选）
 
-这里需要区分两套配置：
+两套后端和前端开发服务器都从仓库根目录的 `.env` 读取进程级环境变量：
 
 | 服务 | `.env` 行为 | 配置位置 |
 | --- | --- | --- |
-| `math_q_agent`（8001） | 不自动读取 `.env`；`MATH_Q_HOME`、端口等环境变量需要由启动 shell 提供 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/` |
-| 出题服务（8000） | 通过 `pydantic-settings` 自动读取仓库根 `.env` | `DEEPSEEK_*`、Ollama、Chroma 和切片参数写在 `.env` 中 |
+| `math_q_agent`（8001） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/` |
+| 出题服务（8000） | 通过 `pydantic-settings` 读取同一份 `.env` | `DEEPSEEK_*`、Ollama、Chroma 和切片参数写在 `.env` 中 |
+| Vite（5173） | 通过 `envDir: '..'` 读取同一份 `.env` | `FRONTEND_*` 控制开发服务器，`VITE_API_BASE_URL` 控制生产前端 API 地址 |
 
 `.env.example` 同时列出两套服务的变量，`.env` 已被 `.gitignore` 忽略。模型与解析配置**不**写入 `.env`，而是通过 `/api/settings` 写入
 `<MATH_Q_HOME>/data/user/settings/model_catalog.json` 与 `document_parsing.json`。
@@ -110,7 +111,10 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 | `MATH_Q_HOME` | 数据根，默认仓库根目录；运行时数据落在 `<MATH_Q_HOME>/data` |
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
 | `CORS_ORIGIN` | 额外允许的浏览器来源，逗号分隔 |
-| `BACKEND_PORT` | 后端端口设置项；用 `python -m math_q_agent` 启动时请改用 `--port` |
+| `BACKEND_HOST` / `BACKEND_PORT` | 知识库与模型配置服务绑定地址和端口 |
+| `QUESTION_BACKEND_HOST` / `QUESTION_BACKEND_PORT` | 出题服务绑定地址和端口 |
+| `FRONTEND_HOST` / `FRONTEND_PORT` | Vite 开发服务器绑定地址和端口 |
+| `VITE_API_BASE_URL` | 前端生产构建使用的绝对 API 地址；本地开发留空，使用 Vite `/api` 代理 |
 
 ### 4. 验证
 
@@ -154,16 +158,16 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 uv pip install --python .venv\Scripts\python.exe -e ".[question]"
 
 # 2) 配置环境变量：复制 .env.example 为 .env（仓库根），填写 DEEPSEEK_API_KEY 等
-#    出题服务通过 pydantic-settings 读取仓库根 .env，与 math_q_agent 互不影响
+#    两套后端和 Vite 都读取这份 .env；shell 中已有变量优先
 
 # 3) 上传文档并入库（支持文字版 PDF / docx / xlsx / md，扫描版 PDF 需接入 OCR 引擎）
 .venv\Scripts\python.exe backend\scripts\upload.py 导数与微分_50题练习卷.pdf --kb kb-math
 
-# 4) 启动出题服务（在 backend 目录下运行，接口文档 http://127.0.0.1:8000/docs）
+# 4) 启动出题服务（在 backend 目录下运行，端口取 QUESTION_BACKEND_PORT）
 cd backend
-..\.venv\Scripts\python.exe -m uvicorn main:app --port 8000
+..\.venv\Scripts\python.exe -m main
 
-# 5) 前端开发服务（另开终端，/api 代理到 8000）
+# 5) 前端开发服务（另开终端，/api 代理到 QUESTION_BACKEND_PORT）
 cd frontend
 npm install
 npm run dev
