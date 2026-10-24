@@ -1,0 +1,33 @@
+"""RiddleMe 后端入口。启动：uv run uvicorn app.main:app --port 8000"""
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from riddleme.api import chat, generate, kb
+from riddleme.config import settings
+
+app = FastAPI(title="RiddleMe Backend", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(kb.router)
+app.include_router(generate.router)
+app.include_router(chat.router)
+
+
+@app.get("/api/health")
+def health():
+    """组件连通性自检：ollama 向量模型、DeepSeek 配置。"""
+    status = {"chroma_dir": str(settings.chroma_path()), "deepseek_key": bool(settings.deepseek_api_key)}
+    try:
+        from riddleme.services.embeddings import embed_one
+
+        dim = len(embed_one("ping"))
+        status["ollama_embedding"] = f"ok({dim}d)"
+    except Exception as exc:
+        status["ollama_embedding"] = f"fail: {exc}"
+    return status
