@@ -95,7 +95,15 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 ### 3. 环境变量（可选）
 
-服务**不会**自动读取 `.env` 文件（运行时设置加载器明确忽略它），变量需要在启动前由 shell 提供；`.env.example` 仅作变量清单参考，`.env` 已被 `.gitignore` 忽略。
+这里需要区分两套配置：
+
+| 服务 | `.env` 行为 | 配置位置 |
+| --- | --- | --- |
+| `math_q_agent`（8001） | 不自动读取 `.env`；`MATH_Q_HOME`、端口等环境变量需要由启动 shell 提供 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/` |
+| 出题服务（8000） | 通过 `pydantic-settings` 自动读取仓库根 `.env` | `DEEPSEEK_*`、Ollama、Chroma 和切片参数写在 `.env` 中 |
+
+`.env.example` 同时列出两套服务的变量，`.env` 已被 `.gitignore` 忽略。模型与解析配置**不**写入 `.env`，而是通过 `/api/settings` 写入
+`<MATH_Q_HOME>/data/user/settings/model_catalog.json` 与 `document_parsing.json`。
 
 | 变量 | 说明 |
 | --- | --- |
@@ -130,9 +138,6 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 ```
 
 ### 5. 首次使用：配置模型
-
-模型与解析配置**不**放在 `.env`，而是通过 `/api/settings` 写入
-`<MATH_Q_HOME>/data/user/settings/model_catalog.json` 与 `document_parsing.json`：
 
 1. 在 `/api/settings` 至少登记一个对话模型与一个嵌入模型（默认 `llamaindex` 流水线依赖嵌入）。
 2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。

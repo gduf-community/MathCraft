@@ -1,4 +1,4 @@
-"""全局配置，从 backend/.env 读取。密钥只存在于环境变量，绝不进代码与 git。"""
+"""出题服务配置，从仓库根目录的 .env 读取。密钥只存在于环境变量，绝不进代码与 git。"""
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
