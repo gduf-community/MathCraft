@@ -3,7 +3,7 @@ from functools import lru_cache
 
 from openai import OpenAI
 
-from riddleme.config import settings
+from config import settings
 
 
 class LLMError(RuntimeError):

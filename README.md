@@ -48,7 +48,10 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   │   │   └── *.py              # 连接器、凭证、密钥池、provider 注册表、文件 IO
 │   │   ├── tools/                # 工具层入口（RAG 检索、网页抓取）
 │   │   └── utils/                # 通用工具：文档抽取/校验、JSON、密钥文件、网络
-│   ├── riddleme/                 # 出题智能体服务（独立 FastAPI 进程，python -m riddleme）
+│   ├── api/                      # 出题服务路由：kb（上传/检索）/ generate（参数出题）/ chat（对话出题）
+│   ├── services/                 # 出题服务：解析、切片、Chroma 检索、DeepSeek 出题、对话槽位状态机
+│   ├── schemas/                  # 与前端对齐的 Question 模型
+│   ├── main.py config.py         # 出题服务入口与配置（独立进程，与 math_q_agent 平级）
 │   │   ├── api/                  # kb（上传/清单/检索）/ generate（参数出题）/ chat（对话出题）路由
 │   │   ├── services/             # 多格式解析、按题号切片、Chroma 检索、DeepSeek 出题、对话槽位状态机
 │   │   └── schemas/              # 与前端对齐的 Question 模型（公式为 $...$ LaTeX）
@@ -168,22 +171,23 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。
 3. 之后即可建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
 
-### 6. 出题智能体（RiddleMe）前端与服务
+### 6. 出题智能体前端与服务
 
-`backend/riddleme/` 是独立于 math_q_agent 的出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 是独立于 math_q_agent 的出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000，与 `math_q_agent` 平级共存），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
 
 ```powershell
 # 1) 安装出题服务依赖（向量检索走本地 Ollama + Chroma）
-uv pip install --python .venv/Scripts/python.exe -e ".[question]"
+uv pip install --python .venv\Scripts\python.exe -e ".[question]"
 
-# 2) 配置环境变量：复制 .env.example 到 backend/.env，填写 DEEPSEEK_API_KEY 等
-#    riddleme 通过 pydantic-settings 读取 backend/.env，与 math_q_agent 互不影响
+# 2) 配置环境变量：复制 .env.example 为 .env（仓库根），填写 DEEPSEEK_API_KEY 等
+#    出题服务通过 pydantic-settings 读取仓库根 .env，与 math_q_agent 互不影响
 
 # 3) 上传文档并入库（支持文字版 PDF / docx / xlsx / md，扫描版 PDF 需接入 OCR 引擎）
 .venv\Scripts\python.exe backend\scripts\upload.py 导数与微分_50题练习卷.pdf --kb kb-math
 
-# 4) 启动出题服务（接口文档 http://127.0.0.1:8000/docs）
-.venv\Scripts\python.exe -m riddleme
+# 4) 启动出题服务（在 backend 目录下运行，接口文档 http://127.0.0.1:8000/docs）
+cd backend
+..\.venv\Scripts\python.exe -m uvicorn main:app --port 8000
 
 # 5) 前端开发服务（另开终端，/api 代理到 8000）
 cd frontend
@@ -191,7 +195,7 @@ npm install
 npm run dev
 ```
 
-前端生产构建 `npm run build` 产出 `frontend/dist`；`.github/workflows/deploy.yml` 提供手动触发的 GitHub Pages 部署，仓库在 Settings → Pages 启用后即可使用。检索与出题的命令行测试脚本位于 `backend/scripts/`。出题服务使用的 DeepSeek 密钥只写入 `backend/.env`，严禁提交。
+前端生产构建 `npm run build` 产出 `frontend/dist`；`.github/workflows/deploy.yml` 提供手动触发的 GitHub Pages 部署，仓库在 Settings → Pages 启用后即可使用。检索与出题的命令行测试脚本位于 `backend/scripts/`（脚本已把 `backend/` 加入 import 路径）。出题服务使用的 DeepSeek 密钥只写入根目录 `.env`，严禁提交。
 
 ## 数据目录
 

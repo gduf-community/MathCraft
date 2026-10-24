@@ -1,9 +1,9 @@
 """对话出题路由。消息体携带槽位状态，由前端保存并在每轮回传。"""
 from fastapi import APIRouter, HTTPException
 
-from riddleme.schemas.question import ChatRequestBody
-from riddleme.services.chat_flow import handle_chat
-from riddleme.services.vectorstore import list_documents
+from schemas.question import ChatRequestBody
+from services.chat_flow import handle_chat
+from services.vectorstore import list_documents
 
 router = APIRouter(prefix="/api", tags=["chat"])
 

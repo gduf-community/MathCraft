@@ -6,9 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.stdout.reconfigure(encoding="utf-8")
 
-from riddleme.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount  # noqa: E402
-from riddleme.services.question_gen import generate_questions  # noqa: E402
-from riddleme.services.vectorstore import list_documents  # noqa: E402
+from schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount  # noqa: E402
+from services.question_gen import generate_questions  # noqa: E402
+from services.vectorstore import list_documents  # noqa: E402
 
 
 def main():

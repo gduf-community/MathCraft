@@ -3,7 +3,7 @@ import re
 
 import chromadb
 
-from riddleme.config import settings
+from config import settings
 
 _client: chromadb.api.ClientAPI | None = None
 

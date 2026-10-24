@@ -3,7 +3,7 @@ from pathlib import Path
 
 from docx import Document
 
-from riddleme.services.parsing.base import ParsedBlock
+from services.parsing.base import ParsedBlock
 
 
 class DocxParser:

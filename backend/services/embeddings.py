@@ -3,7 +3,7 @@ from functools import lru_cache
 
 from langchain_ollama import OllamaEmbeddings
 
-from riddleme.config import settings
+from config import settings
 
 
 class EmbeddingUnavailable(RuntimeError):

@@ -1,11 +1,11 @@
-"""RiddleMe 后端入口。启动：uv run uvicorn app.main:app --port 8000"""
+"""MathCraft 出题服务入口。启动：cd backend && python -m uvicorn main:app --port 8000"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from riddleme.api import chat, generate, kb
-from riddleme.config import settings
+from api import chat, generate, kb
+from config import settings
 
-app = FastAPI(title="RiddleMe Backend", version="0.1.0")
+app = FastAPI(title="MathCraft Question Backend", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,7 +24,7 @@ def health():
     """组件连通性自检：ollama 向量模型、DeepSeek 配置。"""
     status = {"chroma_dir": str(settings.chroma_path()), "deepseek_key": bool(settings.deepseek_api_key)}
     try:
-        from riddleme.services.embeddings import embed_one
+        from services.embeddings import embed_one
 
         dim = len(embed_one("ping"))
         status["ollama_embedding"] = f"ok({dim}d)"

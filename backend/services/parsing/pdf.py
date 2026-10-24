@@ -3,7 +3,7 @@ from pathlib import Path
 
 import fitz
 
-from riddleme.services.parsing.base import OCREngine, ParsedBlock
+from services.parsing.base import OCREngine, ParsedBlock
 
 # 每页平均可提取字符低于该阈值即判定为扫描版
 MIN_CHARS_PER_PAGE = 20

@@ -6,11 +6,11 @@
 import re
 import uuid
 
-from riddleme.config import settings
-from riddleme.schemas.question import Difficulty, GenerateParams, Question, QuestionType
-from riddleme.services import retrieval, vectorstore
-from riddleme.services.llm import chat_json
-from riddleme.services.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
+from config import settings
+from schemas.question import Difficulty, GenerateParams, Question, QuestionType
+from services import retrieval, vectorstore
+from services.llm import chat_json
+from services.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 TYPE_LABELS: dict[QuestionType, str] = {
     QuestionType.single: "选择题",
@@ -164,7 +164,7 @@ def _gen_for_type(
             q.difficulty = params.difficulty
             q.docName = doc_name
             if tc.type == QuestionType.judge and not q.options:
-                from riddleme.schemas.question import OptionItem
+                from schemas.question import OptionItem
 
                 q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
                 q.answer = "A" if q.answer in ("正确", "对", "T", "true", "√") else "B"

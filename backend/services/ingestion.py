@@ -2,10 +2,10 @@
 import uuid
 from pathlib import Path
 
-from riddleme.services import vectorstore
-from riddleme.services.chunking import chunk_blocks
-from riddleme.services.embeddings import embed_many
-from riddleme.services.parsing.base import get_parser
+from services import vectorstore
+from services.chunking import chunk_blocks
+from services.embeddings import embed_many
+from services.parsing.base import get_parser
 
 
 def ingest_file(kb_id: str, file_path: Path, doc_name: str | None = None) -> dict:

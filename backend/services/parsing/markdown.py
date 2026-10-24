@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from riddleme.services.parsing.base import ParsedBlock
+from services.parsing.base import ParsedBlock
 
 HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
 

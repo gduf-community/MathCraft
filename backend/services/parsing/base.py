@@ -62,17 +62,17 @@ def get_parser(file_path: Path) -> Parser:
     if suffix not in PARSERS:
         raise ValueError(f"不支持的文件格式：{suffix}，目前支持 {sorted(set(PARSERS))}")
     if suffix == ".pdf":
-        from riddleme.services.parsing import pdf as pdf_parser
+        from services.parsing import pdf as pdf_parser
 
         return pdf_parser.PdfParser(ocr_engine=ocr_engine)
     if suffix == ".docx":
-        from riddleme.services.parsing import docx as docx_parser
+        from services.parsing import docx as docx_parser
 
         return docx_parser.DocxParser()
     if suffix in (".xlsx",):
-        from riddleme.services.parsing import excel as excel_parser
+        from services.parsing import excel as excel_parser
 
         return excel_parser.ExcelParser()
-    from riddleme.services.parsing import markdown as md_parser
+    from services.parsing import markdown as md_parser
 
     return md_parser.MarkdownParser()

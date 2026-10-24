@@ -11,8 +11,8 @@
 import re
 from dataclasses import dataclass, field
 
-from riddleme.config import settings
-from riddleme.services.parsing.base import ParsedBlock
+from config import settings
+from services.parsing.base import ParsedBlock
 
 # 匹配 1. 2、3．4， 这类题号行首
 QUESTION_NO = re.compile(r"^\s{0,4}\d{1,3}\s*[\.、．]\s*\S")

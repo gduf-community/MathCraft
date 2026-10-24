@@ -1,9 +1,9 @@
 """参数化快速出题路由。"""
 from fastapi import APIRouter, HTTPException
 
-from riddleme.schemas.question import GenerateParams
-from riddleme.services.question_gen import NeedConfirmError, generate_questions
-from riddleme.services.vectorstore import list_documents
+from schemas.question import GenerateParams
+from services.question_gen import NeedConfirmError, generate_questions
+from services.vectorstore import list_documents
 
 router = APIRouter(prefix="/api", tags=["generate"])
 

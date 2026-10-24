@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.stdout.reconfigure(encoding="utf-8")
 
-from riddleme.services.retrieval import retrieve  # noqa: E402
+from services.retrieval import retrieve  # noqa: E402
 
 
 def main():

@@ -1,6 +1,6 @@
 """对话出题编排：槽位抽取 → 缺失追问 → 齐备生成。"""
-from riddleme.services.question_gen import NeedConfirmError, generate_questions
-from riddleme.services.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
+from services.question_gen import NeedConfirmError, generate_questions
+from services.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
 
 DONE_REPLY = "题目已生成完成，共 {n} 道，已同步到「题目预览」标签页。还需要生成其他题型吗？"
 

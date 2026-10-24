@@ -74,4 +74,4 @@ chore(deps): 升级 fastapi 至 0.115
 - 路由放 `backend/math_q_agent/api/routers/`，业务实现放 `backend/math_q_agent/services/<domain>/`，知识库领域逻辑放 `backend/math_q_agent/knowledge/`。
 - 新增可选依赖走 `pyproject.toml` 的 extras，不加入默认依赖。
 - 测试放 `backend/tests/`，文件名 `test_*.py`，通过 `conftest.py` 的 fixture 获取客户端与假嵌入端点。
-- `frontend/` 为出题智能体前端（React 19 + Vite），`node_modules/` 与构建产物 `dist/` 不提交；前端与 math_q_agent 之间的数据契约沉淀在 `backend/riddleme/schemas/` 与前端 `src/types/`，改动时保持两侧字段一致。
+- `frontend/` 为出题智能体前端（React 19 + Vite），`node_modules/` 与构建产物 `dist/` 不提交；出题服务的数据契约沉淀在 `backend/schemas/` 与前端 `src/types/`，改动时保持两侧字段一致。

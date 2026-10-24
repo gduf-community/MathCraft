@@ -6,10 +6,10 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from riddleme.config import settings
-from riddleme.services import vectorstore
-from riddleme.services.ingestion import ingest_file
-from riddleme.services.retrieval import retrieve
+from config import settings
+from services import vectorstore
+from services.ingestion import ingest_file
+from services.retrieval import retrieve
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
