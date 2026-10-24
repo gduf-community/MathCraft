@@ -247,6 +247,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | 文档 | 内容 |
 | --- | --- |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
+| [docs/design/知识库模块说明.md](docs/design/知识库模块说明.md) | 知识库模块架构、生命周期、数据布局和接口分组 |
 | [openapi.json](openapi.json) | 机器可读的 OpenAPI 契约快照 |
 | [STUBS.md](STUBS.md) | 每个被替换为单租户替身的模块及其原行为 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 第三方来源与许可证正文 |
