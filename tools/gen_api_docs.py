@@ -27,7 +27,7 @@ def table(prefix: str) -> str:
     return "\n".join(rows)
 
 
-PREAMBLE = """# API reference — math_q_agent
+PREAMBLE = """# API reference — MathCraft
 
 Base URL: `http://127.0.0.1:8001`. Interactive docs: `/docs`. Machine contract:
 `/openapi.json` (a copy is committed at the repository root).

@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="math_q_agent",
+    title="MathCraft",
     description=(
         "Knowledge-base and model-configuration backend. Extracted from "
         "DeepTutor and reduced to a single-tenant service."

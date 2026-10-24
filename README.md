@@ -1,12 +1,12 @@
-# math_q_agent — 知识库与模型配置后端
+# MathCraft — 知识库与模型配置后端
 
-math_q_agent 是一个独立的 FastAPI 服务，只对外提供两件事：知识库（创建、上传、解析、索引、检索、索引进度）与模型配置（提供方、模型、嵌入/重排角色、任务分配、连通性测试、解析引擎设置）。
+MathCraft 是一个独立的 FastAPI 服务，只对外提供两件事：知识库（创建、上传、解析、索引、检索、索引进度）与模型配置（提供方、模型、嵌入/重排角色、任务分配、连通性测试、解析引擎设置）。发行包名称为 `MathCraft`；为保持现有调用兼容，Python 导入名和 CLI 模块名仍为 `math_q_agent`。
 它从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。
 
 ## 目录结构
 
 ```
-math_q_agent/                     # 仓库根：工程配置、跨端契约与文档
+MathCraft/                        # 仓库根：工程配置、跨端契约与文档
 ├── README.md                     # 当前项目说明、目录结构、启动方式和文档入口
 ├── AGENTS.md                     # 协作约定：文档同步、密钥红线、中文约定式提交
 ├── LICENSE                       # Apache-2.0 许可全文（含上游版权声明）

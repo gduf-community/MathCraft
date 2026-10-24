@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "math_q_agent",
+    "title": "MathCraft",
     "description": "Knowledge-base and model-configuration backend. Extracted from DeepTutor and reduced to a single-tenant service.",
     "version": "0.1.0"
   },

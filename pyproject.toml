@@ -1,4 +1,4 @@
-# math_q_agent — standalone knowledge-base + model-configuration backend.
+# MathCraft — standalone knowledge-base + model-configuration backend.
 #
 # Extracted from DeepTutor @ a31d8262. This project is a snapshot: it does not
 # track upstream. Optional RAG engines and parsing engines keep the upstream
@@ -9,7 +9,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "math_q_agent"
+name = "MathCraft"
 version = "0.1.0"
 description = "Knowledge-base and model-configuration backend extracted from DeepTutor"
 requires-python = ">=3.11,<3.15"
@@ -80,10 +80,10 @@ parse-docling = [
 parse-pymupdf4llm = ["pymupdf4llm>=1.28.2"]
 parse-liteparse = ["liteparse>=2.14.2"]
 parse = [
-    "math_q_agent[parse-markitdown]",
-    "math_q_agent[parse-docling]",
-    "math_q_agent[parse-pymupdf4llm]",
-    "math_q_agent[parse-liteparse]",
+    "MathCraft[parse-markitdown]",
+    "MathCraft[parse-docling]",
+    "MathCraft[parse-pymupdf4llm]",
+    "MathCraft[parse-liteparse]",
 ]
 
 # Optional RAG engines. Heavy and/or externally hosted; the default install
@@ -93,9 +93,9 @@ rag-lightrag = ["lightrag-hku==1.5.7"]
 rag-rerank = ["sentence-transformers>=3.0.0,<6.0.0; python_version < '3.14'"]
 
 engines = [
-    "math_q_agent[graphrag]",
-    "math_q_agent[rag-lightrag]",
-    "math_q_agent[rag-rerank]",
+    "MathCraft[graphrag]",
+    "MathCraft[rag-lightrag]",
+    "MathCraft[rag-rerank]",
 ]
 
 dev = [
