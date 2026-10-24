@@ -7,65 +7,19 @@ MathCraft 是一个独立的 FastAPI 服务，只对外提供两件事：知识�
 
 ```
 MathCraft/                        # 仓库根：工程配置、跨端契约与文档
-├── README.md                     # 当前项目说明、目录结构、启动方式和文档入口
+├── README.md                     # 项目说明、启动方式和文档入口
 ├── AGENTS.md                     # 协作约定：文档同步、密钥红线、中文约定式提交
-├── LICENSE                       # Apache-2.0 许可全文（含上游版权声明）
+├── LICENSE                       # Apache-2.0 许可全文
 ├── THIRD_PARTY_NOTICES.md        # 第三方来源说明与许可证正文
-├── STUBS.md                      # 单租户替身模块清单，含原实现行为对比
-├── pyproject.toml                # 包元数据、依赖与 extras；包体位于 backend/
-├── openapi.json                  # 导出的 OpenAPI 契约快照（后端生成、前端消费）
-├── .env.example                  # 环境变量样例（仅占位，不含真实值）
+├── STUBS.md                      # 单租户替身模块清单
+├── pyproject.toml                # 包元数据、依赖与 extras
+├── openapi.json                  # 导出的 OpenAPI 契约快照
+├── .env.example                  # 环境变量样例
 ├── .gitignore                    # 忽略虚拟环境、运行时数据、缓存与 .env
-├── backend/                      # 后端部署单元
-│   ├── math_q_agent/             # 服务主包（import 名保持不变）
-│   │   ├── __main__.py           # python -m math_q_agent 入口（--host/--port/--reload）
-│   │   ├── api/                  # FastAPI 装配层
-│   │   │   ├── main.py           # 应用工厂：CORS、lifespan、路由挂载、/healthz
-│   │   │   ├── security_guard.py # 可选的请求筛查中间件（默认关闭）
-│   │   │   ├── routers/          # auth / knowledge / settings / system 四组路由
-│   │   │   └── utils/            # 索引进度广播、任务日志流、任务 ID、HTTP 头
-│   │   ├── capabilities/
-│   │   │   └── marginnote4/      # MarginNote4 笔记库连接器（store + 中英文提示词）
-│   │   ├── config/               # pydantic-settings 进程配置（LLM 重试等）
-│   │   ├── core/                 # 跨层协议契约：工具、能力、流事件、追踪
-│   │   ├── knowledge/            # 知识库领域层：manager、manifest、索引运行、进度事件
-│   │   ├── logging/              # loguru 日志装配与调用统计
-│   │   ├── multi_user/           # 上游多用户与权限模型（本仓库由单租户替身驱动）
-│   │   ├── runtime/              # 数据根解析、运行模式、隔离 worker、agentic 兼容壳
-│   │   ├── services/             # 业务服务实现（按领域分包）
-│   │   │   ├── config/           # 运行时设置、模型目录、设置草稿与就绪检查
-│   │   │   ├── llm/              # 各厂商 LLM 客户端与 wire protocol
-│   │   │   ├── embedding/        # 嵌入客户端
-│   │   │   ├── rag/              # 8 条 RAG 流水线、检索服务、索引版本管理
-│   │   │   ├── parsing/          # 7 种文档解析引擎与隔离 worker
-│   │   │   ├── web_source/       # 网页抓取接入
-│   │   │   ├── github_source/    # GitHub 仓库接入
-│   │   │   ├── settings/         # 设置写入、provider 探测与编辑
-│   │   │   ├── search/           # 搜索服务
-│   │   │   ├── voice/ imagegen/ videogen/                    # 语音与生成类支撑服务（HTTP 面未暴露）
-│   │   │   ├── session/ prompt/ mcp/ setup/ model_selection/ # 其它支撑模块
-│   │   │   ├── partners/ workspace/  # 单租户替身，详见 STUBS.md
-│   │   │   └── *.py              # 连接器、凭证、密钥池、provider 注册表、文件 IO
-│   │   ├── tools/                # 工具层入口（RAG 检索、网页抓取）
-│   │   └── utils/                # 通用工具：文档抽取/校验、JSON、密钥文件、网络
-│   ├── api/                      # 出题服务路由：kb（上传/检索）/ generate（参数出题）/ chat（对话出题）
-│   ├── services/                 # 出题服务：解析、切片、Chroma 检索、DeepSeek 出题、对话槽位状态机
-│   ├── schemas/                  # 与前端对齐的 Question 模型
-│   ├── main.py config.py         # 出题服务入口与配置（独立进程，与 math_q_agent 平级）
-│   │   ├── api/                  # kb（上传/清单/检索）/ generate（参数出题）/ chat（对话出题）路由
-│   │   ├── services/             # 多格式解析、按题号切片、Chroma 检索、DeepSeek 出题、对话槽位状态机
-│   │   └── schemas/              # 与前端对齐的 Question 模型（公式为 $...$ LaTeX）
-│   ├── scripts/                  # 出题服务命令行工具：入库 / 检索 / 出题 / 对话联测
-│   ├── tests/                    # pytest 套件：真实 ASGI 应用 + 假嵌入端点
-│   │   ├── conftest.py           # 独立数据根、假 /embeddings 服务、TestClient
-│   │   └── test_*.py             # 契约、引擎、解析、连接器、进度等用例
-├── docs/
-│   └── api.md                    # HTTP API 参考：端点表、参数与 curl 示例
-├── frontend/                     # 出题智能体前端（React 19 + Vite + Tailwind v4）
-│   └── src/                      # 页面组件、api 适配层（httpAdapter/mock 可切换）、全局状态
+├── backend/                      # Python 后端，详细结构见 backend/README.md
+├── docs/                         # API 文档与设计资料
+├── frontend/                     # React 前端，详细结构见 frontend/README.md
 └── tools/                        # 仓库维护脚本
-    ├── closure.py                # 静态导入闭包与悬空引用分析
-    └── gen_api_docs.py           # 由 openapi.json 生成 docs/api.md
 ```
 
 `.venv/`、`data/`、`.pytest_cache/` 等本地生成物已在 `.gitignore` 中忽略，不属于仓库内容。

@@ -71,6 +71,7 @@ chore(deps): 升级 fastapi 至 0.115
 
 ## 5. 目录约定
 
+- 新功能的设计文档统一放在 `docs/design/`；新增功能设计文档完成后，应同步归档到该目录。
 - 路由放 `backend/math_q_agent/api/routers/`，业务实现放 `backend/math_q_agent/services/<domain>/`，知识库领域逻辑放 `backend/math_q_agent/knowledge/`。
 - 新增可选依赖走 `pyproject.toml` 的 extras，不加入默认依赖。
 - 测试放 `backend/tests/`，文件名 `test_*.py`，通过 `conftest.py` 的 fixture 获取客户端与假嵌入端点。
