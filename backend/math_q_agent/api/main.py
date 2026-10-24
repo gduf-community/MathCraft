@@ -24,6 +24,10 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from math_q_agent.runtime.env import load_project_env
+
+load_project_env()
+
 from math_q_agent.logging import configure_logging
 from math_q_agent.services.config import (
     ensure_runtime_settings_files,

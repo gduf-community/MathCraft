@@ -1,5 +1,5 @@
 /**
- * HTTP 适配器：调用 FastAPI 后端（vite dev 通过 /api 代理到 localhost:8000）。
+ * HTTP 适配器：调用 FastAPI 后端（开发时由 Vite 代理到 .env 配置的出题服务）。
  * 实现与 mockAdapter 相同的 ApiClient 接口，可随时切回 mock。
  * 题目编辑/删除/收藏/组卷发布暂由前端本地状态维护，后端持久化后续补充。
  */
@@ -15,8 +15,10 @@ import type {
 } from '../types'
 import type { ApiClient } from './client'
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, {
+  const resp = await fetch(`${API_BASE_URL}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })

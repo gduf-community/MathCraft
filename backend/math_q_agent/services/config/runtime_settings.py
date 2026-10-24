@@ -510,8 +510,9 @@ class RuntimeSettingsService:
     """JSON-backed runtime settings rooted in data/user/settings.
 
     Process environment values are explicit deployment overrides and are applied
-    centrally here rather than scattered through the application. Project-root
-    ``.env`` files are intentionally ignored.
+    centrally here rather than scattered through the application. The service
+    consumes only ``os.environ``; local entrypoints load the repository ``.env``
+    before this service is initialized.
     """
 
     _instances: dict[str, "RuntimeSettingsService"] = {}

@@ -8,14 +8,26 @@ from __future__ import annotations
 import argparse
 import os
 
+from math_q_agent.runtime.env import load_project_env
+
 
 def main() -> None:
+    load_project_env()
     parser = argparse.ArgumentParser(
         prog="math_q_agent",
         description="Knowledge-base and model-configuration backend.",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8001, help="bind port (default: 8001)")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("BACKEND_HOST", "127.0.0.1"),
+        help="bind address (default: BACKEND_HOST or 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("BACKEND_PORT", "8001")),
+        help="bind port (default: BACKEND_PORT or 8001)",
+    )
     parser.add_argument("--reload", action="store_true", help="reload on source changes")
     parser.add_argument("--log-level", default="info", help="uvicorn log level (default: info)")
     args = parser.parse_args()

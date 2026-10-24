@@ -35,7 +35,7 @@ export interface ApiClient {
 }
 
 /**
- * 当前接入 FastAPI 后端（httpAdapter），开发时 vite 将 /api 代理到 localhost:8000。
+ * 当前接入 FastAPI 后端（httpAdapter），开发时 Vite 将 /api 代理到根目录 .env 配置的出题服务。
  * 若要切回纯前端演示模式，把下面一行换回 mockAdapter 即可。
  */
 import { httpAdapter } from './httpAdapter'
