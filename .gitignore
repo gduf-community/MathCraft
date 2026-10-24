@@ -39,3 +39,6 @@ backend/tests/.sources/
 # --- Local overrides -------------------------------------------------------
 .env
 *.local
+
+# --- Frontend (RiddleMe) ---------------------------------------------------
+node_modules/
