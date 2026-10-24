@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import chat, generate, kb
 from config import settings
 
-app = FastAPI(title="MathCraft Question Backend", version="0.1.0")
+app = FastAPI(title="MathCraft 出题服务", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,

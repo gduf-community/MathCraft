@@ -88,12 +88,12 @@ async def lifespan(app: FastAPI):
         emit_task_event=get_task_stream_manager().emit,
     )
     app.state.ready = True
-    logger.info("math_q_agent backend ready")
+    logger.info("MathCraft backend ready")
     try:
         yield
     finally:
         app.state.ready = False
-        logger.info("math_q_agent backend stopped")
+        logger.info("MathCraft backend stopped")
 
 
 app = FastAPI(
@@ -120,4 +120,4 @@ app.include_router(system.router, prefix="/api/system", tags=["system"])
 async def healthz() -> dict[str, Any]:
     """Liveness probe; independent of configured engines or credentials."""
 
-    return {"status": "ok", "service": "math_q_agent"}
+    return {"status": "ok", "service": "MathCraft"}

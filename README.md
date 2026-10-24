@@ -61,20 +61,24 @@ macOS / Linux 把解释器路径换成 `.venv/bin/python` 即可。
 
 > 已有 `.venv` 却提示 `No module named pip`，说明这个环境里没装 pip：改用 `uv pip install`，或执行 `.venv\Scripts\python.exe -m ensurepip` 补装 pip。
 
-可选 extras 按需安装（下例用 uv；用 pip 时把 `uv pip install --python .venv/Scripts/python.exe` 换成 `.venv\Scripts\python.exe -m pip install`）：
+基础安装已经包含默认的 `llamaindex` RAG 引擎和内置 `text_only` 文档解析引擎，启动默认服务不需要安装下面的 extras。其他解析器、RAG 引擎和测试依赖按需安装（下例用 uv；用 pip 时把 `uv pip install --python .venv/Scripts/python.exe` 换成 `.venv\Scripts\python.exe -m pip install`）：
 
 ```powershell
-uv pip install --python .venv/Scripts/python.exe -e ".[parse]"     # 全部文档解析引擎
-uv pip install --python .venv/Scripts/python.exe -e ".[graphrag]"  # GraphRAG（需 Python < 3.14）
-uv pip install --python .venv/Scripts/python.exe -e ".[engines]"   # 全部可选 RAG 引擎
-uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 测试依赖
+uv pip install --python .venv/Scripts/python.exe -e ".[parse]"     # 可选：全部额外文档解析引擎
+uv pip install --python .venv/Scripts/python.exe -e ".[graphrag]"  # 可选：GraphRAG（需 Python < 3.14）
+uv pip install --python .venv/Scripts/python.exe -e ".[engines]"   # 可选：全部额外 RAG 引擎与重排依赖
+uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：测试依赖
 ```
 
-### 2. 启动服务
+其中，`text_only` 不依赖额外解析器或模型，负责 PDF、Office 和文本类文件的基础文本提取；`llamaindex` 使用本地索引和向量检索，运行前仍需通过 `/api/settings` 配置可用的嵌入模型。只有切换到 `docling`、`pymupdf4llm`、`markitdown`、`liteparse`、`mineru`、`tika` 或其他 RAG 引擎时，才需要安装对应依赖或准备外部服务。
+
+### 2. 启动知识库与模型配置服务
 
 ```powershell
 .venv\Scripts\python.exe -m math_q_agent --port 8001
 ```
+
+这里的 Python 模块名仍是 `math_q_agent`，用于保持导入和启动兼容；服务对外名称是 `MathCraft`，健康检查和 API 文档都会显示 `MathCraft`。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -104,7 +108,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 测试依�
 
 ```powershell
 curl.exe http://127.0.0.1:8001/healthz
-# {"status":"ok","service":"math_q_agent"}
+# {"status":"ok","service":"MathCraft"}
 
 curl.exe http://127.0.0.1:8001/api/auth/status
 # {"auth_enabled":false,"single_user":true,"user":{...}}
@@ -134,9 +138,11 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。
 3. 之后即可建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
 
-### 6. 出题智能体前端与服务
+### 6. 启动出题服务与前端
 
-`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 是独立于 math_q_agent 的出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000，与 `math_q_agent` 平级共存），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 是独立于 `math_q_agent` 的 MathCraft 出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+
+推荐启动顺序是：先启动 8001 端口的知识库与模型配置服务，再启动 8000 端口的出题服务，最后启动前端开发服务器。只使用知识库 API 时可以跳过后两步；只开发出题页面时，仍需先启动 8000 端口的出题服务。
 
 ```powershell
 # 1) 安装出题服务依赖（向量检索走本地 Ollama + Chroma）
@@ -223,7 +229,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 
 ## 上游遗留的怪癖
 
-这些是有意保留的行为（裁剪时选择保真而非重构），读代码时每一处都是真陷阱。
+这些是从 DeepTutor 保留下来的兼容行为，不代表 MathCraft 推荐的业务流程。裁剪时选择保真而非重构，读代码或排查启动问题时需要特别注意。
 
 1. 运行时设置文件在 `math_q_agent.api.main` **导入时**创建，并导出到 `os.environ`。
 2. `CATALOG_PATH` 与 `PROJECT_ROOT` 只在导入时解析一次；导入后再改 `MATH_Q_HOME` 不生效。
