@@ -8,6 +8,10 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from math_q_agent.runtime.env import load_project_env
+
+load_project_env()
+
 from api import chat, generate, kb
 from config import settings
 from math_q_agent.api.main import lifespan as knowledge_lifespan
