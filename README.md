@@ -1,12 +1,12 @@
-# MathCraft — 数学智能体全栈项目
+# MathCraft — 数学智能体项目
 
 ## 项目说明
 
 MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目。后端提供知识库管理、文档解析、索引检索、模型配置和出题服务；前端提供题目生成、题目预览、组卷和参数配置等交互界面。
 
-项目包含两套后端能力：`math_q_agent` 提供知识库与模型配置 API，`backend` 根目录下的出题服务提供文档入库、检索和题目生成 API；`frontend` 是与出题服务配套的 React 应用。后端与前端可以分别启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
+项目包含两套后端能力：`MathCraft` 提供知识库与模型配置 API，`backend` 根目录下的出题服务提供文档入库、检索和题目生成 API；`frontend` 是与出题服务配套的 React 应用。后端与前端可以分别启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
 
-`math_q_agent` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。
+`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。内部 `math_q_agent` 包作为兼容层保留，新的启动命令和公共模块名统一为 `MathCraft`。
 
 ## 目录结构
 
@@ -22,6 +22,8 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── .env.example                  # 环境变量样例
 ├── .gitignore                    # 忽略虚拟环境、运行时数据、缓存与 .env
 ├── backend/                      # Python 后端，详细结构见 backend/README.md
+│   ├── MathCraft/                # 对外 Python 模块与启动入口
+│   ├── math_q_agent/             # DeepTutor 兼容实现包
 │   └── README.md                 # 后端目录结构与职责说明
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
@@ -75,10 +77,10 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 ### 2. 启动知识库与模型配置服务
 
 ```powershell
-.venv\Scripts\python.exe -m math_q_agent
+.venv\Scripts\python.exe -m MathCraft
 ```
 
-这里的 Python 模块名仍是 `math_q_agent`，用于保持导入和启动兼容；服务对外名称是 `MathCraft`，健康检查和 API 文档都会显示 `MathCraft`。
+Python 启动模块和公共 API 模块名统一为 `MathCraft`，服务健康检查和 API 文档也显示 `MathCraft`。内部 `math_q_agent` 包保留用于兼容已有导入路径。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -90,7 +92,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 等价的 uvicorn 写法（便于接入进程管理器）：
 
 ```powershell
-.venv\Scripts\python.exe -m uvicorn math_q_agent.api.main:app --host 127.0.0.1 --port 8001
+.venv\Scripts\python.exe -m uvicorn MathCraft.api.main:app --host 127.0.0.1 --port 8001
 ```
 
 ### 3. 环境变量（可选）
@@ -99,7 +101,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 | 服务 | `.env` 行为 | 配置位置 |
 | --- | --- | --- |
-| `math_q_agent`（8001） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/` |
+| `MathCraft`（8001） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/` |
 | 出题服务（8000） | 通过 `pydantic-settings` 读取同一份 `.env` | `DEEPSEEK_*`、Ollama、Chroma 和切片参数写在 `.env` 中 |
 | Vite（5173） | 通过 `envDir: '..'` 读取同一份 `.env` | `FRONTEND_*` 控制开发服务器，`VITE_API_BASE_URL` 控制生产前端 API 地址 |
 
@@ -149,7 +151,7 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 
 ### 6. 启动出题服务与前端
 
-`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 是独立于 `math_q_agent` 的 MathCraft 出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 是独立于 `MathCraft` 知识库服务的出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
 
 推荐启动顺序是：先启动 8001 端口的知识库与模型配置服务，再启动 8000 端口的出题服务，最后启动前端开发服务器。只使用知识库 API 时可以跳过后两步；只开发出题页面时，仍需先启动 8000 端口的出题服务。
 
@@ -259,7 +261,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 改动接口后请同步契约与文档：
 
 ```powershell
-.venv\Scripts\python.exe -c "import json, math_q_agent.api.main as m; open('openapi.json','w',encoding='utf-8').write(json.dumps(m.app.openapi(), indent=2, ensure_ascii=False))"
+.venv\Scripts\python.exe -c "import json, MathCraft.api.main as m; open('openapi.json','w',encoding='utf-8').write(json.dumps(m.app.openapi(), indent=2, ensure_ascii=False))"
 .venv\Scripts\python.exe tools\gen_api_docs.py
 ```
 

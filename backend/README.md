@@ -6,7 +6,9 @@
 
 ```text
 backend/
-├── math_q_agent/       # 知识库、模型配置与系统能力主包，import 名保持为 math_q_agent
+├── MathCraft/          # 对外 Python 模块与启动入口（python -m MathCraft）
+│   └── api/            # 对外 FastAPI 应用导出
+├── math_q_agent/       # DeepTutor 兼容实现包，保留原有 import 路径
 │   ├── api/            # FastAPI 应用装配、路由与请求工具
 │   ├── capabilities/   # 外部能力与 MarginNote4 连接器
 │   ├── config/         # 进程配置
@@ -30,7 +32,8 @@ backend/
 
 ## 运行边界
 
-- `math_q_agent/` 的 Python 导入名和命令行入口保持不变。
+- 使用 `python -m MathCraft` 启动知识库与模型配置服务；`MathCraft.api.main:app` 是对外 ASGI 入口。
+- `math_q_agent/` 作为 DeepTutor 兼容实现包保留，已有导入路径和内部模块无需迁移。
 - 根目录的 `main.py` 启动出题服务；对应配置位于 `config.py`，端口和地址读取根目录 `.env` 的 `QUESTION_BACKEND_HOST` / `QUESTION_BACKEND_PORT`。
-- `math_q_agent` 的启动入口会加载同一份根目录 `.env`，其中 `BACKEND_HOST` / `BACKEND_PORT` 控制知识库与模型配置服务。
+- `MathCraft` 的启动入口会加载同一份根目录 `.env`，其中 `BACKEND_HOST` / `BACKEND_PORT` 控制知识库与模型配置服务。
 - 运行数据、索引和本地配置不放入代码目录，统一按根 README 的约定写入运行时数据目录。

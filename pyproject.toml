@@ -123,7 +123,7 @@ package-dir = {"" = "backend"}
 
 [tool.setuptools.packages.find]
 where = ["backend"]
-include = ["math_q_agent*", "api*", "services*", "schemas*"]
+include = ["MathCraft*", "math_q_agent*", "api*", "services*", "schemas*"]
 
 [tool.setuptools.package-data]
 math_q_agent = [

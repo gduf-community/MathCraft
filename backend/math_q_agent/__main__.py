@@ -1,4 +1,4 @@
-"""Run the backend with ``python -m math_q_agent``.
+"""Run the backend with ``python -m MathCraft``.
 
 Defaults match a local single-tenant deployment: loopback only, port 8001.
 """
@@ -12,9 +12,10 @@ from math_q_agent.runtime.env import load_project_env
 
 
 def main() -> None:
+    os.environ.setdefault("MATH_Q_MODE", "server")
     load_project_env()
     parser = argparse.ArgumentParser(
-        prog="math_q_agent",
+        prog="MathCraft",
         description="Knowledge-base and model-configuration backend.",
     )
     parser.add_argument(
@@ -44,5 +45,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("MATH_Q_MODE", "server")
     main()
