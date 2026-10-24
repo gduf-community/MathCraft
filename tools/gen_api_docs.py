@@ -10,6 +10,9 @@ spec = json.loads((ROOT / "openapi.json").read_text(encoding="utf-8"))
 
 GROUPS = [
     ("/api/knowledge-bases", "Knowledge bases"),
+    ("/api/kb", "Question knowledge import"),
+    ("/api/generate", "Question generation"),
+    ("/api/chat", "Question chat"),
     ("/api/settings", "Settings (model catalogue, providers, parsing)"),
     ("/api/system", "System"),
     ("/api/auth", "Identity"),
@@ -29,7 +32,7 @@ def table(prefix: str) -> str:
 
 PREAMBLE = """# API reference — MathCraft
 
-Base URL: `http://127.0.0.1:8001`. Interactive docs: `/docs`. Machine contract:
+Base URL: `http://127.0.0.1:8000`. Interactive docs: `/docs`. Machine contract:
 `/openapi.json` (a copy is committed at the repository root).
 
 There is **no authentication**: every request is served as the single local
@@ -106,7 +109,7 @@ engine crash is 502.
 ## Indexing progress WebSocket
 
 ```
-ws://127.0.0.1:8001/ws/knowledge-bases/{kb_name}/progress?task_id=<optional>
+ws://127.0.0.1:8000/ws/knowledge-bases/{kb_name}/progress?task_id=<optional>
 ```
 
 - No authentication; the socket is accepted immediately.
@@ -128,19 +131,19 @@ Message shapes:
 
 ```bash
 # create a knowledge base with one file
-curl -X POST http://127.0.0.1:8001/api/knowledge-bases \\
+curl -X POST http://127.0.0.1:8000/api/knowledge-bases \\
   -F name=gears -F files=@notes.pdf
 
 # rebuild its index
-curl -X POST http://127.0.0.1:8001/api/knowledge-bases/gears/reindex
+curl -X POST http://127.0.0.1:8000/api/knowledge-bases/gears/reindex
 
 # retrieve
-curl -X POST http://127.0.0.1:8001/api/knowledge-bases/gears/query \\
+curl -X POST http://127.0.0.1:8000/api/knowledge-bases/gears/query \\
   -H 'Content-Type: application/json' \\
   -d '{"query":"helix angle","top_k":5}'
 
 # inspect the model catalogue
-curl http://127.0.0.1:8001/api/settings/catalog
+curl http://127.0.0.1:8000/api/settings/catalog
 ```
 """
 

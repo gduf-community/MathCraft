@@ -1,5 +1,5 @@
-"""Expose the MathCraft FastAPI application under the public package name."""
+"""Expose the unified MathCraft FastAPI application."""
 
-from math_q_agent.api.main import app
+from MathCraft.app import app
 
 __all__ = ["app"]

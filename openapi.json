@@ -2,10 +2,208 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MathCraft",
-    "description": "Knowledge-base and model-configuration backend. Extracted from DeepTutor and reduced to a single-tenant service.",
     "version": "0.1.0"
   },
   "paths": {
+    "/api/kb/upload": {
+      "post": {
+        "tags": [
+          "kb"
+        ],
+        "summary": "Upload",
+        "description": "上传文档并入库：解析 → 切片 → 向量化 → Chroma。",
+        "operationId": "upload_api_kb_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_api_kb_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kb/documents": {
+      "get": {
+        "tags": [
+          "kb"
+        ],
+        "summary": "Documents",
+        "operationId": "documents_api_kb_documents_get",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "kb-math",
+              "title": "Kb Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kb/search": {
+      "post": {
+        "tags": [
+          "kb"
+        ],
+        "summary": "Search",
+        "description": "RAG 检索测试接口：返回 top-k 相关片段。",
+        "operationId": "search_api_kb_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generate": {
+      "post": {
+        "tags": [
+          "generate"
+        ],
+        "summary": "Generate",
+        "operationId": "generate_api_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateParams"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat",
+        "operationId": "chat_api_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/status": {
       "get": {
         "tags": [
@@ -5908,13 +6106,33 @@
         }
       }
     },
+    "/api/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health",
+        "description": "Check the question-generation dependencies.",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
           "health"
         ],
         "summary": "Healthz",
-        "description": "Liveness probe; independent of configured engines or credentials.",
+        "description": "Liveness probe for the unified backend.",
         "operationId": "healthz_healthz_get",
         "responses": {
           "200": {
@@ -5922,7 +6140,9 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
+                  "additionalProperties": {
+                    "type": "string"
+                  },
                   "type": "object",
                   "title": "Response Healthz Healthz Get"
                 }
@@ -6155,6 +6375,25 @@
         "type": "object",
         "title": "Body_reindex_knowledge_base_api_knowledge_bases__kb_name__reindex_post"
       },
+      "Body_upload_api_kb_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id",
+            "default": "kb-math"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_api_kb_upload_post"
+      },
       "Body_upload_files_api_knowledge_bases__kb_name__upload_post": {
         "properties": {
           "files": {
@@ -6279,6 +6518,52 @@
         ],
         "title": "ChatAttachmentSettingsUpdate",
         "description": "Chat attachment policy (size caps + extraction budgets).\n\nBounds mirror the normalization clamps in\n``runtime_settings.CHAT_ATTACHMENT_*_RANGE`` so the API rejects loudly\nwhat the file layer would silently clamp."
+      },
+      "ChatRequestBody": {
+        "properties": {
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "History",
+            "default": []
+          },
+          "slot_state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Slot State",
+            "default": {}
+          },
+          "existing_stems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Existing Stems",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "kb_id",
+          "doc_id",
+          "message"
+        ],
+        "title": "ChatRequestBody"
       },
       "ChatResponseTimeoutUpdate": {
         "properties": {
@@ -6546,6 +6831,16 @@
         ],
         "title": "DeleteKnowledgeBaseRequest"
       },
+      "Difficulty": {
+        "type": "string",
+        "enum": [
+          "低",
+          "中",
+          "高",
+          "地狱"
+        ],
+        "title": "Difficulty"
+      },
       "DoclingRemoteTest": {
         "properties": {
           "api_base_url": {
@@ -6712,6 +7007,54 @@
         },
         "type": "object",
         "title": "FetchModelsPayload"
+      },
+      "GenerateParams": {
+        "properties": {
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "types": {
+            "items": {
+              "$ref": "#/components/schemas/TypeCount"
+            },
+            "type": "array",
+            "title": "Types"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty",
+            "default": "中"
+          },
+          "source_mode": {
+            "type": "string",
+            "title": "Source Mode",
+            "default": "variant_data"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "existing_stems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Existing Stems",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "kb_id",
+          "doc_id",
+          "types"
+        ],
+        "title": "GenerateParams"
       },
       "GitHubSourceInfo": {
         "properties": {
@@ -8301,6 +8644,18 @@
         "type": "object",
         "title": "ProviderProbePayload"
       },
+      "QuestionType": {
+        "type": "string",
+        "enum": [
+          "single",
+          "multiple",
+          "judge",
+          "blank",
+          "compute",
+          "essay"
+        ],
+        "title": "QuestionType"
+      },
       "RegistryEditPayload": {
         "properties": {
           "kind": {
@@ -8427,6 +8782,46 @@
           "kind"
         ],
         "title": "RegistryEditPayload"
+      },
+      "SearchBody": {
+        "properties": {
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id",
+            "default": "kb-math"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K"
+          },
+          "doc_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchBody"
       },
       "SettingsDraftPayload": {
         "properties": {
@@ -8750,6 +9145,25 @@
         },
         "type": "object",
         "title": "TourCompletePayload"
+      },
+      "TypeCount": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/QuestionType"
+          },
+          "count": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "count"
+        ],
+        "title": "TypeCount"
       },
       "UISettingsUpdate": {
         "properties": {

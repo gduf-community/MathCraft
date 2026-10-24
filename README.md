@@ -4,7 +4,7 @@
 
 MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目。后端提供知识库管理、文档解析、索引检索、模型配置和出题服务；前端提供题目生成、题目预览、组卷和参数配置等交互界面。
 
-项目包含两套后端能力：`MathCraft` 提供知识库与模型配置 API，`backend` 根目录下的出题服务提供文档入库、检索和题目生成 API；`frontend` 是与出题服务配套的 React 应用。后端与前端可以分别启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
+项目包含一个统一的 `MathCraft` 后端：同一进程提供知识库、模型配置、文档入库、检索和题目生成 API；`frontend` 是配套的 React 应用。前后端按独立进程启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
 
 `MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。内部 `math_q_agent` 包作为兼容层保留，新的启动命令和公共模块名统一为 `MathCraft`。
 
@@ -74,35 +74,34 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 其中，`text_only` 不依赖额外解析器或模型，负责 PDF、Office 和文本类文件的基础文本提取；`llamaindex` 使用本地索引和向量检索，运行前仍需通过 `/api/settings` 配置可用的嵌入模型。只有切换到 `docling`、`pymupdf4llm`、`markitdown`、`liteparse`、`mineru`、`tika` 或其他 RAG 引擎时，才需要安装对应依赖或准备外部服务。
 
-### 2. 启动知识库与模型配置服务
+### 2. 启动统一后端
 
 ```powershell
 .venv\Scripts\python.exe -m MathCraft
 ```
 
-Python 启动模块和公共 API 模块名统一为 `MathCraft`，服务健康检查和 API 文档也显示 `MathCraft`。内部 `math_q_agent` 包保留用于兼容已有导入路径。
+Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、模型配置和出题接口都由这个进程提供，内部 `math_q_agent` 代码已直接装配进统一应用。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | 绑定地址；只对本机提供服务 |
-| `--port` | `8001` | 绑定端口 |
+| `--port` | `8000` | 绑定端口 |
 | `--reload` | 关闭 | 源码变更后自动重启，仅开发时使用 |
 | `--log-level` | `info` | uvicorn 日志级别 |
 
 等价的 uvicorn 写法（便于接入进程管理器）：
 
 ```powershell
-.venv\Scripts\python.exe -m uvicorn MathCraft.api.main:app --host 127.0.0.1 --port 8001
+.venv\Scripts\python.exe -m uvicorn MathCraft.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 ### 3. 环境变量（可选）
 
-两套后端和前端开发服务器都从仓库根目录的 `.env` 读取进程级环境变量：
+统一后端和前端开发服务器都从仓库根目录的 `.env` 读取进程级环境变量：
 
 | 服务 | `.env` 行为 | 配置位置 |
 | --- | --- | --- |
-| `MathCraft`（8001） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/` |
-| 出题服务（8000） | 通过 `pydantic-settings` 读取同一份 `.env` | `DEEPSEEK_*`、Ollama、Chroma 和切片参数写在 `.env` 中 |
+| `MathCraft`（8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/`；出题服务配置读取同一份 `.env` |
 | Vite（5173） | 通过 `envDir: '..'` 读取同一份 `.env` | `FRONTEND_*` 控制开发服务器，`VITE_API_BASE_URL` 控制生产前端 API 地址 |
 
 `.env.example` 同时列出两套服务的变量，`.env` 已被 `.gitignore` 忽略。模型与解析配置**不**写入 `.env`，而是通过 `/api/settings` 写入
@@ -114,17 +113,16 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`，服务健康�
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
 | `CORS_ORIGIN` | 额外允许的浏览器来源，逗号分隔 |
 | `BACKEND_HOST` / `BACKEND_PORT` | 知识库与模型配置服务绑定地址和端口 |
-| `QUESTION_BACKEND_HOST` / `QUESTION_BACKEND_PORT` | 出题服务绑定地址和端口 |
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Vite 开发服务器绑定地址和端口 |
 | `VITE_API_BASE_URL` | 前端生产构建使用的绝对 API 地址；本地开发留空，使用 Vite `/api` 代理 |
 
 ### 4. 验证
 
 ```powershell
-curl.exe http://127.0.0.1:8001/healthz
+curl.exe http://127.0.0.1:8000/healthz
 # {"status":"ok","service":"MathCraft"}
 
-curl.exe http://127.0.0.1:8001/api/auth/status
+curl.exe http://127.0.0.1:8000/api/auth/status
 # {"auth_enabled":false,"single_user":true,"user":{...}}
 ```
 
@@ -139,8 +137,8 @@ curl.exe http://127.0.0.1:8001/api/auth/status
 示例：创建一个知识库并上传文档。
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:8001/api/knowledge-bases -F name=demo -F files=@notes.pdf
-curl.exe http://127.0.0.1:8001/api/knowledge-bases
+curl.exe -X POST http://127.0.0.1:8000/api/knowledge-bases -F name=demo -F files=@notes.pdf
+curl.exe http://127.0.0.1:8000/api/knowledge-bases
 ```
 
 ### 5. 首次使用：配置模型
@@ -149,27 +147,23 @@ curl.exe http://127.0.0.1:8001/api/knowledge-bases
 2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。
 3. 之后即可建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
 
-### 6. 启动出题服务与前端
+### 6. 启动前端
 
-`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 是独立于 `MathCraft` 知识库服务的出题服务（RAG 检索 + DeepSeek 出题，默认端口 8000），`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 提供出题能力，并已与 `MathCraft` 知识库和模型配置 API 合并到同一 FastAPI 进程；`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
 
-推荐启动顺序是：先启动 8001 端口的知识库与模型配置服务，再启动 8000 端口的出题服务，最后启动前端开发服务器。只使用知识库 API 时可以跳过后两步；只开发出题页面时，仍需先启动 8000 端口的出题服务。
+启动顺序是：启动统一后端，再启动前端开发服务器。
 
 ```powershell
 # 1) 安装出题服务依赖（向量检索走本地 Ollama + Chroma）
 uv pip install --python .venv\Scripts\python.exe -e ".[question]"
 
 # 2) 配置环境变量：复制 .env.example 为 .env（仓库根），填写 DEEPSEEK_API_KEY 等
-#    两套后端和 Vite 都读取这份 .env；shell 中已有变量优先
+#    统一后端和 Vite 都读取这份 .env；shell 中已有变量优先
 
 # 3) 上传文档并入库（支持文字版 PDF / docx / xlsx / md，扫描版 PDF 需接入 OCR 引擎）
 .venv\Scripts\python.exe backend\scripts\upload.py 导数与微分_50题练习卷.pdf --kb kb-math
 
-# 4) 启动出题服务（在 backend 目录下运行，端口取 QUESTION_BACKEND_PORT）
-cd backend
-..\.venv\Scripts\python.exe -m main
-
-# 5) 前端开发服务（另开终端，/api 代理到 QUESTION_BACKEND_PORT）
+# 4) 前端开发服务（另开终端，/api 代理到 BACKEND_PORT）
 cd frontend
 npm install
 npm run dev

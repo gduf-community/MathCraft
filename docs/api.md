@@ -1,6 +1,6 @@
 # API reference — MathCraft
 
-Base URL: `http://127.0.0.1:8001`. Interactive docs: `/docs`. Machine contract:
+Base URL: `http://127.0.0.1:8000`. Interactive docs: `/docs`. Machine contract:
 `/openapi.json` (a copy is committed at the repository root).
 
 There is **no authentication**: every request is served as the single local
@@ -100,6 +100,26 @@ Errors use FastAPI's envelope: `{"detail": "..."}` with a 4xx/5xx status.
 | `POST` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/retry` | Retry Web Source Sync |
 | `PUT` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/schedule` | Update Web Source Schedule |
 | `GET` | `/api/knowledge-bases/{kb_name}/web-sources` | Get Web Sources |
+
+## Question knowledge import
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| `GET` | `/api/kb/documents` | Documents |
+| `POST` | `/api/kb/search` | Search |
+| `POST` | `/api/kb/upload` | Upload |
+
+## Question generation
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| `POST` | `/api/generate` | Generate |
+
+## Question chat
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| `POST` | `/api/chat` | Chat |
 
 ## Settings (model catalogue, providers, parsing)
 
@@ -255,7 +275,7 @@ engine crash is 502.
 ## Indexing progress WebSocket
 
 ```
-ws://127.0.0.1:8001/ws/knowledge-bases/{kb_name}/progress?task_id=<optional>
+ws://127.0.0.1:8000/ws/knowledge-bases/{kb_name}/progress?task_id=<optional>
 ```
 
 - No authentication; the socket is accepted immediately.
@@ -277,17 +297,17 @@ Message shapes:
 
 ```bash
 # create a knowledge base with one file
-curl -X POST http://127.0.0.1:8001/api/knowledge-bases \
+curl -X POST http://127.0.0.1:8000/api/knowledge-bases \
   -F name=gears -F files=@notes.pdf
 
 # rebuild its index
-curl -X POST http://127.0.0.1:8001/api/knowledge-bases/gears/reindex
+curl -X POST http://127.0.0.1:8000/api/knowledge-bases/gears/reindex
 
 # retrieve
-curl -X POST http://127.0.0.1:8001/api/knowledge-bases/gears/query \
+curl -X POST http://127.0.0.1:8000/api/knowledge-bases/gears/query \
   -H 'Content-Type: application/json' \
   -d '{"query":"helix angle","top_k":5}'
 
 # inspect the model catalogue
-curl http://127.0.0.1:8001/api/settings/catalog
+curl http://127.0.0.1:8000/api/settings/catalog
 ```
