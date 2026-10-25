@@ -70,3 +70,23 @@ def test_document_parsing_per_engine_update_is_isolated(client):
     assert after["engines"]["docling"] == before["engines"]["docling"]
 
     client.put("/api/settings/document-parsing", json={"engines": {"mineru": mineru_before}})
+
+
+def test_mineru_env_overrides_persisted_settings(tmp_path: Path):
+    from math_q_agent.services.config.runtime_settings import RuntimeSettingsService
+
+    service = RuntimeSettingsService(
+        tmp_path,
+        process_env={
+            "MINERU_MODE": "cloud",
+            "MINERU_API_BASE_URL": "https://mineru.example.test",
+            "MINERU_API_TOKEN": "fake-mineru-token",
+        },
+    )
+    service.save_mineru({"mode": "local", "api_token": ""})
+
+    effective = service.load_mineru()
+
+    assert effective["mode"] == "cloud"
+    assert effective["api_base_url"] == "https://mineru.example.test"
+    assert effective["api_token"] == "fake-mineru-token"

@@ -139,6 +139,16 @@ def client(embedding_server: str):
     shutil.rmtree(DATA_HOME, ignore_errors=True)
     DATA_HOME.mkdir(parents=True, exist_ok=True)
     os.environ["MATH_Q_HOME"] = str(DATA_HOME)
+    # Tests must not inherit a developer's local MinerU deployment overrides.
+    # The env override itself is covered with an explicit RuntimeSettingsService
+    # process_env fixture in test_settings_parsing.py.
+    for key in tuple(os.environ):
+        if key.startswith("MINERU_"):
+            os.environ.pop(key, None)
+    # ``load_project_env`` runs during app import. Keep the key explicitly
+    # empty so a developer's ignored local .env cannot reintroduce a real
+    # MinerU credential into tests.
+    os.environ["MINERU_API_TOKEN"] = ""
 
     from fastapi.testclient import TestClient
 

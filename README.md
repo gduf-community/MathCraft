@@ -75,7 +75,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[engines]"   # 可选：�
 uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：测试依赖
 ```
 
-其中，`text_only` 不依赖额外解析器或模型，负责 PDF、Office 和文本类文件的基础文本提取；`llamaindex` 使用本地索引和向量检索，运行前仍需通过 `/api/settings` 配置可用的嵌入模型。只有切换到 `docling`、`pymupdf4llm`、`markitdown`、`liteparse`、`mineru`、`tika` 或其他 RAG 引擎时，才需要安装对应依赖或准备外部服务。
+其中，`text_only` 不依赖额外解析器或模型，负责普通 PDF、Office 和文本类文件的基础文本提取；`llamaindex` 使用本地索引和向量检索，运行前仍需通过 `/api/settings` 配置可用的嵌入模型。扫描型 PDF 没有文字层时会强制使用 MinerU 云端 OCR，必须通过 `/api/settings` 或 `MINERU_MODE=cloud` 配置 MinerU，并提供 API Token；系统不会为扫描 PDF 启动本地 OCR、LiteParse 或 Docling 回退。其他格式或明确选择的解析器仍按对应依赖和外部服务配置运行。
 
 ### 2. 启动统一后端
 
@@ -106,11 +106,26 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、�
 
 | 服务 | `.env` 行为 | 配置位置 |
 | --- | --- | --- |
-| `MathCraft`（8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/`；知识库和出题服务共用这套正式配置 |
+| `MathCraft`（8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 首次没有 `model_catalog.json` 时由 `LLM_*`、`TASK_*`、`EMBEDDING_*` 初始化；通过 `/api/settings` 保存的 catalog 优先；MinerU 支持用 `MINERU_*` 做部署级覆盖 |
 | Vite（5173） | 通过 `envDir: '..'` 读取同一份 `.env` | `FRONTEND_*` 控制开发服务器，`VITE_API_BASE_URL` 控制生产前端 API 地址 |
 
-`.env.example` 仅列出进程和前端变量，`.env` 已被 `.gitignore` 忽略。模型与解析配置**不**写入 `.env`，而是通过 `/api/settings` 写入
-`<MATH_Q_HOME>/data/user/settings/model_catalog.json` 与 `document_parsing.json`。
+`.env.example` 仅包含变量名和空凭据占位，`.env` 已被 `.gitignore` 忽略。模型配置的来源优先级是：
+
+```text
+model_catalog.json > shell 环境变量 > .env > 内置默认值
+```
+
+模型环境变量只负责首次生成或补齐尚不存在的 `model_catalog.json`；通过 `/api/settings` 保存后，后续重启不会被 `.env` 覆盖。MinerU 的 `MINERU_*` 是解析器的部署级覆盖，仍会在运行时覆盖 `document_parsing.json` 对应字段。
+
+扫描型 PDF 建议配置：
+
+```dotenv
+MINERU_MODE=cloud
+MINERU_API_BASE_URL=https://mineru.net
+MINERU_API_TOKEN=
+```
+
+`MINERU_API_TOKEN` 必须填入本机或部署环境的真实 Token，不能写入 `.env.example`、代码、测试或提交记录。缺少 Token 时，扫描 PDF 会明确报“没有配置 MinerU 云端 OCR”，不会启动本地 OCR、LiteParse 或 Docling 回退。
 
 | 变量 | 说明 |
 | --- | --- |
@@ -118,6 +133,11 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、�
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
 | `CORS_ORIGIN` | 额外允许的浏览器来源，逗号分隔 |
 | `BACKEND_HOST` / `BACKEND_PORT` | 知识库与模型配置服务绑定地址和端口 |
+| `LLM_BINDING` / `LLM_MODEL` / `LLM_API_KEY` / `LLM_BASE_URL` | 首次启动时初始化主模型 Provider、模型、密钥和地址 |
+| `TASK_BINDING` / `TASK_MODEL` / `TASK_API_KEY` / `TASK_BASE_URL` | 首次启动时初始化后台任务模型 |
+| `TASK_MODE` | 任务模型模式：`inherit`、`profiles` 或 `reference`，默认 `profiles` |
+| `EMBEDDING_BINDING` / `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` | 首次启动时初始化嵌入模型 |
+| `EMBEDDING_DIMENSION` | 首次启动时初始化嵌入维度 |
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Vite 开发服务器绑定地址和端口 |
 | `VITE_API_BASE_URL` | 前端生产构建使用的绝对 API 地址；本地开发留空，使用 Vite `/api` 代理 |
 
@@ -148,10 +168,10 @@ curl.exe http://127.0.0.1:8000/api/knowledge-bases
 
 ### 5. 首次使用：配置模型与知识库
 
-1. 在 `/api/settings` 至少登记一个对话模型与一个嵌入模型（默认 `llamaindex` 流水线依赖嵌入）。
-2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。
-3. 通过正式知识库接口建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
-4. 前端出题时选择正式知识库和其中的 raw 文档，`/api/generate`、`/api/chat` 仅负责编排。
+1. 可先在 `.env` 填写 `LLM_*`、`TASK_*`、`EMBEDDING_*`，也可以启动后调用 `/api/settings` 编辑 Provider、模型、API 格式和嵌入维度。
+2. 调用 `/api/settings/test-provider` 测试 Provider，再通过 `/api/settings/draft` 与 `/api/settings/apply` 保存；保存会写入运行时 `model_catalog.json`，覆盖首次 `.env` 初始化值。
+3. 选择 `text_only`、Docling 或 MinerU 作为全局文档解析引擎；普通知识库流程默认使用 LlamaIndex。
+4. 通过知识库 API 创建知识库、上传文档并读取后台索引状态；出题服务选择正式知识库和其中的 raw 文档，`/api/generate`、`/api/chat` 仅负责编排。
 
 ### 6. 启动前端
 
@@ -208,7 +228,7 @@ data/
 
 可选引擎惰性导入：缺少依赖时在引擎列表与预检中报告 *unavailable*，其配置端点仍可正常使用，服务启动不受影响。交叉编码器重排是 `.[rag-rerank]` extra。
 
-文档解析接入 7 个引擎（`text_only`、`pymupdf4llm`、`markitdown`、`liteparse`、`docling`、`mineru`、`tika`），除 `text_only` 外均为可选，通过 `parse-*` extras 安装；MinerU 与 Tika 也可以走外部 CLI/服务。
+文档解析接入 7 个引擎（`text_only`、`pymupdf4llm`、`markitdown`、`liteparse`、`docling`、`mineru`、`tika`），除 `text_only` 外均为可选。扫描型 PDF 的 OCR 主路径固定使用 MinerU 云端，要求在设置中配置 `mode=cloud` 和 API Token；MinerU 本地 CLI、LiteParse 和 Docling 不作为扫描 PDF 的隐式 OCR 回退。
 
 ## 认证
 
@@ -249,6 +269,8 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
 | [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 智能出题产品需求、范围和验收标准 |
 | [docs/design/知识库模块说明.md](docs/design/知识库模块说明.md) | 知识库模块架构、生命周期、数据布局和接口分组 |
+| [docs/design/扫描PDF云端OCR策略.md](docs/design/扫描PDF云端OCR策略.md) | 扫描 PDF 的检测、MinerU 云端 OCR 契约和验收标准 |
+| [docs/design/模型配置来源与普通知识库流程.md](docs/design/模型配置来源与普通知识库流程.md) | 模型目录优先级、Task 模式与普通知识库后端流程 |
 | [docs/adr/0001-正式知识库作为唯一知识库入口.md](docs/adr/0001-正式知识库作为唯一知识库入口.md) | 正式知识库唯一入口的架构决策 |
 | [GLOSSARY.md](GLOSSARY.md) | 正式知识库、RAG 和出题编排术语 |
 | [openapi.json](openapi.json) | 机器可读的 OpenAPI 契约快照 |

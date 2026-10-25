@@ -17,7 +17,17 @@ class ParserError(RuntimeError):
     """Raised when a parse fails or is gated (engine missing, models not ready,
     misconfiguration). Carries a user-facing message; the capability/stream
     layers surface it as a stream error. Engine-specific errors (e.g.
-    ``MinerUError``) subclass this so callers can catch a single type."""
+    ``MinerUError``) subclass this so callers can catch a single type.
+
+    ``code`` is an optional stable classification for callers that need to
+    preserve an actionable configuration error instead of treating it as an
+    empty parse result.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
 
 
 @dataclass(frozen=True)

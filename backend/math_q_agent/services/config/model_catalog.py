@@ -251,6 +251,90 @@ def _default_catalog() -> dict[str, Any]:
     }
 
 
+def _env_value(*names: str) -> str:
+    """Return the first non-empty process environment value.
+
+    ``load_project_env`` loads the repository ``.env`` with ``override=False``,
+    so a shell variable already wins before this function is called.
+    """
+
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _env_profile(service_name: str) -> dict[str, Any] | None:
+    """Build one catalog profile from legacy ``.env`` variables.
+
+    The environment is an initialization surface only. It is deliberately
+    converted into the same catalog shape as the settings UI so the runtime
+    has one source of truth after the first save.
+    """
+
+    prefix = service_name.upper()
+    binding = _env_value(f"{prefix}_BINDING", f"{prefix}_PROVIDER")
+    model = _env_value(f"{prefix}_MODEL", f"{prefix}_MODEL_ID")
+    api_key = _env_value(f"{prefix}_API_KEY", f"{prefix}_KEY")
+    base_url = _env_value(f"{prefix}_BASE_URL", f"{prefix}_HOST", f"{prefix}_API_BASE_URL")
+    api_format = _env_value(f"{prefix}_API_FORMAT")
+    api_version = _env_value(f"{prefix}_API_VERSION")
+    dimension = _env_value(f"{prefix}_DIMENSION", f"{prefix}_EMBEDDING_DIMENSION")
+
+    if not any((binding, model, api_key, base_url, api_format, api_version, dimension)):
+        return None
+
+    profile_id = f"{service_name}-profile-env"
+    model_id = f"{service_name}-model-env"
+    model_entry: dict[str, Any] = {
+        "id": model_id,
+        "name": model or f"{service_name.title()} model from .env",
+        "model": model,
+    }
+    if service_name == "embedding" and dimension:
+        try:
+            model_entry["dimension"] = int(dimension)
+        except ValueError:
+            model_entry["dimension"] = dimension
+
+    profile: dict[str, Any] = {
+        "id": profile_id,
+        "name": _env_value(f"{prefix}_PROFILE_NAME") or f"{service_name.title()} from .env",
+        "binding": binding or "openai",
+        "api_format": api_format or "auto",
+        "wire_api": api_format or "auto",
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_version": api_version,
+        "extra_headers": {},
+        "models": [model_entry],
+    }
+    return profile
+
+
+def _catalog_from_environment() -> dict[str, Any] | None:
+    """Create an initial catalog from ``.env`` without overlaying saved state."""
+
+    catalog = _default_catalog()
+    configured = False
+    for service_name in ("llm", "task", "embedding"):
+        profile = _env_profile(service_name)
+        if profile is None:
+            continue
+        configured = True
+        task_mode = _env_value("TASK_MODE") if service_name == "task" else ""
+        if task_mode not in {"inherit", "profiles", "reference"}:
+            task_mode = "profiles" if service_name == "task" else ""
+        catalog["services"][service_name] = {
+            "active_profile_id": profile["id"],
+            "active_model_id": profile["models"][0]["id"],
+            "profiles": [profile],
+            **({"mode": task_mode} if service_name == "task" else {}),
+        }
+    return catalog if configured else None
+
+
 class ModelCatalogService:
     _instances: dict[str, "ModelCatalogService"] = {}
 
@@ -272,7 +356,7 @@ class ModelCatalogService:
         # or hold the destination open during this instance's replace (#1984).
         with self._lock:
             loaded = self._read_existing_catalog()
-            if loaded:
+            if loaded is not None:
                 catalog = _default_catalog()
                 catalog.update({k: v for k, v in loaded.items() if k != "services"})
                 catalog["services"].update(loaded.get("services", {}))
@@ -283,19 +367,22 @@ class ModelCatalogService:
                     self.save(catalog)
                 return catalog
 
-            catalog = _default_catalog()
+            # ``.env`` is only the bootstrap source. Once the catalog exists,
+            # including an intentionally empty catalog, it remains authoritative
+            # so UI edits can override and survive later process restarts.
+            catalog = _catalog_from_environment() or _default_catalog()
             self._normalize(catalog)
             self.save(catalog)
             return catalog
 
-    def _read_existing_catalog(self) -> dict[str, Any]:
+    def _read_existing_catalog(self) -> dict[str, Any] | None:
         if not self.path.exists() or self.path.stat().st_size == 0:
-            return {}
+            return None
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
+            return None
+        return loaded if isinstance(loaded, dict) else None
 
     def save(self, catalog: dict[str, Any]) -> dict[str, Any]:
         with self._lock:

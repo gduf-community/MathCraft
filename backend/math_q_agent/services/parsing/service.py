@@ -9,6 +9,7 @@ content; nothing is parsed implicitly.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -24,6 +25,14 @@ from .types import ParsedDocument, ParserError
 
 logger = logging.getLogger(__name__)
 
+SCANNED_PDF_OCR_ERROR_CODE = "scanned_pdf_mineru_cloud_not_configured"
+SCANNED_PDF_OCR_FAILED_CODE = "scanned_pdf_mineru_cloud_failed"
+_SCANNED_PDF_OCR_ERROR = (
+    "扫描型 PDF 未提取到正文，必须使用 MinerU 云端 OCR；当前未配置 MinerU 云端模式 "
+    "或 API Token，无法启动 OCR 模式。请在设置 → 文档解析中将 MinerU 设置为 cloud "
+    "并配置 API Token。"
+)
+
 
 def _matches_supported_format(source_path: str | Path, supported: frozenset[str]) -> bool:
     """Match simple or compound parser suffixes case-insensitively."""
@@ -38,6 +47,28 @@ def _display_extension(source_path: str | Path, supported: frozenset[str]) -> st
     if matches:
         return max(matches, key=len)
     return Path(source_path).suffix.lower() or "this"
+
+
+def _is_scanned_pdf(source_path: Path) -> bool:
+    """Return whether a PDF has page images but no extractable text layer."""
+    if source_path.suffix.lower() != ".pdf":
+        return False
+
+    import pymupdf
+
+    try:
+        with pymupdf.open(source_path) as document:
+            has_page_image = False
+            for page in document:
+                if page.get_text("text").strip():
+                    return False
+                if page.get_images(full=True):
+                    has_page_image = True
+            return has_page_image
+    except (OSError, RuntimeError, ValueError):
+        # Let the selected parser report the actual unreadable/corrupt-PDF
+        # error. Detection must never hide the parser's own diagnostics.
+        return False
 
 
 # Engines tried, in order, when the *implicitly* selected engine (the global
@@ -147,9 +178,16 @@ class ParseService:
         if not source_path.is_file():
             raise ParserError(f"File to parse not found: {source_path}")
 
-        engine_name = (engine or self.active_engine()).strip().lower()
-        parser = get_parser(engine_name)
-        config = parser.resolve_config()
+        scanned_pdf = _is_scanned_pdf(source_path)
+        if scanned_pdf:
+            engine_name, parser, config = self._resolve_scanned_pdf_ocr()
+            logger.info(
+                "Scanned PDF detected; forcing MinerU cloud OCR for %s", source_path.name
+            )
+        else:
+            engine_name = (engine or self.active_engine()).strip().lower()
+            parser = get_parser(engine_name)
+            config = parser.resolve_config()
 
         supported = parser.supported_formats()
         if supported and not _matches_supported_format(source_path, supported):
@@ -237,9 +275,32 @@ class ParseService:
                 engine=engine_name,
                 workdir=workdir,
             )
-        except Exception:
+        except Exception as exc:
             cache.cleanup_failed(workdir)
+            if scanned_pdf and isinstance(exc, ParserError):
+                raise ParserError(
+                    f"扫描型 PDF 的 MinerU 云端 OCR 失败：{exc}",
+                    code=SCANNED_PDF_OCR_FAILED_CODE,
+                    detail=str(exc),
+                ) from exc
             raise
+
+    @staticmethod
+    def _resolve_scanned_pdf_ocr() -> tuple[str, Any, Any]:
+        """Resolve a cloud-only MinerU config for a scanned PDF."""
+        parser = get_parser("mineru")
+        config = parser.resolve_config()
+        if (
+            not getattr(config, "is_cloud", False)
+            or not str(getattr(config, "api_base_url", "")).strip()
+            or not getattr(config, "api_keys", [])
+        ):
+            raise ParserError(_SCANNED_PDF_OCR_ERROR, code=SCANNED_PDF_OCR_ERROR_CODE)
+
+        # OCR is a property of this scanned-PDF request. Do not mutate the
+        # persisted settings: ordinary MinerU parses keep their configured
+        # value, while this path always sends is_ocr=true to the cloud API.
+        return "mineru", parser, replace(config, is_ocr=True)
 
 
 _service: Optional[ParseService] = None

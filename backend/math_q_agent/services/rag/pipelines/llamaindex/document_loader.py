@@ -22,7 +22,6 @@ from typing import Any, Callable, Iterable
 from llama_index.core import Document
 from llama_index.core.schema import ImageNode
 
-from math_q_agent.services.config.runtime_settings import DOCUMENT_PARSING_ENGINE_LITEPARSE
 from math_q_agent.services.embedding import get_embedding_client
 from math_q_agent.services.llm.image_caption_batch import ImageCaptionBatcher
 from math_q_agent.services.llm.image_caption_cache import complete_image_caption
@@ -45,10 +44,6 @@ IMAGE_DESCRIPTION_PROMPT = (
     "and cite it later. Include visible text/OCR if present, the main subject, "
     "and any educational or technical meaning. Keep the answer under 180 words."
 )
-
-# LiteParse is the only automatic fallback candidate: it performs local OCR,
-# has no model download, and can run without changing the user's global parser.
-_PDF_OCR_FALLBACK_ENGINE = DOCUMENT_PARSING_ENGINE_LITEPARSE
 
 
 @dataclass(frozen=True)
@@ -97,28 +92,6 @@ class LlamaIndexDocumentLoader:
                 text, extracted_images, parse_engine = await asyncio.to_thread(
                     self._parse_document, file_path, kb_dir=kb_dir
                 )
-                scanned_pdf_needs_ocr = (
-                    file_path.suffix.lower() == ".pdf"
-                    and not text.strip()
-                    and parse_engine != _PDF_OCR_FALLBACK_ENGINE
-                )
-                if scanned_pdf_needs_ocr:
-                    fallback = await asyncio.to_thread(
-                        self._parse_document,
-                        file_path,
-                        None,
-                        _PDF_OCR_FALLBACK_ENGINE,
-                        kb_dir=kb_dir,
-                    )
-                    if fallback[0].strip() or fallback[1]:
-                        text, extracted_images, parse_engine = fallback
-                        scanned_pdf_needs_ocr = False
-                    else:
-                        self._log_scanned_pdf_without_ocr(
-                            file_path,
-                            parse_engine,
-                            len(extracted_images),
-                        )
             except SourcePageError as exc:
                 # Parsing can succeed while the original PDF is unreadable.
                 # Keep that document's failure isolated and visible (#1982).
@@ -129,20 +102,19 @@ class LlamaIndexDocumentLoader:
                 if run := current_run():
                     run.document(file_path, "failed", reason="invalid_source", detail=str(exc))
                 continue
-            if not scanned_pdf_needs_ocr:
-                page_documents = self._pdf_documents.pop(str(file_path), [])
-                if page_documents:
-                    documents.extend(page_documents)
-                else:
-                    self._append_if_nonempty(
-                        documents,
-                        file_path,
-                        text,
-                        parse_engine=parse_engine,
-                        extracted_image_count=len(extracted_images),
-                    )
-                image_sources.extend(extracted_images)
-                self._append_visual_documents(documents, extracted_images, visual_candidates)
+            page_documents = self._pdf_documents.pop(str(file_path), [])
+            if page_documents:
+                documents.extend(page_documents)
+            else:
+                self._append_if_nonempty(
+                    documents,
+                    file_path,
+                    text,
+                    parse_engine=parse_engine,
+                    extracted_image_count=len(extracted_images),
+                )
+            image_sources.extend(extracted_images)
+            self._append_visual_documents(documents, extracted_images, visual_candidates)
 
         for file_path_str in classification.text_files:
             file_path = Path(file_path_str)
@@ -235,9 +207,14 @@ class LlamaIndexDocumentLoader:
         try:
             parsed = (parse_service or get_parse_service()).parse(file_path, engine=engine)
         except ParserError as exc:
+            if str(getattr(exc, "code", "")).startswith("scanned_pdf_mineru_cloud_"):
+                # Scanned PDFs have a strict OCR contract. Preserve the cloud
+                # configuration/API failure so the indexing task reports the
+                # actionable reason instead of silently skipping the file.
+                raise
             if engine:
                 self.logger.warning(
-                    "Automatic OCR fallback failed for %s with the %s engine: %s",
+                    "Pinned parser failed for %s with the %s engine: %s",
                     file_path.name,
                     engine,
                     exc,
@@ -312,22 +289,6 @@ class LlamaIndexDocumentLoader:
                     },
                 )
             )
-
-    def _log_scanned_pdf_without_ocr(
-        self,
-        file_path: Path,
-        parse_engine: str,
-        extracted_image_count: int,
-    ) -> None:
-        engine_label = parse_engine or "the active parser"
-        self.logger.warning(
-            "Skipped scanned PDF: %s. The %s engine extracted %d image(s) but no text, "
-            "and no usable local OCR fallback was available. Install LiteParse under "
-            "Settings, Document Parsing, or switch to an OCR-capable engine with OCR enabled.",
-            file_path.name,
-            engine_label,
-            extracted_image_count,
-        )
 
     @staticmethod
     def _text_from_blocks(blocks: list[dict] | None) -> str:
@@ -627,9 +588,7 @@ class LlamaIndexDocumentLoader:
                 engine_label = parse_engine or "the active parser"
                 self.logger.warning(
                     "Skipped empty document: %s. The %s engine extracted %d image(s) "
-                    "but no text. This is usually a scanned PDF; use an OCR-capable "
-                    "parsing engine such as MinerU or Docling with OCR enabled. "
-                    "Change the engine in Settings, Document Parsing.",
+                    "but no text.",
                     file_path.name,
                     engine_label,
                     extracted_image_count,
