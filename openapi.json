@@ -5,127 +5,6 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/api/kb/upload": {
-      "post": {
-        "tags": [
-          "kb"
-        ],
-        "summary": "Upload",
-        "description": "上传文档并入库：解析 → 切片 → 向量化 → Chroma。",
-        "operationId": "upload_api_kb_upload_post",
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_upload_api_kb_upload_post"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/kb/documents": {
-      "get": {
-        "tags": [
-          "kb"
-        ],
-        "summary": "Documents",
-        "operationId": "documents_api_kb_documents_get",
-        "parameters": [
-          {
-            "name": "kb_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "kb-math",
-              "title": "Kb Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/kb/search": {
-      "post": {
-        "tags": [
-          "kb"
-        ],
-        "summary": "Search",
-        "description": "RAG 检索测试接口：返回 top-k 相关片段。",
-        "operationId": "search_api_kb_search_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SearchBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/generate": {
       "post": {
         "tags": [
@@ -6112,7 +5991,7 @@
           "health"
         ],
         "summary": "Health",
-        "description": "Check the question-generation dependencies.",
+        "description": "检查正式知识库和正式模型配置是否可用。",
         "operationId": "health_api_health_get",
         "responses": {
           "200": {
@@ -6374,25 +6253,6 @@
         },
         "type": "object",
         "title": "Body_reindex_knowledge_base_api_knowledge_bases__kb_name__reindex_post"
-      },
-      "Body_upload_api_kb_upload_post": {
-        "properties": {
-          "file": {
-            "type": "string",
-            "contentMediaType": "application/octet-stream",
-            "title": "File"
-          },
-          "kb_id": {
-            "type": "string",
-            "title": "Kb Id",
-            "default": "kb-math"
-          }
-        },
-        "type": "object",
-        "required": [
-          "file"
-        ],
-        "title": "Body_upload_api_kb_upload_post"
       },
       "Body_upload_files_api_knowledge_bases__kb_name__upload_post": {
         "properties": {
@@ -8782,46 +8642,6 @@
           "kind"
         ],
         "title": "RegistryEditPayload"
-      },
-      "SearchBody": {
-        "properties": {
-          "kb_id": {
-            "type": "string",
-            "title": "Kb Id",
-            "default": "kb-math"
-          },
-          "query": {
-            "type": "string",
-            "title": "Query"
-          },
-          "top_k": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Top K"
-          },
-          "doc_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Doc Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "query"
-        ],
-        "title": "SearchBody"
       },
       "SettingsDraftPayload": {
         "properties": {

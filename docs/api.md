@@ -105,9 +105,7 @@ Errors use FastAPI's envelope: `{"detail": "..."}` with a 4xx/5xx status.
 
 | Method | Path | Summary |
 | --- | --- | --- |
-| `GET` | `/api/kb/documents` | Documents |
-| `POST` | `/api/kb/search` | Search |
-| `POST` | `/api/kb/upload` | Upload |
+
 
 ## Question generation
 

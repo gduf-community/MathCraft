@@ -185,6 +185,29 @@ class LlamaIndexPipeline:
     def _current_signature(self) -> EmbeddingSignature | None:
         return self._signature_provider()
 
+    @staticmethod
+    def _attach_document_keys(documents: list[Any], kb_dir: Path) -> None:
+        """Stamp every parsed node with its raw/ relative document identity."""
+        raw_root = (kb_dir / "raw").resolve()
+        for document in documents:
+            metadata = getattr(document, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            path_value = metadata.get("file_path")
+            if not path_value:
+                continue
+            try:
+                path = Path(str(path_value))
+                if not path.is_absolute():
+                    path = (kb_dir / path).resolve()
+                else:
+                    path = path.resolve()
+                metadata["document_key"] = path.relative_to(raw_root).as_posix()
+            except (OSError, ValueError):
+                # A parser may report a non-local provenance path. Such a
+                # document cannot participate in strict file-scoped retrieval.
+                metadata.pop("document_key", None)
+
     def _cleanup_failed_version_dir(self, storage_dir: Path, signature: Optional[Any]) -> None:
         _ = signature
         try:
@@ -224,6 +247,7 @@ class LlamaIndexPipeline:
                 self.logger.error("No valid documents found")
                 return False
 
+            self._attach_document_keys(documents, kb_dir)
             self.logger.info(
                 f"Creating VectorStoreIndex with {len(documents)} documents "
                 f"(chunking + embedding)..."
@@ -442,6 +466,7 @@ class LlamaIndexPipeline:
                 self.logger.warning("No valid documents to add")
                 return False
 
+            self._attach_document_keys(documents, kb_dir)
             VisualAssetStore(kb_dir).publish(visual_candidates)
             if plan.existing_storage is not None:
                 self.logger.info(f"Loading existing index from {plan.existing_storage}...")

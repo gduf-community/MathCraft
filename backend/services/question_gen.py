@@ -6,9 +6,8 @@
 import re
 import uuid
 
-from config import settings
 from schemas.question import Difficulty, GenerateParams, Question, QuestionType
-from services import retrieval, vectorstore
+from services import retrieval
 from services.llm import chat_json
 from services.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
@@ -66,15 +65,9 @@ def _section_matches(section: str, qtype: QuestionType) -> bool:
 
 
 def count_available_originals(kb_id: str, doc_id: str, qtype: QuestionType) -> int | None:
-    """统计材料中该题型的原题数量；材料没有题号结构时返回 None（跳过检查）。"""
-    chunks = vectorstore.count_question_chunks(kb_id, doc_id)
-    if not chunks:
-        return None
-    matched = [c for c in chunks if c["section"] and _section_matches(c["section"], qtype)]
-    if not matched:
-        # 有题号结构但没找到该题型的大题标题
-        return 0
-    return len(matched)
+    """正式 RAG 不维护旧 Chroma 的题目分段统计，交给模型按材料生成。"""
+    _ = (kb_id, doc_id, qtype)
+    return None
 
 
 def _norm_stem(s: str) -> str:
@@ -88,7 +81,7 @@ def _build_context(hits: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def _gen_for_type(
+async def _gen_for_type(
     tc,
     params: GenerateParams,
     doc_name: str,
@@ -109,10 +102,10 @@ def _gen_for_type(
     if scope:
         query_parts.append(scope)
     query_parts.append(type_label)
-    hits = retrieval.retrieve(
+    hits = await retrieval.retrieve(
         params.kb_id,
         query=" ".join(query_parts),
-        top_k=max(settings.top_k, tc.count * 2),
+        top_k=max(8, tc.count * 2),
         doc_id=params.doc_id or None,
     )
     if not hits:
@@ -137,7 +130,7 @@ def _gen_for_type(
             score=DEFAULT_SCORES.get(tc.type, 5),
             extra=extra,
         )
-        data = chat_json(
+        data = await chat_json(
             [
                 {"role": "system", "content": QUESTION_SYSTEM},
                 {
@@ -175,7 +168,7 @@ def _gen_for_type(
     raise ValueError(f"{type_label}生成数量或去重后不达标（要求 {tc.count} 道），请重试")
 
 
-def generate_questions(
+async def generate_questions(
     params: GenerateParams,
     doc_name: str,
     scope: str | None = None,
@@ -185,6 +178,6 @@ def generate_questions(
     avoid_norm = {_norm_stem(s) for s in (existing_stems or []) if s}
     out: list[Question] = []
     for tc in params.types:
-        fresh = _gen_for_type(tc, params, doc_name, scope, avoid_norm, mixed_difficulty)
+        fresh = await _gen_for_type(tc, params, doc_name, scope, avoid_norm, mixed_difficulty)
         out.extend(fresh)
     return out

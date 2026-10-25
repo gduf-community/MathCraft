@@ -172,6 +172,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setGenerating(true)
       try {
         const list = await api.generateQuestions({
+          kbId: selectedKbId,
           docId: doc.id,
           docName: doc.name,
           difficulty,
@@ -195,7 +196,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setGenerating(false)
       }
     },
-    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, showToast],
+    [docs, selectedKbId, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, showToast],
   )
 
   const sendChat = useCallback(
@@ -203,7 +204,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const trimmed = text.trim()
       if (!trimmed) return
       // 未选择知识库文档时禁止对话出题
-      if (!selectedDocId) {
+      if (!selectedKbId || !selectedDocId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
@@ -211,7 +212,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setBotThinking(true)
       try {
         const res = await chat({
-          kb_id: 'kb-math',
+          kb_id: selectedKbId,
           doc_id: selectedDocId,
           message: trimmed,
           history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),

@@ -15,8 +15,8 @@ import type {
  */
 export const ENDPOINTS = {
   knowledgeBases: '/api/knowledge-bases',
-  documents: '/api/knowledge-bases/:kbId/documents',
-  generate: '/api/questions/generate',
+  documents: '/api/knowledge-bases/:kbId/files',
+  generate: '/api/generate',
   question: '/api/questions/:id',
   publish: '/api/papers/publish',
   spaces: '/api/study-spaces',

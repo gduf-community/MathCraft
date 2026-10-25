@@ -3,17 +3,20 @@ from fastapi import APIRouter, HTTPException
 
 from schemas.question import GenerateParams
 from services.question_gen import NeedConfirmError, generate_questions
-from services.vectorstore import list_documents
+from services.knowledge import list_documents
 
 router = APIRouter(prefix="/api", tags=["generate"])
 
 
 @router.post("/generate")
-def generate(params: GenerateParams):
+async def generate(params: GenerateParams):
     docs = list_documents(params.kb_id)
-    doc_name = next((d["doc_name"] for d in docs if d["doc_id"] == params.doc_id), params.doc_id)
+    document = next((d for d in docs if d["doc_id"] == params.doc_id), None)
+    if document is None:
+        raise HTTPException(422, f"文档不存在或不属于知识库：{params.doc_id}")
+    doc_name = document["doc_name"]
     try:
-        questions = generate_questions(
+        questions = await generate_questions(
             params,
             doc_name,
             scope=params.scope or None,

@@ -17,6 +17,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── LICENSE                       # Apache-2.0 许可全文
 ├── THIRD_PARTY_NOTICES.md        # 第三方来源说明与许可证正文
 ├── STUBS.md                      # 单租户替身模块清单
+├── GLOSSARY.md                   # 正式知识库与出题领域术语
 ├── pyproject.toml                # 包元数据、依赖与 extras
 ├── openapi.json                  # 导出的 OpenAPI 契约快照
 ├── .env.example                  # 环境变量样例
@@ -27,6 +28,8 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   └── README.md                 # 后端目录结构与职责说明
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
+│   ├── design/                   # 新功能与模块设计文档
+│   ├── adr/                      # 架构决策记录
 │   └── 智能体出题工作流程.docx  # 出题流程说明
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
 │   └── README.md                 # 前端目录结构与开发命令
@@ -82,6 +85,8 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、模型配置和出题接口都由这个进程提供，内部 `math_q_agent` 代码已直接装配进统一应用。
 
+知识库统一使用 DeepTutor 正式知识库模块，默认 RAG provider 为 `llamaindex`。出题服务只调用正式知识库的文件列表和 RAG 查询，不再提供独立的 Chroma/Ollama 入库链路。
+
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | 绑定地址；只对本机提供服务 |
@@ -101,10 +106,10 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、�
 
 | 服务 | `.env` 行为 | 配置位置 |
 | --- | --- | --- |
-| `MathCraft`（8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/`；出题服务配置读取同一份 `.env` |
+| `MathCraft`（8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 模型、提供方、嵌入和解析配置由 `/api/settings` 写入 `$MATH_Q_HOME/data/user/settings/`；知识库和出题服务共用这套正式配置 |
 | Vite（5173） | 通过 `envDir: '..'` 读取同一份 `.env` | `FRONTEND_*` 控制开发服务器，`VITE_API_BASE_URL` 控制生产前端 API 地址 |
 
-`.env.example` 同时列出两套服务的变量，`.env` 已被 `.gitignore` 忽略。模型与解析配置**不**写入 `.env`，而是通过 `/api/settings` 写入
+`.env.example` 仅列出进程和前端变量，`.env` 已被 `.gitignore` 忽略。模型与解析配置**不**写入 `.env`，而是通过 `/api/settings` 写入
 `<MATH_Q_HOME>/data/user/settings/model_catalog.json` 与 `document_parsing.json`。
 
 | 变量 | 说明 |
@@ -141,35 +146,30 @@ curl.exe -X POST http://127.0.0.1:8000/api/knowledge-bases -F name=demo -F files
 curl.exe http://127.0.0.1:8000/api/knowledge-bases
 ```
 
-### 5. 首次使用：配置模型
+### 5. 首次使用：配置模型与知识库
 
 1. 在 `/api/settings` 至少登记一个对话模型与一个嵌入模型（默认 `llamaindex` 流水线依赖嵌入）。
 2. 用 `/api/settings/test-provider`，或 `/api/system/test/llm`、`/api/system/test/embeddings` 验证提供方可达。
-3. 之后即可建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
+3. 通过正式知识库接口建库、上传并索引；进度通过 `/ws/knowledge-bases/*` 推送。
+4. 前端出题时选择正式知识库和其中的 raw 文档，`/api/generate`、`/api/chat` 仅负责编排。
 
 ### 6. 启动前端
 
-`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py`、`config.py` 提供出题能力，并已与 `MathCraft` 知识库和模型配置 API 合并到同一 FastAPI 进程；`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
+`backend/` 下的 `api/`、`services/`、`schemas/`、`main.py` 提供出题编排能力，并已与 DeepTutor 正式知识库和模型配置 API 合并到同一 FastAPI 进程；`frontend/` 是配套前端（React 19 + Vite + Tailwind v4，构建产物可部署到 GitHub Pages）。
 
 启动顺序是：启动统一后端，再启动前端开发服务器。
 
 ```powershell
-# 1) 安装出题服务依赖（向量检索走本地 Ollama + Chroma）
-uv pip install --python .venv\Scripts\python.exe -e ".[question]"
+# 1) 通过正式知识库 API 或前端上传文档并启动索引
+#    具体请求见 docs/api.md；模型和嵌入配置统一通过 /api/settings 管理
 
-# 2) 配置环境变量：复制 .env.example 为 .env（仓库根），填写 DEEPSEEK_API_KEY 等
-#    统一后端和 Vite 都读取这份 .env；shell 中已有变量优先
-
-# 3) 上传文档并入库（支持文字版 PDF / docx / xlsx / md，扫描版 PDF 需接入 OCR 引擎）
-.venv\Scripts\python.exe backend\scripts\upload.py 导数与微分_50题练习卷.pdf --kb kb-math
-
-# 4) 前端开发服务（另开终端，/api 代理到 BACKEND_PORT）
+# 2) 前端开发服务（另开终端，/api 代理到 BACKEND_PORT）
 cd frontend
 npm install
 npm run dev
 ```
 
-前端生产构建 `npm run build` 产出 `frontend/dist`；`.github/workflows/deploy.yml` 提供手动触发的 GitHub Pages 部署，仓库在 Settings → Pages 启用后即可使用。检索与出题的命令行测试脚本位于 `backend/scripts/`（脚本已把 `backend/` 加入 import 路径）。出题服务使用的 DeepSeek 密钥只写入根目录 `.env`，严禁提交。
+前端生产构建 `npm run build` 产出 `frontend/dist`；`.github/workflows/deploy.yml` 提供手动触发的 GitHub Pages 部署，仓库在 Settings → Pages 启用后即可使用。检索与出题的命令行测试脚本位于 `backend/scripts/`（脚本已把 `backend/` 加入 import 路径）。模型密钥由 `/api/settings` 管理，严禁写入代码、文档或提交记录。
 
 ## 数据目录
 
@@ -247,7 +247,10 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | 文档 | 内容 |
 | --- | --- |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
+| [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 智能出题产品需求、范围和验收标准 |
 | [docs/design/知识库模块说明.md](docs/design/知识库模块说明.md) | 知识库模块架构、生命周期、数据布局和接口分组 |
+| [docs/adr/0001-正式知识库作为唯一知识库入口.md](docs/adr/0001-正式知识库作为唯一知识库入口.md) | 正式知识库唯一入口的架构决策 |
+| [GLOSSARY.md](GLOSSARY.md) | 正式知识库、RAG 和出题编排术语 |
 | [openapi.json](openapi.json) | 机器可读的 OpenAPI 契约快照 |
 | [STUBS.md](STUBS.md) | 每个被替换为单租户替身的模块及其原行为 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 第三方来源与许可证正文 |

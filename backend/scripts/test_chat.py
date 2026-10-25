@@ -1,4 +1,4 @@
-"""对话状态机联测：模拟三轮对话直到出题。uv run python scripts/test_chat.py"""
+"""对话状态机联测：模拟对话直到出题。uv run python scripts/test_chat.py --kb <知识库>"""
 import json
 import sys
 from pathlib import Path
@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.stdout.reconfigure(encoding="utf-8")
 
 import urllib.request  # noqa: E402
+from argparse import ArgumentParser  # noqa: E402
 
 BASE = "http://localhost:8000"
 
@@ -22,12 +23,19 @@ def post(path: str, payload: dict) -> dict:
 
 
 def main():
+    ap = ArgumentParser()
+    ap.add_argument("--kb", required=True)
+    args = ap.parse_args()
     print("== health ==")
     with urllib.request.urlopen(BASE + "/api/health", timeout=60) as r:
         print(json.dumps(json.loads(r.read().decode("utf-8")), ensure_ascii=False))
 
-    docs = json.loads(urllib.request.urlopen(BASE + "/api/kb/documents?kb_id=kb-math", timeout=30).read().decode("utf-8"))
-    doc_id = docs[0]["doc_id"] if docs else ""
+    kb_list = json.loads(urllib.request.urlopen(BASE + "/api/knowledge-bases", timeout=30).read().decode("utf-8"))
+    if not any(item.get("id") == args.kb for item in kb_list):
+        raise SystemExit(f"知识库不存在或不可见：{args.kb}")
+    files = json.loads(urllib.request.urlopen(BASE + f"/api/knowledge-bases/{args.kb}/files", timeout=30).read().decode("utf-8"))["files"]
+    docs = [file for file in files if file.get("type") == "file"]
+    doc_id = docs[0]["name"] if docs else ""
     print(f"doc_id={doc_id}\n")
 
     state: dict = {}
@@ -39,7 +47,7 @@ def main():
     questions: list[dict] = []
     for i, msg in enumerate(turns, 1):
         print(f"== 第{i}轮 用户：{msg}")
-        result = post("/api/chat", {"kb_id": "kb-math", "doc_id": doc_id, "message": msg, "history": history, "slot_state": state})
+        result = post("/api/chat", {"kb_id": args.kb, "doc_id": doc_id, "message": msg, "history": history, "slot_state": state})
         print(f"助手：{result['reply']}")
         print(f"槽位：{json.dumps(result['slot_state'], ensure_ascii=False)}\n")
         history.append({"role": "user", "text": msg})

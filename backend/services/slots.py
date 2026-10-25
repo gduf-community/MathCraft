@@ -20,11 +20,11 @@ DIFFICULTY_ALIASES = {"简单": "低", "容易": "低", "基础": "低", "中等
 TYPE_ALIASES = {"选择": "single", "单选": "single", "多选": "multiple", "判断": "judge", "填空": "blank", "计算": "compute", "简答": "essay", "解答": "essay"}
 
 
-def extract_slots(message: str, history: list[dict]) -> dict:
+async def extract_slots(message: str, history: list[dict]) -> dict:
     """让模型从用户消息里抽取槽位，未提及的字段为 null。"""
     recent = "\n".join(f"{'用户' if h.get('role') == 'user' else '助手'}：{h.get('text', '')}" for h in history[-4:])
     prompt = (f"【最近对话】\n{recent}\n\n" if recent else "") + f"【当前用户消息】\n{message}"
-    data = chat_json(
+    data = await chat_json(
         [
             {"role": "system", "content": SLOT_EXTRACT_SYSTEM},
             {"role": "user", "content": prompt},

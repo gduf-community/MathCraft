@@ -99,13 +99,6 @@ engines = [
     "MathCraft[rag-rerank]",
 ]
 
-# 出题服务（backend/ 下的独立进程）的向量检索依赖。
-# 嵌入模型由本地 Ollama 提供，向量库使用 Chroma 单机模式。
-question = [
-    "langchain-ollama>=0.2.2",
-    "chromadb>=0.5.20",
-]
-
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",

@@ -47,6 +47,7 @@ export interface StudySpace {
 }
 
 export interface GenerateParams {
+  kbId: string
   docId: string
   docName: string
   difficulty: Difficulty

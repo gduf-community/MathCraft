@@ -12,8 +12,7 @@ from math_q_agent.runtime.env import load_project_env
 
 load_project_env()
 
-from api import chat, generate, kb
-from config import settings
+from api import chat, generate
 from math_q_agent.api.main import lifespan as knowledge_lifespan
 from math_q_agent.api.routers import auth, knowledge, settings as settings_router, system
 
@@ -35,8 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Question-generation API.
-app.include_router(kb.router)
+# Question-generation orchestration API.
 app.include_router(generate.router)
 app.include_router(chat.router)
 
@@ -50,18 +48,26 @@ app.include_router(system.router, prefix="/api/system", tags=["system"])
 
 
 @app.get("/api/health", tags=["health"])
-def health():
-    """Check the question-generation dependencies."""
+async def health():
+    """检查正式知识库和正式模型配置是否可用。"""
 
-    status = {"chroma_dir": str(settings.chroma_path()), "deepseek_key": bool(settings.deepseek_api_key)}
+    from math_q_agent.multi_user.knowledge_access import list_visible_knowledge_bases
+    from math_q_agent.services.llm.config import get_llm_config
+    from math_q_agent.services.rag.factory import DEFAULT_PROVIDER
+
     try:
-        from services.embeddings import embed_one
-
-        dim = len(embed_one("ping"))
-        status["ollama_embedding"] = f"ok({dim}d)"
+        knowledge_bases = len(list_visible_knowledge_bases())
     except Exception as exc:
-        status["ollama_embedding"] = f"fail: {exc}"
-    return status
+        knowledge_bases = f"fail: {exc}"
+    try:
+        model_configured = bool(get_llm_config().model)
+    except Exception:
+        model_configured = False
+    return {
+        "rag_provider": DEFAULT_PROVIDER,
+        "knowledge_bases": knowledge_bases,
+        "llm_configured": model_configured,
+    }
 
 
 @app.get("/healthz", tags=["health"])

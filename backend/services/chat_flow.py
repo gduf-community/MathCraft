@@ -11,7 +11,7 @@ CONFIRM_REPLY = """材料中「{type_label}」的原题只有 {available} 道，
 直接回复序号或说明你的选择即可。"""
 
 
-def handle_chat(
+async def handle_chat(
     kb_id: str,
     doc_id: str,
     doc_name: str,
@@ -20,14 +20,14 @@ def handle_chat(
     slot_state: dict,
     existing_stems: list[str] | None = None,
 ) -> dict:
-    state = merge_slots(slot_state or {}, extract_slots(message, history))
+    state = merge_slots(slot_state or {}, await extract_slots(message, history))
     missing = missing_keys(state)
     if missing:
         return {"reply": build_followup(missing), "slot_state": state, "questions": [], "done": False}
 
     params, scope = build_params(state, kb_id, doc_id)
     try:
-        questions = generate_questions(
+        questions = await generate_questions(
             params,
             doc_name,
             scope=scope,

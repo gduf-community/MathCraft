@@ -56,15 +56,17 @@ export function chat(body: {
 
 export const httpAdapter: ApiClient = {
   async listKnowledgeBases() {
-    // 知识库实体暂为固定项，上传接口按 kb_id 建 collection
-    return [{ id: 'kb-math', name: '高等数学知识库' }]
+    const items = await http<{ id: string; name: string }[]>('/api/knowledge-bases')
+    return items.map<KnowledgeBase>((item) => ({ id: item.id, name: item.name }))
   },
 
   async listDocuments(kbId: string) {
-    const docs = await http<{ doc_id: string; doc_name: string; chunks: number }[]>(
-      `/api/kb/documents?kb_id=${encodeURIComponent(kbId)}`,
+    const result = await http<{ files: { name: string; type: string }[] }>(
+      `/api/knowledge-bases/${encodeURIComponent(kbId)}/files`,
     )
-    return docs.map<KbDocument>((d) => ({ id: d.doc_id, kbId, name: d.doc_name }))
+    return result.files
+      .filter((file) => file.type === 'file')
+      .map<KbDocument>((file) => ({ id: file.name, kbId, name: file.name }))
   },
 
   async listStudySpaces() {
@@ -80,7 +82,7 @@ export const httpAdapter: ApiClient = {
     return http<Question[]>('/api/generate', {
       method: 'POST',
       body: JSON.stringify({
-        kb_id: 'kb-math',
+        kb_id: params.kbId,
         doc_id: params.docId,
         types: params.types,
         difficulty: params.difficulty,
