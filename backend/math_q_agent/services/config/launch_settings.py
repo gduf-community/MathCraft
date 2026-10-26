@@ -6,11 +6,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from math_q_agent.runtime.home import get_runtime_home
+from .loader import get_runtime_settings_dir
 
 from .runtime_settings import RuntimeSettingsService
 
-PROJECT_ROOT = get_runtime_home()
 DEFAULT_BACKEND_PORT = 8001
 DEFAULT_FRONTEND_PORT = 3782
 DEFAULT_LANGUAGE = "en"
@@ -76,8 +75,7 @@ def load_launch_settings(project_root: Path | None = None) -> LaunchSettings:
     remains in ``data/user/settings/interface.json``.
     """
 
-    root = project_root or PROJECT_ROOT
-    settings_dir = root / "data" / "user" / "settings"
+    settings_dir = get_runtime_settings_dir(project_root)
     interface_json_path = settings_dir / "interface.json"
     system_json_path = settings_dir / "system.json"
 

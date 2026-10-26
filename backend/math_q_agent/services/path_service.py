@@ -91,7 +91,10 @@ class PathService:
 
     @classmethod
     def get_instance(cls) -> "PathService":
-        if cls._instance is None:
+        if cls._instance is None or (
+            cls._instance._uses_default_workspace_root
+            and cls._instance.workspace_root != get_runtime_data_root().resolve()
+        ):
             cls._instance = cls()
         return cls._instance
 

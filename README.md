@@ -83,6 +83,8 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 .venv\Scripts\python.exe -m MathCraft
 ```
 
+应用导入不会加载 `.env` 或写入运行时设置。ASGI 启动时加载 `.env`、初始化设置和日志，再开始接收请求；初始化失败会直接终止启动。命令行入口会先读取 `.env` 和已保存的启动配置。端口优先级为 `--port` > shell / `.env` 中的 `BACKEND_PORT` > `system.json` > 内置默认值。
+
 Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、模型配置和出题接口都由这个进程提供，内部 `math_q_agent` 代码已直接装配进统一应用。
 
 知识库统一使用 DeepTutor 正式知识库模块，默认 RAG provider 为 `llamaindex`。出题服务只调用正式知识库的文件列表和 RAG 查询，不再提供独立的 Chroma/Ollama 入库链路。
@@ -90,7 +92,7 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、�
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | 绑定地址；只对本机提供服务 |
-| `--port` | `8000` | 绑定端口 |
+| `--port` | 启动配置（`.env.example` 为 `8000`） | 绑定端口；没有环境变量或保存配置时使用内置值 `8001` |
 | `--reload` | 关闭 | 源码变更后自动重启，仅开发时使用 |
 | `--log-level` | `info` | uvicorn 日志级别 |
 
@@ -129,7 +131,7 @@ MINERU_API_TOKEN=
 
 | 变量 | 说明 |
 | --- | --- |
-| `MATH_Q_HOME` | 数据根，默认仓库根目录；运行时数据落在 `<MATH_Q_HOME>/data` |
+| `MATH_Q_HOME` | 数据根，默认当前工作目录（在仓库根启动时即仓库根）；可在 shell 或 `.env` 中设置，须在 ASGI 启动前确定；运行时数据落在 `<MATH_Q_HOME>/data` |
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
 | `CORS_ORIGIN` | 额外允许的浏览器来源，逗号分隔 |
 | `BACKEND_HOST` / `BACKEND_PORT` | 知识库与模型配置服务绑定地址和端口 |
@@ -252,15 +254,12 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 3. **隔离文档解析需要真实临时目录。** PDF 解析通过 worker 子进程完成；在禁止子进程管道的沙箱中，解析器会报失败而不是静默降级。PDF 入库请在普通环境运行服务。
 4. **按设计没有认证。** 请绑定回环地址或用网关前置。
 
-## 上游遗留的怪癖
+## 配置初始化与兼容约定
 
-这些是从 DeepTutor 保留下来的兼容行为，不代表 MathCraft 推荐的业务流程。裁剪时选择保真而非重构，读代码或排查启动问题时需要特别注意。
-
-1. 运行时设置文件在 `math_q_agent.api.main` **导入时**创建，并导出到 `os.environ`。
-2. `CATALOG_PATH` 与 `PROJECT_ROOT` 只在导入时解析一次；导入后再改 `MATH_Q_HOME` 不生效。
-3. 模型目录写入会重置 LLM/嵌入客户端单例；空写入则不会。
-4. 模型目录**没有**环境变量覆盖层，这一点由上游测试固定，予以保留。
-5. `services/config/loader.py` 仍会读取 `main.yaml` / `agents.yaml` 里的对话 Agent 参数，本服务只用其中的解析/嵌入/模型路径。
+1. 应用模块导入仅装配路由；运行时设置初始化、环境变量导出和日志配置在 ASGI lifespan 启动阶段完成。导出 OpenAPI 不会创建运行时设置或日志。
+2. 配置默认路径通过当前路径服务解析，导入后、启动前设置 `MATH_Q_HOME` 仍然有效；显式路径注入继续受支持，已创建的服务实例仍绑定原目录。运行期间请通过设置 API 修改配置，切换数据根请重启进程。
+3. 设置接口只有在模型目录内容实际改变时才重置 LLM/嵌入客户端；重复保存相同配置不会重置。
+4. 模型环境变量负责首次初始化目录；已保存的有效目录（包括明确保存的空目录）优先，不会被环境变量再次覆盖。
 
 ## 文档入口
 

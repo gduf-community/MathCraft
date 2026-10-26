@@ -1,8 +1,8 @@
 """Shared fixtures: an isolated data root, a fake embedding endpoint, a client.
 
-The application resolves its runtime home and settings directory at import
-time, so ``MATH_Q_HOME`` is set here before ``math_q_agent.api.main`` is
-imported. Tests that need a clean tree remove ``tests/.data-home`` first.
+The application initializes its runtime settings during ASGI startup.
+``MATH_Q_HOME`` is set before the test client starts its lifespan. Tests that
+need a clean tree remove ``tests/.data-home`` first.
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ def client(embedding_server: str):
     for key in tuple(os.environ):
         if key.startswith("MINERU_"):
             os.environ.pop(key, None)
-    # ``load_project_env`` runs during app import. Keep the key explicitly
+    # ``load_project_env`` runs during app startup. Keep the key explicitly
     # empty so a developer's ignored local .env cannot reintroduce a real
     # MinerU credential into tests.
     os.environ["MINERU_API_TOKEN"] = ""

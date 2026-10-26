@@ -11,8 +11,8 @@ is gone. What remains is the surface this service exists for:
     /api/system/*            connectivity tests and status
     /api/auth/*              single-tenant identity (always the local admin)
 
-Import-time setup mirrors upstream: runtime settings files are created on first
-import and exported into the process environment. See README "Known quirks".
+Runtime settings, environment exports and logging are initialized by the ASGI
+lifespan. Importing this module only declares the application and its routes.
 """
 
 from __future__ import annotations
@@ -23,11 +23,9 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from math_q_agent.runtime.env import load_project_env
-
-load_project_env()
-
 from math_q_agent.logging import configure_logging
 from math_q_agent.services.config import (
     ensure_runtime_settings_files,
@@ -38,10 +36,6 @@ from math_q_agent.services.config import (
 from math_q_agent.services.config.origins import normalize_origins
 
 from .routers import auth, knowledge, settings, system
-
-ensure_runtime_settings_files()
-export_runtime_settings_to_env(overwrite=True)
-configure_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +73,35 @@ def build_cors_kwargs() -> dict[str, Any]:
     }
 
 
+class RuntimeCORSMiddleware:
+    """Build CORS after lifespan has loaded the deployment's settings."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self._config: dict[str, Any] | None = None
+        self._middleware: CORSMiddleware | None = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        config = scope["app"].state.cors_kwargs
+        if self._middleware is None or self._config is not config:
+            self._middleware = CORSMiddleware(self.app, **config)
+            self._config = config
+        await self._middleware(scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Wire progress fan-out and log readiness."""
+    """Initialize runtime services before accepting requests."""
+
+    app.state.ready = False
+    load_project_env()
+    ensure_runtime_settings_files()
+    export_runtime_settings_to_env(overwrite=True)
+    configure_logging()
+    app.state.cors_kwargs = build_cors_kwargs()
 
     from math_q_agent.api.utils.progress_broadcaster import ProgressBroadcaster
     from math_q_agent.api.utils.task_log_stream import get_task_stream_manager
@@ -110,7 +130,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(CORSMiddleware, **build_cors_kwargs())
+app.add_middleware(RuntimeCORSMiddleware)
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge-bases"])

@@ -32,17 +32,28 @@ from .models import LOCAL_ADMIN_ID, LOCAL_ADMIN_USERNAME, CurrentUser, UserScope
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = get_runtime_home()
-ADMIN_WORKSPACE_ROOT = PROJECT_ROOT / "data"
-USERS_ROOT = ADMIN_WORKSPACE_ROOT / "users"
-SYSTEM_ROOT = ADMIN_WORKSPACE_ROOT / "system"
-LEGACY_MULTI_USER_ROOT = PROJECT_ROOT / "multi-user"
+
+def __getattr__(name: str) -> Path:
+    """Resolve legacy deployment path attributes without freezing home at import."""
+    home = get_runtime_home()
+    paths = {
+        "PROJECT_ROOT": home,
+        "ADMIN_WORKSPACE_ROOT": home / "data",
+        "USERS_ROOT": home / "data" / "users",
+        "SYSTEM_ROOT": home / "data" / "system",
+        "LEGACY_MULTI_USER_ROOT": home / "multi-user",
+    }
+    if name in paths:
+        return paths[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 USER_SECRETS_DIRNAME = "user-secrets"
 
 _path_services: dict[str, PathService] = {}
 
 _legacy_migration_lock = threading.Lock()
-_legacy_migration_done = False
+_legacy_migration_homes: set[Path] = set()
 
 
 def migrate_legacy_multi_user_tree() -> None:
@@ -55,19 +66,23 @@ def migrate_legacy_multi_user_tree() -> None:
     check), so callers on the auth/grants/workspace read paths can invoke it
     unconditionally.
     """
-    global _legacy_migration_done
-    if _legacy_migration_done:
+    home = get_runtime_home()
+    if home in _legacy_migration_homes:
         return
     with _legacy_migration_lock:
-        if _legacy_migration_done:
+        if home in _legacy_migration_homes:
             return
-        _legacy_migration_done = True
-        legacy = LEGACY_MULTI_USER_ROOT
+        _legacy_migration_homes.add(home)
+        legacy = home / "multi-user"
         if not legacy.is_dir():
             return
         leftovers: list[str] = []
         for child in sorted(legacy.iterdir()):
-            target = SYSTEM_ROOT if child.name == "_system" else USERS_ROOT / child.name
+            target = (
+                home / "data" / "system"
+                if child.name == "_system"
+                else home / "data" / "users" / child.name
+            )
             if target.exists():
                 leftovers.append(child.name)
                 continue
@@ -87,7 +102,11 @@ def migrate_legacy_multi_user_tree() -> None:
 
 
 def admin_scope() -> UserScope:
-    return UserScope(kind="admin", user_id=LOCAL_ADMIN_ID, root=ADMIN_WORKSPACE_ROOT.resolve())
+    return UserScope(
+        kind="admin",
+        user_id=LOCAL_ADMIN_ID,
+        root=(get_runtime_home() / "data").resolve(),
+    )
 
 
 def local_admin_user() -> CurrentUser:
@@ -103,7 +122,11 @@ def scope_for_user(user_id: str, *, is_admin: bool) -> UserScope:
     if is_admin:
         return admin_scope()
     migrate_legacy_multi_user_tree()
-    return UserScope(kind="user", user_id=user_id, root=(USERS_ROOT / user_id).resolve())
+    return UserScope(
+        kind="user",
+        user_id=user_id,
+        root=(get_runtime_home() / "data" / "users" / user_id).resolve(),
+    )
 
 
 def ensure_user_workspace(user_id: str) -> Path:
@@ -127,12 +150,13 @@ def ensure_scope_workspace(scope: UserScope) -> Path:
 
 def ensure_system_dirs() -> None:
     migrate_legacy_multi_user_tree()
+    system_root = get_runtime_home() / "data" / "system"
     for child in ("auth", "grants", "audit", "indexes"):
-        (SYSTEM_ROOT / child).mkdir(parents=True, exist_ok=True)
+        (system_root / child).mkdir(parents=True, exist_ok=True)
     # Per-owner secrets (see ``get_owner_secrets_dir``). Declared here, and its
     # mode set once at startup, so the per-request path only has to create the
     # one owner directory below it.
-    secrets_root = SYSTEM_ROOT / USER_SECRETS_DIRNAME
+    secrets_root = system_root / USER_SECRETS_DIRNAME
     secrets_root.mkdir(parents=True, exist_ok=True)
     os.chmod(secrets_root, stat.S_IRWXU)
 
@@ -222,8 +246,9 @@ def owner_secrets_dir(owner_id: str, *, system_root: Path | None = None) -> Path
     it, and must address them by the owner it was opened for rather than by
     whoever happens to be current.
     """
-    # SYSTEM_ROOT is read per call so a monkey-patched root (tests) is honored.
-    secrets_root = (system_root if system_root is not None else SYSTEM_ROOT) / USER_SECRETS_DIRNAME
+    if system_root is None:
+        system_root = get_runtime_home() / "data" / "system"
+    secrets_root = system_root / USER_SECRETS_DIRNAME
     owner_dir = secrets_root / (owner_id or LOCAL_ADMIN_ID)
     owner_dir.mkdir(parents=True, exist_ok=True)
     # Re-asserted rather than assumed from ``ensure_system_dirs``: this is the

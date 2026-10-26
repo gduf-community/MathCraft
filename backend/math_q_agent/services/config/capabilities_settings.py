@@ -29,7 +29,6 @@ import yaml
 
 from math_q_agent.services.config.loader import (
     DEFAULT_CHAT_PARAMS,
-    PROJECT_ROOT,
     get_runtime_settings_dir,
 )
 from math_q_agent.utils.config_manager import ConfigManager
@@ -104,7 +103,7 @@ _MAIN_YAML_RUNTIME_DEFAULTS: dict[str, dict[str, Any]] = {
 
 
 def _agents_yaml_path() -> Path:
-    return get_runtime_settings_dir(PROJECT_ROOT) / "agents.yaml"
+    return get_runtime_settings_dir() / "agents.yaml"
 
 
 def _read_agents_yaml() -> dict[str, Any]:

@@ -13,17 +13,14 @@ from typing import Any
 
 import yaml
 
-from math_q_agent.runtime.home import get_runtime_home
 from math_q_agent.services.path_service import get_path_service
-
-# Runtime workspace root. Application settings live under PROJECT_ROOT/data/user/settings.
-PROJECT_ROOT = get_runtime_home()
 
 
 def get_runtime_settings_dir(project_root: Path | None = None) -> Path:
-    """Return the canonical runtime settings directory under ``data/user/settings``."""
-    root = project_root or PROJECT_ROOT
-    return root / "data" / "user" / "settings"
+    """Use the current PathService unless a runtime home is explicitly supplied."""
+    if project_root is not None:
+        return project_root / "data" / "user" / "settings"
+    return get_path_service().get_settings_dir()
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -96,9 +93,6 @@ def resolve_config_path(
     Raises:
         FileNotFoundError: If the requested config does not exist.
     """
-    if project_root is None:
-        project_root = PROJECT_ROOT
-
     settings_dir = get_runtime_settings_dir(project_root)
     config_path = settings_dir / config_file
     if config_path.exists():
@@ -114,14 +108,11 @@ def load_config_with_main(config_file: str, project_root: Path | None = None) ->
 
     Args:
         config_file: Configuration file name (e.g., "main.yaml")
-        project_root: Project root directory (if None, will try to auto-detect)
+        project_root: Explicit runtime home; None uses the current PathService
 
     Returns:
         Merged configuration dictionary
     """
-    if project_root is None:
-        project_root = PROJECT_ROOT
-
     config_path, _ = resolve_config_path(config_file, project_root)
     return _inject_runtime_paths(_load_yaml_file(config_path))
 
@@ -136,14 +127,11 @@ async def load_config_with_main_async(
 
     Args:
         config_file: Configuration file name (e.g., "main.yaml")
-        project_root: Project root directory (if None, will try to auto-detect)
+        project_root: Explicit runtime home; None uses the current PathService
 
     Returns:
         Merged configuration dictionary
     """
-    if project_root is None:
-        project_root = PROJECT_ROOT
-
     config_path, _ = resolve_config_path(config_file, project_root)
     return _inject_runtime_paths(await _load_yaml_file_async(config_path))
 
@@ -248,7 +236,7 @@ def get_agent_params(module_name: str) -> dict:
         "math_animator": ("plugins", "math_animator"),
         "llm_probe": ("diagnostics", "llm_probe"),
     }
-    path = get_runtime_settings_dir(PROJECT_ROOT) / "agents.yaml"
+    path = get_runtime_settings_dir() / "agents.yaml"
     if not path.exists():
         raise FileNotFoundError(f"Missing required configuration file: {path}")
     section = section_map.get(module_name)
@@ -362,7 +350,7 @@ def get_capability_params(capability: str) -> dict[str, Any]:
             one list of budgets, and it is this one.
     """
     defaults = _STAGED_CAPABILITY_DEFAULTS[capability]
-    path = get_runtime_settings_dir(PROJECT_ROOT) / "agents.yaml"
+    path = get_runtime_settings_dir() / "agents.yaml"
     cfg: dict[str, Any] = {}
     if path.exists():
         with open(path, encoding="utf-8") as f:
@@ -384,7 +372,6 @@ def get_chat_params() -> dict[str, Any]:
 
 
 __all__ = [
-    "PROJECT_ROOT",
     "get_runtime_settings_dir",
     "load_config_with_main",
     "get_path_from_config",

@@ -37,5 +37,7 @@ backend/
 - 使用 `python -m MathCraft` 启动统一后端；`MathCraft.api.main:app` 是对外 ASGI 入口，包含知识库、模型配置和出题路由。
 - `math_q_agent/` 作为 DeepTutor 正式实现包保留，出题服务通过薄适配器调用其中的 RAGService、LLM 和知识库访问层。
 - `MathCraft.app` 装配正式知识库、模型配置和出题编排服务；端口和地址读取根目录 `.env` 的 `BACKEND_HOST` / `BACKEND_PORT`。
-- `MathCraft` 的启动入口会加载同一份根目录 `.env`，其中 `BACKEND_HOST` / `BACKEND_PORT` 控制知识库与模型配置服务。
+- `MathCraft` 的启动入口会加载同一份根目录 `.env`，其中 `BACKEND_HOST` / `BACKEND_PORT` 控制知识库与模型配置服务；没有 `BACKEND_PORT` 时使用已保存启动设置，显式 `--port` 优先。
 - 运行数据、索引和本地配置不放入代码目录，统一按根 README 的约定写入运行时数据目录。
+
+应用模块导入仅装配路由，ASGI lifespan 负责加载 `.env`、初始化运行时设置、导出环境变量和配置日志。`MATH_Q_HOME` 可在导入后、启动前确定；配置默认目录由路径服务解析，已有实例继续绑定其原目录。启动顺序与异常边界见 [模型配置来源与普通知识库流程](../docs/design/模型配置来源与普通知识库流程.md)。

@@ -24,11 +24,6 @@ from .embedding_endpoint import (
     normalize_embedding_endpoint_for_display,
 )
 
-# Fallback only — frozen at admin scope at import time. Production code should
-# enter through ``get_model_catalog_service()`` so the path is resolved from the
-# current user's PathService on every call.
-CATALOG_PATH = get_path_service().get_settings_file("model_catalog")
-
 # A fixed placeholder is returned to settings clients instead of provider
 # credentials. It is also accepted on write as "keep the stored value", so a
 # load/edit/save round trip never sends a real secret to the browser.
@@ -339,7 +334,9 @@ class ModelCatalogService:
     _instances: dict[str, "ModelCatalogService"] = {}
 
     def __init__(self, path: Path | None = None):
-        self.path = path or CATALOG_PATH
+        self.path = (
+            path if path is not None else get_path_service().get_settings_file("model_catalog")
+        )
         self._lock = threading.RLock()
 
     @classmethod
@@ -751,7 +748,6 @@ def get_model_catalog_service() -> ModelCatalogService:
 
 
 __all__ = [
-    "CATALOG_PATH",
     "CATALOG_SECRET_MASK",
     "CONNECTABLE_SERVICES",
     "LLM_SHAPED_SERVICES",

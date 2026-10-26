@@ -9,7 +9,6 @@ from .knowledge_base_config import (
 from .launch_settings import LaunchSettings, load_launch_settings
 from .loader import (
     DEFAULT_CHAT_PARAMS,
-    PROJECT_ROOT,
     get_agent_params,
     get_chat_params,
     get_path_from_config,
@@ -47,15 +46,13 @@ from .runtime_settings import (
     load_system_settings,
 )
 
-# Re-export the loader module itself for code paths that monkeypatch via the
-# package namespace, e.g. ``math_q_agent.services.config.loader.PROJECT_ROOT``.
+# Re-export the loader module for callers that use the package namespace.
 loader = importlib.import_module(f"{__name__}.loader")
 
 __all__ = [
     "LaunchSettings",
     "load_launch_settings",
     # From loader.py
-    "PROJECT_ROOT",
     "get_runtime_settings_dir",
     "load_config_with_main",
     "resolve_config_path",

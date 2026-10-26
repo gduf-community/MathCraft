@@ -68,7 +68,6 @@ from math_q_agent.multi_user.knowledge_access import (
 from math_q_agent.multi_user.knowledge_access import (
     list_visible_knowledge_bases as list_visible_kb_access,
 )
-from math_q_agent.services.config import PROJECT_ROOT
 from math_q_agent.services.file_io import atomic_write_json
 from math_q_agent.services.rag.factory import (
     DEFAULT_PROVIDER,
@@ -133,7 +132,6 @@ def format_bytes_human_readable(size_bytes: int) -> str:
         return f"{size_bytes} bytes"
 
 
-_kb_base_dir = PROJECT_ROOT / "data" / "knowledge_bases"
 DEFAULT_KB_ALIASES = {"", "default", "current", "selected", "默认", "默认知识库", "当前知识库"}
 
 # Lazy initialization

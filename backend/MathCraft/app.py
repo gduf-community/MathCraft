@@ -9,9 +9,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from math_q_agent.runtime.env import load_project_env
-
-load_project_env()
-
 from api import chat, generate
 from math_q_agent.api.main import lifespan as knowledge_lifespan
 from math_q_agent.api.routers import auth, knowledge, settings as settings_router, system
@@ -81,6 +78,11 @@ def run() -> None:
     import argparse
     import uvicorn
 
+    from math_q_agent.services.config import load_launch_settings
+
+    load_project_env()
+    launch_settings = load_launch_settings()
+
     parser = argparse.ArgumentParser(
         prog="MathCraft",
         description="Unified knowledge-base, model-settings and question-generation backend.",
@@ -93,8 +95,8 @@ def run() -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("BACKEND_PORT", "8000")),
-        help="bind port (default: BACKEND_PORT or 8000)",
+        default=launch_settings.backend_port,
+        help="bind port (default: BACKEND_PORT or saved system settings)",
     )
     parser.add_argument("--reload", action="store_true", help="reload on source changes")
     args = parser.parse_args()

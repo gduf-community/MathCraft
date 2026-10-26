@@ -10,7 +10,6 @@ from typing import Any
 
 from math_q_agent.services.config import (
     DEPRECATED_SEARCH_PROVIDERS,
-    PROJECT_ROOT,
     SEARCH_FALLBACK_PROVIDER,
     SUPPORTED_SEARCH_PROVIDERS,
     ResolvedSearchConfig,
@@ -42,7 +41,7 @@ _logger = logging.getLogger(__name__)
 
 def _get_web_search_config() -> dict[str, Any]:
     try:
-        config = load_config_with_main("main.yaml", PROJECT_ROOT)
+        config = load_config_with_main("main.yaml")
         return config.get("tools", {}).get("web_search", {})
     except Exception as exc:
         _logger.debug(f"Could not load config: {exc}")

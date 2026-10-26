@@ -26,12 +26,11 @@ def load_logging_config() -> LoggingConfig:
     """Load logging settings from ``data/user/settings/main.yaml``."""
     try:
         from math_q_agent.services.config import (
-            PROJECT_ROOT,
             get_path_from_config,
             load_config_with_main,
         )
 
-        config = load_config_with_main("main.yaml", PROJECT_ROOT)
+        config = load_config_with_main("main.yaml")
         logging_config = config.get("logging", {}) or {}
         return LoggingConfig(
             level=str(logging_config.get("level", "INFO")).upper(),
