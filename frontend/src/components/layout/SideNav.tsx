@@ -2,17 +2,17 @@ import type { LucideIcon } from 'lucide-react'
 import { BookOpen, Database, FileText, Home, PanelLeftClose, PanelLeftOpen, Star, User } from 'lucide-react'
 import { useApp } from '../../store/AppContext'
 
-const NAV_ITEMS: { key: string; label: string; icon: LucideIcon; active?: boolean }[] = [
-  { key: 'home', label: '智能出题', icon: Home, active: true },
+const NAV_ITEMS: { key: string; label: string; icon: LucideIcon; tab?: 'generate' | 'bank' }[] = [
+  { key: 'home', label: '智能出题', icon: Home, tab: 'generate' },
   { key: 'space', label: '学习空间', icon: BookOpen },
   { key: 'fav', label: '题目收藏', icon: Star },
   { key: 'paper', label: '组卷记录', icon: FileText },
-  { key: 'bank', label: '题库管理', icon: Database },
+  { key: 'bank', label: '题库管理', icon: Database, tab: 'bank' },
   { key: 'me', label: '个人中心', icon: User },
 ]
 
 export default function SideNav() {
-  const { navCollapsed, toggleNav, showToast } = useApp()
+  const { navCollapsed, toggleNav, showToast, activeTab, setActiveTab } = useApp()
   return (
     <nav
       className={`z-10 flex shrink-0 flex-col border-r border-line/60 bg-white py-3 transition-all duration-300 ${
@@ -20,25 +20,32 @@ export default function SideNav() {
       }`}
     >
       <ul className="flex-1 space-y-1 px-2">
-        {NAV_ITEMS.map(({ key, label, icon: Icon, active }) => (
-          <li key={key}>
-            <button
-              type="button"
-              title={navCollapsed ? label : undefined}
-              onClick={() => {
-                if (!active) showToast('演示版当前仅开放「智能出题」模块')
-              }}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
-                active
-                  ? 'bg-primary-light font-semibold text-primary'
-                  : 'text-ink-2 hover:bg-primary-weak hover:text-primary'
-              } ${navCollapsed ? 'justify-center px-0' : ''}`}
-            >
-              <Icon size={18} className="shrink-0" />
-              {!navCollapsed && <span className="truncate">{label}</span>}
-            </button>
-          </li>
-        ))}
+        {NAV_ITEMS.map(({ key, label, icon: Icon, tab }) => {
+          const active = tab !== undefined && activeTab === tab
+          return (
+            <li key={key}>
+              <button
+                type="button"
+                title={navCollapsed ? label : undefined}
+                onClick={() => {
+                  if (tab) {
+                    setActiveTab(tab)
+                  } else {
+                    showToast('演示版当前仅开放「智能出题」与「题库管理」模块')
+                  }
+                }}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                  active
+                    ? 'bg-primary-light font-semibold text-primary'
+                    : 'text-ink-2 hover:bg-primary-weak hover:text-primary'
+                } ${navCollapsed ? 'justify-center px-0' : ''}`}
+              >
+                <Icon size={18} className="shrink-0" />
+                {!navCollapsed && <span className="truncate">{label}</span>}
+              </button>
+            </li>
+          )
+        })}
       </ul>
       <div className="border-t border-line/60 px-2 pt-2">
         <button

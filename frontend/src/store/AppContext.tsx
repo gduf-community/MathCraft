@@ -14,7 +14,7 @@ import type {
   StudySpace,
 } from '../types'
 
-export type TabKey = 'generate' | 'preview'
+export type TabKey = 'generate' | 'preview' | 'bank'
 
 export interface TypeConfig {
   checked: boolean
