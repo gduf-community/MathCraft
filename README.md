@@ -25,13 +25,20 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── backend/                      # Python 后端，详细结构见 backend/README.md
 │   ├── MathCraft/                # 对外 Python 模块与启动入口
 │   ├── math_q_agent/             # DeepTutor 兼容实现包
+│   │   ├── api/routers/profile.py # 单租户教师资料与头像接口
+│   │   └── services/profile/     # 资料校验与独立持久化
 │   └── README.md                 # 后端目录结构与职责说明
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
 │   ├── design/                   # 新功能与模块设计文档
+│   │   ├── 个人中心与模型配置页面设计.md # 已确认的页面方案与能力边界
+│   │   ├── 个人中心与应用设置功能规格.md # 页面范围、保存契约与验收
+│   │   └── 个人中心与应用设置实施记录.md # 验收结果、审查及验证边界
 │   ├── adr/                      # 架构决策记录
 │   └── 智能体出题工作流程.docx  # 出题流程说明
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
+│   ├── src/components/settings/ # 模型、引擎、解析及知识库入口
+│   ├── src/components/profile/  # 教师资料表单与头像上传
 │   └── README.md                 # 前端目录结构与开发命令
 └── tools/                        # 仓库维护脚本
 ```
@@ -266,6 +273,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | 文档 | 内容 |
 | --- | --- |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
+| [docs/design/个人中心与应用设置实施记录.md](docs/design/个人中心与应用设置实施记录.md) | 实际交付、18 项验收映射、双轴审查及本地验证边界 |
 | [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 智能出题产品需求、范围和验收标准 |
 | [docs/design/知识库模块说明.md](docs/design/知识库模块说明.md) | 知识库模块架构、生命周期、数据布局和接口分组 |
 | [docs/design/扫描PDF云端OCR策略.md](docs/design/扫描PDF云端OCR策略.md) | 扫描 PDF 的检测、MinerU 云端 OCR 契约和验收标准 |
@@ -289,3 +297,13 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 本项目以 **Apache-2.0** 发布，全文见 [LICENSE](LICENSE)，`pyproject.toml` 中同步声明 `license = {text = "Apache-2.0"}`。`LICENSE` 中的版权行为上游项目（Copyright 2025 Data Intelligence Lab, The University of Hong Kong），裁剪时原样保留。
 
 代码取自 DeepTutor（该项目同样为 Apache-2.0）；第三方来源与对应的 MIT 等许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 个人中心与应用设置
+
+左侧导航底部「设置」默认打开主语言模型，包含模型与服务、知识库引擎及文档解析。主语言模型、辅助任务模型（可跟随主模型）与嵌入模型使用模型草稿：保存草稿不影响正式配置；应用更改只应用已保存草稿；引擎和解析各自保存。连接检查仅说明实际检查到的能力。
+
+个人中心只维护头像、昵称、只读教师身份、任教学段及年级。使用独立的 `/api/user-profile` 接口持久化；头像选择后先预览，点击「保存资料」后先保存资料、再上传头像；两步分别反馈结果，失败保留可重试选择。支持经校验的 PNG、JPEG、WebP，最大 5 MiB。资料与模型目录互相独立。
+
+题库管理上方提供真实知识库与「配置引擎」入口，建库选择只作用于本次知识库。原有题库协作、组卷和学习空间仍保留明确的演示／未开放状态，不向学生真实发布。安装下载任务只观察当前后端进程；取消不回滚已完成内容。
+
+规格：[个人中心与应用设置功能规格](docs/design/个人中心与应用设置功能规格.md)。实际验收：[实施记录](docs/design/个人中心与应用设置实施记录.md)。接口：[API 文档](docs/api.md)。

@@ -14,7 +14,7 @@ import type {
   StudySpace,
 } from '../types'
 
-export type TabKey = 'generate' | 'preview' | 'bank'
+export type TabKey = 'generate' | 'preview' | 'bank' | 'settings' | 'profile' | 'space'
 
 export interface TypeConfig {
   checked: boolean
@@ -34,6 +34,11 @@ interface AppState {
   // 布局
   activeTab: TabKey
   setActiveTab: (t: TabKey) => void
+  hasUnsavedChanges: boolean
+  setHasUnsavedChanges: (dirty: boolean) => void
+  settingsTarget: { engine: string; request: number } | null
+  openEngineSettings: (engine?: string) => void
+  refreshKnowledgeBases: () => Promise<void>
   navCollapsed: boolean
   toggleNav: () => void
   paramsCollapsed: boolean
@@ -91,7 +96,34 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [activeTab, setActiveTab] = useState<TabKey>('generate')
+  const [activeTab, setActiveTabState] = useState<TabKey>('generate')
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [settingsTarget, setSettingsTarget] = useState<{ engine: string; request: number } | null>(null)
+  const dirtyRef = useRef(false)
+  dirtyRef.current = hasUnsavedChanges
+  const confirmLeave = useCallback(() => !dirtyRef.current || window.confirm('当前页面有未保存的更改，确定离开并放弃这些更改？'), [])
+  const setActiveTab = useCallback((tab: TabKey) => {
+    if (tab === activeTab || !confirmLeave()) return
+    setHasUnsavedChanges(false)
+    if (tab === 'settings') setSettingsTarget(null)
+    setActiveTabState(tab)
+  }, [activeTab, confirmLeave])
+  const openEngineSettings = useCallback((engine = 'llamaindex') => {
+    if (!confirmLeave()) return
+    setHasUnsavedChanges(false)
+    setSettingsTarget((previous) => ({ engine, request: (previous?.request ?? 0) + 1 }))
+    setActiveTabState('settings')
+  }, [confirmLeave])
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paramsCollapsed, setParamsCollapsed] = useState(false)
 
@@ -126,6 +158,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setToast({ id: Date.now(), text })
     window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
+  }, [])
+
+  const refreshKnowledgeBases = useCallback(async () => {
+    setKbs(await api.listKnowledgeBases())
   }, [])
 
   // 初始化：加载知识库、文档与学习空间
@@ -289,13 +325,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const record = await api.publishPaper({ modules, spaceIds, saveRecord })
       if (record) setRecords((prev) => [record, ...prev])
       setSelectedIds([])
-      showToast(saveRecord ? '组卷已发布，并保存到组卷记录' : '组卷已发布到所选学习空间')
+      showToast(saveRecord ? '演示组卷已保存到本次会话；学生接收与作答尚未开放' : '已完成组卷演示；尚未真实发布给学生')
       return true
     },
     [showToast],
   )
 
   const value: AppState = {
+    hasUnsavedChanges,
+    setHasUnsavedChanges,
+    settingsTarget,
+    openEngineSettings,
+    refreshKnowledgeBases,
     activeTab,
     setActiveTab,
     navCollapsed,

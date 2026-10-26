@@ -65,7 +65,7 @@ export default function AssembleModal({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-line px-6 py-4">
-          <h3 className="text-base font-bold text-ink">组卷发布</h3>
+          <h3 className="text-base font-bold text-ink">组卷发布 · 演示</h3>
           <button
             type="button"
             onClick={onClose}
@@ -76,6 +76,7 @@ export default function AssembleModal({ onClose }: Props) {
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          <p className="rounded-lg bg-primary-light px-3 py-2 text-sm text-ink-2">当前为组卷演示，所选学习空间不会实际接收题目，学生作答尚未开放。组卷记录仅保留在本次会话中。</p>
           <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
             <input
               type="checkbox"
@@ -176,7 +177,7 @@ export default function AssembleModal({ onClose }: Props) {
               onClick={() => void publish()}
               className="rounded-lg bg-primary px-6 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
             >
-              发布
+              完成演示
             </button>
           </div>
         </div>

@@ -16,6 +16,7 @@ GROUPS = [
     ("/api/settings", "Settings (model catalogue, providers, parsing)"),
     ("/api/system", "System"),
     ("/api/auth", "Identity"),
+    ("/api/user-profile", "Teacher profile and avatar"),
 ]
 
 
@@ -152,6 +153,16 @@ def main() -> int:
     parts = [PREAMBLE]
     for prefix, title in GROUPS:
         parts.append(f"## {title}\n\n| Method | Path | Summary |\n| --- | --- | --- |\n{table(prefix)}\n\n")
+    parts.append("""## Teacher profile contract
+
+- `GET /api/user-profile` reads the single local teacher's profile.
+- `PUT /api/user-profile` accepts only `nickname`, `teaching_stage` and `grade`; identity remains read-only. Stage values are empty, `primary`, `junior`, or `senior`; grade is an empty string or a matching number string (1–6, 7–9, 10–12 respectively).
+- `POST /api/user-profile/avatar` accepts a multipart `file` and persists the avatar independently. Valid PNG, JPEG or WebP images up to 5 MiB are accepted; each dimension is at most 4096 pixels; animated, SVG and invalid image bodies are rejected. Images are re-encoded as PNG, and the returned avatar URL includes a content hash to refresh the view.
+- `GET /api/user-profile/avatar` serves the stored image; it returns 404 before the first upload. Profile reads return `avatar_url` or null.
+- The UI previews selected images locally and uploads only after the user confirms Save Profile and the profile PUT succeeds. Profile and avatar writes are separate requests; a partial failure is reported separately and is not rolled back as one transaction.
+- Personal data never enters the model catalog or draft. `/api/settings/profile` remains a configuration export and is not the teacher profile API.
+
+""")
     parts.append(RETRIEVAL)
     text = "".join(parts)
     (ROOT / "docs").mkdir(exist_ok=True)

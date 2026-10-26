@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from math_q_agent.runtime.env import load_project_env
 from api import chat, generate
 from math_q_agent.api.main import lifespan as knowledge_lifespan
-from math_q_agent.api.routers import auth, knowledge, settings as settings_router, system
+from math_q_agent.api.routers import auth, knowledge, profile, settings as settings_router, system
 
 
 @asynccontextmanager
@@ -37,6 +37,7 @@ app.include_router(chat.router)
 
 # Knowledge-base, model settings and connectivity API.
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(profile.router, prefix="/api/user-profile", tags=["user-profile"])
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge-bases"])
 app.include_router(knowledge.ws_router, prefix="/ws", tags=["knowledge-bases"])
 app.include_router(settings_router.public_router, prefix="/api/settings", tags=["settings"])

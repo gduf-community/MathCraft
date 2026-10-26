@@ -14,6 +14,7 @@ import {
 import * as bankMock from '../../../api/mock/bankMock'
 import type { ManagedBank } from '../../../api/mock/bankMock'
 import { useApp } from '../../../store/AppContext'
+import { KnowledgeConnections } from '../../settings/KnowledgeConnections'
 import { Avatar } from './shared'
 import BankEditModal from './BankEditModal'
 import BankViewModal from './BankViewModal'
@@ -87,7 +88,9 @@ export default function BankTab() {
   const dangerBtn = `${rowButton} border border-red-200 bg-red-50 text-red-500 hover:bg-red-100`
 
   return (
-    <div className="flex-1 overflow-y-auto bg-page p-5">
+    <div className="flex-1 overflow-y-auto bg-page p-3 sm:p-5">
+      <KnowledgeConnections />
+      <p className="mb-4 mt-6 text-xs text-ink-2">以下题库协作与成员操作为演示，真实知识库及其引擎在上方管理。</p>
       {/* 子标签页 */}
       <div className="flex items-center gap-7 border-b border-line px-1">
         {(

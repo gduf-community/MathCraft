@@ -35,7 +35,7 @@ from math_q_agent.services.config import (
 )
 from math_q_agent.services.config.origins import normalize_origins
 
-from .routers import auth, knowledge, settings, system
+from .routers import auth, knowledge, profile, settings, system
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,7 @@ app = FastAPI(
 app.add_middleware(RuntimeCORSMiddleware)
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(profile.router, prefix="/api/user-profile", tags=["user-profile"])
 app.include_router(knowledge.router, prefix="/api", tags=["knowledge-bases"])
 app.include_router(knowledge.ws_router, prefix="/ws", tags=["knowledge-bases"])
 app.include_router(settings.public_router, prefix="/api/settings", tags=["settings"])

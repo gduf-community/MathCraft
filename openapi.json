@@ -130,6 +130,143 @@
         }
       }
     },
+    "/api/user-profile": {
+      "get": {
+        "tags": [
+          "user-profile"
+        ],
+        "summary": "Get Profile",
+        "operationId": "get_profile_api_user_profile_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfile"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Profile storage is unavailable"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "user-profile"
+        ],
+        "summary": "Put Profile",
+        "operationId": "put_profile_api_user_profile_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserProfileUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfile"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Profile storage is unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/user-profile/avatar": {
+      "get": {
+        "tags": [
+          "user-profile"
+        ],
+        "summary": "Get Avatar",
+        "operationId": "get_avatar_api_user_profile_avatar_get",
+        "responses": {
+          "200": {
+            "description": "Saved avatar",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "503": {
+            "description": "Profile storage is unavailable"
+          },
+          "404": {
+            "description": "No saved avatar"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "user-profile"
+        ],
+        "summary": "Upload Avatar",
+        "operationId": "upload_avatar_api_user_profile_avatar_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_avatar_api_user_profile_avatar_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfile"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Profile storage is unavailable"
+          },
+          "400": {
+            "description": "Invalid image, format, filename or dimensions"
+          },
+          "413": {
+            "description": "Avatar exceeds 5 MiB"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge-bases/health": {
       "get": {
         "tags": [
@@ -6254,6 +6391,20 @@
         "type": "object",
         "title": "Body_reindex_knowledge_base_api_knowledge_bases__kb_name__reindex_post"
       },
+      "Body_upload_avatar_api_user_profile_avatar_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_avatar_api_user_profile_avatar_post"
+      },
       "Body_upload_files_api_knowledge_bases__kb_name__upload_post": {
         "properties": {
           "files": {
@@ -9109,6 +9260,87 @@
         "type": "object",
         "title": "UISettingsUpdate",
         "description": "Partial UI settings for user-initiated PATCH/PUT updates via /api/settings/ui.\n\nAll fields have None defaults so `model_dump(exclude_unset=True)` naturally\nexcludes fields not provided in the frontend payload, while explicitly provided\ndefaults (e.g., `theme: \"snow\"`) still update the backend. This separates\nthe semantic contract: `/ui` endpoint only merges whatever explicitly arrives\nfrom the frontend."
+      },
+      "UserProfile": {
+        "properties": {
+          "nickname": {
+            "type": "string",
+            "title": "Nickname",
+            "default": "教师"
+          },
+          "teaching_stage": {
+            "type": "string",
+            "enum": [
+              "",
+              "primary",
+              "junior",
+              "senior"
+            ],
+            "title": "Teaching Stage",
+            "default": ""
+          },
+          "grade": {
+            "type": "string",
+            "pattern": "^(?:[1-9]|1[0-2])?$",
+            "title": "Grade",
+            "default": ""
+          },
+          "role": {
+            "type": "string",
+            "const": "teacher",
+            "title": "Role",
+            "default": "teacher",
+            "readOnly": true
+          },
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "UserProfile"
+      },
+      "UserProfileUpdate": {
+        "properties": {
+          "nickname": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Nickname"
+          },
+          "teaching_stage": {
+            "type": "string",
+            "enum": [
+              "",
+              "primary",
+              "junior",
+              "senior"
+            ],
+            "title": "Teaching Stage",
+            "default": ""
+          },
+          "grade": {
+            "type": "string",
+            "pattern": "^(?:[1-9]|1[0-2])?$",
+            "title": "Grade",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "nickname"
+        ],
+        "title": "UserProfileUpdate"
       },
       "ValidationError": {
         "properties": {
