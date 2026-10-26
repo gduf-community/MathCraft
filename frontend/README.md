@@ -42,8 +42,15 @@ npm run build
 npm run preview
 ```
 
-开发服务器从仓库根目录的 `.env` 读取 `FRONTEND_HOST`、`FRONTEND_PORT`，并将 `/api` 请求代理到
-`BACKEND_HOST` / `BACKEND_PORT`。部署构建时可设置 `VITE_API_BASE_URL` 指向 MathCraft 后端的 API 根地址。
+开发服务器从仓库根目录的 `.env` 读取 `FRONTEND_HOST`、`FRONTEND_PORT`（默认 `127.0.0.1:5173`），并将 `/api` 请求代理到 `BACKEND_HOST` / `BACKEND_PORT`（默认 `127.0.0.1:8000`）。Vite 不读取后端保存的 `system.json`：建议按根 README 使用 `python -m MathCraft --port 8000` 启动后端；使用其他端口时，须同步根目录 `.env` 的 `BACKEND_PORT` 并重启开发服务器。
+
+`VITE_API_BASE_URL` 用于指定后端 API 地址；设置后也会优先作为开发服务器的 `/api` 代理目标。
+
+当前题库页面的文档上传和向量化进度由 `useDocUpload` 调用 `bankMock` 并通过定时器模拟，不发送文件内容，也不启动后端索引。真实文档上传、解析与索引应通过正式知识库 API 完成，请参阅 [API 文档](../docs/api.md)。
+
+## 页面设计与范围
+
+[个人中心与模型配置页面设计](../docs/design/个人中心与模型配置页面设计.md)记录本期页面范围：左侧底部独立「设置」，默认打开「模型与服务 → 主语言模型」；设置分为模型与服务、知识库引擎、文档解析，模型用途仅含主语言模型、辅助任务模型（提供「跟随主模型」）与嵌入模型，并支持提供方及连接管理。模型采用独立草稿/应用，其他分区独立保存。个人中心仅五项教师资料，教师身份只读，头像及资料独立持久化；学习空间保留未开放提示与现有组卷占位，不实现学生发布接收作答闭环。对应的[本地功能规格](../docs/design/个人中心与应用设置功能规格.md)记录用户故事、保存契约和验收标准；本期按本地 Markdown 完成实施与验收。
 
 ## 设置与个人资料交互
 

@@ -17,7 +17,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── LICENSE                       # Apache-2.0 许可全文
 ├── THIRD_PARTY_NOTICES.md        # 第三方来源说明与许可证正文
 ├── STUBS.md                      # 单租户替身模块清单
-├── GLOSSARY.md                   # 正式知识库与出题领域术语
+├── GLOSSARY.md                   # 学习空间、个人中心、设置与知识库领域术语
 ├── pyproject.toml                # 包元数据、依赖与 extras
 ├── openapi.json                  # 导出的 OpenAPI 契约快照
 ├── .env.example                  # 环境变量样例
@@ -32,7 +32,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   ├── api.md                    # HTTP API 参考
 │   ├── design/                   # 新功能与模块设计文档
 │   │   ├── 个人中心与模型配置页面设计.md # 已确认的页面方案与能力边界
-│   │   ├── 个人中心与应用设置功能规格.md # 页面范围、保存契约与验收
+│   │   ├── 个人中心与应用设置功能规格.md # 本地功能规格、用户故事与验收标准
 │   │   └── 个人中心与应用设置实施记录.md # 验收结果、审查及验证边界
 │   ├── adr/                      # 架构决策记录
 │   └── 智能体出题工作流程.docx  # 出题流程说明
@@ -87,10 +87,10 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 ### 2. 启动统一后端
 
 ```powershell
-.venv\Scripts\python.exe -m MathCraft
+.venv\Scripts\python.exe -m MathCraft --port 8000
 ```
 
-应用导入不会加载 `.env` 或写入运行时设置。ASGI 启动时加载 `.env`、初始化设置和日志，再开始接收请求；初始化失败会直接终止启动。命令行入口会先读取 `.env` 和已保存的启动配置。端口优先级为 `--port` > shell / `.env` 中的 `BACKEND_PORT` > `system.json` > 内置默认值。
+应用导入不会加载 `.env` 或写入运行时设置。ASGI 启动时加载 `.env`、初始化设置和日志，再开始接收请求；初始化失败会直接终止启动。命令行入口会先读取 `.env` 和已保存的启动配置。端口优先级为 `--port` > shell / `.env` 中的 `BACKEND_PORT` > `system.json` > 内置默认值。以上命令显式绑定 `8000`，与下文验证地址和 Vite 默认代理端口一致；省略 `--port` 且没有环境变量或已保存配置时，后端使用 `8001`。
 
 Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、模型配置和出题接口都由这个进程提供，内部 `math_q_agent` 代码已直接装配进统一应用。
 
@@ -100,14 +100,15 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、�
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | 绑定地址；只对本机提供服务 |
 | `--port` | 启动配置（`.env.example` 为 `8000`） | 绑定端口；没有环境变量或保存配置时使用内置值 `8001` |
-| `--reload` | 关闭 | 源码变更后自动重启，仅开发时使用 |
-| `--log-level` | `info` | uvicorn 日志级别 |
+| `--reload` | 关闭 | 当前入口虽然接受此参数，但传给 Uvicorn 的是应用对象，无法启用热重载；开发时使用下方 Uvicorn 命令 |
 
-等价的 uvicorn 写法（便于接入进程管理器）：
+也可以直接通过 Uvicorn 启动（便于接入进程管理器）：
 
 ```powershell
 .venv\Scripts\python.exe -m uvicorn MathCraft.api.main:app --host 127.0.0.1 --port 8000
 ```
+
+开发时可在上述 Uvicorn 命令末尾添加 `--reload --reload-dir backend`；日志级别使用 Uvicorn 的 `--log-level info`。这些参数中，`--log-level` 不属于 `python -m MathCraft` 的命令行参数。
 
 ### 3. 环境变量（可选）
 
@@ -115,7 +116,7 @@ Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、�
 
 | 服务 | `.env` 行为 | 配置位置 |
 | --- | --- | --- |
-| `MathCraft`（8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 首次没有 `model_catalog.json` 时由 `LLM_*`、`TASK_*`、`EMBEDDING_*` 初始化；通过 `/api/settings` 保存的 catalog 优先；MinerU 支持用 `MINERU_*` 做部署级覆盖 |
+| `MathCraft`（上述示例为 8000） | 启动时读取仓库根 `.env`；shell 中已有的同名变量优先 | 首次没有 `model_catalog.json` 时由 `LLM_*`、`TASK_*`、`EMBEDDING_*` 初始化；通过 `/api/settings` 保存的 catalog 优先；MinerU 支持用 `MINERU_*` 做部署级覆盖 |
 | Vite（5173） | 通过 `envDir: '..'` 读取同一份 `.env` | `FRONTEND_*` 控制开发服务器，`VITE_API_BASE_URL` 控制生产前端 API 地址 |
 
 `.env.example` 仅包含变量名和空凭据占位，`.env` 已被 `.gitignore` 忽略。模型配置的来源优先级是：
@@ -140,7 +141,7 @@ MINERU_API_TOKEN=
 | --- | --- |
 | `MATH_Q_HOME` | 数据根，默认当前工作目录（在仓库根启动时即仓库根）；可在 shell 或 `.env` 中设置，须在 ASGI 启动前确定；运行时数据落在 `<MATH_Q_HOME>/data` |
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
-| `CORS_ORIGIN` | 额外允许的浏览器来源，逗号分隔 |
+| `CORS_ORIGIN` | 兼容应用 `math_q_agent.api.main:app` 读取的额外浏览器来源，逗号分隔；统一应用 `MathCraft.api.main:app` 当前固定允许所有来源，此变量不会收紧其 CORS 策略 |
 | `BACKEND_HOST` / `BACKEND_PORT` | 知识库与模型配置服务绑定地址和端口 |
 | `LLM_BINDING` / `LLM_MODEL` / `LLM_API_KEY` / `LLM_BASE_URL` | 首次启动时初始化主模型 Provider、模型、密钥和地址 |
 | `TASK_BINDING` / `TASK_MODEL` / `TASK_API_KEY` / `TASK_BASE_URL` | 首次启动时初始化后台任务模型 |
@@ -189,7 +190,7 @@ curl.exe http://127.0.0.1:8000/api/knowledge-bases
 启动顺序是：启动统一后端，再启动前端开发服务器。
 
 ```powershell
-# 1) 通过正式知识库 API 或前端上传文档并启动索引
+# 1) 通过正式知识库 API 上传文档并启动索引
 #    具体请求见 docs/api.md；模型和嵌入配置统一通过 /api/settings 管理
 
 # 2) 前端开发服务（另开终端，/api 代理到 BACKEND_PORT）
@@ -197,6 +198,8 @@ cd frontend
 npm install
 npm run dev
 ```
+
+题库管理上方的「知识库连接」支持真实建库、文件上传与引擎配置；下方既有题库协作、文档上传和模拟进度仍为演示，使用 `bankMock` 和定时器，不会触发真实索引。正式接口见 [docs/api.md](docs/api.md)。Vite 默认代理到 `127.0.0.1:8000`，不会读取后端保存的 `system.json`；如果后端改用其他端口，请同时在根目录 `.env` 设置 `BACKEND_PORT` 并重启前端开发服务器。
 
 前端生产构建 `npm run build` 产出 `frontend/dist`；`.github/workflows/deploy.yml` 提供手动触发的 GitHub Pages 部署，仓库在 Settings → Pages 启用后即可使用。检索与出题的命令行测试脚本位于 `backend/scripts/`（脚本已把 `backend/` 加入 import 路径）。模型密钥由 `/api/settings` 管理，严禁写入代码、文档或提交记录。
 
@@ -218,19 +221,20 @@ data/
 └── user/settings/*.json        # 模型目录、解析、引擎等设置
 ```
 
-`MATH_Q_HOME` 默认为仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
+`MATH_Q_HOME` 默认使用进程启动时的当前工作目录；在仓库根目录启动时才对应仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
 
 ## RAG 引擎
 
-与上游一致，接入 8 条引擎：
+当前工厂注册 9 个 RAG provider，配置时使用下表中的精确标识符：
 
 | 引擎 | 默认安装 | 说明 |
 | --- | --- | --- |
 | `llamaindex` | 是 | 默认引擎，全文 + 向量 + 可选 BM25 |
-| `pageindex` | 是（`pageindex` 包） | reasoning-as-retrieval |
+| `pageindex` | 是（`pageindex` 包） | PageIndex Cloud 云端服务，需配置专用 API Key |
+| `pageindex-oss` | 是（`pageindex` 包） | PageIndex OSS 本地索引，使用当前激活的 LLM，支持 PDF |
 | `graphrag` | 否 | `pip install -e ".[graphrag]"`，需 Python < 3.14 |
 | `lightrag` | 否 | `pip install -e ".[rag-lightrag]"` |
-| `lightrag_server` | 否 | 连接外部 LightRAG 服务 |
+| `lightrag-server` | 否 | 连接外部 LightRAG 服务 |
 | `ima` | 否 | 连接外部 IMA 部署 |
 | `kiwix` | 否 | 连接外部 Kiwix 服务 |
 | `weknora` | 否 | 连接外部 WeKnora 部署 |
@@ -273,13 +277,15 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | 文档 | 内容 |
 | --- | --- |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
-| [docs/design/个人中心与应用设置实施记录.md](docs/design/个人中心与应用设置实施记录.md) | 实际交付、18 项验收映射、双轴审查及本地验证边界 |
 | [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 智能出题产品需求、范围和验收标准 |
+| [docs/design/个人中心与模型配置页面设计.md](docs/design/个人中心与模型配置页面设计.md) | 五项教师资料、三种模型用途与连接管理、知识库引擎、文档解析及学习空间延期 |
+| [docs/design/个人中心与应用设置功能规格.md](docs/design/个人中心与应用设置功能规格.md) | 本地规范：46 条用户故事、实现决策与 18 项行为验收 |
+| [docs/design/个人中心与应用设置实施记录.md](docs/design/个人中心与应用设置实施记录.md) | 实际交付、18 项验收映射、双轴审查及本地验证边界 |
 | [docs/design/知识库模块说明.md](docs/design/知识库模块说明.md) | 知识库模块架构、生命周期、数据布局和接口分组 |
 | [docs/design/扫描PDF云端OCR策略.md](docs/design/扫描PDF云端OCR策略.md) | 扫描 PDF 的检测、MinerU 云端 OCR 契约和验收标准 |
 | [docs/design/模型配置来源与普通知识库流程.md](docs/design/模型配置来源与普通知识库流程.md) | 模型目录优先级、Task 模式与普通知识库后端流程 |
 | [docs/adr/0001-正式知识库作为唯一知识库入口.md](docs/adr/0001-正式知识库作为唯一知识库入口.md) | 正式知识库唯一入口的架构决策 |
-| [GLOSSARY.md](GLOSSARY.md) | 正式知识库、RAG 和出题编排术语 |
+| [GLOSSARY.md](GLOSSARY.md) | 学习空间、个人中心、应用设置、知识库、RAG 和出题编排术语 |
 | [openapi.json](openapi.json) | 机器可读的 OpenAPI 契约快照 |
 | [STUBS.md](STUBS.md) | 每个被替换为单租户替身的模块及其原行为 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 第三方来源与许可证正文 |
@@ -291,6 +297,8 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 .venv\Scripts\python.exe -c "import json, MathCraft.api.main as m; open('openapi.json','w',encoding='utf-8').write(json.dumps(m.app.openapi(), indent=2, ensure_ascii=False))"
 .venv\Scripts\python.exe tools\gen_api_docs.py
 ```
+
+第一条命令从统一应用导出 OpenAPI 契约到根目录 `openapi.json`；第二条命令读取该快照并生成 `docs/api.md`。这两步用于开发维护，不是启动服务的必要步骤。端点表由契约生成，生成脚本中的检索说明和 WebSocket 示例仍需随行为变化人工维护。
 
 ## 许可证
 

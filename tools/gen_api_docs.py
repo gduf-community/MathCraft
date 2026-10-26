@@ -33,8 +33,11 @@ def table(prefix: str) -> str:
 
 PREAMBLE = """# API reference — MathCraft
 
-Base URL: `http://127.0.0.1:8000`. Interactive docs: `/docs`. Machine contract:
-`/openapi.json` (a copy is committed at the repository root).
+Examples use `http://127.0.0.1:8000`, matching the README command
+`python -m MathCraft --port 8000`. Without a CLI override, `BACKEND_PORT`, or
+saved system settings, the backend defaults to `8001`. Replace the HTTP and
+WebSocket example ports with the actual deployment port. Interactive docs:
+`/docs`. Machine contract: `/openapi.json` (a copy is committed at the repository root).
 
 There is **no authentication**: every request is served as the single local
 admin. CORS is permissive by default. Bind to loopback or front it with a
@@ -60,8 +63,10 @@ RETRIEVAL = """## Retrieval contract
 - `top_k` — 1..50, defaults to the engine's configured default.
 - `search_mode` — engine-specific; omit to use the knowledge base's own mode.
   `GET /query-options` lists what the engine accepts.
-- `synthesize` — `false` returns retrieved passages only. `true` additionally
-  asks the configured LLM to write an answer.
+- `synthesize` — controls whether the response includes `answer`. When `true`,
+  the endpoint exposes the engine's returned `answer` or `content`; it does not
+  initiate an additional LLM synthesis step. With the default LlamaIndex engine,
+  this value contains retrieved context. Engine-specific retrieval may itself use an LLM.
 
 Response:
 
