@@ -6,9 +6,11 @@ import TabBar from './components/layout/TabBar'
 import GenerateTab from './components/tabs/GenerateTab'
 import PreviewTab from './components/tabs/PreviewTab'
 import BankTab from './components/tabs/BankTab'
+import FavoritesTab from './components/tabs/FavoritesTab'
 import Toast from './components/ui/Toast'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { ProfilePage } from './components/profile/ProfilePage'
+import { FavoritesProvider } from './store/FavoritesContext'
 import { ProfileProvider } from './store/ProfileContext'
 import { BookOpen } from 'lucide-react'
 
@@ -31,6 +33,8 @@ function Shell() {
             <div className="flex min-h-0 flex-1 flex-col">
               <BankTab />
             </div>
+          ) : activeTab === 'favorites' ? (
+            <FavoritesTab />
           ) : (
             <>
               <TabBar />
@@ -47,8 +51,10 @@ function Shell() {
 
 export default function App() {
   return (
-    <AppProvider>
-      <ProfileProvider><Shell /></ProfileProvider>
-    </AppProvider>
+    <FavoritesProvider>
+      <AppProvider>
+        <ProfileProvider><Shell /></ProfileProvider>
+      </AppProvider>
+    </FavoritesProvider>
   )
 }

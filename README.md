@@ -39,6 +39,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
 │   ├── src/components/settings/ # 模型、引擎、解析及知识库入口
 │   ├── src/components/profile/  # 教师资料表单与头像上传
+│   ├── src/components/tabs/FavoritesTab/ # 题目收藏页（mock 数据，前端演示）
 │   └── README.md                 # 前端目录结构与开发命令
 └── tools/                        # 仓库维护脚本
 ```

@@ -8,6 +8,7 @@
 frontend/
 ├── src/
 │   ├── api/                  # 后端 HTTP 适配层与 mock 数据适配器
+│   │   ├── favorites.ts      # 收藏域 API 封装（当前转调 mock）
 │   │   └── mock/             # 本地开发用模拟数据与适配器
 │   ├── components/
 │   │   ├── settings/         # 模型目录、引擎、解析与真实知识库入口
@@ -15,6 +16,7 @@ frontend/
 │   │   ├── layout/           # 顶部栏、侧边导航和标签栏
 │   │   ├── tabs/             # 生成题目、预览题目等页面标签
 │   │   │   ├── GenerateTab/  # 对话输入、快捷提示和机器人头像
+│   │   │   ├── FavoritesTab/ # 题目收藏页：收藏夹、筛选、只读卡片与批量操作
 │   │   │   ├── BankTab/      # 真实知识库入口与既有题库演示
 │   │   │   └── PreviewTab/   # 题目卡片、答案、组卷和评分编辑
 │   │   └── ui/               # 通用下拉框、提示等基础组件
@@ -47,6 +49,8 @@ npm run preview
 `VITE_API_BASE_URL` 用于指定后端 API 地址；设置后也会优先作为开发服务器的 `/api` 代理目标。
 
 当前题库页面的文档上传和向量化进度由 `useDocUpload` 调用 `bankMock` 并通过定时器模拟，不发送文件内容，也不启动后端索引。真实文档上传、解析与索引应通过正式知识库 API 完成，请参阅 [API 文档](../docs/api.md)。
+
+「题目收藏」页面本期只做前端：页面依赖 `store/FavoritesContext.tsx`，Context 只依赖 `api/favorites.ts` 封装，该封装内部转调 `api/mock/favoritesMock.ts`。刷新页面即重置，不读写后端；后端接入时只需替换 `api/favorites.ts` 的实现。预览页星标与收藏页共用同一份内存收藏状态；收藏页卡片只读，组卷入口仅做加入清单提示与计数。设计说明见 [题目收藏页面设计](../docs/design/题目收藏页面设计.md)。
 
 ## 页面设计与范围
 
