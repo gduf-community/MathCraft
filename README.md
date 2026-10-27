@@ -300,12 +300,6 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 
 第一条命令从统一应用导出 OpenAPI 契约到根目录 `openapi.json`；第二条命令读取该快照并生成 `docs/api.md`。这两步用于开发维护，不是启动服务的必要步骤。端点表由契约生成，生成脚本中的检索说明和 WebSocket 示例仍需随行为变化人工维护。
 
-## 许可证
-
-本项目以 **Apache-2.0** 发布，全文见 [LICENSE](LICENSE)，`pyproject.toml` 中同步声明 `license = {text = "Apache-2.0"}`。`LICENSE` 中的版权行为上游项目（Copyright 2025 Data Intelligence Lab, The University of Hong Kong），裁剪时原样保留。
-
-代码取自 DeepTutor（该项目同样为 Apache-2.0）；第三方来源与对应的 MIT 等许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
 ## 个人中心与应用设置
 
 左侧导航底部「设置」默认打开主语言模型，包含模型与服务、知识库引擎及文档解析。主语言模型、辅助任务模型（可跟随主模型）与嵌入模型使用模型草稿：保存草稿不影响正式配置；应用更改只应用已保存草稿；引擎和解析各自保存。连接检查仅说明实际检查到的能力。
@@ -315,3 +309,9 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 题库管理上方提供真实知识库与「配置引擎」入口，建库选择只作用于本次知识库。原有题库协作、组卷和学习空间仍保留明确的演示／未开放状态，不向学生真实发布。安装下载任务只观察当前后端进程；取消不回滚已完成内容。
 
 规格：[个人中心与应用设置功能规格](docs/design/个人中心与应用设置功能规格.md)。实际验收：[实施记录](docs/design/个人中心与应用设置实施记录.md)。接口：[API 文档](docs/api.md)。
+
+## 许可证
+
+本项目以 **Apache-2.0** 发布，全文见 [LICENSE](LICENSE)，`pyproject.toml` 中同步声明 `license = {text = "Apache-2.0"}`。`LICENSE` 中的版权行为上游项目（Copyright 2025 Data Intelligence Lab, The University of Hong Kong），裁剪时原样保留。
+
+代码取自 DeepTutor（该项目同样为 Apache-2.0）；第三方来源与对应的 MIT 等许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

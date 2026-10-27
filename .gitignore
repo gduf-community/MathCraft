@@ -42,3 +42,12 @@ backend/tests/.sources/
 
 # --- Frontend (RiddleMe) ---------------------------------------------------
 node_modules/
+
+# --- Local temporary files and artifacts -----------------------------------
+/.scratch/
+/pytest-of-39651/
+/frontend/.playwright-cli/
+/output/
+/说明.txt
+/docs/数学智能体题目.zip
+/docs/数学智能体题目/
