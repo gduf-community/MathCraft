@@ -17,7 +17,7 @@ import { BookOpen } from 'lucide-react'
 function Shell() {
   const { activeTab, settingsTarget } = useApp()
   return (
-    <div className="flex h-screen flex-col bg-page text-ink">
+    <div className="flex h-screen min-w-[960px] flex-col bg-page text-ink">
       <TopBar />
       <div className="relative flex min-h-0 flex-1">
         <SideNav />
