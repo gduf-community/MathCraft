@@ -20,6 +20,7 @@ interface FavoritesState {
   createFolder: (name: string, description?: string) => Promise<FavoriteFolder>
   renameFolder: (id: string, name: string, description?: string) => Promise<void>
   deleteFolder: (id: string) => Promise<void>
+  reorderFolders: (orderedIds: string[]) => Promise<void>
   moveFavorites: (ids: string[], folderId: string) => Promise<void>
   updateQuestionSnapshot: (question: Question) => Promise<void>
   addToAssemble: (count: number) => void
@@ -106,6 +107,20 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
     )
   }, [])
 
+  const reorderFolders = useCallback(async (orderedIds: string[]) => {
+    await favoritesApi.reorderFolders(orderedIds)
+    setFolders((prev) => {
+      const byId = new Map(prev.map((folder) => [folder.id, folder]))
+      const inbox = byId.get('inbox')
+      const next: FavoriteFolder[] = []
+      orderedIds.forEach((id, index) => {
+        const folder = byId.get(id)
+        if (folder && folder.id !== 'inbox') next.push({ ...folder, order: index + 1 })
+      })
+      return inbox ? [{ ...inbox, order: 0 }, ...next] : next
+    })
+  }, [])
+
   const moveFavorites = useCallback(async (ids: string[], folderId: string) => {
     await favoritesApi.moveFavorites(ids, folderId)
     const target = new Set(ids)
@@ -146,6 +161,7 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
     createFolder,
     renameFolder,
     deleteFolder,
+    reorderFolders,
     moveFavorites,
     updateQuestionSnapshot,
     addToAssemble,

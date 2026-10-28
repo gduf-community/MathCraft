@@ -82,12 +82,19 @@ export default function FavoriteCard({
             难度：{q.difficulty}
           </span>
           {q.knowledgePoint && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-line/90 bg-[#f4f7fc] px-2 py-0.5 text-ink-2">
-              <Tag size={12} className="text-ink-3" />
-              {q.knowledgePoint}
+            <span
+              className="inline-flex max-w-[220px] items-center gap-1 rounded-full border border-line/90 bg-[#f4f7fc] px-2 py-0.5 text-ink-2"
+              title={q.knowledgePoint}
+            >
+              <Tag size={12} className="shrink-0 text-ink-3" />
+              <span className="truncate">{q.knowledgePoint}</span>
             </span>
           )}
-          {!compact && <span className="text-ink-3">{q.id}</span>}
+          {!compact && (
+            <span className="max-w-[140px] truncate text-ink-3" title={q.id}>
+              {q.id}
+            </span>
+          )}
         </div>
 
         <p
@@ -115,18 +122,21 @@ export default function FavoriteCard({
 
         <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-dashed border-line/80 pt-2.5">
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-            <span className="inline-flex items-center gap-1">
-              <Folder size={13} />
-              {folderName}
+            <span className="inline-flex min-w-0 items-center gap-1" title={folderName}>
+              <Folder size={13} className="shrink-0" />
+              <span className="max-w-[120px] truncate">{folderName}</span>
             </span>
             <span className="text-[#d5dbe6]">·</span>
-            <span className="inline-flex items-center gap-1">
-              <FileText size={13} />
-              {item.source.bankName ?? '未知题库'}
-              {item.source.chapter ? ` · ${item.source.chapter}` : ''}
+            <span
+              className="inline-flex min-w-0 items-center gap-1"
+              title={[item.source.bankName ?? '未知题库', item.source.chapter].filter(Boolean).join(' · ')}
+            >
+              <FileText size={13} className="shrink-0" />
+              <span className="max-w-[180px] truncate">{item.source.bankName ?? '未知题库'}</span>
+              {item.source.chapter && <span className="max-w-[180px] truncate"> · {item.source.chapter}</span>}
             </span>
             <span className="text-[#d5dbe6]">·</span>
-            <span className="inline-flex items-center gap-1">
+            <span className="inline-flex shrink-0 items-center gap-1">
               <Clock size={13} />
               {formatCollectedAt(item.collectedAt)}收藏
             </span>

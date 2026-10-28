@@ -20,6 +20,7 @@ export const favoritesApi = {
   renameFolder: (id: string, name: string, description?: string): Promise<void> =>
     favoritesMock.renameFolder(id, name, description),
   deleteFolder: (id: string): Promise<void> => favoritesMock.deleteFolder(id),
+  reorderFolders: (ids: string[]): Promise<void> => favoritesMock.reorderFolders(ids),
   moveFavorites: (ids: string[], folderId: string): Promise<void> =>
     favoritesMock.moveFavorites(ids, folderId),
   updateFavoriteQuestion: (question: Question): Promise<void> =>

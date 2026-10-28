@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { CheckSquare, Download, Inbox, Search, Users, X } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { CheckSquare, Download, Inbox, MoreHorizontal, Plus, Search, Trash2, Users, X } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { useFavorites } from '../../../store/FavoritesContext'
 import { TYPE_LABELS } from '../../../constants'
@@ -11,6 +11,7 @@ import FavoritesFilters from './FavoritesFilters'
 import type { SortKey } from './FavoritesFilters'
 import FavoritesRail from './FavoritesRail'
 import { ConfirmModal, FolderFormModal, MoveFolderModal } from './FolderModal'
+import ManageFoldersModal from './ManageFoldersModal'
 
 type FolderModalState =
   | { mode: 'create' }
@@ -19,6 +20,31 @@ type FolderModalState =
   | null
 
 const DIFF_RANK: Record<Difficulty, number> = { 低: 1, 中: 2, 高: 3, 地狱: 4 }
+
+const RAIL_COLLAPSED_KEY = 'mcraft.favorites.railCollapsed'
+const FILTERS_COLLAPSED_KEY = 'mcraft.favorites.filtersCollapsed'
+
+/** 折叠状态读写 localStorage；隐私模式下读写失败时回退为展开 */
+function useStoredFlag(key: string) {
+  const [value, setValue] = useState(() => {
+    try {
+      return window.localStorage.getItem(key) === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggle = () =>
+    setValue((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(key, next ? '1' : '0')
+      } catch {
+        /* 忽略存储异常 */
+      }
+      return next
+    })
+  return [value, toggle] as const
+}
 
 /** 题目收藏页：收藏夹、筛选、只读卡片、批量操作与撤销 */
 export default function FavoritesTab() {
@@ -34,6 +60,7 @@ export default function FavoritesTab() {
     createFolder,
     renameFolder,
     deleteFolder,
+    reorderFolders,
     moveFavorites,
     addToAssemble,
   } = useFavorites()
@@ -50,6 +77,12 @@ export default function FavoritesTab() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [folderModal, setFolderModal] = useState<FolderModalState>(null)
   const [moveOpen, setMoveOpen] = useState(false)
+  const [mobileMenu, setMobileMenu] = useState<{ folder: FavoriteFolder; left: number; top: number } | null>(null)
+  const [manageOpen, setManageOpen] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const manageButtonRef = useRef<HTMLButtonElement>(null)
+  const [railCollapsed, toggleRail] = useStoredFlag(RAIL_COLLAPSED_KEY)
+  const [filtersCollapsed, toggleFilters] = useStoredFlag(FILTERS_COLLAPSED_KEY)
 
   const resetView = () => {
     setLimit(6)
@@ -156,6 +189,33 @@ export default function FavoritesTab() {
     })
   }
 
+  const removeSelected = async () => {
+    // 按当前列表顺序取快照，撤销时按同一顺序插回
+    const removing = filtered.filter((item) => selectedIds.includes(item.id))
+    if (!removing.length) return
+    const previousSelection = [...selectedIds]
+    const removed: FavoriteItem[] = []
+    for (const item of removing) {
+      const snapshot = await removeFavorite(item.id)
+      if (snapshot) removed.push(snapshot)
+    }
+    if (!removed.length) return
+    const removedIds = new Set(removed.map((item) => item.id))
+    setSelectedIds([])
+    showToast(`已移出 ${removed.length} 题`, {
+      actionLabel: '撤销',
+      duration: 5000,
+      onAction: () => {
+        void (async () => {
+          for (const snapshot of removed) await restoreFavorite(snapshot)
+          setSelectedIds((prev) => [
+            ...new Set([...prev, ...previousSelection.filter((id) => removedIds.has(id))]),
+          ])
+        })()
+      },
+    })
+  }
+
   const addAssemble = (count: number, detail: string) => {
     if (count <= 0) {
       showToast('当前没有可加入组卷的题目')
@@ -173,6 +233,23 @@ export default function FavoritesTab() {
     addAssemble(filtered.length, `已按当前筛选结果加入组卷清单 ${filtered.length} 道`)
   }
 
+  const hasActiveFilters =
+    typeFilter !== 'all' ||
+    difficultyFilter !== 'all' ||
+    knowledgeFilter !== 'all' ||
+    sourceFilter !== 'all' ||
+    query.trim() !== ''
+
+  const filterSummary = [
+    typeFilter !== 'all' ? TYPE_LABELS[typeFilter] : '',
+    difficultyFilter !== 'all' ? difficultyFilter : '',
+    knowledgeFilter !== 'all' ? knowledgeFilter : '',
+    sourceFilter !== 'all' ? sourceFilter : '',
+    query.trim() ? `搜索：${query.trim()}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
   const clearFilters = () => {
     setTypeFilter('all')
     setDifficultyFilter('all')
@@ -180,6 +257,7 @@ export default function FavoritesTab() {
     setSourceFilter('all')
     setQuery('')
     resetView()
+    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const submitFolder = async (name: string, description: string) => {
@@ -205,15 +283,21 @@ export default function FavoritesTab() {
   const confirmDelete = async () => {
     if (folderModal?.mode !== 'delete') return
     const folder = folderModal.folder
+    const count = folderCounts[folder.id] ?? 0
     try {
       await deleteFolder(folder.id)
-      if (folderFilter === folder.id) setFolderFilter('all')
+      if (folderFilter === folder.id) setFolderFilter('inbox')
       setFolderModal(null)
       resetView()
-      showToast(`已删除收藏夹「${folder.name}」，题目已移到未分类`)
+      showToast(`已删除收藏夹「${folder.name}」，${count} 道题已移至未分类`)
     } catch (error) {
       showToast(error instanceof Error ? error.message : '删除失败')
     }
+  }
+
+  const closeManage = () => {
+    setManageOpen(false)
+    manageButtonRef.current?.focus()
   }
 
   const handleMove = async (folderId: string) => {
@@ -235,7 +319,7 @@ export default function FavoritesTab() {
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-[#f5f8fd]">
-      <header className="flex shrink-0 flex-wrap items-end justify-between gap-4 px-6 pb-4 pt-5 xl:px-8">
+      <header className="flex shrink-0 flex-wrap items-end justify-between gap-4 px-6 pb-3 pt-4 xl:px-8 xl:pb-4 xl:pt-5">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-[21px] font-bold text-ink">题目收藏</h2>
@@ -285,28 +369,68 @@ export default function FavoritesTab() {
           onCreate={() => setFolderModal({ mode: 'create' })}
           onRename={(folder) => setFolderModal({ mode: 'rename', folder })}
           onDelete={(folder) => setFolderModal({ mode: 'delete', folder })}
-          onManage={() => showToast('收藏夹管理：重命名、排序与删除（演示）')}
+          onManage={() => setManageOpen(true)}
+          collapsed={railCollapsed}
+          onToggle={toggleRail}
+          manageButtonRef={manageButtonRef}
         />
 
         <section className="flex min-w-0 flex-1 flex-col gap-3">
-          <div className="flex gap-2 overflow-x-auto pb-1 lg:hidden">
-            {mobileFolders.map((folder) => (
-              <button
-                key={folder.id}
-                type="button"
-                onClick={() => {
-                  setFolderFilter(folder.id)
-                  resetView()
-                }}
-                className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-                  folderFilter === folder.id
-                    ? 'border-primary bg-primary text-white'
-                    : 'border-line bg-white text-ink-2'
-                }`}
-              >
-                {folder.name} ({folder.count})
-              </button>
-            ))}
+          <div className="flex shrink-0 flex-nowrap items-start gap-2 overflow-hidden pb-1 lg:hidden">
+            {mobileFolders.map((folder) => {
+              const active = folderFilter === folder.id
+              const manageable = folder.id !== 'all' && folder.id !== 'inbox'
+              return (
+                <div
+                  key={folder.id}
+                  className={`flex shrink-0 items-center rounded-lg border text-xs transition-colors ${
+                    active ? 'border-primary bg-primary text-white' : 'border-line bg-white text-ink-2'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    title={folder.name}
+                    onClick={() => {
+                      setFolderFilter(folder.id)
+                      resetView()
+                    }}
+                    className={`max-w-[160px] truncate py-1.5 pl-3 ${manageable ? 'pr-1.5' : 'pr-3'}`}
+                  >
+                    {folder.name} ({folder.count})
+                  </button>
+                  {manageable && (
+                    <button
+                      type="button"
+                      title="重命名 / 删除"
+                      aria-label={`管理收藏夹 ${folder.name}`}
+                      onClick={(event) => {
+                        const item = folders.find((value) => value.id === folder.id)
+                        if (!item) return
+                        const rect = event.currentTarget.getBoundingClientRect()
+                        setMobileMenu({
+                          folder: item,
+                          left: Math.max(8, Math.min(rect.left, window.innerWidth - 112)),
+                          top: rect.bottom + 4,
+                        })
+                      }}
+                      className={`py-1.5 pl-0.5 pr-2 ${
+                        active ? 'text-white/80 hover:text-white' : 'text-ink-3 hover:text-primary'
+                      }`}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+            <button
+              type="button"
+              onClick={() => setFolderModal({ mode: 'create' })}
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-dashed border-line bg-white px-3 py-1.5 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
+            >
+              <Plus size={13} />
+              新建收藏夹
+            </button>
           </div>
 
           <FavoritesFilters
@@ -350,9 +474,14 @@ export default function FavoritesTab() {
             allSelected={allSelected}
             someSelected={someSelected}
             onToggleAll={toggleAll}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
+            collapsed={filtersCollapsed}
+            onToggleCollapsed={toggleFilters}
+            summary={filterSummary}
           />
 
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
             {loading ? (
               <div className="flex h-full items-center justify-center text-sm text-ink-3">正在加载收藏…</div>
             ) : baseEmpty || noResult ? (
@@ -409,7 +538,7 @@ export default function FavoritesTab() {
           </div>
 
           {!loading && filtered.length > 0 && (
-            <div className="flex items-center justify-center gap-3 pt-1 text-xs text-ink-3">
+            <div className="flex shrink-0 items-center justify-center gap-3 pt-1 text-xs text-ink-3">
               {filtered.length > limit ? (
                 <>
                   <button
@@ -448,6 +577,15 @@ export default function FavoritesTab() {
           </button>
           <button
             type="button"
+            onClick={() => void removeSelected()}
+            aria-label={`移出收藏（${selectedItems.length} 题）`}
+            className="inline-flex h-8 items-center gap-1 rounded-lg border border-red-200 bg-[#fef2f2] px-3 text-xs font-medium text-danger transition-colors hover:bg-[#fee2e2]"
+          >
+            <Trash2 size={13} />
+            移出收藏
+          </button>
+          <button
+            type="button"
             onClick={() => showToast('导出已选题目（Word / CSV 二选一）')}
             className="inline-flex h-8 items-center rounded-lg border border-line bg-white px-3 text-xs font-medium text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
           >
@@ -471,6 +609,51 @@ export default function FavoritesTab() {
         </div>
       )}
 
+      {mobileMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setMobileMenu(null)} />
+          <div
+            className="fixed z-40 w-28 rounded-lg border border-line bg-white py-1 shadow-lg"
+            style={{ left: mobileMenu.left, top: mobileMenu.top }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setFolderModal({ mode: 'rename', folder: mobileMenu.folder })
+                setMobileMenu(null)
+              }}
+              className="block w-full px-3 py-2 text-left text-sm text-ink-2 hover:bg-primary-weak hover:text-primary"
+            >
+              重命名
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFolderModal({ mode: 'delete', folder: mobileMenu.folder })
+                setMobileMenu(null)
+              }}
+              className="block w-full px-3 py-2 text-left text-sm text-danger hover:bg-[#fef2f2]"
+            >
+              删除
+            </button>
+          </div>
+        </>
+      )}
+
+      {manageOpen && (
+        <ManageFoldersModal
+          folders={folders}
+          counts={folderCounts}
+          total={total}
+          childOpen={folderModal !== null}
+          onClose={closeManage}
+          onCreate={() => setFolderModal({ mode: 'create' })}
+          onRename={(folder) => setFolderModal({ mode: 'rename', folder })}
+          onDelete={(folder) => setFolderModal({ mode: 'delete', folder })}
+          onReorder={(ids) => void reorderFolders(ids)}
+        />
+      )}
+
       {folderModal && folderModal.mode !== 'delete' && (
         <FolderFormModal
           folder={folderModal.mode === 'rename' ? folderModal.folder : undefined}
@@ -482,8 +665,8 @@ export default function FavoritesTab() {
       {folderModal?.mode === 'delete' && (
         <ConfirmModal
           title="删除收藏夹"
-          message={`确定删除收藏夹「${folderModal.folder.name}」吗？夹内题目不会被删除，会回到「未分类」。`}
-          confirmText="确认删除"
+          message="确定删除该收藏夹？题目将移至未分类"
+          confirmText="删除"
           onClose={() => setFolderModal(null)}
           onConfirm={() => void confirmDelete()}
         />

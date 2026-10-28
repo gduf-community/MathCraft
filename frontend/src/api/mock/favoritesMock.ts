@@ -333,6 +333,23 @@ export async function deleteFolder(id: string): Promise<void> {
   items = items.map((item) => (item.folderId === id ? { ...item, folderId: 'inbox' } : item))
 }
 
+/** 重排自建收藏夹；inbox 固定在最前，order 从 1 开始，仅会话内生效 */
+export async function reorderFolders(orderedIds: string[]): Promise<void> {
+  await delay(120)
+  const byId = new Map(folders.map((folder) => [folder.id, folder]))
+  const inbox = folders.find((folder) => folder.id === 'inbox')
+  const next: FavoriteFolder[] = []
+  for (const id of orderedIds) {
+    const folder = byId.get(id)
+    if (!folder || folder.id === 'inbox') continue
+    next.push(folder)
+  }
+  next.forEach((folder, index) => {
+    folder.order = index + 1
+  })
+  folders = inbox ? [{ ...inbox, order: 0 }, ...next] : next
+}
+
 export async function moveFavorites(ids: string[], folderId: string): Promise<void> {
   await delay(100)
   if (!folders.some((folder) => folder.id === folderId)) throw new Error('收藏夹不存在')
