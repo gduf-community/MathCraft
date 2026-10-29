@@ -295,7 +295,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | 文档 | 内容 |
 | --- | --- |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
-| [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 考研数学一、二、三全章节总体需求：多选解析结果、面板与对话、逐题版本及指定版本组卷；含确认状态和待决策事项 |
+| [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 考研全章节总体需求：整份解析结果多选与原文预览、对话范围、手动版本保存与清理、待组卷及独立组卷页；含确认状态和待决策事项 |
 | [docs/design/模型直接配置功能规格.md](docs/design/模型直接配置功能规格.md) | 三类直接配置、名称规则、手动发现、单项保存与迁移契约 |
 | [docs/design/模型直接配置实施记录.md](docs/design/模型直接配置实施记录.md) | 直接配置实现、验收证据及验证边界 |
 | [docs/design/模型与服务页面优化功能规格.md](docs/design/模型与服务页面优化功能规格.md) | 提供方优先导航、卡片与模型列表交互、48 条用户故事及 18 项验收 |
