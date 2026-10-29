@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { settingsRequest } from '../../api/settingsHttp'
 import { useApp } from '../../store/AppContext'
+import { ConfigurationDialog } from '../ui/ConfigurationDialog'
 
 interface KnowledgeBase {
   id?: string | null
@@ -337,9 +338,9 @@ export function KnowledgeConnections() {
         <button type="button" className="settings-button-secondary" disabled={busy} onClick={() => openEngineSettings()}>
           <Settings2 size={16} aria-hidden="true" />配置引擎
         </button>
-        {!formOpen && <button type="button" className="settings-button" disabled={busy} onClick={openCreation}>
+        <button type="button" className="settings-button" disabled={busy} onClick={openCreation}>
           <Plus size={16} aria-hidden="true" />新建知识库
-        </button>}
+        </button>
       </div>
     </div>
 
@@ -398,57 +399,57 @@ export function KnowledgeConnections() {
       <p className="mt-3 text-sm text-ink-2">配置标记不代表依赖、连接或索引已就绪；远端专用连接需沿用已有工作流。</p>
     </details>}
 
-    {binding && <form className="space-y-4 rounded-lg border border-line p-4" onSubmit={(event) => { void saveBinding(event) }} aria-labelledby={`${formId}-binding`}>
-      <h3 id={`${formId}-binding`} className="font-semibold text-ink">更改「{binding.kb.name}」的引擎绑定</h3>
-      {binding.loading && <p role="status" className="text-sm text-ink-2">正在读取此库当前配置…</p>}
-      {!binding.loading && CREATE_ENGINES.has(binding.currentProvider) && <label className="settings-label" htmlFor={`${formId}-binding-engine`}>目标绑定引擎
-        <span className="text-sm font-normal text-ink-2">当前配置：{providers.find((provider) => provider.id === binding.currentProvider)?.name ?? binding.currentProvider}</span>
-        <select id={`${formId}-binding-engine`} className="settings-input" value={binding.selectedProvider} disabled={bindingSaving || loading || !!resourceErrors.providers || !!bindingRestriction(binding.kb) || !binding.canEdit} onChange={(event) => setBinding((previous) => previous && ({ ...previous, selectedProvider: event.target.value, error: '' }))}>
-          {!providers.some((provider) => provider.id === binding.selectedProvider && CREATE_ENGINES.has(provider.id)) && <option value={binding.selectedProvider}>{binding.selectedProvider}</option>}
-          {providers.filter((provider) => CREATE_ENGINES.has(provider.id)).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-        </select>
-      </label>}
-      <p className="settings-note">已有就绪索引可能返回后端 409 冲突；确认只提交该库的引擎绑定。成功后需要后续手动重建，不会自动迁移、删除索引或启动重建。</p>
-      {binding.error && <p className="settings-error" role="alert">{binding.error}</p>}
-      <div className="flex flex-wrap gap-2">
-        <button type="submit" className="settings-button" disabled={!binding.canEdit || !bindingDirty || binding.loading || bindingSaving || loading || !CREATE_ENGINES.has(binding.currentProvider) || !providers.some((provider) => provider.id === binding.selectedProvider && CREATE_ENGINES.has(provider.id)) || !!resourceErrors.providers}>{bindingSaving ? '正在提交绑定…' : '确认变更绑定'}</button>
-        <button type="button" className="settings-button-secondary" disabled={bindingSaving} onClick={closeBinding}>取消绑定编辑</button>
-      </div>
-    </form>}
-    {formOpen && <form className="space-y-4 border-t border-line pt-4" onSubmit={(event) => { void submit(event) }} aria-labelledby={`${formId}-create`}>
-      <h3 id={`${formId}-create`} className="font-semibold text-ink">新建真实知识库</h3>
-      <fieldset disabled={submitting} className="grid min-w-0 gap-4 sm:grid-cols-2">
-        <label className="settings-label" htmlFor={`${formId}-name`}>知识库名称
-          <input id={`${formId}-name`} className="settings-input" required value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <label className="settings-label" htmlFor={`${formId}-engine`}>本次建库引擎
-          <select id={`${formId}-engine`} className="settings-input" value={engine} disabled={loading || !!resourceErrors.providers} onChange={(event) => { setEngine(event.target.value); setEmbedding('') }}>
-            {!selectedProvider && <option value={engine}>请先读取引擎目录</option>}
-            {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}{CREATE_ENGINES.has(provider.id) ? '' : '（需专用连接）'}</option>)}
+    {binding && <ConfigurationDialog title={`更改「${binding.kb.name}」的引擎绑定`} onClose={closeBinding} busy={bindingSaving} footer={<>
+      <button type="button" className="settings-button-secondary" disabled={bindingSaving} onClick={closeBinding}>取消</button>
+      <button type="submit" form={`${formId}-binding-form`} className="settings-button" disabled={!binding.canEdit || !bindingDirty || binding.loading || bindingSaving || loading || !CREATE_ENGINES.has(binding.currentProvider) || !providers.some((provider) => provider.id === binding.selectedProvider && CREATE_ENGINES.has(provider.id)) || !!resourceErrors.providers}>{bindingSaving ? '正在提交绑定…' : '确认变更绑定'}</button>
+    </>}>
+      <form id={`${formId}-binding-form`} className="space-y-4" onSubmit={(event) => { void saveBinding(event) }} aria-label="引擎绑定配置">
+        {binding.loading && <p role="status" className="text-sm text-ink-2">正在读取此库当前配置…</p>}
+        {!binding.loading && CREATE_ENGINES.has(binding.currentProvider) && <label className="settings-label" htmlFor={`${formId}-binding-engine`}>目标绑定引擎
+          <span className="text-sm font-normal text-ink-2">当前配置：{providers.find((provider) => provider.id === binding.currentProvider)?.name ?? binding.currentProvider}</span>
+          <select id={`${formId}-binding-engine`} className="settings-input" value={binding.selectedProvider} disabled={bindingSaving || loading || !!resourceErrors.providers || !!bindingRestriction(binding.kb) || !binding.canEdit} onChange={(event) => setBinding((previous) => previous && ({ ...previous, selectedProvider: event.target.value, error: '' }))}>
+            {!providers.some((provider) => provider.id === binding.selectedProvider && CREATE_ENGINES.has(provider.id)) && <option value={binding.selectedProvider}>{binding.selectedProvider}</option>}
+            {providers.filter((provider) => CREATE_ENGINES.has(provider.id)).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
           </select>
-        </label>
-        {canCreate && usesEmbedding && <label className="settings-label sm:col-span-2" htmlFor={`${formId}-embedding`}>本次建库嵌入模型
-          <select id={`${formId}-embedding`} className="settings-input" value={embedding} aria-describedby={`${formId}-embedding-note`} onChange={(event) => setEmbedding(event.target.value)}>
-            <option value="">使用后端现有默认{activeModel ? `：${activeModel.profile_name} / ${activeModel.label}` : '（由后端校验）'}</option>
-            {embedding && !models?.options.some((option) => embeddingValue(option) === embedding) && <option value={embedding} disabled>此前选择当前不可用，请重新选择</option>}
-            {models?.options.map((option) => <option key={embeddingValue(option)} value={embeddingValue(option)}>{option.profile_name} / {option.label}{option.detail ? ` · ${option.detail}` : ''}</option>)}
-          </select>
-          <span id={`${formId}-embedding-note`} className="text-sm font-normal text-ink-2">仅绑定此次新建知识库；使用默认时由后端解析当前正式配置。</span>
         </label>}
-        {canCreate && <label className="settings-label sm:col-span-2" htmlFor={`${formId}-files`}>初始文件（可选，可多选）
-          <input ref={fileInput} id={`${formId}-files`} className="settings-input" type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
-          <span className="break-words text-sm font-normal text-ink-2">{files.length > 0 ? `已选择 ${files.length} 个文件：${files.map((file) => file.name).join('、')}` : '不选文件也可提交。文件格式与上传限制以所选引擎的后端校验为准。'}</span>
-        </label>}
-      </fieldset>
-      {selectedProvider && !canCreate && <p className="settings-note">{CONNECT_NOTES[engine] ?? '此引擎尚未核实通用建库能力，请沿用现有专用连接流程。'} 此表单不会为该引擎发送建库请求。</p>}
-      {canCreate && usesEmbedding && resourceErrors.embedding && <p className="settings-error" role="alert">嵌入模型选项读取失败：{resourceErrors.embedding}。可刷新重试，或选择使用后端现有默认。</p>}
-      <p className="settings-note">引擎与嵌入选择仅用于此次新建知识库，不切换全局默认，不修改已有知识库绑定，也不会自动迁移或重建旧索引。</p>
-      {submitError && <p className="settings-error" role="alert">建库请求失败：{submitError}</p>}
-      <div className="flex flex-wrap gap-2">
-        <button type="submit" className="settings-button" disabled={submitting || loading || !canCreate || !!resourceErrors.providers}>{submitting ? '正在提交…' : '提交建库任务'}</button>
-        <button type="button" className="settings-button-secondary" disabled={submitting} onClick={closeForm}>取消</button>
-        <button type="button" className="settings-button-secondary" disabled={submitting || !selectedProvider} onClick={() => openEngineSettings(engine)}>配置所选引擎</button>
-      </div>
-    </form>}
+        <p className="settings-note">已有就绪索引可能返回后端 409 冲突；确认只提交该库的引擎绑定。成功后需要后续手动重建，不会自动迁移、删除索引或启动重建。</p>
+        {binding.error && <p className="settings-error" role="alert">{binding.error}</p>}
+      </form>
+    </ConfigurationDialog>}
+    {formOpen && <ConfigurationDialog title="新建知识库" description="选择本次建库使用的引擎和嵌入模型，可同时上传初始文档。" onClose={closeForm} busy={submitting} footer={<>
+      <button type="button" className="settings-button-secondary" disabled={submitting || !selectedProvider} onClick={() => openEngineSettings(engine)}>配置所选引擎</button>
+      <button type="button" className="settings-button-secondary" disabled={submitting} onClick={closeForm}>取消</button>
+      <button type="submit" form={`${formId}-create-form`} className="settings-button" disabled={submitting || loading || !canCreate || !!resourceErrors.providers}>{submitting ? '正在提交…' : '提交建库任务'}</button>
+    </>}>
+      <form id={`${formId}-create-form`} className="space-y-4" onSubmit={(event) => { void submit(event) }} aria-label="新建知识库配置">
+        <fieldset disabled={submitting} className="grid min-w-0 gap-4 sm:grid-cols-2">
+          <label className="settings-label" htmlFor={`${formId}-name`}>知识库名称
+            <input id={`${formId}-name`} className="settings-input" required value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label className="settings-label" htmlFor={`${formId}-engine`}>本次建库引擎
+            <select id={`${formId}-engine`} className="settings-input" value={engine} disabled={loading || !!resourceErrors.providers} onChange={(event) => { setEngine(event.target.value); setEmbedding('') }}>
+              {!selectedProvider && <option value={engine}>请先读取引擎目录</option>}
+              {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}{CREATE_ENGINES.has(provider.id) ? '' : '（需专用连接）'}</option>)}
+            </select>
+          </label>
+          {canCreate && usesEmbedding && <label className="settings-label sm:col-span-2" htmlFor={`${formId}-embedding`}>本次建库嵌入模型
+            <select id={`${formId}-embedding`} className="settings-input" value={embedding} aria-describedby={`${formId}-embedding-note`} onChange={(event) => setEmbedding(event.target.value)}>
+              <option value="">使用后端现有默认{activeModel ? `：${activeModel.profile_name} / ${activeModel.label}` : '（由后端校验）'}</option>
+              {embedding && !models?.options.some((option) => embeddingValue(option) === embedding) && <option value={embedding} disabled>此前选择当前不可用，请重新选择</option>}
+              {models?.options.map((option) => <option key={embeddingValue(option)} value={embeddingValue(option)}>{option.profile_name} / {option.label}{option.detail ? ` · ${option.detail}` : ''}</option>)}
+            </select>
+            <span id={`${formId}-embedding-note`} className="text-sm font-normal text-ink-2">仅绑定此次新建知识库；使用默认时由后端解析当前正式配置。</span>
+          </label>}
+          {canCreate && <label className="settings-label sm:col-span-2" htmlFor={`${formId}-files`}>初始文件（可选，可多选）
+            <input ref={fileInput} id={`${formId}-files`} className="settings-input" type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
+            <span className="break-words text-sm font-normal text-ink-2">{files.length > 0 ? `已选择 ${files.length} 个文件：${files.map((file) => file.name).join('、')}` : '不选文件也可提交。文件格式与上传限制以所选引擎的后端校验为准。'}</span>
+          </label>}
+        </fieldset>
+        {selectedProvider && !canCreate && <p className="settings-note">{CONNECT_NOTES[engine] ?? '此引擎尚未核实通用建库能力，请沿用现有专用连接流程。'} 此表单不会为该引擎发送建库请求。</p>}
+        {canCreate && usesEmbedding && resourceErrors.embedding && <p className="settings-error" role="alert">嵌入模型选项读取失败：{resourceErrors.embedding}。可刷新重试，或选择使用后端现有默认。</p>}
+        <p className="settings-note">引擎与嵌入选择仅用于此次新建知识库，不切换全局默认，不修改已有知识库绑定，也不会自动迁移或重建旧索引。</p>
+        {submitError && <p className="settings-error" role="alert">建库请求失败：{submitError}</p>}
+      </form>
+    </ConfigurationDialog>}
   </section>
 }

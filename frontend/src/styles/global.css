@@ -133,3 +133,20 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline: 2px solid
   .settings-card { padding: 1rem; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* 原生模态层不受页面 overflow 与层叠上下文裁切。 */
+.configuration-dialog { width: min(720px, calc(100vw - 2rem)); max-width: none; max-height: calc(100dvh - 3rem); margin: auto; padding: 0; border: 1px solid var(--color-line); border-radius: 18px; background: white; color: var(--color-ink); box-shadow: 0 24px 80px rgb(15 27 51 / 24%); overflow: hidden; }
+.configuration-dialog[open] { display: flex; flex-direction: column; }
+.configuration-dialog::backdrop { background: rgb(15 27 51 / 42%); }
+.configuration-dialog-header { display: flex; flex-shrink: 0; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--color-line); }
+.configuration-dialog-close { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 40px; height: 40px; margin: -.25rem -.5rem -.25rem 0; border-radius: 8px; color: var(--color-ink-2); cursor: pointer; }
+.configuration-dialog-close:hover { background: var(--color-page); color: var(--color-ink); }
+.configuration-dialog-close:disabled { opacity: .5; cursor: not-allowed; }
+.configuration-dialog-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1.5rem; overflow-wrap: anywhere; }
+.configuration-dialog-footer { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .625rem; padding: 1rem 1.5rem; border-top: 1px solid var(--color-line); background: white; }
+@media (max-width: 640px) {
+  .configuration-dialog { width: calc(100vw - 1rem); max-height: calc(100dvh - 1rem); border-radius: 14px; }
+  .configuration-dialog-header, .configuration-dialog-content { padding: 1rem; }
+  .configuration-dialog-footer { padding: .875rem 1rem; }
+  .configuration-dialog-footer > button { flex-grow: 1; }
+}

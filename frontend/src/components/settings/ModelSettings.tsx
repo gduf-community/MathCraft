@@ -102,7 +102,7 @@ export function ModelSettings({ onDirtyChange }: ModelSettingsProps) {
     verify: (written: ModelCatalog, readback: ModelCatalog) => boolean
     completed?: DirectModelTarget
   }) {
-    if (lock.current) return
+    if (lock.current) return false
     lock.current = true
     setBusy(label); setError(''); setNotice('')
     let wrote = false
@@ -113,31 +113,33 @@ export function ModelSettings({ onDirtyChange }: ModelSettingsProps) {
       if (!result.catalog?.services) throw new Error('写入响应缺少正式目录')
       const readback = await readLiveModelSettings()
       if (!verify(result.catalog, readback.catalog)) throw new Error('正式读回结果与写入响应不一致')
-      if (!mounted.current) return
+      if (!mounted.current) return false
       acceptLive(readback, completed); clearUnverified(operationKey)
       setNotice(`${label}成功，已读回并核实正式状态。其他配置的本地编辑已保留。`)
+      return true
     } catch (cause) {
-      if (!mounted.current) return
+      if (!mounted.current) return false
       const message = safeError(cause, current.current.catalog ?? undefined)
       if (wrote || cause instanceof ModelWriteReadbackError) {
         const text = `${label}请求已成功，但正式状态待核实：${message}。当前输入已保留，请重新读取核实，或重试当前操作。`
         setUnverified((value) => ({ ...value, [operationKey]: text })); setError(text)
       } else setError(`${label}失败：${message}。当前输入与其他本地编辑均已保留。`)
+      return false
     } finally { lock.current = false; if (mounted.current) setBusy('') }
   }
-  function save(target: DirectModelTarget, model: ModelEntry) {
-    if (!current.current.snapshot) return
+  async function save(target: DirectModelTarget, model: ModelEntry) {
+    if (!current.current.snapshot) return false
     const validation = validateDirectModel(current.current.snapshot.catalog, target, model)
-    if (validation) { setError(validation); return }
+    if (validation) { setError(validation); return false }
     const config = model.direct_config!
     const parsedHeaders = parseDirectHeaders(config.extra_headers)
-    if (parsedHeaders.error !== null) { setError(parsedHeaders.error); return }
+    if (parsedHeaders.error !== null) { setError(parsedHeaders.error); return false }
     const normalized: ModelEntry = {
       ...model, name: model.name!.trim(), model: model.model.trim(),
       direct_config: { ...config, extra_headers: parsedHeaders.headers },
     }
     const draftUpdatedAt = current.current.draftSources[targetKey(target)]
-    void writeAndVerify({
+    return writeAndVerify({
       label: '保存并启用', completed: target,
       action: () => saveDirectModel({ service: target.service, profile_id: target.profile_id, model: normalized, ...(draftUpdatedAt ? { restore_draft: true, draft_updated_at: draftUpdatedAt } : {}) }),
       verify: (written, readback) => {
@@ -162,6 +164,28 @@ export function ModelSettings({ onDirtyChange }: ModelSettingsProps) {
     const original = findDirectModel(state.snapshot.catalog, target)
     setCatalog(original ? putDirectModel(state.catalog, target, original) : removeLocalModel(state.catalog, target))
     clearSource(target); clearUnverified(targetKey(target)); setError(''); setNotice('已撤销当前项本地编辑。')
+  }
+  function discardNew(target: DirectModelTarget) {
+    if (lock.current) return
+    const original = current.current.snapshot?.catalog
+    const saved = original ? findDirectModel(original, target) : undefined
+    setCatalog((value) => {
+      if (!value) return value
+      if (saved) return putDirectModel(value, target, saved)
+      const next = removeLocalModel(value, target)
+      const service = next.services[target.service]
+      if (!service || original?.services[target.service]?.profiles.some((profile) => profile.id === target.profile_id)) return next
+      return { ...next, services: { ...next.services, [target.service]: {
+        ...service, profiles: service.profiles.filter((profile) => profile.id !== target.profile_id || profile.models.length > 0),
+      } } }
+    })
+    clearSource(target)
+    const key = targetKey(target)
+    if (unverified[key]) {
+      const message = '已关闭新增面板；此前保存请求已成功，但正式状态仍待核实，请重新读取正式目录。关闭仅丢弃本地输入，不会删除已保存的模型。'
+      setUnverified((value) => ({ ...value, [key]: message })); setError(message)
+    } else setError('')
+    setNotice('')
   }
   function remove(target: DirectModelTarget) {
     const state = current.current
@@ -232,7 +256,7 @@ export function ModelSettings({ onDirtyChange }: ModelSettingsProps) {
       </div>
       <div className="min-w-0 p-4 sm:p-5">{tabs.map(({ value }) => <div key={value} role="tabpanel" hidden={tab !== value} id={`${id}-panel-${value}`} aria-labelledby={`${id}-tab-${value}`}>
         <DirectModelEditor key={`${value}/${revision}`} catalog={catalog} live={snapshot.catalog} service={value} providers={snapshot.providers[value] ?? (value === 'task' ? snapshot.providers.llm ?? [] : [])}
-          busy={!!busy} active={tab === value} requestedSelection={restoreFocus} draftSources={draftSources} onChange={edit} onSave={save} onDelete={remove} onDefault={makeDefault} onMode={changeMode} onReset={reset} />
+          busy={!!busy} error={error} active={tab === value} requestedSelection={restoreFocus} draftSources={draftSources} unverified={unverified} onChange={edit} onSave={save} onDiscardNew={discardNew} onDelete={remove} onDefault={makeDefault} onMode={changeMode} onReset={reset} />
       </div>)}</div>
     </div>
     <p role="status" className="text-xs leading-5 text-slate-500">{busy ? `${busy}中…` : dirty ? '有未保存或待核实的配置；切换类别会保留输入，刷新或离开前将提醒。' : '当前正式配置已读取。保存与默认选择是独立操作。'}</p>

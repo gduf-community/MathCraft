@@ -10,6 +10,7 @@ import type {
   ProviderOption,
   ProviderProbeResult,
 } from '../../../types/modelSettings'
+import { ConfigurationDialog } from '../../ui/ConfigurationDialog'
 import { equal, serviceLabels } from './catalog'
 import { directApiFormat, directProtocolFields, findDirectModel, newDirectModel, parseDirectHeaders, targetKey, validateDirectModel } from './directCatalog'
 import { Field, inputClass, primaryClass, ProviderSelect, secondaryClass } from './Fields'
@@ -20,11 +21,14 @@ interface DirectModelEditorProps {
   service: ModelServiceName
   providers: ProviderOption[]
   busy: boolean
+  error: string
   active: boolean
   requestedSelection: DirectModelTarget | null
   draftSources: Record<string, string>
+  unverified: Record<string, string>
   onChange: (target: DirectModelTarget, model: ModelEntry) => void
-  onSave: (target: DirectModelTarget, model: ModelEntry) => void
+  onSave: (target: DirectModelTarget, model: ModelEntry) => Promise<boolean>
+  onDiscardNew: (target: DirectModelTarget) => void
   onDelete: (target: DirectModelTarget) => void
   onDefault: (target: DirectModelTarget) => void
   onMode: (mode: 'inherit' | 'profiles') => void
@@ -53,13 +57,15 @@ function probeMessage(result: ProviderProbeResult) {
 }
 
 export function DirectModelEditor({
-  catalog, live, service, providers, busy, active, requestedSelection, draftSources,
-  onChange, onSave, onDelete, onDefault, onMode, onReset,
+  catalog, live, service, providers, busy, error, active, requestedSelection, draftSources, unverified,
+  onChange, onSave, onDiscardNew, onDelete, onDefault, onMode, onReset,
 }: DirectModelEditorProps) {
   const rows = (catalog.services[service]?.profiles ?? []).flatMap((profile) =>
     profile.models.map((model) => ({ profile, model, target: { service, profile_id: profile.id, model_id: model.id } })),
   )
   const [selected, setSelected] = useState('')
+  const [creating, setCreating] = useState<ReturnType<typeof newDirectModel> | null>(null)
+  const saving = useRef(false)
   const [query, setQuery] = useState('')
   const [attempted, setAttempted] = useState<Record<string, boolean>>({})
   const [replaceKeys, setReplaceKeys] = useState<Record<string, boolean>>({})
@@ -71,7 +77,8 @@ export function DirectModelEditor({
   const detailRef = useRef<HTMLDivElement>(null)
   const railRef = useRef<HTMLElement>(null)
   const id = useId()
-  const current = rows.find((row) => targetKey(row.target) === selected) ?? rows[0]
+  const current = rows.find((row) => targetKey(row.target) === (creating ? targetKey(creating.target) : selected)) ?? rows[0]
+  const formId = `${id}-form`
   const target = current?.target
   const model = current?.model
   const config = model?.direct_config
@@ -83,6 +90,7 @@ export function DirectModelEditor({
   const parsedHeaders = parseDirectHeaders(config?.extra_headers)
   const key = target ? targetKey(target) : ''
   const draftUpdatedAt = draftSources[key]
+  const verificationError = unverified[key]
   // 完整字段指纹让任何字段更改立即使旧发现结果失效；未保存密钥仅驻留内存。
   const identity = active && model ? JSON.stringify([key, model, draftUpdatedAt]) : ''
   currentIdentity.current = identity
@@ -146,69 +154,36 @@ export function DirectModelEditor({
       if (mounted.current && requestVersion.current === version && currentIdentity.current === fingerprint) setDiscovering(false)
     }
   }
+  function closeCreate() {
+    if (!creating || busy || saving.current) return
+    const message = verificationError
+      ? '此前保存请求已成功，但正式状态尚未核实。关闭只丢弃本地输入，不会删除已保存的模型；关闭后请重新读取正式目录核实。确定关闭？'
+      : '放弃新增模型的修改并关闭？'
+    if ((verificationError || (model && !equal(model, creating.model))) && !window.confirm(message)) return
+    onDiscardNew(creating.target)
+    setCreating(null)
+  }
+  async function saveCurrent() {
+    if (!target || !model || !config || validation || busy || saving.current || parsedHeaders.error !== null) return
+    saving.current = true
+    try {
+      const success = await onSave(target, { ...model, direct_config: { ...config, extra_headers: parsedHeaders.headers } })
+      if (success && mounted.current && creating) {
+        setSelected(targetKey(target))
+        setQuery('')
+        setCreating(null)
+      }
+    } finally { saving.current = false }
+  }
   const headersValid = parsedHeaders.error === null
   const embeddingChanged = service === 'embedding' && !!saved && !!model &&
     !equal([saved.model, saved.dimension, saved.direct_config?.binding, saved.direct_config?.base_url, saved.direct_config?.api_format, saved.direct_config?.api_version],
       [model.model, model.dimension, config?.binding, config?.base_url, config?.api_format, config?.api_version])
 
-  return <div className="space-y-4">
-    {service === 'task' && <div className="settings-card space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="flex flex-wrap gap-2" role="group" aria-label="任务模型模式">
-        {([{ mode: 'inherit', label: '跟随主模型' }, { mode: 'profiles', label: '独立配置' }] as const).map(({ mode, label }) => <button
-          key={mode} type="button" className={taskMode === mode ? primaryClass : secondaryClass}
-          aria-pressed={taskMode === mode} disabled={busy || taskMode === mode} onClick={() => onMode(mode)}
-        >{label}</button>)}
-      </div>
-      <p className="text-sm leading-6 text-slate-600" role="status">{taskMode === 'inherit'
-        ? `当前跟随主语言模型：${inherited?.name || inherited?.model || '尚未配置主模型'}。下方独立配置作为备用，保存不会切换任务模式。`
-        : '当前使用独立任务默认配置。切换为跟随主模型会保留全部独立配置。'}</p>
-    </div>}
-    <div className="@container/model-workspace min-w-0">
-      <div className="grid min-w-0 items-start gap-5 @4xl/model-workspace:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)]">
-        <aside ref={railRef} className="min-w-0 space-y-3" aria-label={`${serviceLabels[service]}配置列表`}>
-          <button type="button" className={`${primaryClass} flex min-h-11 w-full items-center justify-center gap-2`} disabled={busy} onClick={() => {
-            const next = newDirectModel(service)
-            onChange(next.target, next.model)
-            setSelected(targetKey(next.target))
-            setQuery('')
-            revealDetail()
-          }}><Plus size={16} aria-hidden="true" />添加模型</button>
-          <Field label="搜索配置或提供方"><span className="relative block">
-            <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-3 text-slate-400" />
-            <input type="search" className={`${inputClass} pl-9!`} placeholder="配置名称、模型标识或提供方" value={query} onChange={(event) => setQuery(event.target.value)} />
-          </span></Field>
-          <p className="text-xs text-slate-500" role="status">{normalizedQuery ? `找到 ${visible.length} / ${rows.length} 个配置` : `已配置 ${rows.length} 个模型`}</p>
-          <div className="max-h-80 space-y-2 overflow-y-auto @4xl/model-workspace:max-h-[36rem]">
-            {visible.map(({ model: entry, target: entryTarget }) => {
-              const entryKey = targetKey(entryTarget)
-              const original = findDirectModel(live, entryTarget)
-              const edited = !equal(entry, original) || !!draftSources[entryKey]
-              const defaultEntry = live.services[service]?.active_profile_id === entryTarget.profile_id && live.services[service]?.active_model_id === entryTarget.model_id
-              return <button key={entryKey} type="button" disabled={busy} aria-pressed={entryKey === key}
-                className={`w-full rounded-2xl border p-3 text-left focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50 ${entryKey === key ? 'border-blue-400 bg-blue-50 ring-1 ring-blue-100' : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/50'}`}
-                onClick={() => { setSelected(entryKey); revealDetail() }}>
-                <span className="flex flex-wrap items-start justify-between gap-2">
-                  <span className="min-w-0 break-all text-sm font-semibold text-slate-800">{entry.name || '未命名配置'}</span>
-                  {defaultEntry && <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700"><Check size={12} aria-hidden="true" />默认</span>}
-                </span>
-                <span className="mt-1 block break-all text-xs leading-5 text-slate-500">{providers.find((option) => option.value === entry.direct_config?.binding)?.label || entry.direct_config?.binding || '待选择提供方'}</span>
-                <span className="mt-1 block break-all text-xs text-slate-500">{entry.model || '模型标识待填写'}</span>
-                {edited && <span className="mt-2 block text-xs text-amber-700">{draftSources[entryKey] ? '已恢复旧草稿，尚未启用' : original ? '有未保存编辑' : '尚未保存'}</span>}
-              </button>
-            })}
-            {!visible.length && <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm leading-6 text-slate-500">
-              {rows.length ? '没有匹配的配置，请修改搜索条件。' : '尚未配置模型。点击“添加模型”，在同一表单填写提供方与模型信息。'}
-              {!!rows.length && <button type="button" className={`${secondaryClass} mt-3`} onClick={() => setQuery('')}>清除搜索</button>}
-            </div>}
-          </div>
-          <p className="text-xs leading-5 text-slate-500">选择配置只切换编辑对象。默认配置需要在详情中单独设置；切换模型类别会保留本地输入。</p>
-        </aside>
-        <div ref={detailRef} tabIndex={-1} aria-label="模型配置详情" className="settings-card min-w-0 scroll-mt-6 rounded-2xl border border-slate-200 bg-white p-4 outline-none focus-visible:ring-2 focus-visible:ring-blue-200 sm:p-5">
-          {model && config && target ? <form key={key} className="space-y-5" onSubmit={(event) => {
+  const editorForm = model && config && target ? <form key={key} id={formId} className="space-y-5" onSubmit={(event) => {
             event.preventDefault()
             setAttempted((previous) => ({ ...previous, [key]: true }))
-            if (!validation && !busy && parsedHeaders.error === null)
-              onSave(target, { ...model, direct_config: { ...config, extra_headers: parsedHeaders.headers } })
+            void saveCurrent()
           }}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="break-all text-base font-semibold text-slate-800">{model.name || '新模型配置'}</h3>
@@ -287,16 +262,76 @@ export function DirectModelEditor({
             </fieldset>
             {embeddingChanged && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-800">模型、维度、提供方、地址或协议发生变化，已有知识库索引可能不再兼容，需要在知识库中核实；此处不会自动重建索引。仅更换密钥不改变嵌入身份。</p>}
             {attempted[key] && validation && <p role="alert" className="text-sm text-red-700">{validation}</p>}
-            <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+            {creating && (error || verificationError) && <p role="alert" className="text-sm leading-6 text-red-700">{error || verificationError}</p>}
+            {!creating && <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
               <button type="submit" className={`${primaryClass} min-h-11`} disabled={busy || !dirty}>保存并启用</button>
               <button type="button" className={`${secondaryClass} min-h-11`} disabled={busy || !saved || isDefault} onClick={() => onDefault(target)}>设为默认</button>
               <button type="button" className={`${secondaryClass} min-h-11`} disabled={busy || !dirty} onClick={() => onReset(target)}>撤销当前项编辑</button>
               <button type="button" className={`${secondaryClass} min-h-11 text-red-700`} disabled={busy} onClick={() => onDelete(target)}>{saved ? '删除配置' : '取消添加'}</button>
-            </div>
+            </div>}
             <p className="text-xs leading-5 text-slate-500" role="status">{busy ? '正在写入并核实正式状态…' : dirty ? '保存只启用当前配置，其他项的本地编辑会保留；设为默认使用当前项已保存的版本。' : '当前配置与正式状态一致。发现结果仅辅助填写。'}</p>
-          </form> : <div className="py-8 text-sm leading-7 text-slate-500">选择已有配置查看详情，或添加一个模型；填写完成后可一次保存并启用。</div>}
+          </form> : <div className="py-8 text-sm leading-7 text-slate-500">选择已有配置查看详情，或添加一个模型；填写完成后可一次保存并启用。</div>
+
+  return <div className="space-y-4">
+    {service === 'task' && <div className="settings-card space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap gap-2" role="group" aria-label="任务模型模式">
+        {([{ mode: 'inherit', label: '跟随主模型' }, { mode: 'profiles', label: '独立配置' }] as const).map(({ mode, label }) => <button
+          key={mode} type="button" className={taskMode === mode ? primaryClass : secondaryClass}
+          aria-pressed={taskMode === mode} disabled={busy || taskMode === mode} onClick={() => onMode(mode)}
+        >{label}</button>)}
+      </div>
+      <p className="text-sm leading-6 text-slate-600" role="status">{taskMode === 'inherit'
+        ? `当前跟随主语言模型：${inherited?.name || inherited?.model || '尚未配置主模型'}。下方独立配置作为备用，保存不会切换任务模式。`
+        : '当前使用独立任务默认配置。切换为跟随主模型会保留全部独立配置。'}</p>
+    </div>}
+    <div className="@container/model-workspace min-w-0">
+      <div className="grid min-w-0 items-start gap-5 @4xl/model-workspace:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)]">
+        <aside ref={railRef} className="min-w-0 space-y-3" aria-label={`${serviceLabels[service]}配置列表`}>
+          <button type="button" className={`${primaryClass} flex min-h-11 w-full items-center justify-center gap-2`} disabled={busy} onClick={() => {
+            const next = newDirectModel(service)
+            onChange(next.target, next.model)
+            setCreating(next)
+          }}><Plus size={16} aria-hidden="true" />添加模型</button>
+          <Field label="搜索配置或提供方"><span className="relative block">
+            <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-3 text-slate-400" />
+            <input type="search" className={`${inputClass} pl-9!`} placeholder="配置名称、模型标识或提供方" value={query} onChange={(event) => setQuery(event.target.value)} />
+          </span></Field>
+          <p className="text-xs text-slate-500" role="status">{normalizedQuery ? `找到 ${visible.length} / ${rows.length} 个配置` : `已配置 ${rows.length} 个模型`}</p>
+          <div className="max-h-80 space-y-2 overflow-y-auto @4xl/model-workspace:max-h-[36rem]">
+            {visible.map(({ model: entry, target: entryTarget }) => {
+              const entryKey = targetKey(entryTarget)
+              const original = findDirectModel(live, entryTarget)
+              const edited = !equal(entry, original) || !!draftSources[entryKey]
+              const defaultEntry = live.services[service]?.active_profile_id === entryTarget.profile_id && live.services[service]?.active_model_id === entryTarget.model_id
+              return <button key={entryKey} type="button" disabled={busy} aria-pressed={entryKey === key}
+                className={`w-full rounded-2xl border p-3 text-left focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50 ${entryKey === key ? 'border-blue-400 bg-blue-50 ring-1 ring-blue-100' : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/50'}`}
+                onClick={() => { setSelected(entryKey); revealDetail() }}>
+                <span className="flex flex-wrap items-start justify-between gap-2">
+                  <span className="min-w-0 break-all text-sm font-semibold text-slate-800">{entry.name || '未命名配置'}</span>
+                  {defaultEntry && <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700"><Check size={12} aria-hidden="true" />默认</span>}
+                </span>
+                <span className="mt-1 block break-all text-xs leading-5 text-slate-500">{providers.find((option) => option.value === entry.direct_config?.binding)?.label || entry.direct_config?.binding || '待选择提供方'}</span>
+                <span className="mt-1 block break-all text-xs text-slate-500">{entry.model || '模型标识待填写'}</span>
+                {edited && <span className="mt-2 block text-xs text-amber-700">{draftSources[entryKey] ? '已恢复旧草稿，尚未启用' : original ? '有未保存编辑' : '尚未保存'}</span>}
+              </button>
+            })}
+            {!visible.length && <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm leading-6 text-slate-500">
+              {rows.length ? '没有匹配的配置，请修改搜索条件。' : '尚未配置模型。点击“添加模型”，在弹出面板填写提供方与模型信息。'}
+              {!!rows.length && <button type="button" className={`${secondaryClass} mt-3`} onClick={() => setQuery('')}>清除搜索</button>}
+            </div>}
+          </div>
+          <p className="text-xs leading-5 text-slate-500">选择配置只切换编辑对象。默认配置需要在详情中单独设置；切换模型类别会保留本地输入。</p>
+        </aside>
+        <div ref={detailRef} tabIndex={-1} aria-label="模型配置详情" className="settings-card min-w-0 scroll-mt-6 rounded-2xl border border-slate-200 bg-white p-4 outline-none focus-visible:ring-2 focus-visible:ring-blue-200 sm:p-5">
+          {creating ? <p className="py-8 text-sm leading-7 text-slate-500">请在新增模型面板中填写配置。</p> : editorForm}
         </div>
       </div>
     </div>
+    {creating && <ConfigurationDialog title={`新增${serviceLabels[service]}`} description="填写提供方与模型信息，保存后启用此项配置。" busy={busy} onClose={closeCreate} footer={<>
+      <button type="button" className={`${secondaryClass} min-h-11`} disabled={busy} onClick={closeCreate}>取消</button>
+      <button type="submit" form={formId} className={`${primaryClass} min-h-11`} disabled={busy}>{busy ? '正在保存并核实…' : '保存并启用'}</button>
+    </>}>
+      {editorForm}
+    </ConfigurationDialog>}
   </div>
 }
