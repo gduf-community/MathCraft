@@ -52,6 +52,12 @@ def _redact_profile(profile: dict[str, Any]) -> None:
         # cross the API boundary. This also covers JSON-string header maps.
         if key == "extra_headers" or _is_secret_field(key):
             profile[key] = _redact_secret_value(value)
+        elif isinstance(value, dict):
+            _redact_profile(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _redact_profile(item)
 
 
 def redact_catalog_secrets(catalog: dict[str, Any]) -> dict[str, Any]:
@@ -73,13 +79,14 @@ def redact_catalog_secrets(catalog: dict[str, Any]) -> dict[str, Any]:
 def _restore_secret_value(proposed: Any, current: Any) -> Any:
     if proposed == CATALOG_SECRET_MASK:
         return deepcopy(current)
-    if isinstance(proposed, dict) and isinstance(current, dict):
-        return {
-            key: _restore_secret_value(value, current.get(key)) for key, value in proposed.items()
-        }
-    if isinstance(proposed, list) and isinstance(current, list):
+    if isinstance(proposed, dict):
+        stored = current if isinstance(current, dict) else {}
+        return {key: _restore_secret_value(value, stored.get(key))
+                for key, value in proposed.items()}
+    if isinstance(proposed, list):
+        stored_items = current if isinstance(current, list) else []
         return [
-            _restore_secret_value(value, current[index] if index < len(current) else None)
+            _restore_secret_value(value, stored_items[index] if index < len(stored_items) else None)
             for index, value in enumerate(proposed)
         ]
     return proposed
@@ -89,6 +96,16 @@ def _restore_profile_secrets(proposed: dict[str, Any], current: dict[str, Any]) 
     for key, value in list(proposed.items()):
         if key == "extra_headers" or _is_secret_field(key):
             proposed[key] = _restore_secret_value(value, current.get(key))
+        elif isinstance(value, dict):
+            stored = current.get(key)
+            _restore_profile_secrets(value, stored if isinstance(stored, dict) else {})
+    current_models = {
+        model.get("id"): model for model in current.get("models", []) or []
+        if isinstance(model, dict) and model.get("id")
+    }
+    for model in proposed.get("models", []) or []:
+        if isinstance(model, dict):
+            _restore_profile_secrets(model, current_models.get(model.get("id"), {}))
 
 
 def restore_catalog_secrets(
@@ -106,8 +123,7 @@ def restore_catalog_secrets(
         if not isinstance(connection, dict):
             continue
         current_connection = current_connections.get(connection.get("id"))
-        if current_connection is not None:
-            _restore_profile_secrets(connection, current_connection)
+        _restore_profile_secrets(connection, current_connection or {})
     current_services = current_catalog.get("services", {})
     for service_name, proposed_service in restored.get("services", {}).items():
         if not isinstance(proposed_service, dict):
@@ -122,8 +138,7 @@ def restore_catalog_secrets(
             if not isinstance(profile, dict):
                 continue
             current_profile = current_profiles.get(profile.get("id"))
-            if current_profile is not None:
-                _restore_profile_secrets(profile, current_profile)
+            _restore_profile_secrets(profile, current_profile or {})
     return restored
 
 
@@ -272,6 +287,7 @@ def _env_profile(service_name: str) -> dict[str, Any] | None:
     binding = _env_value(f"{prefix}_BINDING", f"{prefix}_PROVIDER")
     model = _env_value(f"{prefix}_MODEL", f"{prefix}_MODEL_ID")
     api_key = _env_value(f"{prefix}_API_KEY", f"{prefix}_KEY")
+    key_declared = any(name in os.environ for name in (f"{prefix}_API_KEY", f"{prefix}_KEY"))
     base_url = _env_value(f"{prefix}_BASE_URL", f"{prefix}_HOST", f"{prefix}_API_BASE_URL")
     api_format = _env_value(f"{prefix}_API_FORMAT")
     api_version = _env_value(f"{prefix}_API_VERSION")
@@ -300,9 +316,9 @@ def _env_profile(service_name: str) -> dict[str, Any] | None:
         "api_format": api_format or "auto",
         "wire_api": api_format or "auto",
         "base_url": base_url,
-        "api_key": api_key,
+        "api_key": api_key if key_declared or service_name not in LLM_SHAPED_SERVICES else None,
         "api_version": api_version,
-        "extra_headers": {},
+        "extra_headers": None if service_name in LLM_SHAPED_SERVICES else {},
         "models": [model_entry],
     }
     return profile
@@ -359,32 +375,39 @@ class ModelCatalogService:
                 catalog["services"].update(loaded.get("services", {}))
                 merged_defaults = catalog != loaded
                 before = deepcopy(catalog)
+                from .direct_model_config import migrate_direct_catalog
+
+                catalog = migrate_direct_catalog(catalog)
                 self._normalize(catalog)
                 if merged_defaults or catalog != before:
-                    self.save(catalog)
+                    return self.save(catalog)
                 return catalog
 
             # ``.env`` is only the bootstrap source. Once the catalog exists,
             # including an intentionally empty catalog, it remains authoritative
             # so UI edits can override and survive later process restarts.
             catalog = _catalog_from_environment() or _default_catalog()
-            self._normalize(catalog)
-            self.save(catalog)
-            return catalog
+            return self.save(catalog)
 
     def _read_existing_catalog(self) -> dict[str, Any] | None:
-        if not self.path.exists() or self.path.stat().st_size == 0:
+        if not self.path.exists():
             return None
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-        return loaded if isinstance(loaded, dict) else None
+            raise ValueError("模型配置文件无效，原文件已保留") from None
+        if not isinstance(loaded, dict):
+            raise ValueError("模型配置文件无效，原文件已保留")
+        return loaded
 
     def save(self, catalog: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             normalized = deepcopy(catalog)
+            from .direct_model_config import migrate_direct_catalog, validate_direct_names
+
+            normalized = migrate_direct_catalog(normalized)
             self._normalize(normalized)
+            validate_direct_names(normalized)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, temp_name = tempfile.mkstemp(
                 prefix=f".{self.path.name}.",
@@ -510,6 +533,11 @@ class ModelCatalogService:
             return False
         connection = connections.get(connection_id)
         if connection is None:
+            if service_name in {"llm", "embedding", "task"} and any(
+                not isinstance(model.get("direct_config"), dict)
+                for model in profile.get("models", [])
+            ):
+                raise ValueError("模型配置迁移失败：原连接已不存在")
             # The connection was deleted: unlink rather than wipe, so the
             # profile keeps working with the credentials it already holds.
             profile.pop("connection_id", None)
@@ -571,14 +599,23 @@ class ModelCatalogService:
                 profile.setdefault("name", "Untitled Profile")
                 profile.setdefault("api_version", "")
                 profile.setdefault("base_url", "")
-                profile.setdefault("api_key", "")
+                # Independent LLM/task profiles inherit only missing credentials.
+                # Linked profiles retain their existing empty storage placeholders.
+                inherit_missing_credentials = (
+                    service_name in LLM_SHAPED_SERVICES
+                    and not profile.get("connection_id")
+                    and not profile.get("provider_ref")
+                )
+                profile.setdefault("api_key", None if inherit_missing_credentials else "")
                 if service_name == "search":
                     profile.setdefault("provider", "brave")
                     profile.setdefault("proxy", "")
                     profile["models"] = []
                 else:
                     profile.setdefault("binding", "openai")
-                    profile.setdefault("extra_headers", {})
+                    profile.setdefault(
+                        "extra_headers", None if inherit_missing_credentials else {}
+                    )
                     if service_name in LLM_SHAPED_SERVICES and _normalize_profile_api_format(
                         profile
                     ):

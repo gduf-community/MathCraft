@@ -6,11 +6,10 @@ from contextlib import asynccontextmanager
 import os
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-from math_q_agent.runtime.env import load_project_env
+from math_q_agent.runtime.env import DEFAULT_BACKEND_HOST, load_project_env
 from api import chat, generate
-from math_q_agent.api.main import lifespan as knowledge_lifespan
+from math_q_agent.api.main import RuntimeCORSMiddleware, lifespan as knowledge_lifespan
 from math_q_agent.api.routers import auth, knowledge, profile, settings as settings_router, system
 
 
@@ -24,12 +23,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MathCraft", version="0.1.0", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(RuntimeCORSMiddleware)
 
 # Question-generation orchestration API.
 app.include_router(generate.router)
@@ -90,14 +84,14 @@ def run() -> None:
     )
     parser.add_argument(
         "--host",
-        default=os.getenv("BACKEND_HOST", "127.0.0.1"),
+        default=os.getenv("BACKEND_HOST", "").strip() or DEFAULT_BACKEND_HOST,
         help="bind address (default: BACKEND_HOST or 127.0.0.1)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=launch_settings.backend_port,
-        help="bind port (default: BACKEND_PORT or saved system settings)",
+        help="bind port (default: BACKEND_PORT, saved system settings, or 8000)",
     )
     parser.add_argument("--reload", action="store_true", help="reload on source changes")
     args = parser.parse_args()

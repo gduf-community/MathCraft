@@ -120,6 +120,15 @@ def _source_default_url(source: dict, service: str | None) -> str:
 def resolve_profile_provider(
     catalog: dict, service: str, profile: dict, model: dict | None = None
 ) -> dict:
+    direct = (model or {}).get("direct_config")
+    if isinstance(direct, dict):
+        # This model owns its entire connection. In particular, absent/empty
+        # secrets and headers must never be filled from a legacy container.
+        result = deepcopy(direct)
+        result["id"] = profile.get("id")
+        result["models"] = deepcopy(profile.get("models", []))
+        result["name"] = (model or {}).get("name", "")
+        return result
     ref = (model or {}).get("provider_ref") or profile.get("provider_ref")
     if not isinstance(ref, dict):
         overrides = profile.get("service_overrides")
@@ -215,6 +224,10 @@ def referenced_models(catalog: dict, ref: dict) -> list[tuple[str, str, str | No
                 else ([{}] if not profile.get("provider_only") else [])
             )
             for model in models:
+                # An independent model keeps legacy metadata only for round trips;
+                # it no longer consumes the old provider source at runtime.
+                if isinstance(model.get("direct_config"), dict):
+                    continue
                 source = model.get("provider_ref") or inherited
                 identity = (
                     source.get("connection_id"),

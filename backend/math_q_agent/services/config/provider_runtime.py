@@ -849,18 +849,22 @@ def resolve_llm_runtime_config(
     service: ModelCatalogService | None = None,
     llm_selection: dict[str, Any] | LLMSelection | None = None,
     service_name: str = "llm",
+    catalog_only: bool = False,
 ) -> ResolvedLLMConfig:
     """Resolve active LLM config with TutorBot-style provider matching.
 
     ``service_name`` selects which catalog service supplies the profile and
     model. It is ``llm`` for everything the user drives; the ``task`` service
     is the same shape and stands in for it on the calls math_q_agent makes on its
-    own. The provider pool it falls back to stays the LLM one either way —
-    a task profile that names a bare model still resolves against the
-    credentials configured for chat.
+    own. Legacy task profiles may resolve missing fields from the LLM pool.
+    A model with direct_config owns all its connection fields and uses no pool.
+    ``catalog_only`` resolves only supplied catalog data without personal
+    profile reads or capability-cache writes, for pure migration snapshots.
     """
     catalog_service = service or get_model_catalog_service()
-    loaded = _with_personal_llm_profiles(_load_catalog(catalog))
+    loaded = _load_catalog(catalog)
+    if not catalog_only:
+        loaded = _with_personal_llm_profiles(loaded)
     # Parse the payload once: ``apply_llm_selection_to_catalog`` would otherwise
     # re-parse it, so a malformed selection would be validated (and rejected)
     # from two places. ``from_payload`` is idempotent on an already-parsed value.
@@ -904,7 +908,8 @@ def resolve_llm_runtime_config(
     if (model or {}).get("context_window_source") == "default":
         context_window = None
 
-    provider_pool = _collect_provider_pool(loaded)
+    direct = isinstance((model or {}).get("direct_config"), dict)
+    provider_pool = {} if direct else _collect_provider_pool(loaded)
     spec = _choose_resolved_provider(
         hint=binding_hint,
         model=resolved_model,
@@ -923,18 +928,29 @@ def resolve_llm_runtime_config(
 
     mapped = (
         None
-        if (profile or {}).get("provider_ref") or (model or {}).get("provider_ref")
+        if direct or (profile or {}).get("provider_ref") or (model or {}).get("provider_ref")
         else provider_pool.get(spec.name)
     )
-    api_key = active_api_key or (mapped.api_key if mapped else "")
+    # Missing/None credentials inherit; explicit empty values must stay empty.
+    # A truthiness fallback would silently borrow another profile's credentials.
+    api_key = (
+        active_api_key
+        if (profile or {}).get("api_key") is not None
+        else (mapped.api_key if mapped else "")
+    )
     api_base = active_api_base or ((mapped.api_base or "") if mapped else "")
     api_version = active_api_version or ((mapped.api_version or "") if mapped else "")
     if not api_base:
         api_base = spec.default_api_base_for(api_format)
     if not api_key and spec.is_local:
         api_key = "sk-no-key-required"
-    extra_headers = active_extra_headers or ((mapped.extra_headers or {}) if mapped else {})
-    _register_catalog_capabilities(loaded)
+    extra_headers = (
+        active_extra_headers
+        if (profile or {}).get("extra_headers") is not None
+        else ((mapped.extra_headers or {}) if mapped else {})
+    )
+    if not catalog_only:
+        _register_catalog_capabilities(loaded)
 
     return ResolvedLLMConfig(
         model=resolved_model,
@@ -1165,17 +1181,22 @@ def resolve_embedding_runtime_config(
     # ``None`` means "fall back to adapter heuristic".
     send_dimensions = _coerce_optional_bool((model or {}).get("send_dimensions"))
 
-    provider_pool = _collect_embedding_provider_pool(loaded)
-    provider_name = _resolve_embedding_provider(
-        hint=binding_hint,
-        model=resolved_model,
-        api_base=active_api_base or None,
-        provider_pool=provider_pool,
+    direct = isinstance((model or {}).get("direct_config"), dict)
+    provider_pool = {} if direct else _collect_embedding_provider_pool(loaded)
+    provider_name = (
+        binding_hint
+        if direct and binding_hint in EMBEDDING_PROVIDERS
+        else _resolve_embedding_provider(
+            hint=binding_hint,
+            model=resolved_model,
+            api_base=active_api_base or None,
+            provider_pool=provider_pool,
+        )
     )
     spec = EMBEDDING_PROVIDERS[provider_name]
     mapped = (
         None
-        if (profile or {}).get("provider_ref") or (model or {}).get("provider_ref")
+        if direct or (profile or {}).get("provider_ref") or (model or {}).get("provider_ref")
         else provider_pool.get(provider_name)
     )
 

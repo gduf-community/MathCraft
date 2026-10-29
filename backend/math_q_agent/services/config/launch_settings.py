@@ -6,12 +6,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from math_q_agent.runtime.env import DEFAULT_BACKEND_PORT, DEFAULT_FRONTEND_PORT
+
 from .loader import get_runtime_settings_dir
 
 from .runtime_settings import RuntimeSettingsService
 
-DEFAULT_BACKEND_PORT = 8001
-DEFAULT_FRONTEND_PORT = 3782
 DEFAULT_LANGUAGE = "en"
 
 

@@ -14,11 +14,10 @@ import type {
   StudySpace,
 } from '../types'
 import type { ApiClient } from './client'
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+import { apiUrl } from './urls'
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${API_BASE_URL}${path}`, {
+  const resp = await fetch(apiUrl(path), {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })

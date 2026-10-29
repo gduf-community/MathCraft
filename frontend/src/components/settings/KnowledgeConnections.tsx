@@ -328,7 +328,7 @@ export function KnowledgeConnections() {
         <h2 id={`${formId}-heading`} className="flex items-center gap-2 text-lg font-semibold text-ink">
           <Database size={20} aria-hidden="true" />知识库连接
         </h2>
-        <p className="mt-1 text-sm text-ink-2">真实知识库与引擎配置；下方演示题库保持原有用途。</p>
+        <p className="mt-1 text-sm text-ink-2">管理真实知识库连接、建库任务与知识库引擎绑定。</p>
       </div>
       <div className="flex flex-wrap gap-2">
         <button type="button" className="settings-button-secondary" disabled={loading || busy} onClick={() => { void refreshLists() }}>
