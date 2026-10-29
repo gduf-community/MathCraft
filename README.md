@@ -296,7 +296,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | 文档 | 内容 |
 | --- | --- |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
-| [docs/更详细的出题流程.md](docs/更详细的出题流程.md) | 教师阅读版：用自然对话讲述原文预览、选资料、逐题修改、手动保存版本和组卷 |
+| [docs/更详细的出题流程.md](docs/更详细的出题流程.md) | 教师操作版：按上传资料、指定范围、逐题修改、手动保存版本和组卷的顺序说明操作 |
 | [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 考研全章节总体需求：整份解析结果多选与原文预览、对话范围、手动版本保存与清理、待组卷及独立组卷页；含确认状态和待决策事项 |
 | [docs/design/模型直接配置功能规格.md](docs/design/模型直接配置功能规格.md) | 三类直接配置、名称规则、手动发现、单项保存与迁移契约 |
 | [docs/design/模型直接配置实施记录.md](docs/design/模型直接配置实施记录.md) | 直接配置实现、验收证据及验证边界 |
