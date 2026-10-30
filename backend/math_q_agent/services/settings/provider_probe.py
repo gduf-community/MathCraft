@@ -89,20 +89,32 @@ def discovery_request(binding: str, base_url: str, api_version: str = "") -> tup
     """Use vendor metadata on the configured host only; never infer another region."""
     parsed = urlsplit(base_url)
     path = parsed.path.rstrip("/")
+    for suffix in (
+        "/embeddings", "/audio/speech", "/audio/transcriptions",
+        "/images/generations", "/videos/generations", "/chat/completions",
+        "/responses", "/messages", "/api/embed", "/api/embeddings",
+    ):
+        if path.endswith(suffix):
+            path = path.removesuffix(suffix)
+            break
     params: dict[str, str | int] = (
         {"api-version": api_version} if api_version and binding in {"azure", "azure_openai"} else {}
     )
     if binding == "ollama":
-        path = path.removesuffix("/v1") + "/api/tags"
+        path = path.removesuffix("/v1")
+        if not path.endswith("/api/tags"):
+            path += "/tags" if path.endswith("/api") else "/api/tags"
     elif binding == "dashscope" and (parsed.hostname or "").endswith(".aliyuncs.com"):
         # The official native catalog includes capability metadata and pagination.
         path = path.replace("/compatible-mode/v1", "/api/v1")
         if "/services/" in path:
             path = path.split("/services/", 1)[0]
-        path += "/models"
+        if not path.endswith("/models"):
+            path += "/models"
         params = {"page_no": 1, "page_size": 100}
     else:
-        path += "/models"
+        if not path.endswith("/models"):
+            path += "/models"
         if binding == "openrouter":
             params["output_modalities"] = "all"
     return urlunsplit(parsed._replace(path=path, query="", fragment="")), params
@@ -188,6 +200,40 @@ async def probe_search_provider(
 
 
 async def probe_provider(
+    binding: str, base_url: str, api_key: str | None = None,
+    api_format: str = "auto", extra_headers: dict[str, str] | None = None,
+    api_version: str = "",
+) -> dict:
+    """Return stable, credential-free reasons shared by every discovery route."""
+    from math_q_agent.services.provider_registry import canonical_provider_name
+
+    if canonical_provider_name(binding) in {"github_copilot", "codebuddy"}:
+        from math_q_agent.services.llm.factory import fetch_models
+
+        try:
+            models = await fetch_models(binding, base_url, api_key, api_format)
+            result = {"status": "connected", "models": [{"id": item} for item in models]}
+        except (asyncio.TimeoutError, TimeoutError):
+            result = {"status": "timeout", "models": []}
+        except Exception:
+            # Auth helpers may embed credentials in exception strings.
+            result = {"status": "unavailable", "models": []}
+    else:
+        result = await _probe_provider(binding, base_url, api_key, api_format, extra_headers, api_version)
+    reasons = {
+        "connected": "models_listed" if result.get("models") else "empty_models",
+        "auth_error": "authentication_rejected",
+        "rate_limited": "rate_limit_exceeded",
+        "unavailable": "model_discovery_unavailable",
+        "http_error": "upstream_http_error",
+        "timeout": "request_timed_out",
+        "unreachable": "connection_failed",
+        "invalid_url": "invalid_base_url",
+    }
+    return {**result, "reason": reasons[result["status"]]}
+
+
+async def _probe_provider(
     binding: str,
     base_url: str,
     api_key: str | None = None,
@@ -213,22 +259,6 @@ async def probe_provider(
         valid = False
     if not valid:
         return {"status": "invalid_url", "models": []}
-    # Other services store the full inference endpoint. Discovery lives beside it.
-    for suffix in (
-        "/embeddings",
-        "/audio/speech",
-        "/audio/transcriptions",
-        "/images/generations",
-        "/videos/generations",
-        "/chat/completions",
-        "/responses",
-        "/messages",
-        "/api/embed",
-        "/api/embeddings",
-    ):
-        if base_url.endswith(suffix):
-            base_url = base_url.removesuffix(suffix)
-            break
     headers = build_auth_headers(api_key, _auth_binding(binding, api_format))
     headers.pop("Content-Type", None)
     headers.update(extra_headers or {})
@@ -272,7 +302,7 @@ async def probe_provider(
                     try:
                         payload = await response.json()
                     except (ValueError, aiohttp.ContentTypeError):
-                        return {"status": "unavailable", "models": []}
+                        return {"status": "unavailable", "models": [], "http_status": 200}
                     output = payload.get("output") if isinstance(payload, dict) else None
                     native = isinstance(output, dict) and isinstance(output.get("models"), list)
                     items = (
@@ -289,7 +319,7 @@ async def probe_provider(
                     if not isinstance(items, list) or (
                         isinstance(payload, dict) and payload.get("success") is False
                     ):
-                        return {"status": "unavailable", "models": []}
+                        return {"status": "unavailable", "models": [], "http_status": 200}
                     normalized = [
                         {**item, "id": item.get("id") or item.get("model")}
                         if isinstance(item, dict)
@@ -298,7 +328,7 @@ async def probe_provider(
                     ]
                     names = list(dict.fromkeys(collect_model_names(normalized)))
                     if items and not names:
-                        return {"status": "unavailable", "models": []}
+                        return {"status": "unavailable", "models": [], "http_status": 200}
                     if items and all(name in seen for name in names):
                         warning = "partial_models"
                         break
@@ -334,7 +364,7 @@ async def probe_provider(
                     if kinds:
                         entry["services"] = kinds
                     models[name] = entry
-            result = {"status": "connected", "models": list(models.values())}
+            result = {"status": "connected", "models": list(models.values()), "http_status": 200}
             capabilities = detect_capabilities(all_items)
             if capabilities:
                 result["capabilities"] = capabilities

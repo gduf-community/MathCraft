@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_BACKEND_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 8000
+DEFAULT_FRONTEND_PORT = 5173
 
 
 def load_project_env() -> Path:
@@ -19,4 +21,10 @@ def load_project_env() -> Path:
     return env_file
 
 
-__all__ = ["PROJECT_ROOT", "load_project_env"]
+__all__ = [
+    "PROJECT_ROOT",
+    "DEFAULT_BACKEND_HOST",
+    "DEFAULT_BACKEND_PORT",
+    "DEFAULT_FRONTEND_PORT",
+    "load_project_env",
+]

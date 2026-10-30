@@ -93,7 +93,7 @@ def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> N
             assert not old_home.exists()
             assert "http://localhost:5678" in app.state.cors_kwargs["allow_origins"]
             assert app.state.cors_kwargs["allow_origin_regex"] is None
-            if {module!r} == "math_q_agent.api.main":
+            if {module!r} in ("math_q_agent.api.main", "MathCraft.api.main"):
                 response = client.options("/healthz", headers={{
                     "origin": "http://localhost:5678",
                     "access-control-request-method": "GET",
@@ -155,6 +155,68 @@ def test_cli_reads_environment_before_parsing_listen_options(tmp_path: Path) -> 
         assert calls[0][0] is app
         assert calls[0][1]["host"] == "127.0.0.2"
         assert calls[0][1]["port"] == 8123
+        ''',
+        tmp_path / "cli-home",
+    )
+
+
+@pytest.mark.parametrize("shell_port, expected_port", [(None, 8234), ("8235", 8235)])
+def test_cli_loads_shared_dotenv_without_overriding_shell(
+    tmp_path: Path, shell_port: str | None, expected_port: int,
+) -> None:
+    _run(
+        f'''
+        import os
+        import sys
+        from pathlib import Path
+        import uvicorn
+        import math_q_agent.runtime.env as runtime_env
+
+        root = Path(os.environ["MATH_Q_HOME"]).parent / "project"
+        root.mkdir()
+        (root / ".env").write_text(
+            "BACKEND_HOST=127.0.0.2\\nBACKEND_PORT=8234\\nFRONTEND_PORT=5234\\n",
+            encoding="utf-8",
+        )
+        runtime_env.PROJECT_ROOT = root
+        for key in ("BACKEND_HOST", "BACKEND_PORT", "FRONTEND_PORT"):
+            os.environ.pop(key, None)
+        if {shell_port!r} is not None:
+            os.environ["BACKEND_PORT"] = {shell_port!r}
+        from MathCraft.app import run
+        calls = []
+        uvicorn.run = lambda application, **kwargs: calls.append(kwargs)
+        sys.argv = ["MathCraft"]
+        run()
+        assert calls[0]["host"] == "127.0.0.2"
+        assert calls[0]["port"] == {expected_port}
+        from math_q_agent.services.config import load_launch_settings
+        assert load_launch_settings().frontend_port == 5234
+        ''',
+        tmp_path / "cli-home",
+    )
+
+
+def test_cli_missing_dotenv_uses_matching_frontend_defaults(tmp_path: Path) -> None:
+    _run(
+        '''
+        import os
+        import sys
+        from pathlib import Path
+        import uvicorn
+        import math_q_agent.runtime.env as runtime_env
+        runtime_env.PROJECT_ROOT = Path(os.environ["MATH_Q_HOME"]).parent / "absent"
+        for key in ("BACKEND_HOST", "BACKEND_PORT", "FRONTEND_PORT"):
+            os.environ.pop(key, None)
+        from MathCraft.app import run
+        calls = []
+        uvicorn.run = lambda application, **kwargs: calls.append(kwargs)
+        sys.argv = ["MathCraft"]
+        run()
+        assert calls[0]["host"] == "127.0.0.1"
+        assert calls[0]["port"] == 8000
+        from math_q_agent.services.config import load_launch_settings
+        assert load_launch_settings().frontend_port == 5173
         ''',
         tmp_path / "cli-home",
     )

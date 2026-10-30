@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from math_q_agent.runtime.env import DEFAULT_BACKEND_PORT, DEFAULT_FRONTEND_PORT
 from math_q_agent.services.file_io import atomic_write_json as _atomic_write_json
 from math_q_agent.services.path_service import get_path_service
 
@@ -20,9 +21,9 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, Any] = {
     # audited deployments; MATH_Q_VERSION_CHECK_ENABLED is the deployment
     # override for read-only settings volumes.
     "version_check_enabled": True,
-    "backend_port": 8001,
+    "backend_port": DEFAULT_BACKEND_PORT,
     "backend_workers": 1,
-    "frontend_port": 3782,
+    "frontend_port": DEFAULT_FRONTEND_PORT,
     "next_public_api_base_external": "",
     "next_public_api_base": "",
     "cors_origin": "",
@@ -1371,9 +1372,9 @@ class RuntimeSettingsService:
         return {
             "version": 1,
             "version_check_enabled": _coerce_bool(settings.get("version_check_enabled"), True),
-            "backend_port": _coerce_port(settings.get("backend_port"), 8001),
+            "backend_port": _coerce_port(settings.get("backend_port"), DEFAULT_BACKEND_PORT),
             "backend_workers": _coerce_clamped_int(settings.get("backend_workers"), 1, 1, 64),
-            "frontend_port": _coerce_port(settings.get("frontend_port"), 3782),
+            "frontend_port": _coerce_port(settings.get("frontend_port"), DEFAULT_FRONTEND_PORT),
             "next_public_api_base_external": public_api_base,
             "next_public_api_base": _string(settings.get("next_public_api_base")),
             "cors_origin": _string(settings.get("cors_origin")),

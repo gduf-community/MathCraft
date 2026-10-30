@@ -1,518 +1,240 @@
-import { useEffect, useRef, useState } from 'react'
-import {
-  applyModelDraft,
-  discardModelDraft,
-  discoverProviderModels,
-  fetchLanguageModels,
-  readModelSettings,
-  saveModelDraft,
-} from '../../api/modelSettings'
-import type {
-  DiscoveredModel,
-  ModelCatalog,
-  ModelDraft,
-  ModelProfile,
-  ModelServiceName,
-  ProviderOption,
-  ProviderProbeRequest,
-} from '../../types/modelSettings'
-import {
-  connectionPayload,
-  embeddingIdentityChanged,
-  equal,
-  probePayload,
-  safeError,
-  serviceLabels,
-  validateCatalog,
-} from './model/catalog'
-import { ConnectionsEditor } from './model/ConnectionsEditor'
-import { primaryClass, secondaryClass } from './model/Fields'
-import { ServiceEditor } from './model/ServiceEditor'
+import { Bot, Database, SlidersHorizontal } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { ModelWriteReadbackError, deleteDirectModel, readLiveModelSettings, readDirectModelDraft, saveDirectModel, setDefaultDirectModel, setDirectTaskMode } from '../../api/modelSettings'
+import type { DirectModelResponse, DirectModelTarget, ModelCatalog, ModelDraft, ModelEntry, ModelServiceName, ModelSettingsResponse } from '../../types/modelSettings'
+import { equal, safeError } from './model/catalog'
+import { changedDirectModels, directServices, editableCatalog, findDirectModel, mergeDirectEdits, parseDirectHeaders, putDirectModel, removeLocalModel, targetKey, validateDirectModel } from './model/directCatalog'
+import { DirectModelEditor } from './model/DirectModelEditor'
+import { Field, inputClass, primaryClass, secondaryClass } from './model/Fields'
 
-interface ModelSettingsProps {
-  onDirtyChange?: (dirty: boolean) => void
-}
-type Tab = ModelServiceName | 'connections'
-interface Snapshot {
-  live: ModelCatalog
-  draft: ModelDraft | null
-  baseline: ModelCatalog
-  providers: Record<string, ProviderOption[]>
-}
+interface ModelSettingsProps { onDirtyChange?: (dirty: boolean) => void }
+const tabs = [
+  { value: 'llm', label: '语言模型', icon: Bot },
+  { value: 'embedding', label: '嵌入模型', icon: Database },
+  { value: 'task', label: '任务模型', icon: SlidersHorizontal },
+] as const
 
 export function ModelSettings({ onDirtyChange }: ModelSettingsProps) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [tab, setTab] = useState<ModelServiceName>('llm')
+  const [snapshot, setSnapshot] = useState<ModelSettingsResponse | null>(null)
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
-  const [tab, setTab] = useState<Tab>('llm')
-  const [busy, setBusy] = useState('读取模型设置')
+  const [legacyDraft, setLegacyDraft] = useState<ModelDraft | null>(null)
+  const [draftPreview, setDraftPreview] = useState<ModelCatalog | null>(null)
+  const [draftError, setDraftError] = useState('')
+  const [restoreKey, setRestoreKey] = useState('')
+  const [draftSources, setDraftSources] = useState<Record<string, string>>({})
+  const [unverified, setUnverified] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [invalid, setInvalid] = useState(false)
   const [revision, setRevision] = useState(0)
-  const [discovery, setDiscovery] = useState<{
-    key: string
-    models: DiscoveredModel[]
-  } | null>(null)
-  const lock = useRef(false)
+  const [restoreFocus, setRestoreFocus] = useState<DirectModelTarget | null>(null)
   const mounted = useRef(true)
-  const readVersion = useRef(0)
-  const dirty =
-    !!catalog && !!snapshot && (!equal(catalog, snapshot.baseline) || invalid)
+  const requestVersion = useRef(0)
+  const lock = useRef(false)
+  const id = useId()
+  const current = useRef({ catalog, snapshot, draftSources })
+  current.current = { catalog, snapshot, draftSources }
+  const dirty = !!snapshot && !!catalog && (changedDirectModels(snapshot.catalog, catalog).length > 0 || Object.keys(draftSources).length > 0 || Object.keys(unverified).length > 0)
 
+  useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
   useEffect(() => {
-    onDirtyChange?.(dirty)
-  }, [dirty, onDirtyChange])
-  useEffect(
-    () => () => {
-      onDirtyChange?.(false)
-    },
-    [onDirtyChange],
-  )
+    if (!dirty) return
+    const preventLoss = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', preventLoss)
+    return () => window.removeEventListener('beforeunload', preventLoss)
+  }, [dirty])
 
-  function accept(data: Awaited<ReturnType<typeof readModelSettings>>) {
-    const baseline = data.draft?.catalog ?? data.catalog
-    setSnapshot({
-      live: data.catalog,
-      draft: data.draft,
-      baseline,
-      providers: data.providers,
-    })
-    setCatalog(baseline)
-    setInvalid(false)
-    setRevision((value) => value + 1)
-    setDiscovery(null)
-  }
   async function load() {
-    const version = ++readVersion.current
-    setBusy('读取模型设置')
-    setError('')
+    if (lock.current) return
+    const version = ++requestVersion.current
+    setBusy('读取模型设置'); setError(''); setNotice('')
     try {
-      const data = await readModelSettings()
-      if (mounted.current && version === readVersion.current) accept(data)
+      const [liveResult, draftResult] = await Promise.allSettled([readLiveModelSettings(), readDirectModelDraft()])
+      if (!mounted.current || version !== requestVersion.current) return
+      if (liveResult.status === 'rejected') throw liveResult.reason
+      const data = liveResult.value
+      const next = editableCatalog(data.catalog)
+      setSnapshot({ ...data, catalog: next }); setCatalog(next)
+      setDraftSources({}); setUnverified({}); setRestoreFocus(null); setRestoreKey(''); setRevision((value) => value + 1)
+      if (draftResult.status === 'fulfilled') {
+        setLegacyDraft(draftResult.value.draft)
+        setDraftPreview(draftResult.value.draft?.catalog ?? null)
+        setDraftError('')
+      } else {
+        setLegacyDraft(null); setDraftPreview(null)
+        setDraftError('旧草稿暂时无法读取，正式配置仍可正常编辑；可稍后重新读取。')
+      }
     } catch (cause) {
-      if (mounted.current && version === readVersion.current)
-        setError(safeError(cause))
+      if (mounted.current && version === requestVersion.current) setError(safeError(cause, current.current.catalog ?? undefined))
     } finally {
-      if (mounted.current && version === readVersion.current) setBusy('')
+      if (mounted.current && version === requestVersion.current) setBusy('')
     }
   }
   useEffect(() => {
     mounted.current = true
     void load()
-    return () => {
-      mounted.current = false
-      readVersion.current += 1
-    }
+    return () => { mounted.current = false; requestVersion.current += 1 }
   }, [])
 
-  function edit(next: ModelCatalog) {
-    setCatalog(next)
-    setNotice('')
-    setError('')
-    setDiscovery(null)
+  function edit(target: DirectModelTarget, model: ModelEntry) {
+    setCatalog((value) => value ? putDirectModel(value, target, model) : value)
+    setError(''); setNotice('')
   }
-
-  async function perform(label: string, action: () => Promise<void>) {
+  function clearSource(target: DirectModelTarget) {
+    setDraftSources((value) => { const next = { ...value }; delete next[targetKey(target)]; return next })
+  }
+  function clearUnverified(key: string) {
+    setUnverified((value) => { const next = { ...value }; delete next[key]; return next })
+  }
+  function acceptLive(data: ModelSettingsResponse, completed?: DirectModelTarget) {
+    const before = current.current
+    if (!before.snapshot || !before.catalog) return
+    const nextLive = editableCatalog(data.catalog)
+    setCatalog(mergeDirectEdits(before.snapshot.catalog, before.catalog, nextLive, completed))
+    setSnapshot({ ...data, catalog: nextLive })
+    if (completed) clearSource(completed)
+  }
+  async function writeAndVerify({ label, action, verify, completed }: {
+    label: string
+    action: () => Promise<DirectModelResponse>
+    verify: (written: ModelCatalog, readback: ModelCatalog) => boolean
+    completed?: DirectModelTarget
+  }) {
     if (lock.current) return
     lock.current = true
-    setBusy(label)
-    setError('')
-    setNotice('')
-    setDiscovery(null)
+    setBusy(label); setError(''); setNotice('')
+    let wrote = false
+    const operationKey = completed ? targetKey(completed) : label
     try {
-      await action()
+      const result = await action()
+      wrote = true
+      if (!result.catalog?.services) throw new Error('写入响应缺少正式目录')
+      const readback = await readLiveModelSettings()
+      if (!verify(result.catalog, readback.catalog)) throw new Error('正式读回结果与写入响应不一致')
+      if (!mounted.current) return
+      acceptLive(readback, completed); clearUnverified(operationKey)
+      setNotice(`${label}成功，已读回并核实正式状态。其他配置的本地编辑已保留。`)
     } catch (cause) {
-      setError(safeError(cause, catalog ?? undefined))
-    } finally {
-      lock.current = false
-      setBusy('')
+      if (!mounted.current) return
+      const message = safeError(cause, current.current.catalog ?? undefined)
+      if (wrote || cause instanceof ModelWriteReadbackError) {
+        const text = `${label}请求已成功，但正式状态待核实：${message}。当前输入已保留，请重新读取核实，或重试当前操作。`
+        setUnverified((value) => ({ ...value, [operationKey]: text })); setError(text)
+      } else setError(`${label}失败：${message}。当前输入与其他本地编辑均已保留。`)
+    } finally { lock.current = false; if (mounted.current) setBusy('') }
+  }
+  function save(target: DirectModelTarget, model: ModelEntry) {
+    if (!current.current.snapshot) return
+    const validation = validateDirectModel(current.current.snapshot.catalog, target, model)
+    if (validation) { setError(validation); return }
+    const config = model.direct_config!
+    const parsedHeaders = parseDirectHeaders(config.extra_headers)
+    if (parsedHeaders.error !== null) { setError(parsedHeaders.error); return }
+    const normalized: ModelEntry = {
+      ...model, name: model.name!.trim(), model: model.model.trim(),
+      direct_config: { ...config, extra_headers: parsedHeaders.headers },
     }
+    const draftUpdatedAt = current.current.draftSources[targetKey(target)]
+    void writeAndVerify({
+      label: '保存并启用', completed: target,
+      action: () => saveDirectModel({ service: target.service, profile_id: target.profile_id, model: normalized, ...(draftUpdatedAt ? { restore_draft: true, draft_updated_at: draftUpdatedAt } : {}) }),
+      verify: (written, readback) => {
+        const saved = findDirectModel(written, target)
+        const confirmed = findDirectModel(readback, target)
+        return !!saved && !!confirmed && saved.name === normalized.name && saved.model === normalized.model && equal(saved, confirmed) &&
+          written.services[target.service]?.active_profile_id === readback.services[target.service]?.active_profile_id &&
+          written.services[target.service]?.active_model_id === readback.services[target.service]?.active_model_id &&
+          (target.service !== 'task' || written.services.task?.mode === readback.services.task?.mode)
+      },
+    })
   }
-
-  async function save() {
-    if (!catalog || !snapshot || invalid) return
-    const validation = validateCatalog(catalog)
-    if (validation) {
-      setError(validation)
-      return
+  function makeDefault(target: DirectModelTarget) {
+    void writeAndVerify({ label: '设为默认', action: () => setDefaultDirectModel(target), verify: (_written, readback) => readback.services[target.service]?.active_profile_id === target.profile_id && readback.services[target.service]?.active_model_id === target.model_id })
+  }
+  function changeMode(mode: 'inherit' | 'profiles') {
+    void writeAndVerify({ label: mode === 'inherit' ? '跟随主模型' : '启用独立任务配置', action: () => setDirectTaskMode(mode), verify: (_written, readback) => (readback.services.task?.mode ?? 'inherit') === mode })
+  }
+  function reset(target: DirectModelTarget) {
+    const state = current.current
+    if (!state.catalog || !state.snapshot || !window.confirm('撤销当前配置的本地编辑？其他配置的编辑会保留。')) return
+    const original = findDirectModel(state.snapshot.catalog, target)
+    setCatalog(original ? putDirectModel(state.catalog, target, original) : removeLocalModel(state.catalog, target))
+    clearSource(target); clearUnverified(targetKey(target)); setError(''); setNotice('已撤销当前项本地编辑。')
+  }
+  function remove(target: DirectModelTarget) {
+    const state = current.current
+    if (!state.snapshot || !state.catalog) return
+    const existing = findDirectModel(state.snapshot.catalog, target)
+    if (!existing) {
+      if (!window.confirm('取消添加并放弃当前配置的输入？')) return
+      setCatalog(removeLocalModel(state.catalog, target)); clearSource(target); clearUnverified(targetKey(target)); return
     }
-    await perform('保存草稿', async () => {
-      const { draft } = await saveModelDraft(catalog, snapshot.draft)
-      if (!draft?.catalog) throw new Error('服务端未返回有效目录草稿，请重试')
-      setSnapshot({ ...snapshot, draft, baseline: draft.catalog })
-      setCatalog(draft.catalog)
-      setRevision((value) => value + 1)
-      setNotice('草稿已保存；正式配置尚未改变。')
-    })
+    if (!window.confirm(`删除配置「${existing.name || existing.model}」？如果它仍被知识库等引用，服务端将拒绝删除。当前项的本地编辑也将丢弃。`)) return
+    void writeAndVerify({ label: '删除配置', completed: target, action: () => deleteDirectModel(target), verify: (written, readback) => !findDirectModel(written, target) && !findDirectModel(readback, target) })
   }
-
-  async function apply() {
-    if (!catalog || !snapshot?.draft?.catalog || dirty) return
-    if (
-      embeddingIdentityChanged(snapshot.live, catalog) &&
-      !window.confirm(
-        '嵌入模型的身份属性被修改或删除；若已有知识库绑定这些模型，可能需要重建或暂时不可用；无法完全确定受影响范围。此处不会自动重建。确认应用已保存草稿？',
-      )
-    )
-      return
-    await perform('应用已保存草稿', async () => {
-      try {
-        const applied = await applyModelDraft()
-        const data = await readModelSettings()
-        if (data.draft !== null)
-          throw new Error('应用后仍存在草稿，可能有并发修改；请核对真实状态')
-        if (!equal(data.catalog, applied.catalog))
-          throw new Error('正式目录已发生并发变化，请重新读取并核对')
-        accept(data)
-        setNotice('已核实正式目录更新且草稿已清空；后续调用使用正式配置。')
-      } catch (cause) {
-        // 应用可能已发生部分副作用；读取事实但保留编辑，不能声称回滚。
-        try {
-          const data = await readModelSettings()
-          setSnapshot((current) =>
-            current
-              ? { ...current, live: data.catalog, draft: data.draft }
-              : current,
-          )
-        } catch {
-          /* 原错误在外层展示，同时明确正式状态未确认。 */
-        }
-        throw new Error(
-          `${safeError(cause, catalog)}。当前编辑已保留，正式状态可能已有变化；请核对后重试或重新读取。`,
-        )
-      }
-    })
+  const recoveryRows = draftPreview ? directServices.flatMap((service) => editableCatalog(draftPreview).services[service]?.profiles.flatMap((profile) => profile.models.map((model) => ({ target: { service, profile_id: profile.id, model_id: model.id }, model }))) ?? []) : []
+  function restore() {
+    const row = recoveryRows.find(({ target }) => targetKey(target) === restoreKey)
+    if (!row || !catalog || !legacyDraft?.updated_at) return
+    const currentModel = findDirectModel(catalog, row.target)
+    const original = snapshot ? findDirectModel(snapshot.catalog, row.target) : undefined
+    if (currentModel && (!equal(currentModel, original) || draftSources[restoreKey]) && !window.confirm('恢复此项会替换该配置当前的本地输入，其他配置不变，是否继续？')) return
+    edit(row.target, row.model)
+    setDraftSources((value) => ({ ...value, [restoreKey]: legacyDraft.updated_at! }))
+    setTab(row.target.service); setRestoreFocus({ ...row.target })
+    setNotice('已恢复所选配置的旧草稿输入，尚未启用。请核对后保存当前项；凭据将仅从所选草稿版本恢复。')
   }
-
-  async function discard() {
-    if (!snapshot || (!snapshot.draft && !dirty)) return
-    if (
-      !window.confirm(
-        '丢弃已存草稿和当前未保存编辑？此操作不删除正式目录及正式凭据。',
-      )
-    )
-      return
-    await perform('丢弃草稿', async () => {
-      if (snapshot.draft) await discardModelDraft()
-      const data = await readModelSettings()
-      accept(data)
-      setNotice(
-        snapshot.draft
-          ? data.draft
-            ? '发现新的服务端草稿，已重新读取，请核对。'
-            : '草稿已丢弃，已重新读取正式配置。'
-          : '已撤销本地编辑，已重新读取服务端状态。',
-      )
-    })
-  }
-
-  function canFetch(profile: ModelProfile) {
-    if (
-      !catalog ||
-      !snapshot ||
-      tab === 'embedding' ||
-      tab === 'connections' ||
-      profile.provider_ref
-    )
-      return false
-    const payload = probePayload(catalog, tab, profile)
-    // fetch-models 不支持 header/version/proxy/keypool；掩码可能来自草稿而非正式目录。
-    const formalProfile = snapshot.live.services[tab]?.profiles.find(
-      (item) => item.id === profile.id,
-    )
-    const formalMask =
-      payload.api_key !== '***' ||
-      (!snapshot.draft?.catalog &&
-        !!formalProfile &&
-        formalProfile.api_key === '***' &&
-        formalProfile.connection_id === profile.connection_id)
-    return (
-      typeof payload.api_key !== 'object' &&
-      formalMask &&
-      !payload.api_version &&
-      !payload.proxy &&
-      (!payload.extra_headers ||
-        (typeof payload.extra_headers === 'object' &&
-          !Object.keys(payload.extra_headers).length))
-    )
-  }
-
-  async function discover(
-    payload: ProviderProbeRequest,
-    key: string,
-    useFetch = false,
-  ) {
-    await perform('发现模型', async () => {
-      const result = useFetch
-        ? {
-            ...(await fetchLanguageModels(payload)),
-            status: 'connected',
-            warning: undefined,
-          }
-        : await discoverProviderModels(payload)
-      const messages: Record<string, string> = {
-        unauthorized: '凭据无效或权限不足',
-        forbidden: '服务拒绝访问',
-        rate_limited: '请求限流',
-        timeout: '发现超时',
-        unreachable: '无法连接服务',
-        unavailable: '服务未提供可用模型发现接口',
-        unsupported: '此提供方不支持该发现方式',
-      }
-      if (result.status !== 'connected')
-        throw new Error(
-          `模型发现未成功：${messages[result.status] || result.status}。未执行推理或嵌入。`,
-        )
-      setDiscovery({ key, models: result.models ?? [] })
-      setNotice(
-        `模型列表接口已响应，共发现 ${result.models?.length ?? 0} 个标识${result.warning ? '（结果可能不完整）' : ''}；未验证推理或嵌入能力。`,
-      )
-    })
-  }
-
-  if (!snapshot || !catalog)
-    return (
-      <section
-        className="rounded-2xl border border-slate-200 bg-white p-6"
-        aria-busy={!!busy}
-      >
-        {busy ? (
-          <p role="status">正在读取模型设置…</p>
-        ) : (
-          <>
-            <p role="alert" className="settings-error text-sm text-red-700">
-              {error || '模型设置读取失败'}
-            </p>
-            <button
-              type="button"
-              className={`${secondaryClass} mt-4`}
-              onClick={() => void load()}
-            >
-              重试读取
-            </button>
-          </>
-        )}
-      </section>
-    )
-  const embeddingRisk = embeddingIdentityChanged(snapshot.live, catalog)
-  const embeddingDefaultChanged = !equal(
-    [
-      snapshot.live.services.embedding?.active_profile_id,
-      snapshot.live.services.embedding?.active_model_id,
-    ],
-    [
-      catalog.services.embedding?.active_profile_id,
-      catalog.services.embedding?.active_model_id,
-    ],
-  )
-  return (
-    <section
-      className="space-y-5"
-      aria-label="模型与服务设置"
-      aria-busy={!!busy}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900">模型与服务</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            配置连接、模型和活动选择，先保存草稿，再应用更改。
-          </p>
-        </div>
-        <span
-          className={`rounded-full px-3 py-1 text-xs font-medium ${dirty ? 'bg-amber-50 text-amber-800' : snapshot.draft?.catalog ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600'}`}
-        >
-          {dirty
-            ? '有未保存编辑'
-            : snapshot.draft?.catalog
-              ? '已保存草稿 · 尚未生效'
-              : '正式配置'}
-        </span>
+  if (!snapshot || !catalog) return <section className="space-y-4" aria-label="模型与服务设置">
+    <p role="status" className="text-sm text-slate-500">{busy || '模型设置尚未读取'}</p>
+    {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+    {!busy && <button type="button" className={primaryClass} onClick={() => void load()}>重新读取模型设置</button>}
+  </section>
+  const migration = snapshot.migration ?? snapshot.catalog.direct_config_migration
+  const draftRenamed = draftPreview?.direct_config_migration?.renamed
+  return <section className="min-w-0 space-y-5" aria-label="模型与服务设置" aria-busy={!!busy}>
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><h2 className="text-lg font-semibold text-slate-800">模型与服务</h2><p className="mt-1 text-sm leading-6 text-slate-500">每项独立配置提供方、地址与凭据，一次保存并启用。保存不会自动获取模型列表。</p></div>
+      <button type="button" className={secondaryClass} disabled={!!busy} onClick={() => { if (!dirty || window.confirm('重新读取会替换所有未保存输入及草稿恢复来源；已成功写入但待核实的操作也将从正式目录读取。是否继续？')) void load() }}>重新读取</button>
+    </div>
+    {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-800">{error}</p>}
+    {notice && <p role="status" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm leading-6 text-blue-800">{notice}</p>}
+    {Object.keys(unverified).length > 0 && !error && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">有已写入但正式状态待核实的操作。输入仍保留，请重新读取正式目录核实。</p>}
+    {migration && <details className="rounded-xl border border-blue-200 bg-blue-50 p-3" open={!!migration.renamed?.length}>
+      <summary className="cursor-pointer text-sm font-medium text-blue-800 focus-visible:outline-2 focus-visible:outline-blue-500">旧模型配置迁移信息</summary>
+      <p className="mt-2 text-sm leading-6 text-blue-800">{safeError(new Error(migration.message || '旧共享连接已展开为各模型的独立配置；旧草稿仍需明确恢复后逐项保存。'), catalog)}</p>
+      {!!migration.renamed?.length && <ul className="mt-2 list-inside list-disc space-y-1 text-sm text-blue-800">{migration.renamed.map((entry, index) => <li key={JSON.stringify([entry.service, entry.profile_id, entry.model_id, index])}>{entry.old_name ?? entry.from ?? '未命名'} → {entry.new_name ?? entry.to}</li>)}</ul>}
+    </details>}
+    {draftError && <p role="status" className="text-sm text-amber-800">{draftError}</p>}
+    {legacyDraft?.catalog && <details className="settings-card rounded-xl border border-amber-200 bg-amber-50 p-3">
+      <summary className="cursor-pointer text-sm font-medium text-amber-800 focus-visible:outline-2 focus-visible:outline-blue-500">保留的旧草稿：按配置项恢复</summary>
+      <div className="mt-3 space-y-3">
+        <p className="text-sm leading-6 text-amber-800">旧草稿尚未启用。选择一个配置载入表单，再单独保存；这不会应用整份草稿，也不会改变其他配置。{legacyDraft.updated_at ? `草稿版本：${legacyDraft.updated_at}` : '缺少草稿版本，暂时无法安全恢复。'}</p>
+        {!!draftRenamed?.length && <div className="text-sm text-amber-800"><p>旧草稿的配置名称调整：</p><ul className="mt-2 list-inside list-disc space-y-1">{draftRenamed.map((entry, index) => <li key={JSON.stringify([entry.service, entry.model_id, index])}>{entry.old_name || "未命名"} → {entry.new_name}</li>)}</ul></div>}
+        <Field label="选择恢复的配置"><select className={inputClass} value={restoreKey} onChange={(event) => setRestoreKey(event.target.value)}><option value="">请选择旧草稿中的配置</option>{recoveryRows.map(({ target, model }) => <option key={targetKey(target)} value={targetKey(target)}>{tabs.find((entry) => entry.value === target.service)?.label} · {model.name || model.model || model.id}</option>)}</select></Field>
+        <button type="button" className={secondaryClass} disabled={!!busy || !restoreKey || !legacyDraft.updated_at} onClick={restore}>恢复所选项到表单</button>
       </div>
-      {snapshot.draft?.updated_at && (
-        <p className="text-xs text-slate-500">
-          草稿保存时间：{snapshot.draft.updated_at}
-        </p>
-      )}
-      {snapshot.draft && Object.keys(snapshot.draft.extensions).length > 0 && (
-        <p className="settings-note text-sm text-blue-700">
-          草稿包含其他页面状态；保存时保留。应用只处理模型目录，并清空整份草稿；丢弃也会移除整份草稿。
-        </p>
-      )}
-      <div
-        className="flex flex-wrap gap-2"
-        role="tablist"
-        aria-label="模型设置子页"
-      >
-        {(
-          [
-            ...Object.entries(serviceLabels),
-            ['connections', '提供方与连接'],
-          ] as [Tab, string][]
-        ).map(([value, label]) => (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === value}
-            aria-controls="model-settings-panel"
-            id={`model-tab-${value}`}
-            key={value}
-            disabled={!!busy}
-            className={`${secondaryClass} ${tab === value ? 'border-blue-300 bg-blue-50 text-blue-700' : ''}`}
-            onClick={() => {
-              if (value === tab) return
-              if (invalid) {
-                setError(
-                  '请先修正 JSON 格式，再切换子页；其他未保存字段仍保留。',
-                )
-                return
-              }
-              if (
-                dirty &&
-                !window.confirm(
-                  '当前目录有未保存编辑。继续切换子页并保留全部编辑？',
-                )
-              )
-                return
-              setTab(value)
-              setError('')
-            }}
-          >
-            {label}
-          </button>
-        ))}
+    </details>}
+    <div className="settings-card min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div role="tablist" aria-label="模型类别" className="flex overflow-x-auto border-b border-slate-200 px-2 pt-2">
+        {tabs.map(({ value, label, icon: Icon }, index) => <button key={value} type="button" role="tab" id={`${id}-tab-${value}`} aria-controls={`${id}-panel-${value}`} aria-selected={tab === value} tabIndex={tab === value ? 0 : -1}
+          className={`flex min-h-11 shrink-0 items-center gap-2 rounded-t-xl border-b-2 px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-blue-500 ${tab === value ? 'border-blue-600 bg-blue-50 font-semibold text-blue-700' : 'border-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}
+          onClick={() => setTab(value)} onKeyDown={(event) => {
+            let next = index
+            if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
+            else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
+            else if (event.key === 'Home') next = 0
+            else if (event.key === 'End') next = tabs.length - 1
+            else return
+            event.preventDefault(); setTab(tabs[next].value); document.getElementById(`${id}-tab-${tabs[next].value}`)?.focus()
+          }}><Icon size={16} aria-hidden="true" />{label}</button>)}
       </div>
-      {error && (
-        <div
-          role="alert"
-          className="settings-error rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800"
-        >
-          {error}
-        </div>
-      )}
-      {notice && (
-        <p
-          role="status"
-          className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800"
-        >
-          {notice}
-        </p>
-      )}
-      {(embeddingRisk || embeddingDefaultChanged) && (
-        <div className="settings-note rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
-          {embeddingRisk
-            ? '嵌入模型的名称标识、维度、端点等身份属性被修改或删除；若已有知识库绑定这些模型，可能需要重建或不可用。受影响范围无法完全确定，应用时需确认。'
-            : '切换默认嵌入模型不会遍历重建旧库；已有库可能继续使用原绑定。'}
-          重建需到知识库页面操作，此页不会自动重建。仅更换 API Key
-          不改变嵌入身份。
-        </div>
-      )}
-      <fieldset
-        disabled={!!busy}
-        className="min-w-0 disabled:opacity-70"
-        id="model-settings-panel"
-        role="tabpanel"
-        aria-labelledby={`model-tab-${tab}`}
-      >
-        {tab === 'connections' ? (
-          <ConnectionsEditor
-            key={`${tab}/${revision}`}
-            catalog={catalog}
-            providers={[
-              ...(snapshot.providers.llm ?? []),
-              ...(snapshot.providers.embedding ?? []).filter(
-                (item) =>
-                  !snapshot.providers.llm?.some(
-                    (option) => option.value === item.value,
-                  ),
-              ),
-            ]}
-            discovery={discovery}
-            onSelect={() => { setDiscovery(null); setNotice('') }}
-            onChange={edit}
-            onError={setError}
-            onInvalid={setInvalid}
-            onDiscover={(connection) =>
-              void discover(
-                connectionPayload(connection),
-                `connection/${connection.id}`,
-              )
-            }
-            invalid={invalid}
-            busy={!!busy}
-          />
-        ) : (
-          <ServiceEditor
-            key={`${tab}/${revision}`}
-            catalog={catalog}
-            live={snapshot.live}
-            name={tab}
-            providers={snapshot.providers[tab] ?? []}
-            onChange={edit}
-            onError={setError}
-            onInvalid={setInvalid}
-            invalid={invalid}
-            busy={!!busy}
-            canFetch={canFetch}
-            discovery={discovery}
-            onDiscover={(profile, useFetch) =>
-              void discover(
-                probePayload(catalog, tab, profile),
-                `${tab}/${profile.id}`,
-                useFetch,
-              )
-            }
-          />
-        )}
-      </fieldset>
-      <div className="settings-card flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4">
-        <button
-          type="button"
-          className={primaryClass}
-          disabled={!!busy || !dirty || invalid}
-          onClick={() => void save()}
-        >
-          保存草稿
-        </button>
-        <button
-          type="button"
-          className={primaryClass}
-          disabled={!!busy || dirty || !snapshot.draft?.catalog}
-          onClick={() => void apply()}
-        >
-          应用更改
-        </button>
-        <button
-          type="button"
-          className={secondaryClass}
-          disabled={!!busy || (!dirty && !snapshot.draft)}
-          onClick={() => void discard()}
-        >
-          {snapshot.draft ? '丢弃草稿' : '撤销本地编辑'}
-        </button>
-        <button
-          type="button"
-          className={secondaryClass}
-          disabled={!!busy}
-          onClick={() => {
-            if (
-              !dirty ||
-              window.confirm('重新读取会替换当前未保存编辑，是否继续？')
-            )
-              void load()
-          }}
-        >
-          重新读取
-        </button>
-        <p className="text-xs text-slate-500" role="status">
-          {busy
-            ? `${busy}中…`
-            : dirty
-              ? '请先保存当前编辑，再应用已存草稿。'
-              : snapshot.draft?.catalog
-                ? '应用只使用已保存草稿，不包含其他设置区域。'
-                : '当前无可应用的目录草稿。'}
-        </p>
-      </div>
-    </section>
-  )
+      <div className="min-w-0 p-4 sm:p-5">{tabs.map(({ value }) => <div key={value} role="tabpanel" hidden={tab !== value} id={`${id}-panel-${value}`} aria-labelledby={`${id}-tab-${value}`}>
+        <DirectModelEditor key={`${value}/${revision}`} catalog={catalog} live={snapshot.catalog} service={value} providers={snapshot.providers[value] ?? (value === 'task' ? snapshot.providers.llm ?? [] : [])}
+          busy={!!busy} active={tab === value} requestedSelection={restoreFocus} draftSources={draftSources} onChange={edit} onSave={save} onDelete={remove} onDefault={makeDefault} onMode={changeMode} onReset={reset} />
+      </div>)}</div>
+    </div>
+    <p role="status" className="text-xs leading-5 text-slate-500">{busy ? `${busy}中…` : dirty ? '有未保存或待核实的配置；切换类别会保留输入，刷新或离开前将提醒。' : '当前正式配置已读取。保存与默认选择是独立操作。'}</p>
+  </section>
 }

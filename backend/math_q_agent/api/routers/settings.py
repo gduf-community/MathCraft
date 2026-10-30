@@ -80,6 +80,7 @@ from math_q_agent.services.settings.interface_settings import (
 from math_q_agent.services.settings.starter_settings import (
     TRACE_COUNT_RANGE as STARTER_TRACE_COUNT_RANGE,
 )
+from math_q_agent.services.settings.direct_model_edit import validate_catalog_names
 from math_q_agent.services.tool_names import USER_TOGGLEABLE_TOOL_NAMES
 
 router = APIRouter()
@@ -270,6 +271,42 @@ class ProviderEditPayload(BaseModel):
     activate: bool = False
 
 
+class DirectModelPayload(BaseModel):
+    service: Literal["llm", "embedding", "task"]
+    profile_id: str
+    model: dict[str, Any]
+    make_default: bool = False
+    restore_draft: bool = False
+    draft_updated_at: str | None = None
+
+
+class DirectModelTargetPayload(BaseModel):
+    service: Literal["llm", "embedding", "task"]
+    profile_id: str
+    model_id: str
+
+
+class DirectModelTaskModePayload(BaseModel):
+    mode: Literal["inherit", "profiles"]
+
+
+class ModelWriteReadbackFailure(BaseModel):
+    code: Literal["model_write_committed_readback_failed"]
+    message: str
+
+
+class ModelWriteServiceUnavailable(BaseModel):
+    detail: str | ModelWriteReadbackFailure
+
+
+DIRECT_MODEL_WRITE_RESPONSES = {
+    503: {
+        "model": ModelWriteServiceUnavailable,
+        "description": "Storage unavailable; the committed readback-failure code requires verification, not a rejected-write message.",
+    },
+}
+
+
 class RegistryEditPayload(BaseModel):
     kind: Literal["provider", "model", "default", "task_choice"]
     task: dict[str, Any] | None = None
@@ -325,17 +362,6 @@ class CodexReasoningEffortUpdate(BaseModel):
     reasoning_effort: str | None = None
 
 
-class FetchModelsPayload(BaseModel):
-    binding: str = ""
-    base_url: str = ""
-    api_key: Optional[str] = None
-    profile_id: Optional[str] = None
-    # Which LLM-shaped service the profile lives in (for resolving a masked key).
-    service: Literal["llm", "task"] = "llm"
-    # The profile's API format; decides whether /models takes Anthropic headers.
-    api_format: Optional[str] = None
-
-
 class ModelCapabilitiesQuery(BaseModel):
     binding: str = ""
     model: str = ""
@@ -354,6 +380,13 @@ class ProviderProbePayload(BaseModel):
     )
     profile_id: str | None = None
     connection_id: str | None = None
+    model_id: str | None = None
+    restore_draft: bool = False
+    draft_updated_at: str | None = None
+
+
+class FetchModelsPayload(ProviderProbePayload):
+    pass
 
 
 class NetworkSettingsUpdate(BaseModel):
@@ -476,6 +509,22 @@ class DocumentParsingInstall(BaseModel):
     engine: str
 
 
+def _read_catalog_for_settings(service=None) -> dict[str, Any]:
+    """Give settings readers safe migration/storage errors without losing bad files."""
+    service = service or get_model_catalog_service()
+    try:
+        return service.load()
+    except ValueError:
+        raise HTTPException(status_code=409, detail=(
+            "模型配置迁移或校验未完成，原配置已保留。"
+            "请检查旧连接与任务引用，或恢复配置文件后重试。"
+        )) from None
+    except OSError:
+        raise HTTPException(status_code=503, detail=(
+            "模型配置存储读写失败。请检查设置目录权限及文件占用后重试。"
+        )) from None
+
+
 @contextlib.contextmanager
 def _runtime_catalog_write() -> Iterator[None]:
     """Bracket a write to the model catalog, resetting clients if it landed.
@@ -493,22 +542,22 @@ def _runtime_catalog_write() -> Iterator[None]:
     restart (#1421).
 
     Whether the catalog changed is a property of the file, not of the caller,
-    so both sides are read here. Five endpoints each assembling their own
-    before/after pair is five chances to pair the wrong two and a sixth
-    endpoint's chance to forget; wrapping the write is the whole contract.
+    so both sides are read here. Having each endpoint assemble its own
+    before/after pair risks mismatched snapshots or a forgotten reset;
+    wrapping the write keeps that contract in one place.
 
     A write that raises leaves the block without resetting, which is what a
     failed write should do: there is nothing new for the clients to read.
     """
     service = get_model_catalog_service()
-    before = service.load()
+    before = _read_catalog_for_settings(service)
     try:
         yield
     except PermissionError as exc:
         # #1984: filesystem denial is not an authentication failure. Preserve
         # the atomic writer's failure boundary and the unapplied draft; do not
         # blindly retry a stale catalog over another writer's newer settings.
-        logger.exception("Filesystem access denied while saving the model catalog")
+        logger.error("Filesystem access denied while saving the model catalog")
         raise HTTPException(
             status_code=503,
             detail=(
@@ -518,8 +567,23 @@ def _runtime_catalog_write() -> Iterator[None]:
                 "then retry."
             ),
         ) from exc
-    if service.load() == before:
-        return
+    except ValueError as exc:
+        from math_q_agent.services.settings.direct_model_edit import DirectModelEditError
+
+        if isinstance(exc, DirectModelEditError):
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+        if "全局唯一" in str(exc):
+            raise HTTPException(status_code=409, detail="Model configuration names must be globally unique.") from None
+        raise HTTPException(status_code=400, detail="Invalid model configuration.") from None
+    readback_failed = False
+    try:
+        if service.load() == before:
+            return
+    except Exception:
+        # The write body already completed. A failed read cannot turn that
+        # durable write into a rejection, nor leave clients on stale settings.
+        readback_failed = True
+        logger.warning("Model catalog write completed but readback is unavailable")
     logger.warning(
         "Admin applied catalog; resetting global LLM/embedding clients. "
         "In-flight user turns may flip backend client mid-call."
@@ -530,6 +594,11 @@ def _runtime_catalog_write() -> Iterator[None]:
     clear_llm_config_cache()
     reset_llm_client()
     reset_embedding_client()
+    if readback_failed:
+        raise HTTPException(status_code=503, detail={
+            "code": "model_write_committed_readback_failed",
+            "message": "配置写入已完成，但正式状态暂时无法读回，请重新读取核实。",
+        }) from None
 
 
 def load_ui_settings() -> dict[str, Any]:
@@ -928,7 +997,7 @@ async def get_settings():
 
     return {
         "ui": load_ui_settings(),
-        "catalog": redact_catalog_secrets(get_model_catalog_service().load()),
+        "catalog": redact_catalog_secrets(_read_catalog_for_settings()),
         "providers": _provider_choices(),
         "connection_targets": _connection_targets(),
         # What actually runs on the background task model. The list comes from
@@ -1053,7 +1122,7 @@ async def update_openai_codex_reasoning_effort(
 @router.get("/catalog")
 async def get_catalog():
     _require_settings_admin()
-    return {"catalog": redact_catalog_secrets(get_model_catalog_service().load())}
+    return {"catalog": redact_catalog_secrets(_read_catalog_for_settings())}
 
 
 @router.get("/network")
@@ -1352,7 +1421,7 @@ async def _stage_settings_preset(
     merged = merge_draft_secrets(
         incoming,
         stored,
-        get_model_catalog_service().load(),
+        _read_catalog_for_settings(),
     )
     preset_draft = preset.draft_extensions()
     tools = preset_draft["tools"]["enabled_tools"]
@@ -1713,19 +1782,112 @@ async def test_mineru_connection(payload: MinerUSettingsUpdate):
 async def get_llm_options():
     if not get_current_user().is_admin:
         return allowed_llm_options()
-    return list_llm_options(get_model_catalog_service().load())
+    return list_llm_options(_read_catalog_for_settings())
 
 
 @router.put("/catalog")
 async def update_catalog(payload: CatalogPayload):
     _require_settings_admin()
     service = get_model_catalog_service()
-    current = service.load()
+    current = _read_catalog_for_settings(service)
     restored = restore_catalog_secrets(payload.catalog, current)
     proposed = reconcile_codex_catalog_update(current, restored)
     with _runtime_catalog_write():
+        validate_catalog_names(proposed)
         catalog = service.save(proposed)
     return {"catalog": redact_catalog_secrets(catalog)}
+
+
+@router.get("/direct-model/draft")
+async def get_direct_model_draft():
+    """Preview a migrated draft copy, preserving its original revision and file."""
+    _require_settings_admin()
+    from math_q_agent.services.config.direct_model_config import migrate_direct_catalog
+
+    draft = get_settings_draft_service().load()
+    if not isinstance(draft.get("catalog"), dict):
+        return {"draft": None}
+    try:
+        preview = deepcopy(draft)
+        preview["catalog"] = migrate_direct_catalog(preview["catalog"])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="The saved draft cannot be migrated safely.") from None
+    return {"draft": redact_draft(preview)}
+
+
+@router.post("/direct-model", responses=DIRECT_MODEL_WRITE_RESPONSES)
+async def save_direct_model(payload: DirectModelPayload):
+    """Save exactly one model against the latest live catalog, leaving drafts alone."""
+    _require_settings_admin()
+    from math_q_agent.services.settings.direct_model_edit import (
+        DirectModelEditError,
+        upsert_direct_model,
+        draft_secret_source,
+    )
+
+    def mutate(catalog):
+        source = None
+        if payload.restore_draft:
+            source = draft_secret_source(
+                get_settings_draft_service().load(), payload.draft_updated_at,
+                payload.service, payload.profile_id.strip(), str(payload.model.get("id") or "").strip(),
+            )
+        upsert_direct_model(
+            catalog, payload.service, payload.profile_id, payload.model,
+            make_default=payload.make_default, secret_source=source,
+        )
+        validate_catalog_names(catalog)
+
+    try:
+        with _runtime_catalog_write():
+            catalog = get_model_catalog_service().update(mutate)
+    except DirectModelEditError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"catalog": redact_catalog_secrets(catalog)}
+
+
+def _write_direct_model(mutator):
+    from math_q_agent.services.settings.direct_model_edit import DirectModelEditError
+
+    def validated(catalog):
+        mutator(catalog)
+        validate_catalog_names(catalog)
+
+    try:
+        with _runtime_catalog_write():
+            catalog = get_model_catalog_service().update(validated)
+    except DirectModelEditError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"catalog": redact_catalog_secrets(catalog)}
+
+
+@router.post("/direct-model/default", responses=DIRECT_MODEL_WRITE_RESPONSES)
+async def default_direct_model(payload: DirectModelTargetPayload):
+    _require_settings_admin()
+    from math_q_agent.services.settings.direct_model_edit import select_direct_model
+
+    return _write_direct_model(lambda catalog: select_direct_model(
+        catalog, payload.service, payload.profile_id, payload.model_id,
+    ))
+
+
+@router.post("/direct-model/delete", responses=DIRECT_MODEL_WRITE_RESPONSES)
+async def remove_direct_model(payload: DirectModelTargetPayload):
+    _require_settings_admin()
+    from math_q_agent.services.settings.direct_model_edit import delete_direct_model
+
+    return _write_direct_model(lambda catalog: delete_direct_model(
+        catalog, payload.service, payload.profile_id, payload.model_id,
+        knowledge_bases_root=get_path_service().get_knowledge_bases_root(),
+    ))
+
+
+@router.post("/direct-model/task-mode", responses=DIRECT_MODEL_WRITE_RESPONSES)
+async def change_direct_task_mode(payload: DirectModelTaskModePayload):
+    _require_settings_admin()
+    from math_q_agent.services.settings.direct_model_edit import set_task_mode
+
+    return _write_direct_model(lambda catalog: set_task_mode(catalog, payload.mode))
 
 
 @router.post("/apply/registry")
@@ -1737,7 +1899,7 @@ async def apply_registry_edit(payload: RegistryEditPayload):
     service = get_model_catalog_service()
     draft_service = get_settings_draft_service()
     stored = draft_service.load()
-    current = service.load()
+    current = _read_catalog_for_settings(service)
     edit = payload.model_dump(exclude_none=True)
     try:
         proposed = merge_registry_edit(current, edit, stored_draft=stored.get("catalog"))
@@ -1748,6 +1910,7 @@ async def apply_registry_edit(payload: RegistryEditPayload):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     with _runtime_catalog_write():
+        validate_catalog_names(proposed)
         service.apply(proposed)
     catalog = service.load()
     if stored.get("catalog") == catalog:
@@ -1769,7 +1932,7 @@ async def apply_provider_edit(payload: ProviderEditPayload):
     service = get_model_catalog_service()
     draft_service = get_settings_draft_service()
     stored = draft_service.load()
-    current = service.load()
+    current = _read_catalog_for_settings(service)
     try:
         proposed = merge_provider_edit(
             current,
@@ -1784,6 +1947,7 @@ async def apply_provider_edit(payload: ProviderEditPayload):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     reconciled = reconcile_codex_catalog_update(current, proposed)
     with _runtime_catalog_write():
+        validate_catalog_names(reconciled)
         service.apply(reconciled)
     catalog = service.load()
     draft_catalog = stored.get("catalog")
@@ -1832,7 +1996,7 @@ async def apply_catalog_service(payload: CatalogServicePayload):
 
     _require_settings_admin()
     service = get_model_catalog_service()
-    current = service.load()
+    current = _read_catalog_for_settings(service)
     draft_service = get_settings_draft_service()
     stored_draft = draft_service.load()
     proposed = deepcopy(current)
@@ -1851,6 +2015,7 @@ async def apply_catalog_service(payload: CatalogServicePayload):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     reconciled = reconcile_codex_catalog_update(current, restored)
     with _runtime_catalog_write():
+        validate_catalog_names(reconciled)
         runtime = service.apply(reconciled)
     catalog = service.load()
 
@@ -1901,7 +2066,7 @@ async def update_settings_draft(payload: SettingsDraftPayload):
     merged = merge_draft_secrets(
         payload.model_dump(),
         stored,
-        get_model_catalog_service().load(),
+        _read_catalog_for_settings(),
     )
     if is_empty_draft(merged):
         service.clear()
@@ -1928,7 +2093,7 @@ async def apply_catalog(payload: CatalogPayload | None = None):
     _require_settings_admin()
     service = get_model_catalog_service()
     draft_service = get_settings_draft_service()
-    current = service.load()
+    current = _read_catalog_for_settings(service)
     if payload is not None:
         proposed = restore_catalog_secrets(payload.catalog, current)
     else:
@@ -1940,6 +2105,7 @@ async def apply_catalog(payload: CatalogPayload | None = None):
         )
     catalog = reconcile_codex_catalog_update(current, proposed)
     with _runtime_catalog_write():
+        validate_catalog_names(catalog)
         applied = service.apply(catalog)
     catalog_after = service.load()
     draft_service.clear()
@@ -1950,35 +2116,55 @@ async def apply_catalog(payload: CatalogPayload | None = None):
     }
 
 
-@router.post("/test-provider")
-async def test_provider_connection(payload: ProviderProbePayload):
-    """Test current form credentials, resolving masks from draft/live settings by ID."""
+async def _discover_provider(payload: ProviderProbePayload):
+    """Resolve only same-ID live credentials for both discovery HTTP surfaces."""
     _require_settings_admin()
     from math_q_agent.services.settings.provider_probe import probe_provider, probe_search_provider
-
-    current = get_model_catalog_service().load()
-    saved = get_settings_draft_service().load().get("catalog")
-    source = restore_catalog_secrets(saved, current) if isinstance(saved, dict) else current
-    fields = payload.model_dump()
-    if payload.connection_id:
-        fields["id"] = payload.connection_id
-        proposed = {"connections": [fields]}
-        resolved = restore_catalog_secrets(proposed, source)["connections"][0]
-    else:
-        fields["id"] = payload.profile_id
-        proposed = {"services": {payload.service: {"profiles": [fields]}}}
-        resolved = restore_catalog_secrets(proposed, source)["services"][payload.service][
-            "profiles"
-        ][0]
     from math_q_agent.services.keypool import primary_api_key
 
+    from math_q_agent.services.settings.direct_model_edit import (
+        DirectModelEditError, draft_secret_source, require_mask_sources,
+    )
+
+    current = _read_catalog_for_settings()
+    if payload.restore_draft:
+        try:
+            current = draft_secret_source(
+                get_settings_draft_service().load(), payload.draft_updated_at,
+                payload.service, payload.profile_id, payload.model_id,
+            )
+        except DirectModelEditError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    source = {}
+    if payload.model_id:
+        profiles = current.get("services", {}).get(payload.service, {}).get("profiles", [])
+        profile = next((p for p in profiles if p.get("id") == payload.profile_id), {})
+        model = next((m for m in profile.get("models", []) if m.get("id") == payload.model_id), None)
+        source = (model or {}).get("direct_config") or {}
+    elif payload.connection_id:
+        source = next((c for c in current.get("connections", [])
+                       if c.get("id") == payload.connection_id), {})
+    elif payload.profile_id:
+        source = next((p for p in current.get("services", {}).get(payload.service, {}).get("profiles", [])
+                       if p.get("id") == payload.profile_id), {})
+    fields = {**source, **payload.model_dump(exclude_unset=True)}
+    try:
+        require_mask_sources(fields, source)
+    except DirectModelEditError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    # Reuse catalog secret handling with an already ID-matched source. No draft
+    # participates, and explicit empty values remain empty.
+    resolved = restore_catalog_secrets(
+        {"connections": [{**fields, "id": "probe"}]},
+        {"connections": [{**source, "id": "probe"}]},
+    )["connections"][0]
     key = primary_api_key(resolved.get("api_key"))
     headers = resolved.get("extra_headers") or {}
     if isinstance(headers, str):
         try:
             headers = json.loads(headers)
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=400, detail="Invalid extra headers JSON.") from exc
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid extra headers JSON.") from None
     if not isinstance(headers, dict) or any(not isinstance(v, str) for v in headers.values()):
         raise HTTPException(status_code=400, detail="Extra headers must contain text values.")
     if (
@@ -1986,76 +2172,27 @@ async def test_provider_connection(payload: ProviderProbePayload):
         or key == CATALOG_SECRET_MASK
         or any(v == CATALOG_SECRET_MASK for v in headers.values())
     ):
-        raise HTTPException(
-            status_code=400, detail="Saved credentials were not found. Enter the key again."
-        )
+        raise HTTPException(status_code=400, detail="Saved credentials were not found. Enter the key again.")
+    binding = resolved.get("binding", payload.binding)
+    base_url = resolved.get("base_url", payload.base_url)
     if payload.service == "search":
-        return await probe_search_provider(
-            payload.binding, payload.base_url, key, proxy=payload.proxy
-        )
+        return await probe_search_provider(binding, base_url, key, proxy=resolved.get("proxy", ""))
     return await probe_provider(
-        payload.binding, payload.base_url, key, payload.api_format, headers, payload.api_version
+        binding, base_url, key, resolved.get("api_format", "auto"),
+        headers, resolved.get("api_version", ""),
     )
+
+
+@router.post("/test-provider")
+async def test_provider_connection(payload: ProviderProbePayload):
+    """Read-only model discovery; a listed endpoint does not establish inference access."""
+    return await _discover_provider(payload)
 
 
 @router.post("/fetch-models")
 async def fetch_models_from_provider(payload: FetchModelsPayload):
-    """List selectable model IDs using the provider's own authentication.
-
-    Thin HTTP surface over ``factory.fetch_models`` so the settings UI can
-    populate a model picker. Copilot uses the caller's owner-private CLI login,
-    not the profile's API key or base URL.
-    """
-    _require_settings_admin()
-    from math_q_agent.services.llm.factory import fetch_models as fetch_llm_models
-    from math_q_agent.services.provider_registry import canonical_provider_name
-
-    base_url = (payload.base_url or "").strip()
-    binding = (payload.binding or "").strip().lower() or "openai"
-    is_copilot = canonical_provider_name(binding) == "github_copilot"
-    if not base_url and binding != "codebuddy" and not is_copilot:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="base_url is required for this provider.",
-        )
-
-    api_key = payload.api_key
-    api_format = (payload.api_format or "").strip().lower()
-    if is_copilot:
-        base_url, api_key, api_format = "", None, "auto"
-    elif payload.profile_id and (api_key == CATALOG_SECRET_MASK or not api_format):
-        service = get_model_catalog_service().load().get("services", {}).get(payload.service, {})
-        profile = next(
-            (item for item in service.get("profiles", []) if item.get("id") == payload.profile_id),
-            None,
-        )
-        if api_key == CATALOG_SECRET_MASK:
-            api_key = profile.get("api_key") if profile else None
-        if not api_format and profile:
-            api_format = str(profile.get("api_format") or "")
-
-    try:
-        model_ids = await fetch_llm_models(binding, base_url, api_key, api_format or "auto")
-    except Exception as exc:  # noqa: BLE001 — surface any provider error as 502
-        if is_copilot:
-            # OAuth exceptions can contain credential-bearing URLs or responses.
-            # Never echo or log their raw text at this public HTTP boundary.
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "Could not list GitHub Copilot models. "
-                    "Run: math_q_agent provider login github-copilot "
-                    "for this account in the server's math_q_agent home, "
-                    "then retry. If already logged in, check Copilot access and connectivity."
-                ),
-            ) from None
-        logger.exception("Failed to fetch models from %s", base_url)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Provider request failed: {exc}",
-        ) from exc
-
-    return {"models": [{"id": model_id, "name": model_id} for model_id in model_ids]}
+    """Expose the same discovery result and errors as test-provider."""
+    return await _discover_provider(payload)
 
 
 @router.post("/model-capabilities")
@@ -2271,13 +2408,14 @@ class TourCompletePayload(BaseModel):
 async def complete_tour(payload: TourCompletePayload | None = None):
     _require_settings_admin()
     service = get_model_catalog_service()
-    current = service.load()
+    current = _read_catalog_for_settings(service)
     catalog = (
         restore_catalog_secrets(payload.catalog, current)
         if payload and payload.catalog
         else current
     )
     with _runtime_catalog_write():
+        validate_catalog_names(catalog)
         applied = service.apply(catalog)
     now = int(time.time())
     launch_at = now + 3

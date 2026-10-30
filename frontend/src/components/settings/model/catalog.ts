@@ -120,12 +120,15 @@ export function probePayload(
 
 export function connectionPayload(
   connection: ModelConnection,
+  service: 'llm' | 'embedding' = 'llm',
 ): ProviderProbeRequest {
+  const override = connection.service_overrides?.[service]
+  const fields = override?.enabled ? override : {}
   return {
-    binding: connection.provider,
-    service: 'llm',
+    binding: String(fields.binding || connection.provider),
+    service,
     connection_id: connection.id,
-    base_url: connection.base_url || '',
+    base_url: String(fields.base_url || connection.base_url || ''),
     api_key: connection.api_key,
     api_format: connection.api_format || 'auto',
     api_version: connection.api_version || '',

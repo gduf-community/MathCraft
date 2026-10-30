@@ -1,9 +1,7 @@
 /** 设置与个人资料始终访问真实后端，不受出题演示适配器影响。 */
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+import { apiUrl } from './urls'
 
-export function apiUrl(path: string): string {
-  return `${API_BASE}${path}`
-}
+export { apiUrl } from './urls'
 
 function describeDetail(detail: unknown): string {
   if (typeof detail === 'string') return detail

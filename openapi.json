@@ -5179,6 +5179,223 @@
         }
       }
     },
+    "/api/settings/direct-model/draft": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Direct Model Draft",
+        "description": "Preview a migrated draft copy, preserving its original revision and file.",
+        "operationId": "get_direct_model_draft_api_settings_direct_model_draft_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/direct-model": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Save Direct Model",
+        "description": "Save exactly one model against the latest live catalog, leaving drafts alone.",
+        "operationId": "save_direct_model_api_settings_direct_model_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectModelPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "Storage unavailable; the committed readback-failure code requires verification, not a rejected-write message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelWriteServiceUnavailable"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/direct-model/default": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Default Direct Model",
+        "operationId": "default_direct_model_api_settings_direct_model_default_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectModelTargetPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "Storage unavailable; the committed readback-failure code requires verification, not a rejected-write message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelWriteServiceUnavailable"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/direct-model/delete": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Remove Direct Model",
+        "operationId": "remove_direct_model_api_settings_direct_model_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectModelTargetPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "Storage unavailable; the committed readback-failure code requires verification, not a rejected-write message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelWriteServiceUnavailable"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/direct-model/task-mode": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Change Direct Task Mode",
+        "operationId": "change_direct_task_mode_api_settings_direct_model_task_mode_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectModelTaskModePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "Storage unavailable; the committed readback-failure code requires verification, not a rejected-write message.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelWriteServiceUnavailable"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/settings/apply/registry": {
       "post": {
         "tags": [
@@ -5426,7 +5643,7 @@
           "settings"
         ],
         "summary": "Test Provider Connection",
-        "description": "Test current form credentials, resolving masks from draft/live settings by ID.",
+        "description": "Read-only model discovery; a listed endpoint does not establish inference access.",
         "operationId": "test_provider_connection_api_settings_test_provider_post",
         "requestBody": {
           "content": {
@@ -5466,7 +5683,7 @@
           "settings"
         ],
         "summary": "Fetch Models From Provider",
-        "description": "List selectable model IDs using the provider's own authentication.\n\nThin HTTP surface over ``factory.fetch_models`` so the settings UI can\npopulate a model picker. Copilot uses the caller's owner-private CLI login,\nnot the profile's API key or base URL.",
+        "description": "Expose the same discovery result and errors as test-provider.",
         "operationId": "fetch_models_from_provider_api_settings_fetch_models_post",
         "requestBody": {
           "content": {
@@ -6852,6 +7069,101 @@
         ],
         "title": "Difficulty"
       },
+      "DirectModelPayload": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "embedding",
+              "task"
+            ],
+            "title": "Service"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "model": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model"
+          },
+          "make_default": {
+            "type": "boolean",
+            "title": "Make Default",
+            "default": false
+          },
+          "restore_draft": {
+            "type": "boolean",
+            "title": "Restore Draft",
+            "default": false
+          },
+          "draft_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "service",
+          "profile_id",
+          "model"
+        ],
+        "title": "DirectModelPayload"
+      },
+      "DirectModelTargetPayload": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "embedding",
+              "task"
+            ],
+            "title": "Service"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "service",
+          "profile_id",
+          "model_id"
+        ],
+        "title": "DirectModelTargetPayload"
+      },
+      "DirectModelTaskModePayload": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "inherit",
+              "profiles"
+            ],
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "DirectModelTaskModePayload"
+      },
       "DoclingRemoteTest": {
         "properties": {
           "api_base_url": {
@@ -6966,7 +7278,7 @@
           "binding": {
             "type": "string",
             "title": "Binding",
-            "default": ""
+            "default": "openai"
           },
           "base_url": {
             "type": "string",
@@ -6979,10 +7291,63 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ],
             "title": "Api Key"
+          },
+          "api_format": {
+            "type": "string",
+            "title": "Api Format",
+            "default": "auto"
+          },
+          "api_version": {
+            "type": "string",
+            "title": "Api Version",
+            "default": ""
+          },
+          "extra_headers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Headers"
+          },
+          "proxy": {
+            "type": "string",
+            "title": "Proxy",
+            "default": ""
+          },
+          "service": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "task",
+              "embedding",
+              "search",
+              "tts",
+              "stt",
+              "imagegen",
+              "videogen"
+            ],
+            "title": "Service",
+            "default": "llm"
           },
           "profile_id": {
             "anyOf": [
@@ -6995,16 +7360,7 @@
             ],
             "title": "Profile Id"
           },
-          "service": {
-            "type": "string",
-            "enum": [
-              "llm",
-              "task"
-            ],
-            "title": "Service",
-            "default": "llm"
-          },
-          "api_format": {
+          "connection_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -7013,7 +7369,34 @@
                 "type": "null"
               }
             ],
-            "title": "Api Format"
+            "title": "Connection Id"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "restore_draft": {
+            "type": "boolean",
+            "title": "Restore Draft",
+            "default": false
+          },
+          "draft_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Updated At"
           }
         },
         "type": "object",
@@ -8326,6 +8709,45 @@
         "type": "object",
         "title": "ModelCapabilitiesQuery"
       },
+      "ModelWriteReadbackFailure": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "const": "model_write_committed_readback_failed",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ModelWriteReadbackFailure"
+      },
+      "ModelWriteServiceUnavailable": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ModelWriteReadbackFailure"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ModelWriteServiceUnavailable"
+      },
       "MoveFilePayload": {
         "properties": {
           "source": {
@@ -8650,6 +9072,33 @@
               }
             ],
             "title": "Connection Id"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "restore_draft": {
+            "type": "boolean",
+            "title": "Restore Draft",
+            "default": false
+          },
+          "draft_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Updated At"
           }
         },
         "type": "object",

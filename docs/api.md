@@ -1,8 +1,8 @@
 # API reference — MathCraft
 
 Examples use `http://127.0.0.1:8000`, matching the README command
-`python -m MathCraft --port 8000`. Without a CLI override, `BACKEND_PORT`, or
-saved system settings, the backend defaults to `8001`. Replace the HTTP and
+`python -m MathCraft`. Without a CLI override, `BACKEND_PORT`, or
+saved system settings, the backend defaults to `8000`. Replace the HTTP and
 WebSocket example ports with the actual deployment port. Interactive docs:
 `/docs`. Machine contract: `/openapi.json` (a copy is committed at the repository root).
 
@@ -10,7 +10,7 @@ There is **no authentication**: every request is served as the single local
 admin. CORS is permissive by default. Bind to loopback or front it with a
 gateway you control.
 
-Errors use FastAPI's envelope: `{"detail": "..."}` with a 4xx/5xx status.
+Errors use FastAPI's `detail` envelope with a 4xx/5xx status. Most details are safe text; the documented direct-model committed/readback-failed outcome uses a structured code and message.
 
 ## Knowledge bases
 
@@ -138,6 +138,11 @@ Errors use FastAPI's envelope: `{"detail": "..."}` with a 4xx/5xx status.
 | `PUT` | `/api/settings/chat-response-timeout` | Update Chat Response Timeout |
 | `GET` | `/api/settings/chat-starters` | Get Chat Starter Settings |
 | `PUT` | `/api/settings/chat-starters` | Update Chat Starter Settings |
+| `POST` | `/api/settings/direct-model` | Save Direct Model |
+| `POST` | `/api/settings/direct-model/default` | Default Direct Model |
+| `POST` | `/api/settings/direct-model/delete` | Remove Direct Model |
+| `GET` | `/api/settings/direct-model/draft` | Get Direct Model Draft |
+| `POST` | `/api/settings/direct-model/task-mode` | Change Direct Task Mode |
 | `GET` | `/api/settings/document-parsing` | Get Document Parsing Settings |
 | `PUT` | `/api/settings/document-parsing` | Update Document Parsing Settings |
 | `POST` | `/api/settings/document-parsing/docling/test` | Test Docling Remote Connection |
@@ -227,6 +232,19 @@ Errors use FastAPI's envelope: `{"detail": "..."}` with a 4xx/5xx status.
 - `GET /api/user-profile/avatar` serves the stored image; it returns 404 before the first upload. Profile reads return `avatar_url` or null.
 - The UI previews selected images locally and uploads only after the user confirms Save Profile and the profile PUT succeeds. Profile and avatar writes are separate requests; a partial failure is reported separately and is not rolled back as one transaction.
 - Personal data never enters the model catalog or draft. `/api/settings/profile` remains a configuration export and is not the teacher profile API.
+
+## Direct model configuration contract
+
+- Language (`llm`), embedding (`embedding`) and independent task (`task`) configurations keep stable `profile_id` / model `id` references. Each model has a `direct_config` object containing its own provider `binding`, `base_url`, credentials and applicable connection parameters. The legacy profile container is an internal compatibility detail.
+- `POST /api/settings/direct-model` accepts `{service, profile_id, model, make_default?, restore_draft?, draft_updated_at?}`. It merges only this model into the latest live catalog within one locked atomic write; it never promotes a saved settings draft. The first model in a category becomes its default; adding another keeps the existing default. Saving an independent task configuration preserves the task mode.
+- `POST /api/settings/direct-model/default` and `/api/settings/direct-model/delete` accept `{service, profile_id, model_id}`. Default selection is separate from selecting a model for editing. `POST /api/settings/direct-model/task-mode` accepts `{mode: "inherit" | "profiles"}` and preserves independent configurations.
+- `GET /api/settings/direct-model/draft` returns a masked migrated preview of the saved draft, preserving its original `updated_at` revision and file. Explicit restoration uses `restore_draft: true` with `draft_updated_at` and the exact service/profile/model IDs; only this item is restored, and a changed draft revision is rejected. Ordinary saves never consult draft credentials.
+- These operations return `{catalog}` with masked credentials. If the write completed but server-side readback failed, HTTP 503 includes `detail: {code: "model_write_committed_readback_failed", message}`; runtime caches are invalidated and clients must display a pending-verification state, retain local edits, and re-read rather than report a rejected write. Other storage failures use a safe string detail. Configuration names are trimmed, nonempty and globally unique across the three categories, using case-sensitive comparison. Model identifiers may repeat. Masks retain only the same model's saved credentials; an explicit empty value clears them.
+- `POST /api/settings/test-provider` discovers models from the current form without saving it. Include `service`, `profile_id` and `model_id` when retaining an existing masked direct configuration; versioned explicit draft restoration uses the same two restoration fields. Unsaved model IDs are permitted when credentials are supplied directly. `/api/settings/fetch-models` uses the same discovery semantics. Results include `status`, `models` and the actual upstream `http_status` when available. A stable `reason` code classifies the result without exposing the upstream body; the UI presents a localized explanation. Transport failures have no invented HTTP status; rejected requests are never successful empty lists. No inference or embedding is performed.
+- Discovery is optional and manual. Failure permits manual model identifiers and saving. A successful list request does not establish inference or embedding access.
+- Legacy live configurations migrate atomically to independent fields while retaining IDs, defaults and knowledge-base bindings. Historical name adjustments are reported in catalog migration metadata. Saved drafts remain separate and are never applied by migration or a direct-model save. Saved catalogs retain precedence over environment initialization; these endpoints never rewrite `.env`.
+
+Specification and acceptance: [模型直接配置功能规格](design/模型直接配置功能规格.md), [实施记录](design/模型直接配置实施记录.md).
 
 ## Retrieval contract
 

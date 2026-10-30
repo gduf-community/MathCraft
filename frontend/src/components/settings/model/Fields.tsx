@@ -142,6 +142,7 @@ export function ConnectionForm({
   const isMasked =
     fields.api_key === '***' ||
     (Array.isArray(fields.api_key) &&
+      fields.api_key.length > 0 &&
       fields.api_key.every((value) => value === '***'))
   const formats = [
     ...new Set([
@@ -185,6 +186,7 @@ export function ConnectionForm({
           <button
             type="button"
             className={`${secondaryClass} text-left`}
+            aria-label="更换凭据（API Key）"
             onClick={() => setReplaceKey(true)}
           >
             ••••••••　更换凭据
@@ -208,6 +210,7 @@ export function ConnectionForm({
           <button
             type="button"
             className={secondaryClass}
+            aria-label="明确清除已保存凭据（API Key）"
             onClick={() => onChange({ api_key: '' })}
           >
             明确清除已保存凭据
