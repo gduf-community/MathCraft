@@ -92,3 +92,6 @@ chore(deps): 升级 fastapi 至 0.115
 - 新增可选依赖走 `pyproject.toml` 的 extras，不加入默认依赖。
 - 测试放 `backend/tests/`，文件名 `test_*.py`，通过 `conftest.py` 的 fixture 获取客户端与假嵌入端点。
 - `frontend/` 为出题智能体前端（React 19 + Vite），`node_modules/` 与构建产物 `dist/` 不提交；出题服务的数据契约沉淀在 `backend/schemas/` 与前端 `src/types/`，改动时保持两侧字段一致。
+
+## 6. 开发时时刻留意是否需要重构
+在开发时，如果发现重构为更合理的代码能使项目接口更清晰，实现更合理，使代码低耦合和高内聚，而不是在有问题的代码上堆叠代码，来使测试通过或解决bug,那就提出重构意见，如果用户默许你自动重构，就自动执行。
