@@ -103,6 +103,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",
     "import-linter>=2.1.0,<3.0.0",
+    "ruff>=0.15.22,<0.16.0",
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "python-pptx>=1.0.0",
@@ -133,3 +134,62 @@ MathCraft = [
 testpaths = ["backend/tests"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["backend"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules intentionally keep compatibility or lazy imports below runtime
+# declarations so optional engines do not become import-time requirements.
+"backend/MathCraft/api/routers/knowledge.py" = ["E402"]
+"backend/MathCraft/api/routers/settings.py" = ["E402", "F401"]
+"backend/MathCraft/knowledge/progress_tracker.py" = ["E402"]
+"backend/MathCraft/services/rag/linked_kb.py" = ["E402"]
+"backend/MathCraft/services/setup/init.py" = ["F821"]
+"backend/MathCraft/services/web_source/sync.py" = ["E402"]
+"backend/MathCraft/services/config/test_runner.py" = ["F401"]
+"backend/MathCraft/utils/bibtex_converter.py" = ["F841"]
+"backend/main.py" = ["F401"]
+"backend/services/question_gen.py" = ["F401"]
+# Pytest fixtures are imported for registration and then injected by name.
+"backend/tests/**/*.py" = ["F401", "F811"]
+
+[tool.pyright]
+# Incremental baseline: keep the CI check actionable while legacy modules are
+# annotated and their existing diagnostics are migrated in follow-up changes.
+include = [
+    "backend/MathCraft/core",
+    "backend/MathCraft/config",
+    "backend/MathCraft/logging",
+    "backend/MathCraft/runtime/env.py",
+    "backend/MathCraft/runtime/home.py",
+    "backend/MathCraft/runtime/mode.py",
+    "backend/MathCraft/runtime/worker_tasks.py",
+    "backend/MathCraft/services/base_sync.py",
+    "backend/MathCraft/services/file_io.py",
+    "backend/MathCraft/services/path_service.py",
+    "backend/MathCraft/services/provider_registry.py",
+    "backend/MathCraft/services/tool_names.py",
+    "backend/MathCraft/services/voice/base.py",
+    "backend/MathCraft/services/voice/config.py",
+    "backend/MathCraft/services/voice/audio.py",
+    "backend/MathCraft/services/voice/speech_text.py",
+    "backend/MathCraft/services/voice/discovery.py",
+    "backend/MathCraft/services/voice/preview.py",
+    "backend/MathCraft/services/search/base.py",
+    "backend/MathCraft/services/search/types.py",
+    "backend/MathCraft/services/search/consolidation.py",
+    "backend/MathCraft/services/search/source_filter.py",
+]
+exclude = ["backend/tests", "backend/scripts", "**/__pycache__"]
+extraPaths = ["backend"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false

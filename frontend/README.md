@@ -48,8 +48,16 @@ frontend/
 ```powershell
 npm install
 npm run dev
+npm run typecheck
+npm run lint
 npm run build
 npm run preview
+```
+
+`npm run typecheck` 执行严格的 TypeScript 检查，`npm run lint` 执行 ESLint。仓库根目录的 Pyright 使用同一份前端 Node 依赖运行：
+
+```powershell
+.\node_modules\.bin\pyright.cmd
 ```
 
 ## 共享环境配置

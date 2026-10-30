@@ -6,6 +6,8 @@ accept an engine switch without disturbing the other engines' stored settings.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 ALL_ENGINES = {
     "text_only",
     "docling",
