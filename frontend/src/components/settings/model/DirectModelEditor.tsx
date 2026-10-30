@@ -205,7 +205,7 @@ export function DirectModelEditor({
                 <div className="flex min-w-0 flex-col gap-1.5 text-sm font-medium text-slate-700">
                   <label htmlFor={`${id}-key`}>API Key</label>
                   {(config.api_key === '***' || (Array.isArray(config.api_key) && config.api_key.every((value) => value === '***') && config.api_key.length > 0)) && !replaceKeys[key]
-                    ? <button id={`${id}-key`} type="button" className={`${secondaryClass} text-left`} onClick={() => setReplaceKeys((previous) => ({ ...previous, [key]: true }))}>••••••••　更换凭据</button>
+                     ? <button id={`${id}-key`} type="button" className={`${secondaryClass} text-left`} onClick={() => setReplaceKeys((previous) => ({ ...previous, [key]: true }))}>•••••••• 更换凭据</button>
                     : <input id={`${id}-key`} className={inputClass} type="password" autoComplete="new-password" value={config.api_key === '***' ? '' : Array.isArray(config.api_key) ? config.api_key.every((value) => value === '***') ? '' : config.api_key.join(',') : config.api_key ?? ''} onChange={(event) => patchConfig({ api_key: event.target.value })} />}
                   <div className="flex flex-wrap items-center gap-2">
                     <button type="button" className={`${secondaryClass} text-xs`} onClick={() => patchConfig({ api_key: '' })}>明确清除凭据</button>

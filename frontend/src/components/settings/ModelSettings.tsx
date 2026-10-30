@@ -245,7 +245,7 @@ export function ModelSettings({ onDirtyChange }: ModelSettingsProps) {
         {tabs.map(({ value, label, icon: Icon }, index) => <button key={value} type="button" role="tab" id={`${id}-tab-${value}`} aria-controls={`${id}-panel-${value}`} aria-selected={tab === value} tabIndex={tab === value ? 0 : -1}
           className={`flex min-h-11 shrink-0 items-center gap-2 rounded-t-xl border-b-2 px-4 py-3 text-sm focus-visible:outline-2 focus-visible:outline-blue-500 ${tab === value ? 'border-blue-600 bg-blue-50 font-semibold text-blue-700' : 'border-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}
           onClick={() => setTab(value)} onKeyDown={(event) => {
-            let next = index
+            let next: number
             if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
             else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
             else if (event.key === 'Home') next = 0

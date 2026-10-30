@@ -288,6 +288,23 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 .venv\Scripts\python.exe -m pytest -q
 ```
 
+开发依赖同时包含 Ruff。提交到 GitHub 后，`.github/workflows/ci.yml` 会对 `backend/` 执行 Ruff lint 检查；本地可使用相同命令复现：
+
+```powershell
+.venv\Scripts\python.exe -m ruff check backend
+```
+
+前端静态检查和 Pyright 使用 `frontend` 的 Node 开发依赖：
+
+```powershell
+Push-Location frontend
+npm ci
+npm run typecheck
+npm run lint
+Pop-Location
+.\frontend\node_modules\.bin\pyright.cmd
+```
+
 `pyproject.toml` 的 `testpaths` 已指向 `backend/tests`，直接运行即可。套件通过 `TestClient` 驱动真实 ASGI 应用，数据根指向一次性的 `backend/tests/.data-home`；它会启动一个假的 OpenAI 兼容 `/embeddings` 端点，因此默认 LlamaIndex 流水线无需任何外部凭证即可完成索引与检索。端到端用例会建库、上传文档、等待索引完成并断言召回片段。
 
 ## 隔离文档解析恢复

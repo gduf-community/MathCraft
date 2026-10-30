@@ -189,7 +189,7 @@ export function ConnectionForm({
             aria-label="更换凭据（API Key）"
             onClick={() => setReplaceKey(true)}
           >
-            ••••••••　更换凭据
+            •••••••• 更换凭据
           </button>
         ) : (
           <input
