@@ -52,12 +52,13 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   ├── adr/                      # 架构决策记录
 │   └── 智能体出题工作流程.docx  # 出题流程说明
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
+│   ├── src/api/urls.ts          # 环境配置驱动的 HTTP 与 WebSocket 地址
 │   ├── src/components/settings/ # 模型、引擎、解析及知识库入口
 │   │   ├── model/DirectModelEditor.tsx # 完整模型表单与手动发现
 │   │   └── model/directCatalog.ts # 单模型编辑合并与校验
 │   ├── src/components/ui/ConfigurationDialog.tsx # 通用临时配置模态面板
 │   ├── src/components/profile/  # 教师资料表单与头像上传
-│   ├── src/api/urls.ts          # 环境配置驱动的 HTTP 与 WebSocket 地址
+│   ├── src/components/tabs/FavoritesTab/ # 题目收藏页（mock 数据，前端演示）
 │   └── README.md                 # 前端目录结构与开发命令
 └── tools/                        # 仓库维护脚本
 ```
