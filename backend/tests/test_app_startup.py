@@ -13,7 +13,7 @@ import pytest
 
 def _run(script: str, home: Path) -> None:
     env = dict(os.environ)
-    env["MATH_Q_HOME"] = str(home)
+    env["MATHCRAFT_HOME"] = str(home)
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
         env=env,
@@ -45,7 +45,7 @@ def test_import_only_declares_app(module: str, tmp_path: Path) -> None:
         assert "/healthz" in schema["paths"]
         assert dict(os.environ) == before_env
         assert logging.getLogger().handlers == before_handlers
-        assert not Path(os.environ["MATH_Q_HOME"]).exists()
+        assert not Path(os.environ["MATHCRAFT_HOME"]).exists()
         ''',
         tmp_path / "unused-home",
     )
@@ -62,7 +62,7 @@ def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> N
         from fastapi.testclient import TestClient
         import MathCraft.runtime.env as runtime_env
 
-        old_home = Path(os.environ["MATH_Q_HOME"])
+        old_home = Path(os.environ["MATHCRAFT_HOME"])
         home = old_home.parent / "startup-home"
         settings = home / "data" / "user" / "settings"
         settings.mkdir(parents=True)
@@ -78,7 +78,7 @@ def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> N
         calls = []
         def load_test_env():
             calls.append("load")
-            os.environ["MATH_Q_HOME"] = str(home)
+            os.environ["MATHCRAFT_HOME"] = str(home)
             return home / ".env"
 
         runtime_env.load_project_env = load_test_env
@@ -173,7 +173,7 @@ def test_cli_loads_shared_dotenv_without_overriding_shell(
         import uvicorn
         import MathCraft.runtime.env as runtime_env
 
-        root = Path(os.environ["MATH_Q_HOME"]).parent / "project"
+        root = Path(os.environ["MATHCRAFT_HOME"]).parent / "project"
         root.mkdir()
         (root / ".env").write_text(
             "BACKEND_HOST=127.0.0.2\\nBACKEND_PORT=8234\\nFRONTEND_PORT=5234\\n",
@@ -206,7 +206,7 @@ def test_cli_missing_dotenv_uses_matching_frontend_defaults(tmp_path: Path) -> N
         from pathlib import Path
         import uvicorn
         import MathCraft.runtime.env as runtime_env
-        runtime_env.PROJECT_ROOT = Path(os.environ["MATH_Q_HOME"]).parent / "absent"
+        runtime_env.PROJECT_ROOT = Path(os.environ["MATHCRAFT_HOME"]).parent / "absent"
         for key in ("BACKEND_HOST", "BACKEND_PORT", "FRONTEND_PORT"):
             os.environ.pop(key, None)
         from MathCraft.app import run
@@ -239,7 +239,7 @@ def test_cli_preserves_saved_port_and_override_priority(
         import uvicorn
         import MathCraft.runtime.env as runtime_env
 
-        home = Path(os.environ["MATH_Q_HOME"])
+        home = Path(os.environ["MATHCRAFT_HOME"])
         settings = home / "data" / "user" / "settings"
         settings.mkdir(parents=True)
         (settings / "system.json").write_text(

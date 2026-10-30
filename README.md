@@ -6,7 +6,7 @@ MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目�
 
 项目包含一个统一的 `MathCraft` 后端：同一进程提供知识库、模型配置、文档入库、检索和题目生成 API；`frontend` 是配套的 React 应用。前后端按独立进程启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
 
-`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。主实现包统一位于 `backend/MathCraft/`，Python import 和启动入口统一使用 `MathCraft`。旧 `math_q_agent` import 与启动命令停止支持，不保留旧目录兼容壳；`MATH_Q_HOME` 与既有 `data/` 运行时路径保持不变。
+`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATHCRAFT_HOME/data`。主实现包统一位于 `backend/MathCraft/`，Python import 和启动入口统一使用 `MathCraft`。旧 `math_q_agent` import 与启动命令停止支持，不保留旧目录兼容壳；数据根环境变量现统一为 `MATHCRAFT_HOME`，不提供旧名回退。将其值指向原 home 目录即可继续读取既有 `data/`，无需移动数据。
 
 ## 目录结构
 
@@ -163,7 +163,7 @@ MINERU_API_TOKEN=
 
 | 变量 | 说明 |
 | --- | --- |
-| `MATH_Q_HOME` | 数据根，默认当前工作目录（在仓库根启动时即仓库根）；可在 shell 或 `.env` 中设置，须在 ASGI 启动前确定；运行时数据落在 `<MATH_Q_HOME>/data` |
+| `MATHCRAFT_HOME` | 数据根，默认当前工作目录（在仓库根启动时即仓库根）；可在 shell 或 `.env` 中设置，须在 ASGI 启动前确定；运行时数据落在 `<MATHCRAFT_HOME>/data` |
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
 | `CORS_ORIGIN` / `CORS_ORIGINS` | 默认空；两个应用均读取的额外浏览器来源，逗号分隔；当前无认证模式仍默认放行跨域 |
 | `BACKEND_HOST` / `BACKEND_PORT` | 统一后端绑定地址和端口，默认 `127.0.0.1` / `8000`；同时供 Vite 推导代理目标 |
@@ -234,7 +234,7 @@ npm run dev
 
 ## 数据目录
 
-服务持久化的全部内容位于 `$MATH_Q_HOME/data`；包统一保留 `MATH_Q_HOME` 和已有 `data/` 运行时路径，继续读取原设置、知识库、索引与教师资料，不要求搬迁或重建：
+服务持久化的全部内容位于 `$MATHCRAFT_HOME/data`；当前仅使用 `MATHCRAFT_HOME`，不提供旧名回退。将其值指向原 home 目录时，继续读取同一 `data/` 下的原设置、知识库、索引与教师资料，不要求搬迁或重建：
 
 ```
 data/
@@ -250,7 +250,7 @@ data/
 └── user/settings/*.json        # 模型目录、解析、引擎等设置
 ```
 
-`MATH_Q_HOME` 默认使用进程启动时的当前工作目录；在仓库根目录启动时才对应仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
+`MATHCRAFT_HOME` 默认使用进程启动时的当前工作目录；在仓库根目录启动时才对应仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
 
 ## RAG 引擎
 
@@ -298,7 +298,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 ## 配置初始化与兼容约定
 
 1. 应用模块导入仅装配路由；运行时设置初始化、环境变量导出和日志配置在 ASGI lifespan 启动阶段完成。导出 OpenAPI 不会创建运行时设置或日志。
-2. 配置默认路径通过当前路径服务解析，导入后、启动前设置 `MATH_Q_HOME` 仍然有效；显式路径注入继续受支持，已创建的服务实例仍绑定原目录。运行期间请通过设置 API 修改配置，切换数据根请重启进程。
+2. 配置默认路径通过当前路径服务解析，导入后、启动前设置 `MATHCRAFT_HOME` 仍然有效；显式路径注入继续受支持，已创建的服务实例仍绑定原目录。运行期间请通过设置 API 修改配置，切换数据根请重启进程。
 3. 设置接口只有在模型目录内容实际改变时才重置 LLM/嵌入客户端；重复保存相同配置不会重置。
 4. 模型环境变量负责首次初始化目录；已保存的有效目录（包括明确保存的空目录）优先，不会被环境变量再次覆盖。
 

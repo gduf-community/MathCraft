@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def profile_clients(tmp_path, monkeypatch):
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path))
     from MathCraft.api.main import app
 
     def create_client():
@@ -271,14 +271,14 @@ def test_runtime_roots_do_not_share_personal_information(profile_clients, tmp_pa
         saved = client.post("/api/user-profile/avatar", files={"file": ("old.png", bitmap(), "image/png")})
         assert saved.status_code == 200
         old = client.get("/api/user-profile/avatar").content
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "another-runtime"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "another-runtime"))
     with profile_clients() as other:
         assert other.get("/api/user-profile").json() == {
             "nickname": "教师", "role": "teacher", "teaching_stage": "",
             "grade": "", "avatar_url": None,
         }
         assert other.get("/api/user-profile/avatar").status_code == 404
-    monkeypatch.setenv("MATH_Q_HOME", original_home)
+    monkeypatch.setenv("MATHCRAFT_HOME", original_home)
     with profile_clients() as original:
         assert original.get("/api/user-profile").json() == saved.json()
         assert original.get("/api/user-profile/avatar").content == old

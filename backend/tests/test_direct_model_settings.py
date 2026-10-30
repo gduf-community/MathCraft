@@ -8,7 +8,7 @@ import pytest
 
 @pytest.fixture
 def direct_client(tmp_path, monkeypatch):
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path))
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     from fastapi import FastAPI

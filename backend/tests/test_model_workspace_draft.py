@@ -18,7 +18,7 @@ import pytest
 
 @pytest.fixture
 def workspace_client(tmp_path, monkeypatch, embedding_server):
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path))
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     # Seed before importing routes so even incidental reads see only fake data.
