@@ -29,10 +29,15 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   │   ├── api/main.py          # 导出同一个统一 app
 │   │   ├── api/runtime.py       # lifespan、运行时初始化与 CORS 中间件
 │   │   ├── api/routers/profile.py # 单租户教师资料与头像接口
+│   │   ├── runtime/              # 数据根与隔离文档解析进程
+│   │   │   ├── isolated_worker.py # 父进程超时、并发限制与取消回收
+│   │   │   ├── worker_process.py # 固定 python -m 入口与 pickle 协议
+│   │   │   └── worker_tasks.py   # 文本提取与 UTF-8 Markdown 写入任务
 │   │   ├── services/profile/     # 资料校验与独立持久化
 │   │   ├── knowledge/model_references.py # 知识库嵌入绑定查询与删除保护
 │   │   ├── services/config/direct_model_config.py # 独立模型配置迁移与名称规则
 │   │   └── services/settings/direct_model_edit.py # 单模型合并与独立默认操作
+│   ├── tests/test_isolated_document_extraction.py # 真实子进程解析与预览回归
 │   └── README.md                 # 后端目录结构与职责说明
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
@@ -284,6 +289,14 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 ```
 
 `pyproject.toml` 的 `testpaths` 已指向 `backend/tests`，直接运行即可。套件通过 `TestClient` 驱动真实 ASGI 应用，数据根指向一次性的 `backend/tests/.data-home`；它会启动一个假的 OpenAI 兼容 `/embeddings` 端点，因此默认 LlamaIndex 流水线无需任何外部凭证即可完成索引与检索。端到端用例会建库、上传文档、等待索引完成并断言召回片段。
+
+## 隔离文档解析恢复
+
+基线 `6045b32` 缺失 `runtime/worker_process.py` 与 `runtime/worker_tasks.py`，导致已有文本预览和 `TextOnlyParser.parse()` 的隔离调用失败。本次补齐固定入口 `python -m MathCraft.runtime.worker_process <request_path> <result_path>` 和文档任务，复用现有提取器；不增加依赖，恢复范围仅限隔离文档提取，不恢复上游多租户能力。
+
+父子进程通过临时文件交换 pickle：请求为 `callable_path`、`args`、`kwargs`，成功返回 `ok/result`，失败返回 `ok/message/module/type/traceback/attrs`。异常属性至少保留 `filename`，忽略不可序列化属性；公开文档异常与 HTTP 预览契约沿用现有转换。父进程继续负责超时、并发限制、取消后的进程回收与临时目录清理。详细流程和异常边界见[设计文档第 10 节](docs/design/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收)。
+
+2026-10-31 在 Windows / Python 3.14 上验证：新增真实子进程回归 **25 项通过**，覆盖文本与 PDF 提取、Markdown 输出、HTTP 文本预览、错误传回及超时/取消；既有解析相关测试 **9 项通过**，完整后端套件 **322 项通过、1 项跳过**。验证命令与边界见设计文档第 10 节。
 
 ## 已知限制
 
