@@ -23,7 +23,7 @@ def settings_client(tmp_path, monkeypatch):
     )
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from math_q_agent.api.routers.settings import router
+    from MathCraft.api.routers.settings import router
 
     app = FastAPI()
     app.include_router(router, prefix="/api/settings")
@@ -57,7 +57,7 @@ def _direct_catalog(service="llm"):
 
 @pytest.mark.parametrize("service", ["llm", "task", "embedding"])
 def test_direct_empty_values_never_borrow_container_or_pool_credentials(service):
-    from math_q_agent.services.config.provider_runtime import (
+    from MathCraft.services.config.provider_runtime import (
         resolve_embedding_runtime_config, resolve_llm_runtime_config,
     )
 
@@ -98,11 +98,11 @@ def _legacy_catalog():
 
 
 def test_read_migrates_formal_catalog_stably_without_applying_draft(settings_client, tmp_path):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import (
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import (
         resolve_embedding_runtime_config, resolve_llm_runtime_config,
     )
-    from math_q_agent.services.rag.embedding_signature import signature_from_config
+    from MathCraft.services.rag.embedding_signature import signature_from_config
 
     path = tmp_path / "data/user/settings/model_catalog.json"
     legacy = _legacy_catalog()
@@ -153,8 +153,8 @@ def test_read_migrates_formal_catalog_stably_without_applying_draft(settings_cli
 
 
 def test_masked_direct_secrets_follow_model_ids_after_reordering(settings_client, tmp_path):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     path = tmp_path / "data/user/settings/model_catalog.json"
     service = ModelCatalogService(path)
@@ -197,11 +197,11 @@ def test_invalid_formal_file_is_preserved_instead_of_env_bootstrap(settings_clie
     ("llm", False), ("task", False), ("embedding", False), ("embedding", True),
 ])
 def test_migration_freezes_actual_legacy_pool_inheritance(settings_client, tmp_path, service_name, local_endpoint):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import (
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import (
         resolve_embedding_runtime_config, resolve_llm_runtime_config,
     )
-    from math_q_agent.services.rag.embedding_signature import signature_from_config
+    from MathCraft.services.rag.embedding_signature import signature_from_config
 
     path = tmp_path / "data/user/settings/model_catalog.json"
     empty_profile = {"id": "missing", "name": "Missing credentials", "binding": "openai",
@@ -267,7 +267,7 @@ def test_invalid_legacy_reference_stops_migration_without_partial_writes(setting
 
 def test_atomic_migration_replace_failure_preserves_original_and_retry_is_stable(settings_client, tmp_path, monkeypatch):
     import os
-    from math_q_agent.services.config.direct_model_config import migrate_direct_catalog
+    from MathCraft.services.config.direct_model_config import migrate_direct_catalog
 
     path = tmp_path / "data/user/settings/model_catalog.json"
     original = json.dumps(_legacy_catalog()).encode()
@@ -294,8 +294,8 @@ def test_atomic_migration_replace_failure_preserves_original_and_retry_is_stable
 
 
 def test_saved_direct_catalog_remains_authoritative_over_environment(settings_client, tmp_path, monkeypatch):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     path = tmp_path / "data/user/settings/model_catalog.json"
     catalog = _direct_catalog()
@@ -319,7 +319,7 @@ def test_saved_direct_catalog_remains_authoritative_over_environment(settings_cl
 
 
 def test_legacy_local_embedding_root_migrates_to_the_original_visible_endpoint(settings_client, tmp_path):
-    from math_q_agent.services.config.provider_runtime import resolve_embedding_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_embedding_runtime_config
 
     path = tmp_path / "data" / "user" / "settings" / "model_catalog.json"
     original = {"version": 1, "connections": [], "services": {"embedding": {

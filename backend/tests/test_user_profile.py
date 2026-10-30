@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def profile_clients(tmp_path, monkeypatch):
     monkeypatch.setenv("MATH_Q_HOME", str(tmp_path))
-    from math_q_agent.api.main import app
+    from MathCraft.api.main import app
 
     def create_client():
         # Production registrations, without unrelated model/engine startup.

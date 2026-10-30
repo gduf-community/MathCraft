@@ -14,25 +14,7 @@ import type {
   StudySpace,
 } from '../types'
 import type { ApiClient } from './client'
-import { apiUrl } from './urls'
-
-async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(apiUrl(path), {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
-  if (!resp.ok) {
-    let detail: unknown = `HTTP ${resp.status}`
-    try {
-      detail = (await resp.json()).detail
-    } catch {
-      /* 保持默认信息 */
-    }
-    // 结构化错误（如原题数量不足确认）取 message 字段
-    throw new Error(typeof detail === 'object' && detail !== null ? String((detail as { message?: string }).message) : String(detail))
-  }
-  return resp.json() as Promise<T>
-}
+import { settingsRequest as http } from './settingsHttp'
 
 /** 对话出题：后端维护槽位状态机，questions 有值即表示本轮生成了题目 */
 export interface ChatResult {
@@ -55,8 +37,8 @@ export function chat(body: {
 
 export const httpAdapter: ApiClient = {
   async listKnowledgeBases() {
-    const items = await http<{ id: string; name: string }[]>('/api/knowledge-bases')
-    return items.map<KnowledgeBase>((item) => ({ id: item.id, name: item.name }))
+    const items = await http<{ id?: string | null; name: string }[]>('/api/knowledge-bases')
+    return items.map<KnowledgeBase>((item) => ({ id: item.id || item.name, name: item.name }))
   },
 
   async listDocuments(kbId: string) {

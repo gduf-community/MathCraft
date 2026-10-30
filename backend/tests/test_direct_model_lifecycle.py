@@ -14,9 +14,9 @@ from test_direct_model_settings import direct_client, model_entry, save_model  #
 def test_readonly_or_rejected_settings_keep_existing_clients(
     direct_client, embedding_server, tmp_path, monkeypatch, caplog, operation,
 ):
-    from math_q_agent.services.embedding.client import get_embedding_client, reset_embedding_client
-    from math_q_agent.services.llm.client import get_llm_client, reset_llm_client
-    from math_q_agent.services.llm.config import clear_llm_config_cache
+    from MathCraft.services.embedding.client import get_embedding_client, reset_embedding_client
+    from MathCraft.services.llm.client import get_llm_client, reset_llm_client
+    from MathCraft.services.llm.config import clear_llm_config_cache
 
     # Public constructors may synchronize SDK environment; retain fixture isolation.
     monkeypatch.setenv("OPENAI_API_KEY", "fake-unused-environment-key")

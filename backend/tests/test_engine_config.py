@@ -83,7 +83,7 @@ ENGINE_CLASSES = {
 def test_every_engine_resolves_to_its_own_pipeline(provider, expected):
     """Selecting an engine must build that engine, never a quiet fallback."""
 
-    from math_q_agent.services.rag.factory import get_pipeline
+    from MathCraft.services.rag.factory import get_pipeline
 
     kb_root = Path(__file__).resolve().parent / ".data-home" / "data" / "knowledge_bases"
     pipeline = get_pipeline(provider, kb_base_dir=str(kb_root))

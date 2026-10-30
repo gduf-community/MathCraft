@@ -20,7 +20,7 @@ def test_independent_model_does_not_keep_a_legacy_source_dependency(direct_clien
     })
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["catalog"]["services"]["embedding"] == before
-    from math_q_agent.services.config.provider_runtime import resolve_embedding_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_embedding_runtime_config
 
     resolved = resolve_embedding_runtime_config()
     assert resolved.model == "fake-chat"

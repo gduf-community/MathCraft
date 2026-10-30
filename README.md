@@ -6,7 +6,7 @@ MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目�
 
 项目包含一个统一的 `MathCraft` 后端：同一进程提供知识库、模型配置、文档入库、检索和题目生成 API；`frontend` 是配套的 React 应用。前后端按独立进程启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
 
-`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。内部 `math_q_agent` 包作为兼容层保留，新的启动命令和公共模块名统一为 `MathCraft`。
+`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。主实现包统一位于 `backend/MathCraft/`，Python import 和启动入口统一使用 `MathCraft`。旧 `math_q_agent` import 与启动命令停止支持，不保留旧目录兼容壳；`MATH_Q_HOME` 与既有 `data/` 运行时路径保持不变。
 
 ## 目录结构
 
@@ -23,8 +23,11 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── .env.example                  # 环境变量样例
 ├── .gitignore                    # 忽略虚拟环境、运行时数据、缓存与 .env
 ├── backend/                      # Python 后端，详细结构见 backend/README.md
-│   ├── MathCraft/                # 对外 Python 模块与启动入口
-│   ├── math_q_agent/             # DeepTutor 兼容实现包
+│   ├── MathCraft/                # 唯一 Python 主实现包与统一启动入口
+│   │   ├── app.py               # 统一 FastAPI 应用装配
+│   │   ├── __main__.py          # python -m MathCraft 启动入口
+│   │   ├── api/main.py          # 导出同一个统一 app
+│   │   ├── api/runtime.py       # lifespan、运行时初始化与 CORS 中间件
 │   │   ├── api/routers/profile.py # 单租户教师资料与头像接口
 │   │   ├── services/profile/     # 资料校验与独立持久化
 │   │   ├── knowledge/model_references.py # 知识库嵌入绑定查询与删除保护
@@ -36,6 +39,9 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   ├── 更详细的出题流程.md        # 给教师阅读的资料选择、出题修改、版本保存与组卷流程
 │   ├── design/                   # 新功能与模块设计文档
 │   │   ├── PRD-智能出题智能体.md  # 考研全范围、多选解析结果、逐题版本及指定版本组卷的总体需求
+│   │   ├── 后端包统一与接口对齐.md # 包迁移、入口、接口契约与验收边界
+│   │   ├── 题目收藏页面设计.md   # 收藏页交互方案（当前为前端 mock）
+│   │   ├── 题目收藏实施记录.md   # 收藏 mock 实施范围与持久化边界
 │   │   ├── 知识库模块说明.md       # 现有知识库架构、生命周期与接口分组
 │   │   ├── 模型配置来源与普通知识库流程.md # 模型配置来源、启动与知识库主链路
 │   │   ├── 扫描PDF云端OCR策略.md   # 扫描文档解析策略与异常处理
@@ -112,7 +118,9 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 应用导入不会加载 `.env` 或写入运行时设置。ASGI 启动时加载 `.env`、初始化设置和日志，再开始接收请求；初始化失败会直接终止启动。命令行入口会先读取 `.env` 和已保存的启动配置。端口优先级为 `--port` > shell / `.env` 中的 `BACKEND_PORT` > `system.json` > 内置默认值 `8000`，与 Vite 默认代理端口一致。监听地址按 `--host` > shell / `.env` 中的 `BACKEND_HOST` > `127.0.0.1` 确定。
 
-Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、模型配置和出题接口都由这个进程提供，内部 `math_q_agent` 代码已直接装配进统一应用。
+Python 主实现包与启动模块统一为 `MathCraft`。`MathCraft.app` 装配应用，`MathCraft.api.main:app` 导出同一个应用，`python -m MathCraft` 启动该应用；知识库、模型配置、资料和出题接口都由这一进程提供。生命周期与中间件位于 `MathCraft/api/runtime.py`，正式业务路由位于 `MathCraft/api/routers/`。
+
+旧 `math_q_agent` import 与命令停止支持，不提供旧目录兼容壳；开发脚本、动态 import 和 worker 命令需要使用 `MathCraft`。HTTP 与 WebSocket 路径不随 Python 包名改变，迁移范围和验收见 [后端包统一与接口对齐](docs/design/后端包统一与接口对齐.md)。
 
 知识库统一使用 DeepTutor 正式知识库模块，默认 RAG provider 为 `llamaindex`。出题服务只调用正式知识库的文件列表和 RAG 查询，不再提供独立的 Chroma/Ollama 入库链路。
 
@@ -226,7 +234,7 @@ npm run dev
 
 ## 数据目录
 
-服务持久化的全部内容位于 `$MATH_Q_HOME/data`：
+服务持久化的全部内容位于 `$MATH_Q_HOME/data`；包统一保留 `MATH_Q_HOME` 和已有 `data/` 运行时路径，继续读取原设置、知识库、索引与教师资料，不要求搬迁或重建：
 
 ```
 data/
@@ -285,6 +293,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 2. **只有默认引擎做过端到端索引。** 测试用 LlamaIndex 对着假嵌入端点建索引。每个引擎都能解析到各自的流水线类，安装对应 extra 后会从 `configured: false` 变为 `true`，但真实的 GraphRAG / LightRAG / PageIndex 索引没有在这里构建过。
 3. **隔离文档解析需要真实临时目录。** PDF 解析通过 worker 子进程完成；在禁止子进程管道的沙箱中，解析器会报失败而不是静默降级。PDF 入库请在普通环境运行服务。
 4. **按设计没有认证。** 请绑定回环地址或用网关前置。
+5. **题目收藏为前端内存 mock。** 收藏与收藏夹用于界面演示，刷新后重置；尚未接入后端持久化，本轮包统一不新增收藏后端。
 
 ## 配置初始化与兼容约定
 
@@ -297,6 +306,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 
 | 文档 | 内容 |
 | --- | --- |
+| [docs/design/后端包统一与接口对齐.md](docs/design/后端包统一与接口对齐.md) | 统一实现包与入口、运行时路径保留、接口和前端对齐边界及验收标准 |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
 | [docs/更详细的出题流程.md](docs/更详细的出题流程.md) | 教师操作版：按上传资料、指定范围、逐题修改、手动保存版本和组卷的顺序说明操作 |
 | [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 考研全章节总体需求：整份解析结果多选与原文预览、对话范围、手动版本保存与清理、待组卷及独立组卷页；含确认状态和待决策事项 |

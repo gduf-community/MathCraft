@@ -37,7 +37,7 @@ def pdf_path():
 
 
 def test_pdf_text_is_extracted(pdf_path):
-    from math_q_agent.utils.document_extractor import extract_text_from_path
+    from MathCraft.utils.document_extractor import extract_text_from_path
 
     text = extract_text_from_path(pdf_path)
     assert "helix angle" in text.lower()

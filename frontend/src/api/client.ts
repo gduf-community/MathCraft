@@ -9,18 +9,15 @@ import type {
 } from '../types'
 
 /**
- * 后端 API 端点预留。
- * 接入真实后端时，按此清单实现 httpAdapter 并在文件末尾替换默认导出即可，
- * 页面组件不需要任何改动。
+ * 统一 FastAPI app 已提供的出题入口。
+ * httpAdapter 适配后端字段；学习空间、编辑、收藏与组卷仍为本地演示，
+ * 不为这些演示操作声明尚不存在的 HTTP 路由。
  */
 export const ENDPOINTS = {
   knowledgeBases: '/api/knowledge-bases',
   documents: '/api/knowledge-bases/:kbId/files',
   generate: '/api/generate',
-  question: '/api/questions/:id',
-  publish: '/api/papers/publish',
-  spaces: '/api/study-spaces',
-  records: '/api/assemble-records',
+  chat: '/api/chat',
 } as const
 
 export interface ApiClient {

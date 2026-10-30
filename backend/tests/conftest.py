@@ -152,7 +152,7 @@ def client(embedding_server: str):
 
     from fastapi.testclient import TestClient
 
-    import math_q_agent.api.main as main
+    import MathCraft.api.main as main
 
     settings_dir = DATA_HOME / "data" / "user" / "settings"
     settings_dir.mkdir(parents=True, exist_ok=True)

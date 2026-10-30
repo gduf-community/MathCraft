@@ -31,7 +31,7 @@ def workspace_client(tmp_path, monkeypatch, embedding_server):
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from math_q_agent.api.routers.settings import router
+    from MathCraft.api.routers.settings import router
 
     isolated = FastAPI()
     isolated.include_router(router, prefix="/api/settings")
@@ -135,7 +135,7 @@ def _save_draft(client, catalog, extensions=None):
 
 
 def test_bodyless_apply_promotes_changed_defaults_and_resolves_shared_references(workspace_client):
-    from math_q_agent.services.config.provider_runtime import (
+    from MathCraft.services.config.provider_runtime import (
         resolve_embedding_runtime_config,
         resolve_llm_runtime_config,
     )
@@ -241,7 +241,7 @@ def credential_provider():
 def test_masked_draft_resave_keeps_replaces_or_clears_credentials(
     workspace_client, credential_provider, source, key, header, identity,
 ):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = workspace_client
     service_name = "llm" if source == "connection" else "task"
@@ -310,7 +310,7 @@ def test_masked_draft_resave_keeps_replaces_or_clears_credentials(
 
 
 def test_task_modes_preserve_independent_configuration_across_bodyless_applies(workspace_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = workspace_client
     independent = _live(client)["services"]["task"]["profiles"]
@@ -348,7 +348,7 @@ def test_task_modes_preserve_independent_configuration_across_bodyless_applies(w
 def test_failed_apply_preserves_live_runtime_and_draft_for_retry(
     workspace_client, tmp_path, monkeypatch,
 ):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = workspace_client
     before = _live(client)
@@ -406,7 +406,7 @@ def test_failed_apply_preserves_live_runtime_and_draft_for_retry(
 def test_independent_profile_distinguishes_inherited_and_cleared_credentials(
     workspace_client, embedding_server, declaration, expected_key, expected_headers,
 ):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     # Exercise legacy, unnormalised catalogs at the public runtime reader too.
     catalog = _catalog(embedding_server)
@@ -435,7 +435,7 @@ def test_independent_profile_distinguishes_inherited_and_cleared_credentials(
 
 
 def test_bodyless_apply_preserves_explicit_direct_credential_clearing(workspace_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = workspace_client
     before = _live(client)
@@ -462,7 +462,7 @@ def test_bodyless_apply_preserves_explicit_direct_credential_clearing(workspace_
 
 
 def test_cleared_independent_main_profile_does_not_borrow_another_profiles_key(workspace_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = workspace_client
     proposed = _live(client)
@@ -515,8 +515,8 @@ def test_cleared_independent_main_profile_does_not_borrow_another_profiles_key(w
 def test_saved_direct_task_credentials_do_not_inherit_and_survive_reload(
     workspace_client, tmp_path, credentials, expected_key, expected_headers,
 ):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = workspace_client
     before = _live(client)
@@ -553,8 +553,8 @@ def test_saved_direct_task_credentials_do_not_inherit_and_survive_reload(
 def test_loading_legacy_catalog_preserves_missing_task_credentials_across_migration(
     workspace_client, tmp_path, embedding_server,
 ):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     catalog = _catalog(embedding_server)
     task = catalog["services"]["task"]
@@ -579,8 +579,8 @@ def test_loading_legacy_catalog_preserves_missing_task_credentials_across_migrat
 def test_environment_bootstrap_preserves_task_credential_intent(
     workspace_client, tmp_path, embedding_server, monkeypatch, declare_empty_key,
 ):
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     for name in tuple(os.environ):
         if name.startswith(("LLM_", "TASK_", "EMBEDDING_")):

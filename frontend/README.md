@@ -119,3 +119,37 @@ Vite 不读取后端保存的 `system.json`。如果后端通过命令行或已�
 ## 临时配置弹出面板
 
 新建知识库、更改引擎绑定和新增模型采用 `ui/ConfigurationDialog.tsx` 的居中模态面板，标题与底部按钮固定，长内容内部滚动。点击遮罩不会关闭；取消、关闭和 Esc 统一检查未保存修改；提交期间阻止关闭与重复提交，失败保留输入。新增成功后返回原列表，建库提交信息与状态由原列表展示和刷新。既有模型详情、引擎和文档解析保留完整设置页面。设计和验收见[临时配置弹出面板设计](../docs/design/临时配置弹出面板设计.md)，请求字段沿用[API 文档](../docs/api.md)。
+
+## API 契约核对（2026-10-30）
+
+以迁移后的 `backend/MathCraft/app.py` 为统一后端入口：`MathCraft.app` 与 `MathCraft.api.main` 导出同一个 app，知识库、设置和个人资料路由位于 `backend/MathCraft/api/routers/`，出题与对话路由位于 `backend/api/`。前端 URL 使用实际公开路由，不包含 Python 包名，不需要新增接口。
+
+| 调用范围 | 实际方法 / 路由与关键契约 |
+| --- | --- |
+| 出题知识库列表 | `GET /api/knowledge-bases` 返回数组；`id` 允许为空，使用 `id || name` 作为选择值，有正式 ID 时原样保留 |
+| 出题文档列表 | `GET /api/knowledge-bases/{kb}/files` 返回 `{ files }`；仅展示 `type: "file"`，`name` 为 raw 下 POSIX 相对路径，同时作为 `doc_id`；知识库路径参数 URL 编码 |
+| 参数出题 | `POST /api/generate` 使用 `kb_id`、`doc_id`、`types`、`difficulty`、`source_mode`、`scope`、`existing_stems`；返回 `Question[]`，现有默认来源仍为 `variant_data` |
+| 对话出题 | `POST /api/chat` 使用 `kb_id`、`doc_id`、`message`、`history[{role,text}]`、`slot_state`、`existing_stems`；返回 `{ reply, slot_state, questions, done }`；`questions` 仅是本轮新增题目 |
+| 模型与服务 | `/api/settings`、`/draft`、`/direct-model/draft`、`/direct-model`、`/direct-model/{delete,default,task-mode}`、`/apply`、`/test-provider`、`/fetch-models` 的方法与现有字段匹配；保留模型写入/发现的受控错误与写成功读回失败处理 |
+| 引擎设置 | `/api/knowledge-bases/rag-providers`、`rag-providers/{provider}/mode`、`rag-pipelines/{engine}/config`、`rag-pipelines/{provider}/preflight`、`rag-pipelines/lightrag/model-options` 和 WeKnora/Kiwix 探测匹配 |
+| 文档解析 | `/api/settings/document-parsing` 的读取、局部保存、检测、安装、下载及 `/job/{status,cancel}` 匹配；MinerU 检测与下载任务使用独立 `/api/settings/mineru` 路径，保留日志游标和取消语义 |
+| 知识库连接 | 列表、引擎目录、嵌入模型选项、`/{kb}/config` 读取/保存、建库调用匹配；建库使用 `FormData`，不手工覆盖 multipart boundary；无文件建库返回 `task_id: null`，显示已创建但未启动索引 |
+| 教师资料 | `GET/PUT /api/user-profile`；`POST /api/user-profile/avatar` 的 multipart 字段为 `file`，头像读取为同路径 GET；写入资料不回传只读身份/头像字段 |
+| 地址与实时通道 | HTTP 统一经 `apiUrl`；`urls.ts` 提供 `wsUrl`，但当前没有实际 `WebSocket` / `EventSource` / axios 调用；Vite 开发/预览均代理 `/api` 与 `/ws`，生产代理仍由部署端提供 |
+
+本轮修复：
+
+- `api/httpAdapter.ts` 复用 `settingsHttp.ts`，修正知识库可空 ID 映射；错误响应支持 FastAPI 的字符串、`detail.message` 对象、422 的 `loc/msg` 数组和顶层消息，空/非 JSON 错误保留 HTTP 状态。校验错误只读取位置与消息，不回显 `input` 等字段。
+- `store/AppContext.tsx` 对初始化与文档读取错误显示既有提示；切库立即清空旧文档，递增请求序号丢弃过期列表响应，出题前校验文档属于所选知识库。
+- 对话历史与槽位按知识库/文档隔离，切换或重选文档会使旧请求失效；同文档串行发送，迟到成功/失败都不能写入回复、题目、槽位或关闭新请求的等待状态。A→B→A 由递增 token 区分。有效响应将本轮题目按 ID 追加，不覆盖已有预览题目。
+- `api/client.ts` 的端点清单仅列已存在的知识库/文档/出题/对话路由；`KnowledgeConnections.tsx` 对齐空库 `task_id: null` 的成功响应。页面视觉与持久化范围不变。
+
+检查结果：
+
+- 对迁移后路由声明逐项核对 55 个 HTTP 方法/路径组合，全部匹配统一 app 的挂载；这包含当前页面实际使用的引擎枚举展开。
+- 临时 Node 夹具直接执行 TypeScript 转译后的真实 API 适配器，13 组请求/响应场景通过：可空 ID、嵌套文档路径、generate/chat 请求字段、422/409/429/500/502 错误、204、multipart、同源 HTTP/WSS。
+- 临时 hook 夹具执行真实 `AppProvider` 回调，5 组场景通过：有效题目追加与历史、重复发送保护、A→B、A→B→A、同文档重选、旧错误与等待状态隔离。临时夹具通过 stdin 执行，没有增加测试文件。
+- `npm exec tsc -- --noEmit` 与 `npm run build` 用于类型检查和生产构建。仓库没有 lint 脚本或配置，未虚报 lint 通过。本机首次构建遇到 Windows 系统临时目录下 esbuild 文件清理被拒，改用 `frontend/node_modules/.cache/mathcraft-build-temp` 作为当前进程的 `TEMP` / `TMP` 后构建通过；仅保留现有大 chunk 提示。
+- 未使用真实模型或第三方凭据进行端到端生成，联网生成、引擎探测及真实索引仍需在后端配置完成后验收。
+
+保留的演示边界：题目收藏与收藏夹仍通过 `api/favorites.ts` 转调明确声明的内存 mock；题库协作、学习空间、题目编辑/删除、组卷及记录仍为本地演示。当前后端未提供这些页面需要的持久化业务接口，本次不新增或假接接口。
