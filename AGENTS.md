@@ -1,4 +1,4 @@
-# AGENTS.md — math_q_agent 协作约定
+# AGENTS.md — MathCraft 协作约定
 
 本文件面向在本仓库工作的开发者与 AI Agent，约束三件事：**文档同步**、**敏感信息**、**提交规范**。违反其中任何一条的改动，都视为未完成。
 
@@ -18,7 +18,7 @@
 - 接口改动后重新生成契约与文档：
 
   ```powershell
-  .venv\Scripts\python.exe -c "import json, math_q_agent.api.main as m; open('openapi.json','w',encoding='utf-8').write(json.dumps(m.app.openapi(), indent=2, ensure_ascii=False))"
+  .venv\Scripts\python.exe -c "import json, MathCraft.api.main as m; open('openapi.json','w',encoding='utf-8').write(json.dumps(m.app.openapi(), indent=2, ensure_ascii=False))"
   .venv\Scripts\python.exe tools\gen_api_docs.py
   ```
 
@@ -35,7 +35,8 @@
 
 - 禁止提交、打印、贴出任何真实凭据：API Key、Token、Cookie、OAuth 凭证、私钥、数据库口令、会话文件。
 - `.env` 一律不提交（已在 `.gitignore` 中）。只允许提交 `.env.example` 这类占位样例，值必须为空或明显的假值。
-- 模型与提供方配置不要写进代码、测试或文档，统一通过 `/api/settings` 落到 `$MATH_Q_HOME/data/user/settings/`。
+- 模型与提供方配置不要写进代码、测试或文档，统一通过 `/api/settings` 落到 `<runtime-home>/data/user/settings/`；运行时根目录由 `backend/MathCraft/runtime/home.py` 统一解析。
+- 运行时数据根与源码包目录分离；环境变量名称以当前路径服务为准，历史名称不作为兼容约束。调整包名或变量名时，已有设置、知识库和索引的数据处理须明确说明。
 - 运行时数据（`data/`、`.venv/`、日志、解析缓存、知识库索引）不得提交。
 - 提交前自查暂存内容：
 
@@ -76,18 +77,18 @@ chore(deps): 升级 fastapi 至 0.115
 
 ## 4. 代码与测试
 
-- Python 3.11 – 3.14，主包位于 `backend/math_q_agent/`（import 名仍为 `math_q_agent`，不要改动）。
+- Python 3.11 – 3.14，唯一主包位于 `backend/MathCraft/`，import 名为 `MathCraft`；启动入口使用 `python -m MathCraft`，ASGI 应用统一为 `MathCraft.app:app`。
 - 安装开发依赖：`uv pip install --python .venv/Scripts/python.exe -e ".[dev]"`（现有 `.venv` 没有 pip；标准 venv 用 `.venv\Scripts\python.exe -m pip install -e ".[dev]"`）。
 - 运行测试：`.venv\Scripts\python.exe -m pytest -q`（`testpaths` 已指向 `backend/tests`）；改动索引、解析、设置写入等核心路径后必须全绿。
 - 保持单租户边界：需要多用户能力时先读 `STUBS.md`，不要顺手恢复上游的多用户行为。
 - 可选引擎与解析器必须惰性导入：缺依赖时报告 unavailable，不能让服务启动失败。
 - 不要在 import 阶段扩散副作用：现有的 import-time 设置（见 `README.md`「上游遗留的怪癖」）保持现状，新代码不要效仿。
-- `backend/math_q_agent/api/routers/knowledge.py`、`backend/math_q_agent/api/routers/settings.py` 已经很大，新增端点放进对应分组的既有结构里，不要整段复制粘贴。
+- `backend/MathCraft/api/routers/knowledge.py`、`backend/MathCraft/api/routers/settings.py` 已经很大，新增端点放进对应分组的既有结构里，不要整段复制粘贴。
 
 ## 5. 目录约定
 
 - 新功能的设计文档统一放在 `docs/design/`；新增功能设计文档完成后，应同步归档到该目录。
-- 路由放 `backend/math_q_agent/api/routers/`，业务实现放 `backend/math_q_agent/services/<domain>/`，知识库领域逻辑放 `backend/math_q_agent/knowledge/`。
+- 路由放 `backend/MathCraft/api/routers/`，业务实现放 `backend/MathCraft/services/<domain>/`，知识库领域逻辑放 `backend/MathCraft/knowledge/`。
 - 新增可选依赖走 `pyproject.toml` 的 extras，不加入默认依赖。
 - 测试放 `backend/tests/`，文件名 `test_*.py`，通过 `conftest.py` 的 fixture 获取客户端与假嵌入端点。
 - `frontend/` 为出题智能体前端（React 19 + Vite），`node_modules/` 与构建产物 `dist/` 不提交；出题服务的数据契约沉淀在 `backend/schemas/` 与前端 `src/types/`，改动时保持两侧字段一致。
