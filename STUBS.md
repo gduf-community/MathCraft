@@ -21,21 +21,22 @@ Source: DeepTutor `a31d8262`.
 | `capabilities/marginnote4/__init__.py` | Capability + chat tools registration | Exports the store and models only; the connector still uses `resolve_db_path`. |
 | `api/runtime.py` (formerly `math_q_agent/api/main.py`) | Application lifecycle, middleware and upstream service assembly | Retains the reduced lifespan, runtime initialization and CORS middleware. `MathCraft.app` assembles the unified routes; `MathCraft.api.main:app` exports that same application. |
 | `api/routers/system.py` | 633 lines: version checks, update jobs, memory probe, runtime status handshake, SSE | Status + three connectivity tests. `/test/search` explains that search executes in the chat runtime. |
-| `runtime/home.py` | `DEEPTUTOR_HOME` semantics | `MATH_Q_HOME`; the default is the process working directory (the repository root when launched there). |
+| `runtime/home.py` | `DEEPTUTOR_HOME` semantics | `MATHCRAFT_HOME`; the default is the process working directory (the repository root when launched there). |
 
 ## Removing the stubs later
 
 To restore multi-user behaviour: replace `api/routers/auth.py` with upstream's
-router, drop `services/workspace/` back in, point `MATH_Q_HOME` at a per-user
+router, drop `services/workspace/` back in, point `MATHCRAFT_HOME` at a per-user
 root, and delete `services/tool_names.py` in favour of the chat tool package.
 The stand-ins retain upstream function signatures within `MathCraft`; restoring
 multi-user support would require a separate design and implementation change.
 
 ## Runtime paths and frontend mock boundary
 
-`MATH_Q_HOME` and the existing `data/` layout remain unchanged by package
-unification; settings, knowledge-base indexes and user-profile files continue
-to use their existing runtime paths. No data migration is implied.
+`MATHCRAFT_HOME` is now the sole runtime-home environment variable, with no
+fallback to the old name. Set its value to the original home directory to keep
+reading settings, knowledge-base indexes and user-profile files from the same
+`data/` directory. The existing layout is unchanged; no data is moved or rebuilt.
 
 The favorites page currently uses an in-memory frontend mock which resets on
 refresh. This is not a backend persistence implementation or a restored upstream

@@ -57,13 +57,13 @@ backend/
 - `MathCraft/` 同时承载从 DeepTutor 裁剪而来的正式实现与统一应用入口。出题服务通过薄适配器调用 `MathCraft` 内的 RAGService、LLM 和知识库访问层。旧 `math_q_agent` import 与命令停止支持，不保留旧目录兼容壳。
 - `MathCraft.app` 装配正式知识库、模型配置和出题编排服务。`python -m MathCraft` 启动时加载根目录 `.env`；监听地址按 `--host`、`BACKEND_HOST`、默认值 `127.0.0.1` 的优先级确定，端口按 `--port`、`BACKEND_PORT`、已保存系统设置、默认值 `8000` 的优先级确定。shell 中同名变量优先于 `.env`；默认前端端口为 `5173`。统一应用在启动后读取 `CORS_ORIGIN` / `CORS_ORIGINS`，默认无认证模式保持跨域放行。
 - `MathCraft/api/runtime.py` 保存原实现包 `api/main.py` 中的 lifespan 与中间件；`MathCraft/api/main.py` 仅导出统一 app。正式业务路由统一位于 `MathCraft/api/routers/`，HTTP 和 WebSocket 路径保持不变。
-- 运行数据、索引和本地配置继续使用 `MATH_Q_HOME` 与既有 `data/` 路径，包统一不要求数据搬迁或重建。
+- 数据根环境变量现统一为 `MATHCRAFT_HOME`，不提供旧名回退；将其值指向原 home 目录时，运行数据、索引和本地配置继续从同一 `data/` 读取，无需搬迁或重建。
 
 迁移范围、契约、协作边界与验收标准见 [后端包统一与接口对齐](../docs/design/后端包统一与接口对齐.md)。
 
 前后端端口统一由根 `.env` 配置时，后端使用 `python -m MathCraft` 启动。直接运行 Uvicorn 并指定 `--port` 会使用其命令行端口；应用 lifespan 加载 `.env` 无法修改已经解析的监听参数，可能导致 Vite 按 `.env` 转发到没有监听的端口。
 
-应用模块导入仅装配路由，ASGI lifespan 负责加载 `.env`、初始化运行时设置、导出环境变量和配置日志。`MATH_Q_HOME` 可在导入后、启动前确定；配置默认目录由路径服务解析，已有实例继续绑定其原目录。启动顺序与异常边界见 [模型配置来源与普通知识库流程](../docs/design/模型配置来源与普通知识库流程.md)。
+应用模块导入仅装配路由，ASGI lifespan 负责加载 `.env`、初始化运行时设置、导出环境变量和配置日志。`MATHCRAFT_HOME` 可在导入后、启动前确定；配置默认目录由路径服务解析，已有实例继续绑定其原目录。启动顺序与异常边界见 [模型配置来源与普通知识库流程](../docs/design/模型配置来源与普通知识库流程.md)。
 
 ## 教师个人资料
 

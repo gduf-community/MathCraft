@@ -72,7 +72,7 @@ async def test_imported_configuration_follows_home_without_reset(tmp_path, monke
         (second_home, settings_b, "ERROR", 2400, 18002),
         (first_home, settings_a, "DEBUG", 1200, 18001),
     ):
-        monkeypatch.setenv("MATH_Q_HOME", str(home))
+        monkeypatch.setenv("MATHCRAFT_HOME", str(home))
         assert get_runtime_settings_dir() == settings
         assert get_path_service().project_root == home
         assert get_admin_path_service().get_settings_dir() == settings
@@ -103,7 +103,7 @@ async def test_imported_configuration_follows_home_without_reset(tmp_path, monke
 async def test_explicit_paths_survive_home_switch(tmp_path, monkeypatch):
     home = tmp_path / "explicit"
     settings = _seed(home, level="DEBUG", budget=1200, port=18001)
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "ambient"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "ambient"))
     for key in ("BACKEND_PORT", "FRONTEND_PORT"):
         monkeypatch.delenv(key, raising=False)
     assert get_runtime_settings_dir(home) == settings
@@ -113,7 +113,7 @@ async def test_explicit_paths_survive_home_switch(tmp_path, monkeypatch):
     assert load_launch_settings(home).backend_port == 18001
     catalog_path = tmp_path / "custom-catalog.json"
     catalog = ModelCatalogService(catalog_path)
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "changed"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "changed"))
     catalog.save({"version": 1, "connections": [], "services": {}})
     assert catalog.path == catalog_path
     assert catalog_path.is_file()
@@ -133,7 +133,7 @@ def test_explicit_scope_is_not_replaced_by_ambient_home(tmp_path, monkeypatch, k
     token = set_current_user(user)
     try:
         for ambient in (tmp_path / "first", tmp_path / "second"):
-            monkeypatch.setenv("MATH_Q_HOME", str(ambient))
+            monkeypatch.setenv("MATHCRAFT_HOME", str(ambient))
             assert get_runtime_settings_dir() == settings
             assert load_logging_config().level == "WARNING"
             assert ModelCatalogService().path == settings / "model_catalog.json"
@@ -151,6 +151,6 @@ def test_explicit_scope_is_not_replaced_by_ambient_home(tmp_path, monkeypatch, k
 def test_explicit_path_service_singleton_is_not_replaced(tmp_path, monkeypatch):
     service = PathService(tmp_path / "pinned-data")
     monkeypatch.setattr(PathService, "_instance", service)
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "other"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "other"))
     assert get_path_service() is service
     assert get_runtime_settings_dir() == service.get_settings_dir()

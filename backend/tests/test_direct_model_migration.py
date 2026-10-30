@@ -10,12 +10,12 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path))
 
 
 @pytest.fixture
 def settings_client(tmp_path, monkeypatch):
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path))
     settings = tmp_path / "data" / "user" / "settings"
     settings.mkdir(parents=True)
     (settings / "model_catalog.json").write_text(
