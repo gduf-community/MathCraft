@@ -12,6 +12,7 @@ import type { SortKey } from './FavoritesFilters'
 import FavoritesRail from './FavoritesRail'
 import { ConfirmModal, FolderFormModal, MoveFolderModal } from './FolderModal'
 import ManageFoldersModal from './ManageFoldersModal'
+import QuestionDetailModal from './QuestionDetailModal'
 
 type FolderModalState =
   | { mode: 'create' }
@@ -79,8 +80,10 @@ export default function FavoritesTab() {
   const [moveOpen, setMoveOpen] = useState(false)
   const [mobileMenu, setMobileMenu] = useState<{ folder: FavoriteFolder; left: number; top: number } | null>(null)
   const [manageOpen, setManageOpen] = useState(false)
+  const [detailItem, setDetailItem] = useState<FavoriteItem | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const manageButtonRef = useRef<HTMLButtonElement>(null)
+  const detailTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [railCollapsed, toggleRail] = useStoredFlag(RAIL_COLLAPSED_KEY)
   const [filtersCollapsed, toggleFilters] = useStoredFlag(FILTERS_COLLAPSED_KEY)
 
@@ -295,9 +298,30 @@ export default function FavoritesTab() {
     }
   }
 
+  const selectFolder = (folderId: string) => {
+    setFolderFilter(folderId)
+    resetView()
+  }
+
   const closeManage = () => {
     setManageOpen(false)
     manageButtonRef.current?.focus()
+  }
+
+  const openFolder = (folderId: string) => {
+    selectFolder(folderId)
+    scrollRef.current?.scrollTo({ top: 0 })
+    closeManage()
+  }
+
+  const openDetail = (item: FavoriteItem, trigger: HTMLButtonElement) => {
+    detailTriggerRef.current = trigger
+    setDetailItem(item)
+  }
+
+  const closeDetail = () => {
+    setDetailItem(null)
+    requestAnimationFrame(() => detailTriggerRef.current?.focus())
   }
 
   const handleMove = async (folderId: string) => {
@@ -362,10 +386,7 @@ export default function FavoritesTab() {
           counts={folderCounts}
           total={total}
           activeFolder={folderFilter}
-          onSelect={(id) => {
-            setFolderFilter(id)
-            resetView()
-          }}
+          onSelect={selectFolder}
           onCreate={() => setFolderModal({ mode: 'create' })}
           onRename={(folder) => setFolderModal({ mode: 'rename', folder })}
           onDelete={(folder) => setFolderModal({ mode: 'delete', folder })}
@@ -390,10 +411,7 @@ export default function FavoritesTab() {
                   <button
                     type="button"
                     title={folder.name}
-                    onClick={() => {
-                      setFolderFilter(folder.id)
-                      resetView()
-                    }}
+                    onClick={() => selectFolder(folder.id)}
                     className={`max-w-[160px] truncate py-1.5 pl-3 ${manageable ? 'pr-1.5' : 'pr-3'}`}
                   >
                     {folder.name} ({folder.count})
@@ -518,6 +536,7 @@ export default function FavoritesTab() {
                     folderName={folderNameById[item.folderId] ?? '未分类'}
                     selected={selectedIds.includes(item.id)}
                     compact={view === 'compact'}
+                    onOpen={(trigger) => openDetail(item, trigger)}
                     onToggleSelect={() =>
                       setSelectedIds((prev) =>
                         prev.includes(item.id) ? prev.filter((id) => id !== item.id) : [...prev, item.id],
@@ -651,6 +670,7 @@ export default function FavoritesTab() {
           onRename={(folder) => setFolderModal({ mode: 'rename', folder })}
           onDelete={(folder) => setFolderModal({ mode: 'delete', folder })}
           onReorder={(ids) => void reorderFolders(ids)}
+          onOpen={openFolder}
         />
       )}
 
@@ -679,6 +699,14 @@ export default function FavoritesTab() {
           count={selectedItems.length}
           onClose={() => setMoveOpen(false)}
           onMove={handleMove}
+        />
+      )}
+
+      {detailItem && (
+        <QuestionDetailModal
+          item={detailItem}
+          folderName={folderNameById[detailItem.folderId] ?? '未分类'}
+          onClose={closeDetail}
         />
       )}
     </div>

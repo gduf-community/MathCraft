@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Clock, FileText, Folder, Pencil, Star, Tag, Trash2, Users } from 'lucide-react'
+import { Clock, ExternalLink, FileText, Folder, Pencil, Star, Tag, Trash2, Users } from 'lucide-react'
 import { TYPE_LABELS } from '../../../constants'
 import { Latex } from '../../../lib/latex'
 import { formatCollectedAt } from '../../../lib/relativeTime'
@@ -20,6 +20,7 @@ interface Props {
   selected: boolean
   compact: boolean
   onToggleSelect: () => void
+  onOpen: (trigger: HTMLButtonElement) => void
   onRemove: () => void
   onAssemble: () => void
   onEdit: () => void
@@ -32,6 +33,7 @@ export default function FavoriteCard({
   selected,
   compact,
   onToggleSelect,
+  onOpen,
   onRemove,
   onAssemble,
   onEdit,
@@ -143,6 +145,14 @@ export default function FavoriteCard({
           </div>
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={(event) => onOpen(event.currentTarget)}
+              className="inline-flex items-center gap-1 rounded-md border border-line bg-white px-2.5 py-1 text-xs font-medium text-ink-2 transition-colors hover:border-primary/50 hover:bg-primary-weak hover:text-primary"
+            >
+              <ExternalLink size={13} />
+              打开
+            </button>
             <button
               type="button"
               onClick={onAssemble}

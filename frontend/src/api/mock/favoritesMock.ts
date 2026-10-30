@@ -139,20 +139,31 @@ let items: FavoriteItem[] = [
   {
     id: 'fav-005',
     questionId: 'Q-2409-0188',
-    folderId: 'f-derivative',
-    collectedAt: daysAgo(6),
-    source: { bankName: '高数基础题库', chapter: '第三章 微分中值定理' },
+    folderId: 'f-probability',
+    collectedAt: daysAgo(5),
+    source: { bankName: '概率论与数理统计', chapter: '第四章 数字特征' },
     question: question(
       'Q-2409-0188',
       'compute',
       12,
-      '中',
-      '极值与最值',
-      '求函数 $f(x)=x^{3}-3x^{2}+2$ 的极值。',
+      '高',
+      '随机变量的数字特征',
+      String.raw`设随机变量 $X_1,X_2,X_3$ 相互独立，且 $X_1\sim b(4,\dfrac12)$，$X_2\sim b(6,\dfrac13)$，
+$X_3\sim b(6,\dfrac13)$。(1) 求 $P\{X_1=2,X_2=2,X_3=5\}$、$E(X_1X_2X_3)$、$E(X_1-X_2)$、
+$E(X_1-2X_2)$；(2) 设 $X,Y$ 为随机变量，且 $E(X)=3$、$E(Y)=1$、$D(X)=4$、$D(Y)=9$，
+令 $Z=5X-Y+15$，分别在下列 3 种情况下求 $E(Z)$ 和 $D(Z)$：
+(i) $X,Y$ 相互独立；(ii) $X,Y$ 不相关；(iii) $X$ 与 $Y$ 的相关系数为 $0.25$。`,
       [],
-      '极大值 $f(0)=2$，极小值 $f(2)=-2$',
-      '$f\\prime(x)=3x^{2}-6x=3x(x-2)$。$x<0$ 时递增，$0<x<2$ 时递减，$x>2$ 时递增，故 $x=0$ 取极大值 2，$x=2$ 取极小值 $-2$。',
-      '高数基础题库',
+      String.raw`(1) $P\{X_1=2,X_2=2,X_3=5\}=\dfrac{40}{19683}$，$E(X_1X_2X_3)=8$，$E(X_1-X_2)=0$，
+$E(X_1-2X_2)=-2$；(2) $E(Z)=29$；(i) $D(Z)=109$；(ii) $D(Z)=109$；(iii) $D(Z)=94$。`,
+      String.raw`$X_1\sim b(4,\frac12)$、$X_2\sim b(6,\frac13)$、$X_3\sim b(6,\frac13)$ 的期望均为 2。
+(1) 由独立性 $P\{X_1=2,X_2=2,X_3=5\}=\binom42(\frac12)^4\cdot\binom62(\frac13)^2(\frac23)^4$
+$\cdot\binom65(\frac13)^5(\frac23)=\frac{40}{19683}$；$E(X_1X_2X_3)=2\cdot2\cdot2=8$；
+$E(X_1-X_2)=2-2=0$；$E(X_1-2X_2)=2-4=-2$。
+(2) $E(Z)=5E(X)-E(Y)+15=29$；$D(Z)=25D(X)+D(Y)-10\mathrm{Cov}(X,Y)=109-10\mathrm{Cov}(X,Y)$。
+(i)(ii) $\mathrm{Cov}(X,Y)=0$，故 $D(Z)=109$；
+(iii) $\mathrm{Cov}(X,Y)=\rho\sqrt{D(X)D(Y)}=0.25\times6=1.5$，故 $D(Z)=109-15=94$。`,
+      '概率论与数理统计',
     ),
   },
   {

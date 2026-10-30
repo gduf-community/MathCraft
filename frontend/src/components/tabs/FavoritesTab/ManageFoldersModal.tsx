@@ -26,6 +26,7 @@ interface Props {
   onRename: (folder: FavoriteFolder) => void
   onDelete: (folder: FavoriteFolder) => void
   onReorder: (orderedIds: string[]) => void
+  onOpen: (folderId: string) => void
 }
 
 type DropPosition = 'before' | 'after'
@@ -41,6 +42,7 @@ export default function ManageFoldersModal({
   onRename,
   onDelete,
   onReorder,
+  onOpen,
 }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -186,6 +188,15 @@ export default function ManageFoldersModal({
               </span>
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">全部收藏</span>
               <span className="shrink-0 text-xs text-ink-3">{total} 题</span>
+              <button
+                type="button"
+                onClick={() => onOpen('all')}
+                title="打开收藏夹"
+                aria-label="打开收藏夹 全部收藏"
+                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
+              >
+                打开
+              </button>
             </div>
           </li>
           {inboxFolder && (
@@ -198,6 +209,15 @@ export default function ManageFoldersModal({
                   {inboxFolder.name}
                 </span>
                 <span className="shrink-0 text-xs text-ink-3">{counts[inboxFolder.id] ?? 0} 题</span>
+                <button
+                  type="button"
+                  onClick={() => onOpen(inboxFolder.id)}
+                  title="打开收藏夹"
+                  aria-label={`打开收藏夹 ${inboxFolder.name}`}
+                  className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
+                >
+                  打开
+                </button>
               </div>
             </li>
           )}
@@ -283,6 +303,16 @@ export default function ManageFoldersModal({
                       className="grid h-7 w-7 place-items-center rounded-md border border-line bg-white text-ink-3 transition-colors hover:border-primary/50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <ChevronDown size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onPointerDown={stopDrag}
+                      onClick={() => onOpen(folder.id)}
+                      title="打开收藏夹"
+                      aria-label={`打开收藏夹 ${folder.name}`}
+                      className="inline-flex h-7 items-center rounded-md border border-line bg-white px-2 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
+                    >
+                      打开
                     </button>
                     <button
                       type="button"
