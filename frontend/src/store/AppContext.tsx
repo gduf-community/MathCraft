@@ -14,7 +14,7 @@ import type {
   StudySpace,
 } from '../types'
 
-export type TabKey = 'generate' | 'preview' | 'bank' | 'settings' | 'profile' | 'space'
+export type TabKey = 'generate' | 'preview' | 'favorites' | 'bank' | 'settings' | 'profile' | 'space'
 
 export interface TypeConfig {
   checked: boolean
@@ -75,7 +75,6 @@ interface AppState {
   setDiffFilter: (d: Difficulty | 'all') => void
   updateQuestion: (q: Question) => Promise<void>
   deleteQuestion: (id: string) => Promise<void>
-  toggleStar: (id: string) => Promise<void>
 
   // 组卷
   records: AssembleRecord[]
@@ -89,8 +88,12 @@ interface AppState {
   sendChat: (text: string) => Promise<void>
 
   // 全局提示
-  toast: { id: number; text: string } | null
-  showToast: (text: string) => void
+  toast: { id: number; text: string; actionLabel?: string; onAction?: () => void } | null
+  showToast: (
+    text: string,
+    options?: { actionLabel?: string; onAction?: () => void; duration?: number },
+  ) => void
+  dismissToast: () => void
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -149,15 +152,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [botThinking, setBotThinking] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
 
-  const [toast, setToast] = useState<{ id: number; text: string } | null>(null)
+  const [toast, setToast] = useState<{
+    id: number
+    text: string
+    actionLabel?: string
+    onAction?: () => void
+  } | null>(null)
   const toastTimer = useRef<number | undefined>(undefined)
   // 对话出题的槽位状态，由后端每轮回传，前端原样带回
   const chatSlotState = useRef<Record<string, unknown>>({})
 
-  const showToast = useCallback((text: string) => {
-    setToast({ id: Date.now(), text })
+  const showToast = useCallback(
+    (text: string, options?: { actionLabel?: string; onAction?: () => void; duration?: number }) => {
+      setToast({ id: Date.now(), text, actionLabel: options?.actionLabel, onAction: options?.onAction })
+      window.clearTimeout(toastTimer.current)
+      toastTimer.current = window.setTimeout(() => setToast(null), options?.duration ?? 2600)
+    },
+    [],
+  )
+
+  const dismissToast = useCallback(() => {
     window.clearTimeout(toastTimer.current)
-    toastTimer.current = window.setTimeout(() => setToast(null), 2600)
+    setToast(null)
   }, [])
 
   const refreshKnowledgeBases = useCallback(async () => {
@@ -297,18 +313,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [showToast],
   )
 
-  const toggleStar = useCallback(async (id: string) => {
-    let next = false
-    setQuestions((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item
-        next = !item.starred
-        return { ...item, starred: next }
-      }),
-    )
-    await api.toggleStar(id, next)
-  }, [])
-
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]))
   }, [])
@@ -369,7 +373,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDiffFilter,
     updateQuestion,
     deleteQuestion,
-    toggleStar,
     records,
     publishPaper,
     messages,
@@ -379,6 +382,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sendChat,
     toast,
     showToast,
+    dismissToast,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
