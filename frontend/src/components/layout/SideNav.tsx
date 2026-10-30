@@ -6,7 +6,7 @@ import type { TabKey } from '../../store/AppContext'
 const NAV_ITEMS: { key: string; label: string; icon: LucideIcon; tab?: TabKey }[] = [
   { key: 'home', label: '智能出题', icon: Home, tab: 'generate' },
   { key: 'space', label: '学习空间', icon: BookOpen, tab: 'space' },
-  { key: 'fav', label: '题目收藏', icon: Star },
+  { key: 'fav', label: '题目收藏', icon: Star, tab: 'favorites' },
   { key: 'paper', label: '组卷记录', icon: FileText },
   { key: 'bank', label: '题库管理', icon: Database, tab: 'bank' },
   { key: 'me', label: '个人中心', icon: User, tab: 'profile' },
