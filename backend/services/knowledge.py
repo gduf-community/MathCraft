@@ -6,7 +6,7 @@ Chroma/Ollama 入库和检索实现。
 
 from __future__ import annotations
 
-from math_q_agent.multi_user.knowledge_access import (
+from MathCraft.multi_user.knowledge_access import (
     list_visible_knowledge_bases,
     resolve_kb,
     resolve_kb_manifest,

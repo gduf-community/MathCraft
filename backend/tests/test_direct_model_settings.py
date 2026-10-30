@@ -13,9 +13,9 @@ def direct_client(tmp_path, monkeypatch):
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from math_q_agent.services.path_service import PathService
-    from math_q_agent.services.config import model_catalog, settings_draft
-    from math_q_agent.api.routers import settings
+    from MathCraft.services.path_service import PathService
+    from MathCraft.services.config import model_catalog, settings_draft
+    from MathCraft.api.routers import settings
 
     paths = PathService(tmp_path / "data")
     monkeypatch.setattr(PathService, "_instance", paths)
@@ -143,7 +143,7 @@ def test_legacy_write_paths_reject_duplicate_direct_names(direct_client, route):
 
 
 def test_mask_sources_require_explicit_versioned_draft_restore(direct_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = direct_client
     assert save_model(client, model_entry(extra_headers={"X-Fake": "fake-live-header"})).status_code == 200
@@ -241,7 +241,7 @@ def test_legacy_missing_name_is_derived_but_blank_or_direct_names_are_rejected(d
 
 
 def test_legacy_task_reference_copies_only_target_and_allocates_a_unique_name(direct_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = direct_client
     assert save_model(client).status_code == 200
@@ -259,7 +259,7 @@ def test_legacy_task_reference_copies_only_target_and_allocates_a_unique_name(di
 
 
 def test_legacy_profile_credentials_do_not_override_direct_model_connections(direct_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = direct_client
     assert save_model(client).status_code == 200
@@ -315,7 +315,7 @@ def test_catalog_migration_failures_are_safe_and_preserve_the_original_file(dire
 
 
 def test_changing_legacy_shared_source_keeps_each_direct_model_independent(direct_client):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = direct_client
     assert save_model(client).status_code == 200
@@ -369,7 +369,7 @@ def test_committed_write_with_unreadable_readback_is_pending_and_refreshes_runti
     """An OS read fault after replace must not misreport a durable write as rejected."""
     import os
     from pathlib import Path
-    from math_q_agent.services.llm.config import clear_llm_config_cache, get_llm_config
+    from MathCraft.services.llm.config import clear_llm_config_cache, get_llm_config
 
     client = direct_client
     assert save_model(client).status_code == 200
@@ -424,7 +424,7 @@ def test_committed_write_with_unreadable_readback_is_pending_and_refreshes_runti
 
 @pytest.mark.parametrize("replacement_key", ["fake-replaced-key", ""])
 def test_direct_edit_keeps_other_runtime_and_advanced_fields(direct_client, replacement_key):
-    from math_q_agent.services.config.provider_runtime import resolve_llm_runtime_config
+    from MathCraft.services.config.provider_runtime import resolve_llm_runtime_config
 
     client = direct_client
     assert save_model(client).status_code == 200

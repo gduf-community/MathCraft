@@ -1,8 +1,11 @@
 # STUBS — what was replaced, and what the original did
 
-Every module below was **rewritten in place**: the import path is unchanged, so
-the surrounding code still reads like upstream, but the behaviour is
-single-tenant. Nothing else in the tree was rewritten for behaviour.
+The modules below retain the **single-tenant stand-in behaviour** introduced
+when this project was cut down from upstream. Paths in this table are relative
+to `backend/MathCraft/`, the unified implementation package. The former
+`math_q_agent` imports and launch commands are no longer supported, and no
+compatibility package is retained. This package move does not restore upstream
+multi-user behaviour.
 
 Source: DeepTutor `a31d8262`.
 
@@ -16,13 +19,27 @@ Source: DeepTutor `a31d8262`.
 | `services/partners/` | `services/partners/*` (5,393 lines): IM channel managers and scopes | `is_partner_user_id()` always false; no manager. |
 | `runtime/agentic/` | 3,465 lines: the agentic chat loop and its client pool | `close_agentic_client_pool()` / `reset_agentic_client_pool()` are no-ops. |
 | `capabilities/marginnote4/__init__.py` | Capability + chat tools registration | Exports the store and models only; the connector still uses `resolve_db_path`. |
-| `api/main.py` | 833 lines: dependency container, tool/capability registry validation, partners, events, migrations, static frontend | 130 lines: CORS, progress-port wiring, five routers, `/healthz`. |
+| `api/runtime.py` (formerly `math_q_agent/api/main.py`) | Application lifecycle, middleware and upstream service assembly | Retains the reduced lifespan, runtime initialization and CORS middleware. `MathCraft.app` assembles the unified routes; `MathCraft.api.main:app` exports that same application. |
 | `api/routers/system.py` | 633 lines: version checks, update jobs, memory probe, runtime status handshake, SSE | Status + three connectivity tests. `/test/search` explains that search executes in the chat runtime. |
-| `runtime/home.py` | `DEEPTUTOR_HOME` semantics | `MATH_Q_HOME`; default is the repository root. |
+| `runtime/home.py` | `DEEPTUTOR_HOME` semantics | `MATH_Q_HOME`; the default is the process working directory (the repository root when launched there). |
 
 ## Removing the stubs later
 
 To restore multi-user behaviour: replace `api/routers/auth.py` with upstream's
 router, drop `services/workspace/` back in, point `MATH_Q_HOME` at a per-user
 root, and delete `services/tool_names.py` in favour of the chat tool package.
-The call sites are unchanged, which is why the stubs keep upstream signatures.
+The stand-ins retain upstream function signatures within `MathCraft`; restoring
+multi-user support would require a separate design and implementation change.
+
+## Runtime paths and frontend mock boundary
+
+`MATH_Q_HOME` and the existing `data/` layout remain unchanged by package
+unification; settings, knowledge-base indexes and user-profile files continue
+to use their existing runtime paths. No data migration is implied.
+
+The favorites page currently uses an in-memory frontend mock which resets on
+refresh. This is not a backend persistence implementation or a restored upstream
+feature; package unification does not add favorites endpoints or storage.
+
+See [后端包统一与接口对齐](docs/design/后端包统一与接口对齐.md) for the migration
+scope, unchanged contracts and acceptance criteria.

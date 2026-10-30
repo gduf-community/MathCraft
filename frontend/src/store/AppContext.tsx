@@ -161,6 +161,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toastTimer = useRef<number | undefined>(undefined)
   // 对话出题的槽位状态，由后端每轮回传，前端原样带回
   const chatSlotState = useRef<Record<string, unknown>>({})
+  const documentRequest = useRef(0)
+  const chatRequest = useRef(0)
+  const chatPending = useRef(false)
+  const chatContext = useRef('')
+  const chatHistory = useRef<{ role: 'user' | 'assistant'; text: string }[]>([])
 
   const showToast = useCallback(
     (text: string, options?: { actionLabel?: string; onAction?: () => void; duration?: number }) => {
@@ -180,28 +185,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setKbs(await api.listKnowledgeBases())
   }, [])
 
-  // 初始化：加载知识库、文档与学习空间
+  // 初始化失败由现有 toast 提示；卸载或切换知识库后丢弃过期文档响应。
   useEffect(() => {
+    let active = true
+    const request = ++documentRequest.current
     void (async () => {
-      const [kbList, spaceList] = await Promise.all([api.listKnowledgeBases(), api.listStudySpaces()])
-      setKbs(kbList)
-      setSpaces(spaceList)
-      if (kbList.length) {
-        setSelectedKbId(kbList[0].id)
-        const docs = await api.listDocuments(kbList[0].id)
-        setDocs(docs)
-        if (docs.length) setSelectedDocId(docs[0].id)
+      try {
+        const [kbList, spaceList] = await Promise.all([api.listKnowledgeBases(), api.listStudySpaces()])
+        if (!active || request !== documentRequest.current) return
+        setKbs(kbList)
+        setSpaces(spaceList)
+        if (kbList.length) {
+          setSelectedKbId(kbList[0].id)
+          const documents = await api.listDocuments(kbList[0].id)
+          if (!active || request !== documentRequest.current) return
+          setDocs(documents)
+          if (documents.length) setSelectedDocId(documents[0].id)
+        }
+      } catch (error) {
+        if (active && request === documentRequest.current) {
+          showToast(error instanceof Error ? error.message : '知识库读取失败，请检查后端服务')
+        }
       }
     })()
-  }, [])
+    return () => {
+      active = false
+      ++documentRequest.current
+      ++chatRequest.current
+      chatPending.current = false
+    }
+  }, [showToast])
 
   const selectKb = useCallback(async (id: string) => {
+    const request = ++documentRequest.current
     setSelectedKbId(id)
     setSelectedDocId('')
-    setDocs(await api.listDocuments(id))
-  }, [])
+    ++chatRequest.current
+    chatPending.current = false
+    setBotThinking(false)
+    chatContext.current = ''
+    chatHistory.current = []
+    chatSlotState.current = {}
+    setDocs([])
+    try {
+      const documents = await api.listDocuments(id)
+      if (request === documentRequest.current) setDocs(documents)
+    } catch (error) {
+      if (request === documentRequest.current) {
+        showToast(error instanceof Error ? error.message : '文档读取失败，请重试')
+      }
+    }
+  }, [showToast])
 
-  const selectDoc = useCallback((id: string) => setSelectedDocId(id), [])
+  const selectDoc = useCallback((id: string) => {
+    setSelectedDocId(id)
+    ++chatRequest.current
+    chatPending.current = false
+    setBotThinking(false)
+    chatContext.current = ''
+    chatHistory.current = []
+    chatSlotState.current = {}
+  }, [])
 
   const setTypeConfig = useCallback((type: QuestionType, patch: Partial<TypeConfig>) => {
     setTypeConfigs((prev) => ({ ...prev, [type]: { ...prev[type], ...patch } }))
@@ -210,7 +254,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const runGenerate = useCallback(
     async (opts?: { silent?: boolean }) => {
       const doc = docs.find((d) => d.id === selectedDocId)
-      if (!doc) {
+      if (!doc || doc.kbId !== selectedKbId) {
         showToast('请先选择知识库文档')
         return false
       }
@@ -254,44 +298,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const sendChat = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed || chatPending.current) return
       // 未选择知识库文档时禁止对话出题
-      if (!selectedKbId || !selectedDocId) {
+      if (!selectedKbId || !docs.some((doc) => doc.id === selectedDocId && doc.kbId === selectedKbId)) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
       setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
+      const request = ++chatRequest.current
+      chatPending.current = true
       setBotThinking(true)
+      const context = JSON.stringify([selectedKbId, selectedDocId])
+      const sameContext = chatContext.current === context
+      chatContext.current = context
+      if (!sameContext) {
+        chatSlotState.current = {}
+        chatHistory.current = []
+      }
       try {
         const res = await chat({
           kb_id: selectedKbId,
           doc_id: selectedDocId,
           message: trimmed,
-          history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
+          history: chatHistory.current.slice(-6),
           slot_state: chatSlotState.current,
           // 全局去重：把当前已有题目题干传给后端
           existing_stems: questions.map((q) => q.stem),
         })
+        // token 同时区分切换 A→B→A、重选同一文档和已失效请求。
+        if (request !== chatRequest.current || chatContext.current !== context) return
         chatSlotState.current = res.slot_state
+        chatHistory.current.push(
+          { role: 'user', text: trimmed },
+          { role: 'assistant', text: res.reply },
+        )
+        chatHistory.current = chatHistory.current.slice(-6)
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
         if (res.questions?.length) {
           // 对话路径不强制切页：AI 回复先可见，题目已在「题目预览」标签页等候
-          setQuestions(res.questions)
+          setQuestions((prev) => [...prev, ...res.questions.filter((question) => !prev.some((item) => item.id === question.id))])
           setSelectedIds([])
           setTypeFilter('all')
           setDiffFilter('all')
           showToast(`已生成 ${res.questions.length} 道题目，已同步到「题目预览」标签页`)
         }
       } catch (err) {
+        if (request !== chatRequest.current || chatContext.current !== context) return
         setMessages((prev) => [
           ...prev,
           { id: `m-${Date.now()}-a`, role: 'assistant', text: err instanceof Error ? err.message : '服务异常，请稍后再试' },
         ])
       } finally {
-        setBotThinking(false)
+        if (request === chatRequest.current) {
+          chatPending.current = false
+          setBotThinking(false)
+        }
       }
     },
-    [selectedDocId, messages, questions, showToast],
+    [selectedKbId, selectedDocId, docs, questions, showToast],
   )
 
   const updateQuestion = useCallback(

@@ -58,7 +58,7 @@ interface BindingEditor {
 }
 interface CreationTask {
   name: string
-  task_id: string
+  task_id: string | null
 }
 
 type Resource = 'knowledge' | 'providers' | 'embedding'
@@ -349,8 +349,10 @@ export function KnowledgeConnections() {
     {refreshError && <p className="settings-error" role="alert">{refreshError}</p>}
     {bindingNotice && <p className="settings-note" role="status">{bindingNotice}</p>}
     {submitted && <div className="settings-note" role="status">
-      <p>知识库「{submitted.name}」已提交后台任务，索引尚未确认就绪。请刷新列表查看后端状态。</p>
-      <p className="break-all">任务编号：{submitted.task_id}</p>
+      <p>{submitted.task_id
+        ? `知识库「${submitted.name}」已提交后台任务，索引尚未确认就绪。请刷新列表查看后端状态。`
+        : `知识库「${submitted.name}」已创建，尚未上传文档，没有启动索引任务。`}</p>
+      {submitted.task_id && <p className="break-all">任务编号：{submitted.task_id}</p>}
     </div>}
 
     <div aria-busy={loading}>

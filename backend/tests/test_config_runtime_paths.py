@@ -8,22 +8,22 @@ from pathlib import Path
 import pytest
 import yaml
 
-from math_q_agent.logging.config import load_logging_config
-from math_q_agent.multi_user.context import reset_current_user, set_current_user
-from math_q_agent.multi_user.models import CurrentUser, UserScope
-from math_q_agent.multi_user.paths import get_admin_path_service, local_admin_user
-from math_q_agent.services.config import get_runtime_settings_dir, load_launch_settings
-from math_q_agent.services.config.capabilities_settings import get_visualize_params
-from math_q_agent.services.config.loader import (
+from MathCraft.logging.config import load_logging_config
+from MathCraft.multi_user.context import reset_current_user, set_current_user
+from MathCraft.multi_user.models import CurrentUser, UserScope
+from MathCraft.multi_user.paths import get_admin_path_service, local_admin_user
+from MathCraft.services.config import get_runtime_settings_dir, load_launch_settings
+from MathCraft.services.config.capabilities_settings import get_visualize_params
+from MathCraft.services.config.loader import (
     get_agent_params,
     get_chat_params,
     load_config_with_main,
     load_config_with_main_async,
     resolve_config_path,
 )
-from math_q_agent.services.config.model_catalog import ModelCatalogService, get_model_catalog_service
-from math_q_agent.services.path_service import PathService, get_path_service
-from math_q_agent.services.search import _get_web_search_config
+from MathCraft.services.config.model_catalog import ModelCatalogService, get_model_catalog_service
+from MathCraft.services.path_service import PathService, get_path_service
+from MathCraft.services.search import _get_web_search_config
 
 
 @pytest.fixture(autouse=True)

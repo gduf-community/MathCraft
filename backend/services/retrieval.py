@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from math_q_agent.services.rag.service import RAGService
+from MathCraft.services.rag.service import RAGService
 
 from services.knowledge import ensure_document, resolve_for_rag
 

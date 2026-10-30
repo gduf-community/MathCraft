@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify package identity
         run: >-
-          python -c "from importlib.metadata import distribution; import math_q_agent;
+          python -c "from importlib.metadata import distribution; import MathCraft;
           assert distribution('MathCraft').metadata['Name'] == 'MathCraft'"
 
       - name: Run tests

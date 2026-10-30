@@ -116,10 +116,10 @@ package-dir = {"" = "backend"}
 
 [tool.setuptools.packages.find]
 where = ["backend"]
-include = ["MathCraft*", "math_q_agent*", "api*", "services*", "schemas*"]
+include = ["MathCraft*", "api*", "services*", "schemas*"]
 
 [tool.setuptools.package-data]
-math_q_agent = [
+MathCraft = [
     "**/*.yaml",
     "**/*.yml",
     "**/*.md",

@@ -73,7 +73,7 @@ def test_document_parsing_per_engine_update_is_isolated(client):
 
 
 def test_mineru_env_overrides_persisted_settings(tmp_path: Path):
-    from math_q_agent.services.config.runtime_settings import RuntimeSettingsService
+    from MathCraft.services.config.runtime_settings import RuntimeSettingsService
 
     service = RuntimeSettingsService(
         tmp_path,

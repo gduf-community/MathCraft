@@ -12,9 +12,9 @@ import time
 
 
 def test_legacy_migration_preserves_published_knowledge_index(client, embedding_server):
-    from math_q_agent.services.config import get_model_catalog_service
-    from math_q_agent.services.embedding.config import get_embedding_config
-    from math_q_agent.services.rag.embedding_signature import signature_from_config
+    from MathCraft.services.config import get_model_catalog_service
+    from MathCraft.services.embedding.config import get_embedding_config
+    from MathCraft.services.rag.embedding_signature import signature_from_config
 
     service = get_model_catalog_service()
     original = service.load()

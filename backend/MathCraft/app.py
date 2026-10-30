@@ -7,10 +7,10 @@ import os
 
 from fastapi import FastAPI
 
-from math_q_agent.runtime.env import DEFAULT_BACKEND_HOST, load_project_env
+from MathCraft.runtime.env import DEFAULT_BACKEND_HOST, load_project_env
 from api import chat, generate
-from math_q_agent.api.main import RuntimeCORSMiddleware, lifespan as knowledge_lifespan
-from math_q_agent.api.routers import auth, knowledge, profile, settings as settings_router, system
+from MathCraft.api.runtime import RuntimeCORSMiddleware, lifespan as knowledge_lifespan
+from MathCraft.api.routers import auth, knowledge, profile, settings as settings_router, system
 
 
 @asynccontextmanager
@@ -43,9 +43,9 @@ app.include_router(system.router, prefix="/api/system", tags=["system"])
 async def health():
     """检查正式知识库和正式模型配置是否可用。"""
 
-    from math_q_agent.multi_user.knowledge_access import list_visible_knowledge_bases
-    from math_q_agent.services.llm.config import get_llm_config
-    from math_q_agent.services.rag.factory import DEFAULT_PROVIDER
+    from MathCraft.multi_user.knowledge_access import list_visible_knowledge_bases
+    from MathCraft.services.llm.config import get_llm_config
+    from MathCraft.services.rag.factory import DEFAULT_PROVIDER
 
     try:
         knowledge_bases = len(list_visible_knowledge_bases())
@@ -73,7 +73,7 @@ def run() -> None:
     import argparse
     import uvicorn
 
-    from math_q_agent.services.config import load_launch_settings
+    from MathCraft.services.config import load_launch_settings
 
     load_project_env()
     launch_settings = load_launch_settings()

@@ -30,7 +30,7 @@ def test_empty_catalog_is_bootstrapped_from_env(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("EMBEDDING_MODEL", "embed-test")
     monkeypatch.setenv("EMBEDDING_DIMENSION", "1536")
 
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.model_catalog import ModelCatalogService
 
     catalog = ModelCatalogService(tmp_path / "model_catalog.json").load()
 
@@ -85,7 +85,7 @@ def test_saved_catalog_overrides_env_values(tmp_path: Path, monkeypatch) -> None
         encoding="utf-8",
     )
 
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.model_catalog import ModelCatalogService
 
     catalog = ModelCatalogService(path).load()
     profile = catalog["services"]["llm"]["profiles"][0]
@@ -101,14 +101,14 @@ def test_existing_empty_catalog_stays_authoritative(tmp_path: Path, monkeypatch)
     path = tmp_path / "model_catalog.json"
     path.write_text("{}", encoding="utf-8")
 
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.model_catalog import ModelCatalogService
 
     catalog = ModelCatalogService(path).load()
     assert catalog["services"]["llm"]["profiles"] == []
 
 
 def test_shell_environment_wins_over_dotenv_loader_contract(tmp_path: Path, monkeypatch) -> None:
-    from math_q_agent.services.config.model_catalog import ModelCatalogService
+    from MathCraft.services.config.model_catalog import ModelCatalogService
 
     _clear_model_env(monkeypatch)
     monkeypatch.setenv("LLM_MODEL", "shell-model")

@@ -1,1 +1,1 @@
-"""Public API namespace for the MathCraft compatibility package."""
+"""HTTP routes and runtime infrastructure for the MathCraft backend."""
