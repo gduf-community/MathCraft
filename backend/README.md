@@ -28,6 +28,9 @@ backend/
 │   └── utils/          # 通用文件、JSON、网络与校验工具
 ├── api/                # 出题编排路由：generate、chat
 ├── services/           # 出题业务与正式知识库/LLM 适配器
+│   ├── chat_flow.py    # 多轮追问，必填信息齐备后生成
+│   ├── slots.py        # 累积要求与各题型数量检查
+│   ├── prompts.py      # 题目生成与信息抽取提示词
 │   ├── knowledge.py    # 正式知识库目录与文档访问
 │   ├── retrieval.py    # RAGService 检索适配器
 │   └── llm.py          # 正式 LLM 配置适配器
@@ -35,6 +38,7 @@ backend/
 │   └── profile.py      # 资料字段、只读身份与学段年级校验
 ├── scripts/            # 出题和对话联测脚本（使用正式知识库）
 ├── tests/              # 后端测试套件
+│   ├── test_chat_requirements.py # 缺项阻止生成及多轮补齐回归
 │   ├── test_direct_model_settings.py # 单项保存、并发与错误边界
 │   ├── test_direct_model_migration.py # 迁移、名称、掩码与环境优先级
 │   ├── test_direct_model_discovery.py # 本地假服务发现及 HTTP 反馈
@@ -75,3 +79,7 @@ backend/
 两条保留的模型发现通路返回一致业务状态、模型列表、原因代码及存在的上游 HTTP 状态。请求只执行模型列表发现，不进行推理或嵌入，不回传上游错误正文。接口以[机器契约](../openapi.json)及[生成 API 文档](../docs/api.md)为准，行为范围见[功能规格](../docs/design/模型直接配置功能规格.md)。
 
 独立模型实现入口：`math_q_agent/services/config/direct_model_config.py` 负责正式配置迁移和名称约束；`math_q_agent/services/settings/direct_model_edit.py` 负责当前模型合并及默认操作。知识库兼容验证通过设置接口、公开运行时解析和本地假嵌入索引进行，详见[模型直接配置实施记录](../docs/design/模型直接配置实施记录.md)。
+
+## 对话出题必填检查
+
+`/api/chat` 累积教师要求，在题型、每种题型数量、范围、来源和难度齐备后才调用生成；数量缺失时按题型追问，每种题型数量为 1–20 道，不使用默认数量。设计与边界见 [对话出题必填信息检查](../docs/design/对话出题必填信息检查.md)。

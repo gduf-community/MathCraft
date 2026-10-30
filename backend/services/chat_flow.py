@@ -23,7 +23,7 @@ async def handle_chat(
     state = merge_slots(slot_state or {}, await extract_slots(message, history))
     missing = missing_keys(state)
     if missing:
-        return {"reply": build_followup(missing), "slot_state": state, "questions": [], "done": False}
+        return {"reply": build_followup(missing, state), "slot_state": state, "questions": [], "done": False}
 
     params, scope = build_params(state, kb_id, doc_id)
     try:
