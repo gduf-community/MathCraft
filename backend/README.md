@@ -22,6 +22,9 @@ backend/
 │   ├── logging/        # 日志与调用统计
 │   ├── multi_user/     # 上游多用户兼容模块（当前由单租户替身驱动）
 │   ├── runtime/        # 数据根、运行模式与隔离 worker
+│   │   ├── isolated_worker.py # 父进程调度、超时、并发与取消回收
+│   │   ├── worker_process.py # 固定 python -m 入口、pickle 请求及结果封套
+│   │   └── worker_tasks.py # 惰性文本提取与 UTF-8 Markdown 写入
 │   ├── services/       # LLM、嵌入、RAG、解析、设置等业务服务
 │   │   ├── config/direct_model_config.py # 独立配置迁移、名称与有效参数快照
 │   │   ├── settings/direct_model_edit.py # 当前项锁内合并、默认与任务模式
@@ -40,6 +43,7 @@ backend/
 │   └── profile.py      # 资料字段、只读身份与学段年级校验
 ├── scripts/            # 出题和对话联测脚本（使用正式知识库）
 ├── tests/              # 后端测试套件
+│   ├── test_isolated_document_extraction.py # 真实子进程提取、预览、错误与回收
 │   ├── test_chat_requirements.py # 缺项阻止生成及多轮补齐回归
 │   ├── test_direct_model_settings.py # 单项保存、并发与错误边界
 │   ├── test_direct_model_migration.py # 迁移、名称、掩码与环境优先级
@@ -64,6 +68,18 @@ backend/
 前后端端口统一由根 `.env` 配置时，后端使用 `python -m MathCraft` 启动。直接运行 Uvicorn 并指定 `--port` 会使用其命令行端口；应用 lifespan 加载 `.env` 无法修改已经解析的监听参数，可能导致 Vite 按 `.env` 转发到没有监听的端口。
 
 应用模块导入仅装配路由，ASGI lifespan 负责加载 `.env`、初始化运行时设置、导出环境变量和配置日志。`MATHCRAFT_HOME` 可在导入后、启动前确定；配置默认目录由路径服务解析，已有实例继续绑定其原目录。启动顺序与异常边界见 [模型配置来源与普通知识库流程](../docs/design/模型配置来源与普通知识库流程.md)。
+
+## 隔离文档提取
+
+本次补齐基线缺失的 `MathCraft/runtime/worker_process.py` 与 `worker_tasks.py`，恢复 `extract_text_from_path_isolated()` 和 `TextOnlyParser.parse()` 的既有调用链；不增加依赖，单租户边界保持有效。2026-10-31 在 Windows / Python 3.14 上完成真实子进程及完整后端验证。
+
+- `isolated_worker.py` 使用当前 Python 解释器执行固定命令 `python -m MathCraft.runtime.worker_process <request_path> <result_path>`，不通过 shell；继续管理临时目录、超时、并发限制，以及异步取消后的终止和等待回收。
+- `worker_process.py` 读取 pickle 请求 `{callable_path, args, kwargs}`，按 `module:callable` 定位同步函数。成功写入 `{ok: True, result: ...}`；失败写入 `{ok: False, message, module, type, traceback, attrs}`。`attrs` 至少保留异常的 `filename`，忽略不可序列化属性，避免属性序列化失败掩盖原错误。该协议只用于父进程创建的可信临时文件，不是 HTTP 接口。
+- `worker_tasks.py` 在任务执行时惰性调用 `MathCraft.utils.document_extractor.extract_text_from_path`。`extract_document_text` 透传 `filename_hint`、`max_bytes`、`max_chars` 并返回字符串；`extract_document_to_markdown` 先完成提取，再创建目标父目录、以 UTF-8 写入 `.md`，返回 `None`。提取失败不提前创建输出目录或文件。
+- 远程失败先由父进程包装为 `IsolatedWorkerError`；公开提取入口继续恢复文档异常及 `filename`，并将既有内置文件异常映射为 `OSError`。`TextOnlyParser` 继续将既有 worker/文件错误包装为 `ParserError`。超时、取消、无结果或损坏结果沿用父进程原有异常边界，不转换为成功或静默回退。
+- HTTP 文本预览沿用 `GET /api/knowledge-bases/{kb_name}/file-preview-text/{filename:path}`：成功返回纯文本，文档提取失败返回 422，文件缺失返回 404；请求字段与响应格式不变。traceback 和内部属性不增加为 HTTP 响应字段。
+
+验收入口为 `.venv\Scripts\python.exe -m pytest backend/tests/test_isolated_document_extraction.py -q`，要求真实子进程覆盖文本/PDF 成功、Markdown 输出、HTTP 预览成功、错误传回、超时与取消，并完成后端回归。验收细项及实际结果记录入口见[后端包统一与接口对齐第 10 节](../docs/design/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收)。新增回归 25 项通过、既有解析相关测试 9 项通过，完整后端套件 322 项通过、1 项跳过；仅有既有 PyMuPDF 弃用提示。
 
 ## 教师个人资料
 

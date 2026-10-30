@@ -23,6 +23,37 @@ Source: DeepTutor `a31d8262`.
 | `api/routers/system.py` | 633 lines: version checks, update jobs, memory probe, runtime status handshake, SSE | Status + three connectivity tests. `/test/search` explains that search executes in the chat runtime. |
 | `runtime/home.py` | `DEEPTUTOR_HOME` semantics | `MATHCRAFT_HOME`; the default is the process working directory (the repository root when launched there). |
 
+## Isolated document extraction restoration
+
+Baseline `6045b32` omitted `runtime/worker_process.py` and
+`runtime/worker_tasks.py` while existing preview and `TextOnlyParser.parse()`
+callers still referenced them. This change restores those two infrastructure
+modules using the existing extractor, with no new dependencies. It does not
+replace any stand-in above or restore upstream multi-tenant behaviour.
+
+The fixed child entry point is
+`python -m MathCraft.runtime.worker_process <request_path> <result_path>`.
+Trusted temporary files carry a pickle request with `callable_path`, `args`
+and `kwargs`. Replies contain `ok/result` on success or
+`ok/message/module/type/traceback/attrs` on failure; `attrs` preserves
+`filename` when present and omits attributes that cannot be pickled.
+`extract_document_text` lazily calls the existing `extract_text_from_path`,
+forwarding `filename_hint`, `max_bytes` and `max_chars`.
+`extract_document_to_markdown` extracts first, then creates the parent
+directory, writes UTF-8 Markdown and returns `None`.
+
+The parent retains timeouts, concurrency limits and cancellation cleanup.
+Existing public document exceptions, filename handling, parser error wrapping
+and HTTP preview contracts remain the acceptance boundary. The internal error
+envelope is not a new HTTP response schema.
+
+Verified on Windows / Python 3.14 on 2026-10-31:
+`backend/tests/test_isolated_document_extraction.py` passed all 25 tests,
+covering real subprocess text/PDF extraction, Markdown output, successful HTTP
+previews, remote errors, timeouts and cancellation. Existing parsing regressions
+passed all 9 tests; the full backend suite passed 322 tests with 1 skipped. See
+[the restoration design and acceptance criteria](docs/design/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收).
+
 ## Removing the stubs later
 
 To restore multi-user behaviour: replace `api/routers/auth.py` with upstream's
