@@ -34,6 +34,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
 │   ├── design/                   # 新功能与模块设计文档
+│   │   ├── 统一知识库设计.md       # 考研数学出题知识库方案与实施验收
 │   │   ├── 个人中心与模型配置页面设计.md # 已确认的页面方案与能力边界
 │   │   ├── 个人中心与应用设置功能规格.md # 本地功能规格、用户故事与验收标准
 │   │   ├── 个人中心与应用设置实施记录.md # 验收结果、审查及验证边界
@@ -298,6 +299,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 | [docs/design/个人中心与应用设置功能规格.md](docs/design/个人中心与应用设置功能规格.md) | 本地规范：46 条用户故事、实现决策与 18 项行为验收 |
 | [docs/design/个人中心与应用设置实施记录.md](docs/design/个人中心与应用设置实施记录.md) | 实际交付、18 项验收映射、双轴审查及本地验证边界 |
 | [docs/design/知识库模块说明.md](docs/design/知识库模块说明.md) | 知识库模块架构、生命周期、数据布局和接口分组 |
+| [docs/design/统一知识库设计.md](docs/design/统一知识库设计.md) | 考研数学知识库的目标、现状、完整证据、标签结构与验收（待实施） |
 | [docs/design/扫描PDF云端OCR策略.md](docs/design/扫描PDF云端OCR策略.md) | 扫描 PDF 的检测、MinerU 云端 OCR 契约和验收标准 |
 | [docs/design/模型配置来源与普通知识库流程.md](docs/design/模型配置来源与普通知识库流程.md) | 模型目录优先级、Task 模式与普通知识库后端流程 |
 | [docs/adr/0001-正式知识库作为唯一知识库入口.md](docs/adr/0001-正式知识库作为唯一知识库入口.md) | 正式知识库唯一入口的架构决策 |
