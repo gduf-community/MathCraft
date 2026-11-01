@@ -1,4 +1,4 @@
-/** 题库管理页：我创建的题库 / 我加入的题库 两个标签页；真实知识库连接位于设置。 */
+/** 题库管理页：我创建的题库 / 我加入的题库 两个标签页 */
 import { useCallback, useEffect, useState } from 'react'
 import {
   ClipboardList,
@@ -16,8 +16,9 @@ import type { ManagedBank } from '../../../api/mock/bankMock'
 import { useApp } from '../../../store/AppContext'
 import { Avatar } from './shared'
 import BankEditModal from './BankEditModal'
+import BankCreateModal from './BankCreateModal'
 import BankViewModal from './BankViewModal'
-import ConfirmDialog from './ConfirmDialog'
+import ConfirmDialog from '../../ui/ConfirmDialog'
 
 type SubTab = 'owned' | 'joined'
 
@@ -47,6 +48,7 @@ export default function BankTab() {
   const [loading, setLoading] = useState(true)
   const [editTarget, setEditTarget] = useState<ManagedBank | null>(null)
   const [viewTarget, setViewTarget] = useState<ManagedBank | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<ManagedBank | null>(null)
   const [quitTarget, setQuitTarget] = useState<ManagedBank | null>(null)
   const [joining, setJoining] = useState(false)
@@ -87,8 +89,7 @@ export default function BankTab() {
   const dangerBtn = `${rowButton} border border-red-200 bg-red-50 text-red-500 hover:bg-red-100`
 
   return (
-    <div className="flex-1 overflow-y-auto bg-page p-3 sm:p-5">
-      <p className="mb-4 text-xs text-ink-2">题库协作与成员操作为演示，真实知识库及其引擎请在设置中管理。</p>
+    <div className="flex-1 overflow-y-auto p-5">
       {/* 子标签页 */}
       <div className="flex items-center gap-7 border-b border-line px-1">
         {(
@@ -130,7 +131,7 @@ export default function BankTab() {
               </div>
               <button
                 type="button"
-                onClick={() => showToast('新建题库功能将在后端接入后开放（演示）')}
+                onClick={() => setCreateOpen(true)}
                 className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
               >
                 <FolderPlus size={15} /> 新建题库
@@ -295,6 +296,7 @@ export default function BankTab() {
         />
       )}
       {viewTarget && <BankViewModal bank={viewTarget} onClose={() => setViewTarget(null)} onChanged={() => void refresh()} />}
+      {createOpen && <BankCreateModal onClose={() => setCreateOpen(false)} onChanged={() => void refresh()} />}
       {deleteTarget && (
         <ConfirmDialog
           title="删除题库"

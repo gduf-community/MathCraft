@@ -1,25 +1,34 @@
 import { useEffect, useState } from 'react'
 import { Pencil, Save, Star, Trash2, X } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
-import { useFavorites } from '../../../store/FavoritesContext'
 import { TYPE_LABELS } from '../../../constants'
 import type { Question } from '../../../types'
 import { Latex } from '../../../lib/latex'
 import AnswerPanel from './AnswerPanel'
 import ScoreEditor from './ScoreEditor'
+import FavoriteGroupModal from '../../ui/FavoriteGroupModal'
 
 interface Props {
   q: Question
   index: number
+  /** 试卷快照上下文：提供后收藏/编辑/删除/勾选作用于快照而非全局题目 */
+  snapshot?: {
+    selectedIds: string[]
+    toggleSelect: (id: string) => void
+    updateQuestion: (q: Question) => Promise<unknown> | unknown
+    deleteQuestion: (id: string) => Promise<unknown> | unknown
+    toggleStar: (id: string, starred?: boolean) => Promise<unknown> | unknown
+  }
 }
 
 /** 题目卡片：题号/收藏、题干选项、答案解析折叠区、右侧分值与操作 */
-export default function QuestionCard({ q, index }: Props) {
-  const { selectedIds, toggleSelect, updateQuestion, deleteQuestion } = useApp()
-  const { isFavorite, toggleFavorite, updateQuestionSnapshot } = useFavorites()
+export default function QuestionCard({ q, index, snapshot }: Props) {
+  const app = useApp()
+  const { selectedIds, toggleSelect, updateQuestion, deleteQuestion, toggleStar } = snapshot ?? app
   const [editing, setEditing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [draft, setDraft] = useState<Question>(q)
+  const [starPicking, setStarPicking] = useState(false)
 
   useEffect(() => {
     if (!editing) setDraft(q)
@@ -38,13 +47,10 @@ export default function QuestionCard({ q, index }: Props) {
 
   const saveEdit = async () => {
     await updateQuestion(draft)
-    // 已收藏的题目同步快照，避免收藏页继续显示旧题干
-    await updateQuestionSnapshot(draft)
     setEditing(false)
   }
 
   const selected = selectedIds.includes(q.id)
-  const starred = isFavorite(q.id)
   const objective = draft.options.length > 0
 
   const patchDraft = (patch: Partial<Question>) => setDraft((prev) => ({ ...prev, ...patch }))
@@ -90,12 +96,19 @@ export default function QuestionCard({ q, index }: Props) {
           </span>
           <button
             type="button"
-            title={starred ? '取消收藏' : '收藏本题'}
-            aria-pressed={starred}
-            onClick={() => void toggleFavorite(q)}
-            className={`transition-transform hover:scale-110 ${starred ? 'text-star' : 'text-ink-3/70'}`}
+            title={q.starred ? '取消收藏' : '收藏本题'}
+            onClick={() => {
+              if (q.starred) {
+                // 取消点亮：直接取消收藏，不弹窗
+                void toggleStar(q.id)
+                return
+              }
+              // 点亮：弹收藏分组弹窗
+              setStarPicking(true)
+            }}
+            className={`transition-transform hover:scale-110 ${q.starred ? 'text-star' : 'text-ink-3/70'}`}
           >
-            <Star size={16} fill={starred ? 'currentColor' : 'none'} />
+            <Star size={16} fill={q.starred ? 'currentColor' : 'none'} />
           </button>
         </div>
 
@@ -210,6 +223,9 @@ export default function QuestionCard({ q, index }: Props) {
       </div>
 
       <p className="mt-2 pl-[54px] text-xs text-ink-3">所属知识点：{q.knowledgePoint}</p>
+
+      {/* 收藏分组弹窗：选择收藏到哪个标签页 */}
+      {starPicking && <FavoriteGroupModal question={q} onClose={() => setStarPicking(false)} />}
     </article>
   )
 }

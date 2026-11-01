@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
-import { Bot, ListFilter, Users } from 'lucide-react'
+import { Bot, ListFilter, Trash2, Users } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { DIFFICULTIES, TYPE_LABELS, TYPE_ORDER } from '../../../constants'
 import type { Difficulty } from '../../../types'
 import QuestionCard from './QuestionCard'
 import AssembleModal from './AssembleModal'
 import Dropdown from '../../ui/Dropdown'
+import ConfirmDialog from '../../ui/ConfirmDialog'
 
 /** 题目预览标签页：题型筛选、难度筛选、题目列表（滚轮滚动，无翻页） */
 export default function PreviewTab() {
@@ -18,8 +19,10 @@ export default function PreviewTab() {
     setTypeFilter,
     diffFilter,
     setDiffFilter,
+    deleteSelected,
   } = useApp()
   const [assembling, setAssembling] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: questions.length }
@@ -77,6 +80,19 @@ export default function PreviewTab() {
           />
           全选
         </label>
+        <button
+          type="button"
+          disabled={!selectedIds.length}
+          onClick={() => setConfirmDelete(true)}
+          className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors ${
+            selectedIds.length
+              ? 'border-red-200 bg-red-50 text-red-500 hover:bg-red-100'
+              : 'cursor-not-allowed border-line bg-page text-ink-3 opacity-60'
+          }`}
+        >
+          <Trash2 size={12} />
+          删除
+        </button>
         <span className="text-sm text-ink-3">共 {filtered.length} 道题</span>
         <div className="flex-1" />
         <div className="flex items-center gap-2 text-sm text-ink-2">
@@ -110,6 +126,15 @@ export default function PreviewTab() {
       </div>
 
       {assembling && <AssembleModal onClose={() => setAssembling(false)} />}
+      {confirmDelete && (
+        <ConfirmDialog
+          title="删除题目"
+          message={`确定删除已选的 ${selectedIds.length} 道题目吗？删除后不可恢复。`}
+          confirmText="确认删除"
+          onConfirm={() => void deleteSelected()}
+          onClose={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   )
 }

@@ -19,10 +19,10 @@ export const DOCUMENTS: KbDocument[] = [
 
 /** 可发布的学习空间 */
 export const STUDY_SPACES: StudySpace[] = [
-  { id: 'sp-1', name: '24软工1班' },
-  { id: 'sp-2', name: '25计科2班' },
-  { id: 'sp-3', name: '24大数据1班' },
-  { id: 'sp-4', name: '23计科1班' },
+  { id: 'sp-1', name: '24软工1班', code: 'SP20260001', memberCount: 24, capacity: 50, creator: '张老师', members: ['张老师', ...Array.from({ length: 24 - 1 }, (_, i) => `学生${i + 1}`)] },
+  { id: 'sp-2', name: '25计科2班', code: 'SP20260002', memberCount: 31, capacity: 50, creator: '张老师', members: ['张老师', ...Array.from({ length: 31 - 1 }, (_, i) => `学生${i + 1}`)] },
+  { id: 'sp-3', name: '24大数据1班', code: 'SP20260003', memberCount: 18, capacity: 50, creator: '张老师', members: ['张老师', ...Array.from({ length: 18 - 1 }, (_, i) => `学生${i + 1}`)] },
+  { id: 'sp-4', name: '23计科1班', code: 'SP20260004', memberCount: 40, capacity: 50, creator: '李老师', members: ['李老师', ...Array.from({ length: 40 - 1 }, (_, i) => `学生${i + 1}`)] },
 ]
 
 interface QuestionTemplate {

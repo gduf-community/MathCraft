@@ -20,7 +20,7 @@ import * as bankMock from '../../../api/mock/bankMock'
 import type { AdminLevel, ManagedBank } from '../../../api/mock/bankMock'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
-import ConfirmDialog from './ConfirmDialog'
+import ConfirmDialog from '../../ui/ConfirmDialog'
 import { useDocUpload } from './useDocUpload'
 
 const LEVELS: { key: AdminLevel; title: string; desc: string }[] = [
