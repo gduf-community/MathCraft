@@ -91,3 +91,12 @@ async def test_raw_file_response_blocks_active_content_inline(
 
     assert response.headers["content-disposition"].startswith(f"{disposition};")
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_kb_config_rejects_path_separator(client) -> None:
+    response = client.put(
+        "/api/knowledge-bases/..%5Coutside/config",
+        json={"search_mode": "hybrid"},
+    )
+    assert response.status_code == 400
+    assert "reserved" in response.json()["detail"]

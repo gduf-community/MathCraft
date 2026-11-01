@@ -47,6 +47,18 @@ class ProgressStage(Enum):
     ERROR = "error"  # Error
 
 
+def normalize_websocket_progress(progress: dict) -> dict:
+    """Return the stable progress shape exposed over WebSocket."""
+    normalized = dict(progress or {})
+    if "progress_percent" not in normalized:
+        normalized["progress_percent"] = int(normalized.pop("percent", 0) or 0)
+    else:
+        normalized.pop("percent", None)
+    if normalized.get("stage") == ProgressStage.COMPLETED.value:
+        normalized["progress_percent"] = 100
+    return normalized
+
+
 def visible_progress(progress: dict, kb_dir: Path) -> dict:
     """A prepared native terminal record is visible only after publication."""
     version = progress.get("publication_version")

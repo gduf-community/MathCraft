@@ -180,6 +180,14 @@ def _writable_kb(kb_name: str) -> tuple[KnowledgeBaseManager, str, Path]:
     return manager_for_resource(resource), resource.name, resource.base_dir
 
 
+def _validate_config_kb_name(kb_name: str) -> str:
+    """Validate a user-facing KB name before it reaches the config registry."""
+    try:
+        return validate_knowledge_base_name(kb_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class KnowledgeBaseInfo(BaseModel):
     id: str | None = None
     name: str
@@ -2096,6 +2104,7 @@ async def get_all_kb_configs():
 @router.get("/knowledge-bases/{kb_name}/config")
 async def get_kb_config(kb_name: str):
     """Get configuration for a specific knowledge base."""
+    kb_name = _validate_config_kb_name(kb_name)
     try:
         _, resolved_name, _ = _writable_kb(kb_name)
         from MathCraft.services.config import get_kb_config_service
@@ -2103,6 +2112,8 @@ async def get_kb_config(kb_name: str):
         service = get_kb_config_service()
         config = service.get_kb_config(resolved_name)
         return {"kb_name": resolved_name, "config": config}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting config for KB '{kb_name}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2111,6 +2122,7 @@ async def get_kb_config(kb_name: str):
 @router.put("/knowledge-bases/{kb_name}/config")
 async def update_kb_config(kb_name: str, config: dict):
     """Update configuration for a specific knowledge base."""
+    kb_name = _validate_config_kb_name(kb_name)
     try:
         _, resolved_name, kb_base_dir = _writable_kb(kb_name)
         from MathCraft.services.config import get_kb_config_service
@@ -3374,6 +3386,17 @@ def _delete_kb(kb_name: str) -> dict[str, str]:
     """Delete ``kb_name``, whichever route addressed it."""
     try:
         manager, resolved_name, _ = _writable_kb(kb_name)
+        base_dir = Path(manager.base_dir).resolve()
+        target_dir = (base_dir / resolved_name).resolve()
+        try:
+            target_dir.relative_to(base_dir)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Knowledge base path must remain inside the configured knowledge-base directory.",
+            ) from exc
+        if target_dir == base_dir:
+            raise HTTPException(status_code=400, detail="The knowledge-base root cannot be deleted.")
         success = manager.delete_knowledge_base(resolved_name, confirm=True)
     except HTTPException:
         # Re-raised before the catch-all below, which used to turn a 404 from

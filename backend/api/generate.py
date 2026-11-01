@@ -1,15 +1,15 @@
 """参数化快速出题路由。"""
 from fastapi import APIRouter, HTTPException
 
-from schemas.question import GenerateParams
+from schemas.question import GenerateParams, Question
 from services.question_gen import NeedConfirmError, generate_questions
 from services.knowledge import list_documents
 
 router = APIRouter(prefix="/api", tags=["generate"])
 
 
-@router.post("/generate")
-async def generate(params: GenerateParams):
+@router.post("/generate", response_model=list[Question])
+async def generate(params: GenerateParams) -> list[Question]:
     docs = list_documents(params.kb_id)
     document = next((d for d in docs if d["doc_id"] == params.doc_id), None)
     if document is None:

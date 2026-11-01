@@ -25,8 +25,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from MathCraft.runtime.env import load_project_env
+from MathCraft.api.security_guard import build_security_config, wrap_security_guard
 from MathCraft.logging import configure_logging
+from MathCraft.runtime.env import load_project_env
 from MathCraft.services.config import (
     ensure_runtime_settings_files,
     export_runtime_settings_to_env,
@@ -78,15 +79,29 @@ class RuntimeCORSMiddleware:
         self.app = app
         self._config: dict[str, Any] | None = None
         self._middleware: CORSMiddleware | None = None
+        self._guard_settings: dict[str, Any] | None = None
+        self._guard_app: ASGIApp | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        config = scope["app"].state.cors_kwargs
+        app_state = scope["app"].state
+        config = app_state.cors_kwargs
+        guard_settings = app_state.security_guard_settings
+        inner_app = self.app
+        if guard_settings.get("enabled"):
+            if self._guard_app is None or self._guard_settings is not guard_settings:
+                self._guard_app = wrap_security_guard(
+                    self.app, app_state.security_guard_config
+                )
+                self._guard_settings = guard_settings
+            inner_app = self._guard_app
         if self._middleware is None or self._config is not config:
-            self._middleware = CORSMiddleware(self.app, **config)
+            self._middleware = CORSMiddleware(inner_app, **config)
             self._config = config
+        elif self._guard_app is not None and self._middleware.app is not inner_app:
+            self._middleware = CORSMiddleware(inner_app, **config)
         await self._middleware(scope, receive, send)
 
 
@@ -100,6 +115,13 @@ async def lifespan(app: FastAPI):
     export_runtime_settings_to_env(overwrite=True)
     configure_logging()
     app.state.cors_kwargs = build_cors_kwargs()
+    from MathCraft.api.security_guard import load_guard_settings
+
+    guard_settings = load_guard_settings()
+    app.state.security_guard_settings = guard_settings
+    app.state.security_guard_config = (
+        build_security_config(guard_settings) if guard_settings.get("enabled") else None
+    )
 
     from MathCraft.api.utils.progress_broadcaster import ProgressBroadcaster
     from MathCraft.api.utils.task_log_stream import get_task_stream_manager

@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI
+from starlette.types import ASGIApp
 
 from MathCraft.services.config import load_system_settings
 
@@ -62,6 +63,17 @@ def build_security_config(settings: dict[str, Any]) -> Any:
         enabled_detection_categories=ALL_DETECTION_CATEGORIES - {"ssrf"},
         enable_agent=False,
     )
+
+
+def wrap_security_guard(app: ASGIApp, config: Any) -> ASGIApp:
+    """Wrap an ASGI app with an already validated guard configuration.
+
+    The unified app builds this wrapper lazily from its runtime middleware so
+    settings are loaded during lifespan rather than at import time.
+    """
+    from guard import PureASGISecurityMiddleware
+
+    return PureASGISecurityMiddleware(app, config=config)
 
 
 def install_security_guard(app: FastAPI, settings: dict[str, Any] | None = None) -> bool:

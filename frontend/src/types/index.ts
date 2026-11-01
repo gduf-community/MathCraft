@@ -63,8 +63,8 @@ export interface ExamWindow {
 }
 
 export interface GenerateParams {
-  /** 题库（知识库）id，与后端向量库 collection 对应；缺省用内置 kb-math */
-  kbId?: string
+  /** 正式知识库 id，与后端向量库 collection 对应。 */
+  kbId: string
   docId: string
   docName: string
   difficulty: Difficulty

@@ -27,7 +27,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Question"
+                  },
+                  "type": "array",
+                  "title": "Response Generate Api Generate Post"
+                }
               }
             }
           },
@@ -66,7 +72,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
               }
             }
           },
@@ -6767,22 +6775,19 @@
               "type": "object"
             },
             "type": "array",
-            "title": "History",
-            "default": []
+            "title": "History"
           },
           "slot_state": {
             "additionalProperties": true,
             "type": "object",
-            "title": "Slot State",
-            "default": {}
+            "title": "Slot State"
           },
           "existing_stems": {
             "items": {
               "type": "string"
             },
             "type": "array",
-            "title": "Existing Stems",
-            "default": []
+            "title": "Existing Stems"
           }
         },
         "type": "object",
@@ -6792,6 +6797,39 @@
           "message"
         ],
         "title": "ChatRequestBody"
+      },
+      "ChatResponse": {
+        "properties": {
+          "reply": {
+            "type": "string",
+            "title": "Reply"
+          },
+          "slot_state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Slot State"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reply",
+          "slot_state",
+          "questions",
+          "done"
+        ],
+        "title": "ChatResponse",
+        "description": "一轮对话出题的稳定响应。"
       },
       "ChatResponseTimeoutUpdate": {
         "properties": {
@@ -7438,8 +7476,7 @@
               "type": "string"
             },
             "type": "array",
-            "title": "Existing Stems",
-            "default": []
+            "title": "Existing Stems"
           }
         },
         "type": "object",
@@ -8800,6 +8837,24 @@
         ],
         "title": "NetworkSettingsUpdate"
       },
+      "OptionItem": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "text"
+        ],
+        "title": "OptionItem"
+      },
       "PageIndexConfigUpdate": {
         "properties": {
           "api_key": {
@@ -9103,6 +9158,71 @@
         },
         "type": "object",
         "title": "ProviderProbePayload"
+      },
+      "Question": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "default": ""
+          },
+          "type": {
+            "$ref": "#/components/schemas/QuestionType"
+          },
+          "score": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Score",
+            "default": 5
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty",
+            "default": "中"
+          },
+          "stem": {
+            "type": "string",
+            "title": "Stem"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionItem"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "analysis": {
+            "type": "string",
+            "title": "Analysis"
+          },
+          "knowledgePoint": {
+            "type": "string",
+            "title": "Knowledgepoint",
+            "default": ""
+          },
+          "starred": {
+            "type": "boolean",
+            "title": "Starred",
+            "default": false
+          },
+          "docName": {
+            "type": "string",
+            "title": "Docname",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "stem",
+          "answer",
+          "analysis"
+        ],
+        "title": "Question"
       },
       "QuestionType": {
         "type": "string",

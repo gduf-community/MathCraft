@@ -12,6 +12,13 @@ gateway you control.
 
 Errors use FastAPI's `detail` envelope with a 4xx/5xx status. Most details are safe text; the documented direct-model committed/readback-failed outcome uses a structured code and message.
 
+## Health
+
+| Method | Path | Summary |
+| --- | --- | --- |
+| `GET` | `/api/health` | Health |
+| `GET` | `/healthz` | Healthz |
+
 ## Knowledge bases
 
 | Method | Path | Summary |
@@ -103,12 +110,6 @@ Errors use FastAPI's `detail` envelope with a 4xx/5xx status. Most details are s
 | `POST` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/retry` | Retry Web Source Sync |
 | `PUT` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/schedule` | Update Web Source Schedule |
 | `GET` | `/api/knowledge-bases/{kb_name}/web-sources` | Get Web Sources |
-
-## Question knowledge import
-
-| Method | Path | Summary |
-| --- | --- | --- |
-
 
 ## Question generation
 
@@ -224,6 +225,44 @@ Errors use FastAPI's `detail` envelope with a 4xx/5xx status. Most details are s
 | `GET` | `/api/user-profile/avatar` | Get Avatar |
 | `POST` | `/api/user-profile/avatar` | Upload Avatar |
 
+## Question generation contract
+
+### `POST /api/generate`
+
+The parameterized endpoint accepts `kb_id`, `doc_id`, `types` (each item has a
+question `type` and a `count` from 1 to 20), `difficulty`, `source_mode`,
+optional `scope`, and optional `existing_stems`. It returns a JSON array of
+`Question` objects. `existing_stems` is the caller's current question bank;
+the service uses it for prompt-level and normalized-stem deduplication.
+
+### `POST /api/chat`
+
+The chat endpoint accepts `kb_id`, `doc_id`, `message`, `history`,
+`slot_state`, and `existing_stems`, and returns:
+
+```json
+{
+  "reply": "请补充每种题型的数量。",
+  "slot_state": {},
+  "questions": [],
+  "done": false
+}
+```
+
+The client must send the returned `slot_state` back on the next turn. The
+state accumulates explicit requirements across turns; missing question type,
+per-type count, scope, source mode, or difficulty keeps `done` false and does
+not start generation. Once all required slots are present, the response
+contains the newly generated `questions` and sets `done` to true. The
+`existing_stems` list is also sent on each turn so generated questions can be
+deduplicated against questions already shown by the parameterized flow.
+
+This supports the "set parameters first, then continue in chat" flow: the
+parameterized call supplies the initial question set, and a later chat call
+uses the same `kb_id`/`doc_id` plus the current `slot_state` and
+`existing_stems` to request additional questions. The server does not infer
+or persist client-side state between requests.
+
 ## Teacher profile contract
 
 - `GET /api/user-profile` reads the single local teacher's profile.
@@ -327,10 +366,15 @@ ws://127.0.0.1:8000/ws/knowledge-bases/{kb_name}/progress?task_id=<optional>
 Message shapes:
 
 ```json
-{"type": "progress", "data": {"stage": "indexing", "percent": 42, "current": 3, "total": 7, "message": "..."}}
-{"type": "error", "message": "Initialization failed: ..."}
-{"type": "complete", "data": {"stage": "completed", "percent": 100}}
+{"type": "progress", "data": {"stage": "processing_file", "progress_percent": 42, "current": 3, "total": 7, "message": "..."}}
+{"type": "progress", "data": {"stage": "completed", "progress_percent": 100, "current": 1, "total": 1, "message": "..."}}
+{"type": "progress", "data": {"stage": "error", "progress_percent": 0, "error": "Initialization failed: ...", "message": "Initialization failed: ..."}}
 ```
+
+Every WebSocket message uses the outer `type: "progress"`. Terminal states
+are identified by `data.stage` equal to `completed` or `error`; there are no
+separate `complete` or `error` message types. The progress value exposed by
+the durable progress snapshot is `data.progress_percent`.
 
 ## curl examples
 

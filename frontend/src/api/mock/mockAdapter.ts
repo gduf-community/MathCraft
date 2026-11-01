@@ -1,4 +1,4 @@
-import type { ApiClient, GenerateProgressHandler } from '../client'
+import type { ApiClient, GenerateProgressHandler, UploadProgressHandler } from '../client'
 import type {
   AssembleRecord,
   GenerateParams,
@@ -7,7 +7,6 @@ import type {
 } from '../../types'
 import { DEFAULT_SCORES, TYPE_LABELS } from '../../constants'
 import { DOCUMENTS, KNOWLEDGE_BASES, QUESTION_BANK, STUDY_SPACES } from './mockData'
-import { getBankDocsById, listAllBanks } from './bankMock'
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -34,21 +33,18 @@ export const mockAdapter: ApiClient = {
 
   async listDocuments(kbId: string) {
     await delay(120)
-    // 题库 id 不在内置文档清单时，回退到题库管理 mock 的文档数据
-    const fromData = DOCUMENTS.filter((d) => d.kbId === kbId)
-    if (fromData.length) return fromData
-    return getBankDocsById(kbId).map((d) => ({ id: d.id, kbId, name: d.name }))
+    return DOCUMENTS.filter((d) => d.kbId === kbId)
+  },
+
+  async uploadDocument(_kbId: string, file: File, onProgress?: UploadProgressHandler) {
+    onProgress?.(0, `已提交 ${file.name}，后台处理中`)
+    await delay(180)
+    onProgress?.(100, '处理完成')
   },
 
   async listStudySpaces() {
     await delay(120)
     return STUDY_SPACES
-  },
-
-  async listAllBanks() {
-    // 与题库管理同源联动：我创建的 + 我加入的全部题库
-    await delay(120)
-    return listAllBanks().map((b) => ({ id: b.id, name: b.name }))
   },
 
   async generateQuestions(params: GenerateParams, onProgress?: GenerateProgressHandler) {

@@ -68,8 +68,8 @@ interface AppState {
   knowledgeScope: string
   setKnowledgeScope: (v: string) => void
   generating: boolean
-  /** 生成进度：null=空闲；percent 为后端打点的真实百分比 */
-  genProgress: { percent: number; stage: string } | null
+  /** 生成进度：null=空闲；progressPercent 为当前阶段百分比 */
+  genProgress: { progressPercent: number; stage: string } | null
   generate: (opts?: { silent?: boolean }) => Promise<boolean>
 
   // 题目与筛选
@@ -171,7 +171,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
   /** 设置页保存模型配置后刷新题库（知识库）列表 */
   const refreshKnowledgeBases = useCallback(async () => {
-    setKbs(await api.listAllBanks())
+    setKbs(await api.listKnowledgeBases())
   }, [])
 
   useEffect(() => {
@@ -196,7 +196,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [difficulty, setDifficulty] = useState<Difficulty>('中')
   const [knowledgeScope, setKnowledgeScope] = useState('')
   const [generating, setGenerating] = useState(false)
-  const [genProgress, setGenProgress] = useState<{ percent: number; stage: string } | null>(null)
+  const [genProgress, setGenProgress] = useState<{ progressPercent: number; stage: string } | null>(null)
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
@@ -236,10 +236,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 初始化：加载题库联动知识库与学习空间；知识库默认不选中（下拉显示未选择）
   useEffect(() => {
     void (async () => {
-      const [kbList, spaceList] = await Promise.all([api.listAllBanks(), api.listStudySpaces()])
-      // 题库联动端点异常时回退到内置知识库列表
-      const bases = kbList.length ? kbList : await api.listKnowledgeBases()
-      setKbs(bases)
+      const [kbList, spaceList] = await Promise.all([api.listKnowledgeBases(), api.listStudySpaces()])
+      setKbs(kbList)
       setSpaces(spaceList)
     })()
   }, [])
@@ -247,8 +245,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const selectKb = useCallback(async (id: string) => {
     setSelectedKbId(id)
     setSelectedDocId('')
-    // 后端未收录该题库时视为空文档列表，不阻塞界面
-    setDocs(await api.listDocuments(id).catch(() => []))
+    setTypeConfigs(initialTypeConfigs)
+    setDifficulty('中')
+    setKnowledgeScope('')
+    chatSlotState.current = {}
+    setDocs(await api.listDocuments(id))
   }, [])
 
   const selectDoc = useCallback((id: string) => setSelectedDocId(id), [])
@@ -272,12 +273,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return false
       }
       setGenerating(true)
-      setGenProgress({ percent: 0, stage: '准备生成' })
+      setGenProgress({ progressPercent: 0, stage: '准备生成' })
       try {
         const list = await api.generateQuestions(
           {
             // 题库即知识库：把所选题库 id 传给后端检索对应 collection
-            kbId: selectedKbId || undefined,
+            kbId: selectedKbId,
             docId: doc.id,
             docName: doc.name,
             difficulty,
@@ -287,11 +288,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
             existingStems: questions.map((q) => q.stem),
           },
           // 后端打点的真实进度：百分比 + 阶段文案
-          (percent, stage) => setGenProgress({ percent, stage }),
+          (progressPercent, stage) => setGenProgress({ progressPercent, stage }),
         )
         setGenProgress(null)
         // 追加合并，不覆盖已出的题目（对话出题与参数出题共存）
-        setQuestions((prev) => [...prev, ...list.filter((n) => !prev.some((p) => p.id === n.id))])
+        setQuestions((prev) => {
+          const seenIds = new Set(prev.map((question) => question.id))
+          const seenStems = new Set(prev.map((question) => question.stem.replace(/\s+/g, '')))
+          const additions = list.filter((question) => {
+            const stem = question.stem.replace(/\s+/g, '')
+            if (seenIds.has(question.id) || seenStems.has(stem)) return false
+            seenIds.add(question.id)
+            seenStems.add(stem)
+            return true
+          })
+          return [...prev, ...additions]
+        })
         setSelectedIds([])
         setTypeFilter('all')
         setDiffFilter('all')
@@ -313,20 +325,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed) return
-      // 未选择知识库文档时禁止对话出题
-      if (!selectedDocId) {
+      // 出题必须绑定正式知识库中的具体文档
+      if (!selectedKbId || !selectedDocId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
       setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
       setBotThinking(true)
       try {
+        const configuredTypes = (Object.keys(typeConfigs) as QuestionType[])
+          .filter((type) => typeConfigs[type].checked && typeConfigs[type].count > 0)
+          .map((type) => ({ type, count: typeConfigs[type].count }))
+        const slotState = Object.keys(chatSlotState.current).length
+          ? chatSlotState.current
+          : {
+              ...(configuredTypes.length ? { types: configuredTypes } : {}),
+              difficulty,
+              ...(knowledgeScope.trim() ? { scope: knowledgeScope.trim() } : {}),
+            }
         const res = await chat({
-          kb_id: selectedKbId || 'kb-math',
+          kb_id: selectedKbId,
           doc_id: selectedDocId,
           message: trimmed,
           history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
-          slot_state: chatSlotState.current,
+          slot_state: slotState,
           // 全局去重：把当前已有题目题干传给后端
           existing_stems: questions.map((q) => q.stem),
         })
@@ -334,7 +356,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
         if (res.questions?.length) {
           // 对话路径不强制切页：AI 回复先可见，题目已在「题目预览」标签页等候
-          setQuestions(res.questions)
+          setQuestions((prev) => {
+            const seenIds = new Set(prev.map((question) => question.id))
+            const seenStems = new Set(prev.map((question) => question.stem.replace(/\s+/g, '')))
+            const additions = res.questions.filter((question) => {
+              const stem = question.stem.replace(/\s+/g, '')
+              if (seenIds.has(question.id) || seenStems.has(stem)) return false
+              seenIds.add(question.id)
+              seenStems.add(stem)
+              return true
+            })
+            return [...prev, ...additions]
+          })
           setSelectedIds([])
           setTypeFilter('all')
           setDiffFilter('all')
@@ -349,7 +382,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setBotThinking(false)
       }
     },
-    [selectedDocId, selectedKbId, messages, questions, showToast],
+    [selectedDocId, selectedKbId, messages, questions, typeConfigs, difficulty, knowledgeScope, showToast],
   )
 
   const updateQuestion = useCallback(
@@ -637,26 +670,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast('请先在右侧选择知识库')
         return
       }
-      const form = new FormData()
-      form.append('file', file)
-      form.append('kb_id', selectedKbId)
-      showToast(`正在上传「${file.name}」…`)
+      showToast(`已提交「${file.name}」，后台处理中…`)
       try {
-        const resp = await fetch('/api/kb/upload', { method: 'POST', body: form })
-        if (!resp.ok) {
-          let detail: unknown = `HTTP ${resp.status}`
-          try {
-            detail = (await resp.json()).detail
-          } catch {
-            /* 保持默认 */
-          }
-          throw new Error(typeof detail === 'object' && detail !== null ? String((detail as { message?: string }).message) : String(detail))
-        }
-        const result = (await resp.json()) as { doc_id: string; doc_name: string }
-        const docs = await api.listDocuments(selectedKbId)
-        setDocs(docs)
-        if (docs.some((d) => d.id === result.doc_id)) setSelectedDocId(result.doc_id)
-        showToast(`「${result.doc_name}」已上传并入库`)
+        await api.uploadDocument(selectedKbId, file, (_progressPercent, stage) => {
+          if (stage) showToast(`「${file.name}」${stage}`)
+        })
+        setDocs(await api.listDocuments(selectedKbId))
+        showToast(`「${file.name}」已处理完成`)
       } catch (err) {
         showToast(err instanceof Error ? err.message : '上传失败，请检查后端服务')
       }

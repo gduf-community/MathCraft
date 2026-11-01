@@ -8,6 +8,8 @@ from typing import Optional
 
 from fastapi import WebSocket
 
+from MathCraft.knowledge.progress_tracker import normalize_websocket_progress
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +57,7 @@ class ProgressBroadcaster:
 
             for websocket in self._connections[kb_name]:
                 try:
-                    await websocket.send_json({"type": "progress", "data": progress})
+                    await websocket.send_json({"type": "progress", "data": normalize_websocket_progress(progress)})
                 except Exception as e:
                     # Connection closed or error, mark for removal
                     logger.debug(f"Error sending to WebSocket for KB '{kb_name}': {e}")
