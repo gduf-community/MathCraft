@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 import traceback
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import uuid4
@@ -50,7 +51,11 @@ from MathCraft.knowledge.initializer import KnowledgeBaseInitializer
 from MathCraft.knowledge.kb_types import is_connected_kb, supports_local_raw_files
 from MathCraft.knowledge.manager import KnowledgeBaseManager
 from MathCraft.knowledge.naming import validate_knowledge_base_name
-from MathCraft.knowledge.progress_tracker import ProgressStage, ProgressTracker
+from MathCraft.knowledge.progress_tracker import (
+    ProgressStage,
+    ProgressTracker,
+    normalize_websocket_progress,
+)
 from MathCraft.logging import PROCESS_LOG_PRIVATE_ATTR
 from MathCraft.multi_user.context import (
     get_current_user,
@@ -410,6 +415,49 @@ def _safe_join_raw(raw_dir: Path, rel_path: str) -> Path:
     return target
 
 
+def _commit_staged_uploads(staged_files: dict[Path, Path], target_dir: Path) -> None:
+    """Commit a staged upload batch while preserving existing target files.
+
+    ``staged_files`` maps each final path to a file in a temporary directory on
+    the same filesystem. Existing targets are moved to a backup directory
+    before the staged files are moved into place. If any move fails, the
+    already committed files are removed and every backup is restored.
+    """
+    if not staged_files:
+        return
+
+    backup_dir = Path(
+        tempfile.mkdtemp(prefix=f".{target_dir.name}-upload-backup-", dir=str(target_dir.parent))
+    )
+    backups: dict[Path, Path] = {}
+    committed: list[Path] = []
+    try:
+        for index, (target_path, staged_path) in enumerate(staged_files.items()):
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.exists() or target_path.is_symlink():
+                backup_path = backup_dir / str(index)
+                os.replace(target_path, backup_path)
+                backups[target_path] = backup_path
+
+            os.replace(staged_path, target_path)
+            committed.append(target_path)
+    except Exception:
+        for target_path in reversed(committed):
+            try:
+                target_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Failed to remove partially committed upload '%s'", target_path)
+        for target_path, backup_path in backups.items():
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(backup_path, target_path)
+            except OSError:
+                logger.exception("Failed to restore pre-existing upload '%s'", target_path)
+        raise
+    finally:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+
 def _save_uploaded_files(
     files: list[UploadFile],
     target_dir: Path,
@@ -427,117 +475,107 @@ def _save_uploaded_files(
     """
     uploaded_files: list[str] = []
     uploaded_file_paths: list[str] = []
-    written_file_paths: list[Path] = []
+    staged_files: dict[Path, Path] = {}
 
     from MathCraft.services.pocketbase_client import is_pocketbase_enabled
 
     _pb_sync = is_pocketbase_enabled() and bool(kb_name)
 
-    try:
-        for idx, file in enumerate(files):
-            file_path = None
-            original_filename = file.filename or "upload"
-            try:
-                sanitized_filename = DocumentValidator.validate_upload_safety(
-                    original_filename,
-                    _get_upload_file_size(file),
-                    allowed_extensions=allowed_extensions,
-                )
-                file.filename = sanitized_filename
-
-                # Directory uploads carry a relative path (folder/sub/file); the
-                # folder portion is preserved under raw/ so nested structure is
-                # kept verbatim. Single-file uploads have no rel path → root.
-                rel = (
-                    rel_paths[idx].replace("\\", "/")
-                    if rel_paths and idx < len(rel_paths) and rel_paths[idx]
-                    else ""
-                )
-                own_subdir = _sanitize_rel_subdir(rel.rsplit("/", 1)[0]) if "/" in rel else ""
-                # A browser folder pick reports paths relative to the chosen
-                # directory, so its ancestors are simply not in the payload.
-                # dest_subdir is how the caller re-attaches the batch to the
-                # place it belongs inside the KB (#866).
-                subdir = "/".join(part for part in (dest_subdir, own_subdir) if part)
-                dest_dir = target_dir / subdir if subdir else target_dir
-                if subdir:
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                rel_name = f"{subdir}/{sanitized_filename}" if subdir else sanitized_filename
-
-                if Path(sanitized_filename).suffix.lower() == ".zip":
-                    # Expand the archive in place; register each extracted
-                    # member instead of the zip itself.
-                    for dest in _save_zip_archive(
-                        file, sanitized_filename, dest_dir, allowed_extensions
-                    ):
-                        written_file_paths.append(dest)
-                        uploaded_files.append(dest.relative_to(target_dir).as_posix())
-                        uploaded_file_paths.append(str(dest))
-                        if _pb_sync and kb_name:
-                            try:
-                                _upload_file_to_pb(kb_name, dest.name, dest)
-                            except Exception as pb_exc:
-                                logger.debug(
-                                    "PocketBase file upload failed for '%s': %s",
-                                    dest.name,
-                                    pb_exc,
-                                )
-                    continue
-
-                file_path = dest_dir / sanitized_filename
-                max_size = DocumentValidator.MAX_FILE_SIZE
-                written_bytes = 0
-
-                file.file.seek(0)
-                with open(file_path, "wb") as buffer:
-                    for chunk in iter(lambda: file.file.read(8192), b""):
-                        written_bytes += len(chunk)
-                        if written_bytes > max_size:
-                            size_str = format_bytes_human_readable(max_size)
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"File '{sanitized_filename}' exceeds maximum size "
-                                    f"limit of {size_str}"
-                                ),
-                            )
-                        buffer.write(chunk)
-
-                DocumentValidator.validate_upload_safety(
-                    sanitized_filename, written_bytes, allowed_extensions=allowed_extensions
-                )
-                written_file_paths.append(file_path)
-                uploaded_files.append(rel_name)
-                uploaded_file_paths.append(str(file_path))
-
-                # Mirror file to PocketBase when enabled (best-effort, non-blocking).
-                if _pb_sync and kb_name:
-                    try:
-                        _upload_file_to_pb(kb_name, sanitized_filename, file_path)
-                    except Exception as pb_exc:
-                        logger.debug(
-                            "PocketBase file upload failed for '%s': %s",
-                            sanitized_filename,
-                            pb_exc,
-                        )
-            except Exception as e:
-                if file_path and file_path.exists():
-                    try:
-                        os.unlink(file_path)
-                    except OSError:
-                        pass
-
-                error_message = f"Validation failed for file '{original_filename}': {format_exception_message(e)}"
-                logger.error(error_message, exc_info=True)
-                raise HTTPException(status_code=400, detail=error_message) from e
-    except Exception:
-        for written_path in written_file_paths:
-            if written_path.exists():
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{target_dir.name}-upload-staging-", dir=str(target_dir.parent)
+    ) as staging_name:
+        staging_dir = Path(staging_name)
+        try:
+            for idx, file in enumerate(files):
+                original_filename = file.filename or "upload"
                 try:
-                    os.unlink(written_path)
-                except OSError:
-                    pass
-        raise
+                    sanitized_filename = DocumentValidator.validate_upload_safety(
+                        original_filename,
+                        _get_upload_file_size(file),
+                        allowed_extensions=allowed_extensions,
+                    )
+                    file.filename = sanitized_filename
+
+                    # Directory uploads carry a relative path (folder/sub/file); the
+                    # folder portion is preserved under raw/ so nested structure is
+                    # kept verbatim. Single-file uploads have no rel path → root.
+                    rel = (
+                        rel_paths[idx].replace("\\", "/")
+                        if rel_paths and idx < len(rel_paths) and rel_paths[idx]
+                        else ""
+                    )
+                    own_subdir = _sanitize_rel_subdir(rel.rsplit("/", 1)[0]) if "/" in rel else ""
+                    # A browser folder pick reports paths relative to the chosen
+                    # directory, so its ancestors are simply not in the payload.
+                    # dest_subdir is how the caller re-attaches the batch to the
+                    # place it belongs inside the KB (#866).
+                    subdir = "/".join(part for part in (dest_subdir, own_subdir) if part)
+                    dest_dir = staging_dir / subdir if subdir else staging_dir
+                    if subdir:
+                        dest_dir.mkdir(parents=True, exist_ok=True)
+                    rel_name = f"{subdir}/{sanitized_filename}" if subdir else sanitized_filename
+                    final_path = target_dir / rel_name
+
+                    if Path(sanitized_filename).suffix.lower() == ".zip":
+                        # Expand the archive in the staging tree. No existing KB
+                        # file is touched until the complete batch is validated.
+                        for staged_path in _save_zip_archive(
+                            file, sanitized_filename, dest_dir, allowed_extensions
+                        ):
+                            relative_path = staged_path.relative_to(staging_dir).as_posix()
+                            final_path = target_dir / relative_path
+                            staged_files[final_path] = staged_path
+                            uploaded_files.append(relative_path)
+                            uploaded_file_paths.append(str(final_path))
+                        continue
+
+                    staged_path = dest_dir / sanitized_filename
+                    max_size = DocumentValidator.MAX_FILE_SIZE
+                    written_bytes = 0
+
+                    file.file.seek(0)
+                    with open(staged_path, "wb") as buffer:
+                        for chunk in iter(lambda: file.file.read(8192), b""):
+                            written_bytes += len(chunk)
+                            if written_bytes > max_size:
+                                size_str = format_bytes_human_readable(max_size)
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=(
+                                        f"File '{sanitized_filename}' exceeds maximum size "
+                                        f"limit of {size_str}"
+                                    ),
+                                )
+                            buffer.write(chunk)
+
+                    DocumentValidator.validate_upload_safety(
+                        sanitized_filename, written_bytes, allowed_extensions=allowed_extensions
+                    )
+                    staged_files[final_path] = staged_path
+                    uploaded_files.append(rel_name)
+                    uploaded_file_paths.append(str(final_path))
+
+                except Exception as e:
+                    error_message = f"Validation failed for file '{original_filename}': {format_exception_message(e)}"
+                    logger.error(error_message, exc_info=True)
+                    raise HTTPException(status_code=400, detail=error_message) from e
+
+            _commit_staged_uploads(staged_files, target_dir)
+        except Exception:
+            raise
+
+    # Mirror files to PocketBase only after the local batch has committed.
+    if _pb_sync and kb_name:
+        for final_path in staged_files:
+            try:
+                _upload_file_to_pb(kb_name, final_path.name, final_path)
+            except Exception as pb_exc:
+                logger.debug(
+                    "PocketBase file upload failed for '%s': %s",
+                    final_path.name,
+                    pb_exc,
+                )
 
     return uploaded_files, uploaded_file_paths
 
@@ -2059,11 +2097,12 @@ async def get_all_kb_configs():
 async def get_kb_config(kb_name: str):
     """Get configuration for a specific knowledge base."""
     try:
+        _, resolved_name, _ = _writable_kb(kb_name)
         from MathCraft.services.config import get_kb_config_service
 
         service = get_kb_config_service()
-        config = service.get_kb_config(kb_name)
-        return {"kb_name": kb_name, "config": config}
+        config = service.get_kb_config(resolved_name)
+        return {"kb_name": resolved_name, "config": config}
     except Exception as e:
         logger.error(f"Error getting config for KB '{kb_name}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2073,12 +2112,13 @@ async def get_kb_config(kb_name: str):
 async def update_kb_config(kb_name: str, config: dict):
     """Update configuration for a specific knowledge base."""
     try:
+        _, resolved_name, kb_base_dir = _writable_kb(kb_name)
         from MathCraft.services.config import get_kb_config_service
         from MathCraft.services.rag.index_probe import has_ready_provider_index
 
         config = dict(config or {})
         service = get_kb_config_service()
-        current_config = service.get_kb_config(kb_name)
+        current_config = service.get_kb_config(resolved_name)
         # Older clients may send back the full GET payload while editing a
         # retrieval setting. Preserve those no-op fields, but disallow rebinding.
         if any(
@@ -2092,12 +2132,12 @@ async def update_kb_config(kb_name: str, config: dict):
         if "rag_provider" in config:
             requested_provider = _validate_registered_provider(config.get("rag_provider"))
             service = get_kb_config_service()
-            current_config = service.get_kb_config(kb_name)
+            current_config = service.get_kb_config(resolved_name)
             current_provider = _validate_registered_provider(
                 current_config.get("rag_provider") or DEFAULT_PROVIDER
             )
             if requested_provider != current_provider:
-                kb_dir = _current_kb_base_dir() / kb_name
+                kb_dir = kb_base_dir / resolved_name
                 if kb_dir.exists() and has_ready_provider_index(kb_dir, current_provider):
                     raise HTTPException(
                         status_code=409,
@@ -2122,8 +2162,8 @@ async def update_kb_config(kb_name: str, config: dict):
         else:
             service = get_kb_config_service()
 
-        service.set_kb_config(kb_name, config)
-        return {"status": "success", "kb_name": kb_name, "config": service.get_kb_config(kb_name)}
+        service.set_kb_config(resolved_name, config)
+        return {"status": "success", "kb_name": resolved_name, "config": service.get_kb_config(resolved_name)}
     except HTTPException:
         raise
     except Exception as e:
@@ -2978,21 +3018,6 @@ def _list_knowledge_bases():
         raise HTTPException(status_code=500, detail=f"Failed to list knowledge bases: {e!s}")
 
 
-@router.get(
-    "/knowledge-bases/list",
-    response_model=list[KnowledgeBaseInfo],
-    include_in_schema=False,
-)
-async def list_knowledge_bases_proxy_alias():
-    """Proxy-safe alias for the KB list.
-
-    The collection URL is reserved by the frontend's streaming multipart
-    create route, which bypasses Next's request-buffering proxy. Browser list
-    requests use this path so GET traffic can use the normal backend rewrite.
-    """
-    return await list_knowledge_bases()
-
-
 @router.get("/knowledge-bases/{kb_name}")
 async def get_knowledge_base_details(kb_name: str):
     """Get detailed info for a specific KB."""
@@ -3213,11 +3238,24 @@ async def serve_kb_raw_file(kb_name: str, filename: str):
     """
     target = _resolve_kb_raw_file_or_404(kb_name, filename)
     media_type, _ = mimetypes.guess_type(target.name)
+    active_content_extensions = {
+        ".css",
+        ".htm",
+        ".html",
+        ".js",
+        ".mjs",
+        ".svg",
+        ".shtml",
+        ".xht",
+        ".xhtml",
+    }
+    is_active_content = target.suffix.lower() in active_content_extensions
     return FileResponse(
         target,
         media_type=media_type or "application/octet-stream",
         filename=target.name,
-        content_disposition_type="inline",
+        content_disposition_type="attachment" if is_active_content else "inline",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -4429,6 +4467,13 @@ def _progress_age_seconds(timestamp: object) -> float | None:
         return None
 
 
+async def _send_websocket_progress(websocket: WebSocket, progress: dict) -> None:
+    await websocket.send_json({
+        "type": "progress",
+        "data": normalize_websocket_progress(progress),
+    })
+
+
 @ws_router.websocket("/knowledge-bases/{kb_name}/progress")
 async def websocket_progress(websocket: WebSocket, kb_name: str):
     """WebSocket endpoint for real-time progress updates"""
@@ -4475,7 +4520,7 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
             # A terminal snapshot is durable and authoritative. Always replay
             # it, including completed snapshots for already-ready KBs.
             if progress_task_id == expected_task_id and stage in {"completed", "error"}:
-                await websocket.send_json({"type": "progress", "data": initial_progress})
+                await _send_websocket_progress(websocket, initial_progress)
                 return
 
             if not task_metadata:
@@ -4520,7 +4565,7 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
                     error_code="knowledge_task_interrupted",
                     retryable=True,
                 )
-                await websocket.send_json({"type": "progress", "data": initial_progress})
+                await _send_websocket_progress(websocket, initial_progress)
                 return
 
             task_status = str(task_metadata.get("status") or "")
@@ -4549,7 +4594,7 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
                             "retryable": True,
                         }
                     )
-                await websocket.send_json({"type": "progress", "data": terminal_progress})
+                await _send_websocket_progress(websocket, terminal_progress)
                 return
 
         # Fast path: no active task — send current state and close immediately
@@ -4569,28 +4614,24 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
 
         if not has_active_task and not expected_task_id:
             if kb_is_ready:
-                await websocket.send_json(
+                await _send_websocket_progress(
+                    websocket,
                     {
-                        "type": "progress",
-                        "data": {
-                            "stage": "completed",
-                            "message": "Knowledge base is ready.",
-                            "percent": 100,
-                            "current": 1,
-                            "total": 1,
-                        },
-                    }
+                        "stage": "completed",
+                        "message": "Knowledge base is ready.",
+                        "progress_percent": 100,
+                        "current": 1,
+                        "total": 1,
+                    },
                 )
             else:
-                await websocket.send_json(
-                    {
-                        "type": "progress",
-                        "data": initial_progress
-                        or {
-                            "stage": "error",
-                            "message": "Knowledge base needs reindex or initialization.",
-                        },
-                    }
+                await _send_websocket_progress(
+                    websocket,
+                    initial_progress
+                    or {
+                        "stage": "error",
+                        "message": "Knowledge base needs reindex or initialization.",
+                    },
                 )
             return
 
@@ -4619,7 +4660,7 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
                     should_send = True
 
             if should_send:
-                await websocket.send_json({"type": "progress", "data": initial_progress})
+                await _send_websocket_progress(websocket, initial_progress)
 
         last_timestamp = initial_progress.get("timestamp") if initial_progress else None
 
@@ -4639,9 +4680,7 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
                             continue
                         current_timestamp = current_progress.get("timestamp")
                         if current_timestamp != last_timestamp:
-                            await websocket.send_json(
-                                {"type": "progress", "data": current_progress}
-                            )
+                            await _send_websocket_progress(websocket, current_progress)
                             last_timestamp = current_timestamp
 
                             if current_progress.get("stage") in ["completed", "error"]:
@@ -4660,10 +4699,9 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
                                     or "Knowledge-base processing failed."
                                 )
                             )
-                            await websocket.send_json(
+                            await _send_websocket_progress(
+                                websocket,
                                 {
-                                    "type": "progress",
-                                    "data": {
                                         "kb_name": kb_name,
                                         "task_id": expected_task_id,
                                         "stage": "completed" if is_completed else "error",
@@ -4678,8 +4716,7 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
                                             (task_metadata or {}).get("finished_at")
                                             or datetime.now().isoformat()
                                         ),
-                                    },
-                                }
+                                },
                             )
                             break
                     continue
@@ -4692,7 +4729,15 @@ async def websocket_progress(websocket: WebSocket, kb_name: str):
     except Exception as e:
         logger.debug(f"Progress WS error: {e}")
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await _send_websocket_progress(
+                websocket,
+                {
+                    "stage": "error",
+                    "progress_percent": 0,
+                    "message": str(e),
+                    "error": str(e),
+                },
+            )
         except Exception as send_error:
             # Usually a client that is already gone; trace it so a genuinely
             # broken send path cannot vanish.
