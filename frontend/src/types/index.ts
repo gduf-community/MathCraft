@@ -30,6 +30,31 @@ export interface Question {
   favGroupId?: string
   /** 生成时使用的文档名 */
   docName: string
+  sources?: QuestionSource[]
+  review_status?: 'unreviewed' | 'edited_requires_review' | 'legacy_unknown'
+}
+
+export interface QuestionSource {
+  evidence_id: string
+  unit_id: string
+  kb_id: string
+  document_key: string
+  source_digest: string
+  index_version: string
+  parser_signature: string
+  block_ids: string[]
+  evidence_text: string
+  page_indices: number[]
+  page_labels: string[]
+  image_refs: string[]
+  image_urls: string[]
+  image_status: 'none' | 'unread' | 'missing' | 'unknown'
+  source_page_urls: string[]
+  file_url: string
+  completeness: 'complete' | 'incomplete' | 'unknown'
+  warnings: string[]
+  source_status: 'valid' | 'missing' | 'changed' | 'unknown'
+  relation: 'original' | 'variant_reference' | 'concept_reference'
 }
 
 export interface KnowledgeBase {
@@ -41,6 +66,8 @@ export interface KbDocument {
   id: string
   kbId: string
   name: string
+  status?: string
+  warnings?: string[]
 }
 
 export interface StudySpace {

@@ -23,6 +23,10 @@ from MathCraft.services.rag.index_versioning import (
 )
 from MathCraft.services.rag.kb_paths import resolve_kb_dir
 from MathCraft.services.rag.visual_assets import VisualAssetStore
+from MathCraft.services.rag.evidence import (
+    KnowledgeError, check_scope, document_keys, persist_units, public_evidence,
+    verify_unit_sources,
+)
 
 from . import storage
 from .config import default_top_k, should_show_progress
@@ -185,6 +189,33 @@ class LlamaIndexPipeline:
     def _current_signature(self) -> EmbeddingSignature | None:
         return self._signature_provider()
 
+    async def document_status(self, kb_name: str, keys: list[str] | None = None) -> list[dict]:
+        keys = document_keys(keys)
+        self._configure_settings()
+        kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
+        directory = resolve_storage_dir_for_read(kb_dir, self._current_signature())
+        inventory = storage.indexed_document_records(directory) if directory else {}
+        indexed = set(inventory)
+        if keys is None:
+            raw = kb_dir / "raw"
+            keys = sorted(indexed | {p.relative_to(raw).as_posix() for p in raw.rglob("*") if p.is_file()})
+        results = []
+        for key in keys:
+            try:
+                if directory is None:
+                    from MathCraft.services.rag.evidence import source_path
+                    source_path(kb_dir, key)
+                    raise KnowledgeError("document_not_indexed", "当前没有兼容的已发布索引。")
+                _, units, _ = check_scope(kb_dir, directory, [key], indexed, inventory)
+                unit = next(u for u in units.values() if u["document_key"] == key)
+                results.append({"document_key": key, "status": "ready",
+                                "index_version": directory.name, "source_digest": unit["source_digest"],
+                                "parser_signature": unit["parser_signature"], "warnings": unit["warnings"],
+                                "completeness": unit["completeness"]})
+            except KnowledgeError as exc:
+                results.append({"document_key": key, "status": exc.code, "warnings": [str(exc)]})
+        return results
+
     @staticmethod
     def _attach_document_keys(documents: list[Any], kb_dir: Path) -> None:
         """Stamp every parsed node with its raw/ relative document identity."""
@@ -248,6 +279,7 @@ class LlamaIndexPipeline:
                 return False
 
             self._attach_document_keys(documents, kb_dir)
+            persist_units(documents, kb_dir, storage_dir)
             self.logger.info(
                 f"Creating VectorStoreIndex with {len(documents)} documents "
                 f"(chunking + embedding)..."
@@ -299,29 +331,24 @@ class LlamaIndexPipeline:
         **kwargs,
     ) -> Dict[str, Any]:
         kwargs.pop("mode", None)
+        try:
+            keys = document_keys(kwargs.get("document_keys"))
+        except KnowledgeError as exc:
+            return exc.result(query)
+        if keys == []:
+            return {"query": query, "content": "", "answer": "", "sources": [], "scope_status": "empty"}
         # Numbered exercises require structural lookup: tokenization discards
         # chapter numbers, while top-k fragments omit tables and continuation.
         # This uses completed parses only and leaves ordinary semantic queries
         # on the existing embedding/retrieval path.
         from .exercise_lookup import lookup_exercises, requested_exercises
 
-        if requested_exercises(query)[0]:
-            kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
-            try:
-                exact = await asyncio.to_thread(
-                    lookup_exercises, query, kb_dir, Path(self.kb_base_dir).parent / "parse_cache"
-                )
-            except Exception:
-                self.logger.exception("Exercise lookup unavailable; using normal retrieval")
-            else:
-                if exact is not None:
-                    return exact
         self._configure_settings()
         self.logger.info(f"Searching KB '{kb_name}' with query: {query[:50]}...")
 
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
         signature = self._current_signature()
-        storage_dir = resolve_storage_dir_for_read(kb_dir, signature)
+        storage_dir = resolve_storage_dir_for_read(kb_dir, signature, version=kwargs.get("_index_version"))
 
         if storage_dir is None or not (storage_dir / "docstore.json").exists():
             self.logger.warning(
@@ -338,26 +365,79 @@ class LlamaIndexPipeline:
                 "content": "",
                 "provider": "llamaindex",
                 "needs_reindex": True,
+                "error_type": "document_not_indexed" if keys is not None else "index_unavailable",
+                "sources": [],
             }
 
         embedding_mismatch_warning = self._embedding_mismatch_warning(kb_name)
 
         try:
+            indexed_sources = storage.indexed_document_records(storage_dir)
+            indexed_keys = set(indexed_sources)
+            keys, units, scope_warnings = await asyncio.to_thread(
+                check_scope, kb_dir, storage_dir, keys, indexed_keys, indexed_sources
+            )
+            permitted_units = {i: u for i, u in units.items() if keys is None or u["document_key"] in keys}
+            if requested_exercises(query)[0] and units:
+                exact = await asyncio.to_thread(
+                    lookup_exercises, query, kb_dir, Path(self.kb_base_dir).parent / "parse_cache",
+                    keys, {u["document_key"]: u["parser_signature"] for u in permitted_units.values()},
+                )
+                if exact is not None:
+                    # Structural lookup is heuristic. Retain its full material,
+                    # but do not certify an original problem's boundaries.
+                    by_key = {u["document_key"]: u for u in permitted_units.values()}
+                    for source in exact["sources"]:
+                        unit = by_key.get(source.get("document_key"))
+                        if unit:
+                            exact_unit = {**unit, "evidence_text": source["evidence_text"],
+                                          "page_indices": [p for p in source["page_indices"] if p in unit["page_indices"]],
+                                          "completeness": "unknown", "warnings": [
+                                              *unit["warnings"], "题号边界由启发式识别，尚未确认完整原题结构。"]}
+                            identity = public_evidence(exact_unit, kb_name, storage_dir.name)
+                            source.update(identity)
+                    exact["index_version"] = storage_dir.name
+                    return exact
             loop = asyncio.get_running_loop()
             top_k = kwargs.get("top_k") or default_top_k()
             nodes = await loop.run_in_executor(
                 None,
                 copy_context().run,
                 lambda: storage.retrieve_nodes(
-                    storage_dir, query, top_k=top_k, document_keys=kwargs.get("document_keys")
+                    storage_dir, query, top_k=top_k, document_keys=keys,
+                    unit_ids=tuple(permitted_units) if units else (),
                 ),
             )
 
             result = self._nodes_to_result(query, nodes)
+            expanded = []
+            seen = set()
+            for node, source in zip(nodes, result["sources"]):
+                unit_id = (node.node.metadata or {}).get("evidence_unit_id")
+                if unit_id in permitted_units:
+                    if unit_id in seen:
+                        continue
+                    seen.add(unit_id)
+                    source.update(public_evidence(permitted_units[unit_id], kb_name, storage_dir.name))
+                else:
+                    source.update(completeness="unknown", source_status="unknown",
+                                  warnings=["旧索引缺少完整证据记录，请重建索引。"])
+                expanded.append(source)
+            result["sources"] = expanded
+            result["index_version"] = storage_dir.name
+            result["warnings"] = scope_warnings
+            from .retrievers import effective_retrieval_profile
+            from .config import retrieval_config_from_settings
+            configured = retrieval_config_from_settings().profile
+            result["retrieval_profile"] = effective_retrieval_profile(configured)
+            if result["retrieval_profile"] != configured:
+                result["warnings"].append("BM25 不可用，本次使用向量检索。")
             if embedding_mismatch_warning:
                 result["warning"] = embedding_mismatch_warning
             return result
 
+        except KnowledgeError as exc:
+            return exc.result(query)
         except Exception as exc:
             result = search_error_result(query, exc)
             if result.get("error_type"):
@@ -398,6 +478,7 @@ class LlamaIndexPipeline:
                 {
                     "title": meta.get("file_name", meta.get("title", f"Document {i + 1}")),
                     "content": node.node.text[:200],
+                    "evidence_text": node.node.text,
                     "source": meta.get("file_path", meta.get("file_name", "")),
                     "page": meta.get("page_label", meta.get("page", "")),
                     "chunk_id": node.node.node_id or str(i),
@@ -412,7 +493,7 @@ class LlamaIndexPipeline:
                             "parser_signature": meta.get("parser_signature", ""),
                             "page_status": meta.get("page_status", "unlocated"),
                             "visual_status": meta.get("visual_status", "unknown"),
-                            "evidence_text": node.node.text[:6000],
+                            "evidence_text": node.node.text,
                         }
                         if meta.get("document_key")
                         else {}
@@ -453,6 +534,9 @@ class LlamaIndexPipeline:
         plan = storage.resolve_add_storage_plan(kb_dir, signature)
 
         try:
+            from MathCraft.services.rag.evidence import load_units
+            if plan.existing_storage is not None and not load_units(plan.existing_storage):
+                raise KnowledgeError("index_provenance_unavailable", "旧索引缺少证据身份，增量追加前请完整重建；旧版本仍保留。")
             await self._verify_embedding_connectivity()
 
             visual_candidates = []
@@ -467,6 +551,7 @@ class LlamaIndexPipeline:
                 return False
 
             self._attach_document_keys(documents, kb_dir)
+            persist_units(documents, kb_dir, plan.storage_dir, plan.existing_storage)
             VisualAssetStore(kb_dir).publish(visual_candidates)
             if plan.existing_storage is not None:
                 self.logger.info(f"Loading existing index from {plan.existing_storage}...")
@@ -514,6 +599,13 @@ class LlamaIndexPipeline:
         if run:
             run.phase("verifying")
         await asyncio.to_thread(storage.verify_persisted_index, storage_dir)
+        await asyncio.to_thread(verify_unit_sources, kb_dir, storage_dir)
+        from MathCraft.services.rag.evidence import load_units
+        candidate_units = load_units(storage_dir)
+        inventory = storage.indexed_document_records(storage_dir)
+        await asyncio.to_thread(check_scope, kb_dir, storage_dir,
+                                sorted({u["document_key"] for u in candidate_units.values()}),
+                                set(inventory), inventory)
         if run:
             await asyncio.to_thread(run.verify_sources)
         if signature is not None:

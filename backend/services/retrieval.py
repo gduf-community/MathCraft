@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from MathCraft.services.rag.service import RAGService
+from MathCraft.services.rag.evidence import KnowledgeError, select_evidence
 
-from services.knowledge import ensure_document, resolve_for_rag
+from services.knowledge import resolve_for_rag
 
 
 async def retrieve(
@@ -16,19 +17,28 @@ async def retrieve(
     query: str,
     top_k: int = 8,
     doc_id: str | None = None,
+    index_version: str | None = None,
 ) -> list[dict]:
     resource = resolve_for_rag(kb_id)
-    document_keys = [ensure_document(kb_id, doc_id)] if doc_id else None
+    document_keys = [doc_id] if doc_id is not None else None
     result = await RAGService(kb_base_dir=str(resource.base_dir)).search(
         query=query,
         kb_name=resource.name,
         top_k=top_k,
         document_keys=document_keys,
+        rewrite=False,
+        _index_version=index_version,
     )
     if result.get("needs_reindex"):
-        raise ValueError(result.get("answer") or "正式知识库尚未完成索引，请先重新索引")
+        raise KnowledgeError(result.get("error_type") or "document_not_indexed",
+                             result.get("answer") or "正式知识库尚未完成索引，请先重新索引")
     if result.get("error_type"):
-        raise ValueError(result.get("answer") or "正式知识库检索失败")
+        raise KnowledgeError(result["error_type"], result.get("answer") or "正式知识库检索失败")
+
+    if doc_id is not None:
+        sources = select_evidence(result.get("sources", []), kb_id=resource.name, document_key=doc_id)
+        return [{**s, "text": s["evidence_text"], "doc_name": s["document_key"],
+                 "doc_id": s["document_key"]} for s in sources]
 
     hits: list[dict] = []
     for source in result.get("sources", []):
@@ -40,6 +50,7 @@ async def retrieve(
         score = source.get("score")
         hits.append(
             {
+                **source,
                 "text": text,
                 "doc_name": title,
                 "doc_id": document_key,

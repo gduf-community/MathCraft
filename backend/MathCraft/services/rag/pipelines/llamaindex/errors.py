@@ -73,4 +73,5 @@ def search_error_result(query: str, exc: Exception) -> Dict[str, Any]:
         "content": "",
         "provider": "llamaindex",
         "error": message,
+        "error_type": "retrieval_failed",
     }

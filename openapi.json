@@ -91,6 +91,123 @@
         }
       }
     },
+    "/api/questions": {
+      "get": {
+        "tags": [
+          "questions"
+        ],
+        "summary": "List Questions",
+        "operationId": "list_questions_api_questions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Question"
+                  },
+                  "type": "array",
+                  "title": "Response List Questions Api Questions Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/questions/{question_id}": {
+      "get": {
+        "tags": [
+          "questions"
+        ],
+        "summary": "Read Question",
+        "operationId": "read_question_api_questions__question_id__get",
+        "parameters": [
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Question Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Question"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "questions"
+        ],
+        "summary": "Edit Question",
+        "operationId": "edit_question_api_questions__question_id__put",
+        "parameters": [
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Question Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Question"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/status": {
       "get": {
         "tags": [
@@ -2140,6 +2257,16 @@
               "type": "string",
               "title": "Filename"
             }
+          },
+          {
+            "name": "source_hash",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Source Hash"
+            }
           }
         ],
         "responses": {
@@ -3837,6 +3964,52 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge-bases/{kb_name}/document-readiness": {
+      "get": {
+        "tags": [
+          "knowledge-bases"
+        ],
+        "summary": "Document Readiness",
+        "operationId": "document_readiness_api_knowledge_bases__kb_name__document_readiness_get",
+        "parameters": [
+          {
+            "name": "kb_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kb Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentReadiness"
+                  },
+                  "title": "Response Document Readiness Api Knowledge Bases  Kb Name  Document Readiness Get"
+                }
               }
             }
           },
@@ -6819,6 +6992,17 @@
           "done": {
             "type": "boolean",
             "title": "Done"
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type"
           }
         },
         "type": "object",
@@ -7311,6 +7495,56 @@
         "title": "DocumentParsingUpdate",
         "description": "Document-parsing settings update (the multi-engine control panel).\n\n``engine`` (when provided) switches the active parse engine. ``engines``\ncarries partial per-engine updates merged over the stored slices. For the\nMinerU engine, ``api_token`` stays tri-state: omit it (or send ``None``) to\nkeep the stored token, ``\"\"`` clears it, a non-empty string replaces it.\nThe MinerU engine's own knobs can also be edited via the legacy\n``/mineru`` endpoints; both preserve the other engines' settings."
       },
+      "DocumentReadiness": {
+        "properties": {
+          "document_key": {
+            "type": "string",
+            "title": "Document Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "source_digest": {
+            "type": "string",
+            "title": "Source Digest",
+            "default": ""
+          },
+          "index_version": {
+            "type": "string",
+            "title": "Index Version",
+            "default": ""
+          },
+          "parser_signature": {
+            "type": "string",
+            "title": "Parser Signature",
+            "default": ""
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "incomplete",
+              "unknown"
+            ],
+            "title": "Completeness",
+            "default": "unknown"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_key",
+          "status"
+        ],
+        "title": "DocumentReadiness"
+      },
       "FetchModelsPayload": {
         "properties": {
           "binding": {
@@ -7463,6 +7697,12 @@
           },
           "source_mode": {
             "type": "string",
+            "enum": [
+              "original",
+              "variant_data",
+              "variant_context",
+              "new"
+            ],
             "title": "Source Mode",
             "default": "variant_data"
           },
@@ -7887,6 +8127,21 @@
             "minLength": 1,
             "title": "Query",
             "description": "Natural-language question"
+          },
+          "document_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Keys",
+            "description": "raw 相对路径；省略为全库，空列表为空范围"
           },
           "top_k": {
             "anyOf": [
@@ -9213,6 +9468,23 @@
             "type": "string",
             "title": "Docname",
             "default": ""
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/QuestionSource"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "review_status": {
+            "type": "string",
+            "enum": [
+              "unreviewed",
+              "edited_requires_review",
+              "legacy_unknown"
+            ],
+            "title": "Review Status",
+            "default": "legacy_unknown"
           }
         },
         "type": "object",
@@ -9223,6 +9495,148 @@
           "analysis"
         ],
         "title": "Question"
+      },
+      "QuestionSource": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id",
+            "default": ""
+          },
+          "unit_id": {
+            "type": "string",
+            "title": "Unit Id",
+            "default": ""
+          },
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id",
+            "default": ""
+          },
+          "document_key": {
+            "type": "string",
+            "title": "Document Key",
+            "default": ""
+          },
+          "source_digest": {
+            "type": "string",
+            "title": "Source Digest",
+            "default": ""
+          },
+          "index_version": {
+            "type": "string",
+            "title": "Index Version",
+            "default": ""
+          },
+          "parser_signature": {
+            "type": "string",
+            "title": "Parser Signature",
+            "default": ""
+          },
+          "block_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Block Ids"
+          },
+          "evidence_text": {
+            "type": "string",
+            "title": "Evidence Text",
+            "default": ""
+          },
+          "page_indices": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Page Indices"
+          },
+          "page_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Page Labels"
+          },
+          "image_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Image Refs"
+          },
+          "image_urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Image Urls"
+          },
+          "image_status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "unread",
+              "missing",
+              "unknown"
+            ],
+            "title": "Image Status",
+            "default": "unknown"
+          },
+          "source_page_urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Page Urls"
+          },
+          "file_url": {
+            "type": "string",
+            "title": "File Url",
+            "default": ""
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "incomplete",
+              "unknown"
+            ],
+            "title": "Completeness",
+            "default": "unknown"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "source_status": {
+            "type": "string",
+            "enum": [
+              "valid",
+              "missing",
+              "changed",
+              "unknown"
+            ],
+            "title": "Source Status",
+            "default": "unknown"
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "original",
+              "variant_reference",
+              "concept_reference"
+            ],
+            "title": "Relation",
+            "default": "concept_reference"
+          }
+        },
+        "type": "object",
+        "title": "QuestionSource"
       },
       "QuestionType": {
         "type": "string",
@@ -9235,6 +9649,105 @@
           "essay"
         ],
         "title": "QuestionType"
+      },
+      "QuestionUpdate": {
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuestionType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "difficulty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Difficulty"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stem"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OptionItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Options"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "analysis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis"
+          },
+          "knowledgePoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledgepoint"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "QuestionUpdate",
+        "description": "Editable fields only; source identities cannot be supplied by a client."
       },
       "RegistryEditPayload": {
         "properties": {

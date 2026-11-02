@@ -3,25 +3,25 @@ from fastapi import APIRouter, HTTPException
 
 from schemas.question import GenerateParams, Question
 from services.question_gen import NeedConfirmError, generate_questions
-from services.knowledge import list_documents
+from services.knowledge import check_document
+from MathCraft.services.rag.evidence import KnowledgeError
 
 router = APIRouter(prefix="/api", tags=["generate"])
 
 
 @router.post("/generate", response_model=list[Question])
 async def generate(params: GenerateParams) -> list[Question]:
-    docs = list_documents(params.kb_id)
-    document = next((d for d in docs if d["doc_id"] == params.doc_id), None)
-    if document is None:
-        raise HTTPException(422, f"文档不存在或不属于知识库：{params.doc_id}")
-    doc_name = document["doc_name"]
     try:
+        readiness = await check_document(params.kb_id, params.doc_id)
         questions = await generate_questions(
             params,
-            doc_name,
+            params.doc_id,
             scope=params.scope or None,
             existing_stems=params.existing_stems,
+            index_version=readiness["index_version"],
         )
+    except KnowledgeError as exc:
+        raise HTTPException(422, exc.detail()) from exc
     except NeedConfirmError as exc:
         # 原题数量不足：422 + 结构化信息，前端提示用户选择处理方式
         raise HTTPException(

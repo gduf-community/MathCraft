@@ -3,31 +3,30 @@ from fastapi import APIRouter, HTTPException
 
 from schemas.question import ChatRequestBody, ChatResponse
 from services.chat_flow import handle_chat
-from services.knowledge import list_documents
+from services.knowledge import check_document
+from MathCraft.services.rag.evidence import KnowledgeError
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequestBody) -> ChatResponse:
-    docs = list_documents(body.kb_id)
-    if not docs:
-        raise HTTPException(422, "该知识库还没有可用文档，请先在正式知识库中完成索引")
-    document = next((d for d in docs if d["doc_id"] == body.doc_id), None)
-    if document is None:
-        raise HTTPException(422, f"文档不存在或不属于知识库：{body.doc_id}")
-    doc_name = document["doc_name"]
     try:
+        readiness = await check_document(body.kb_id, body.doc_id)
         return ChatResponse.model_validate(
             await handle_chat(
                 body.kb_id,
                 body.doc_id,
-                doc_name,
+                body.doc_id,
                 body.message,
                 body.history,
                 body.slot_state,
                 existing_stems=body.existing_stems,
+                index_version=readiness["index_version"],
             )
         )
+    except KnowledgeError as exc:
+        return ChatResponse(reply=str(exc), slot_state=body.slot_state,
+                            questions=[], done=False, error_type=exc.code)
     except Exception as exc:
         raise HTTPException(500, f"对话处理失败：{exc}") from exc

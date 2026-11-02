@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from MathCraft.runtime.home import get_runtime_data_root
 
 from .embedding_binding import with_kb_embedding
+from .evidence import with_document_scope
 from .factory import DEFAULT_PROVIDER, get_pipeline, list_pipelines, normalize_provider_name
 from .provider_binding import resolve_bound_provider
 
@@ -63,6 +64,12 @@ class RAGService:
         if provider not in self._pipelines:
             self._pipelines[provider] = get_pipeline(name=provider, kb_base_dir=self.kb_base_dir)
         return self._pipelines[provider]
+
+    @with_document_scope
+    @with_kb_embedding
+    async def document_status(self, kb_name: str, document_keys=None) -> list[dict]:
+        provider = self._resolve_provider(kb_name)
+        return await self._get_pipeline(provider).document_status(kb_name, document_keys)
 
     @with_kb_embedding
     async def initialize(self, kb_name: str, file_paths: List[str], **kwargs) -> bool:
@@ -123,6 +130,7 @@ class RAGService:
             run.finish("partial" if partial else "completed", version=version.get("version"))
             return True
 
+    @with_document_scope
     @with_kb_embedding
     async def search(
         self,

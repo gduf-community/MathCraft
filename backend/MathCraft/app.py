@@ -8,7 +8,7 @@ import os
 from fastapi import FastAPI
 
 from MathCraft.runtime.env import DEFAULT_BACKEND_HOST, load_project_env
-from api import chat, generate
+from api import chat, generate, questions
 from MathCraft.api.runtime import RuntimeCORSMiddleware, lifespan as knowledge_lifespan
 from MathCraft.api.routers import auth, knowledge, profile, settings as settings_router, system
 
@@ -28,6 +28,7 @@ app.add_middleware(RuntimeCORSMiddleware)
 # Question-generation orchestration API.
 app.include_router(generate.router)
 app.include_router(chat.router)
+app.include_router(questions.router)
 
 # Knowledge-base, model settings and connectivity API.
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])

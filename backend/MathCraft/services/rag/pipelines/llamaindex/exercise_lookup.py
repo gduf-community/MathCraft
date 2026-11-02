@@ -231,7 +231,7 @@ def _parsed(path: str, mtime: int, size: int) -> tuple[Exercise, ...]:
     return tuple(collect_exercises(blocks)) if isinstance(blocks, list) else ()
 
 
-def _parse_for(source: Path, cache_root: Path) -> Path | None:
+def _parse_for(source: Path, cache_root: Path, parser_signature: str = "") -> Path | None:
     stat = source.stat()
     digest = _source_hash(str(source), stat.st_mtime_ns, stat.st_size)
     root = cache_root / digest[:2] / digest
@@ -245,7 +245,9 @@ def _parse_for(source: Path, cache_root: Path) -> Path | None:
             continue
         try:
             meta = json.loads(manifest.read_text(encoding="utf-8"))
-            if not isinstance(meta, dict) or meta.get("source_hash") != digest:
+            if not isinstance(meta, dict) or not meta.get("created_at") or meta.get("source_hash") != digest:
+                continue
+            if parser_signature and meta.get("signature") not in parser_signature.split("|"):
                 continue
             files = sorted(manifest.parent.rglob("*_content_list.json"))
             files = [
@@ -262,7 +264,9 @@ def _parse_for(source: Path, cache_root: Path) -> Path | None:
     return None
 
 
-def lookup_exercises(query: str, kb_dir: Path, cache_root: Path) -> dict[str, Any] | None:
+def lookup_exercises(query: str, kb_dir: Path, cache_root: Path,
+                     document_keys: list[str] | None = None,
+                     parser_signatures: dict[str, str] | None = None) -> dict[str, Any] | None:
     """Return exact candidates from ready PDF parses, or allow normal retrieval.
 
     Sources must belong to the selected KB. Missing structured parses return
@@ -282,15 +286,20 @@ def lookup_exercises(query: str, kb_dir: Path, cache_root: Path) -> dict[str, An
             "provider": "llamaindex",
             "retrieval_method": "exercise_exact",
             "exercise_status": [],
+            "error_type": "evidence_budget_exceeded",
         }
     candidates = {key: [] for key in keys}
     supported = False
     raw = kb_dir / "raw"
-    for source in sorted(raw.glob("*.pdf")):
+    paths = sorted(raw.rglob("*")) if document_keys is None else [raw / k for k in document_keys]
+    for source in paths:
+        if not source.is_file() or source.suffix.lower() != ".pdf":
+            continue
         if not source.resolve().is_relative_to(raw.resolve()):
             continue
         try:
-            parsed = _parse_for(source, cache_root)
+            key = source.relative_to(raw).as_posix()
+            parsed = _parse_for(source, cache_root, (parser_signatures or {}).get(key, ""))
             if parsed is None:
                 continue
             stat = parsed.stat()
@@ -324,7 +333,7 @@ def lookup_exercises(query: str, kb_dir: Path, cache_root: Path) -> dict[str, An
             parts.append(
                 f"【{label}】存在 {len(matches)} 个候选，下面分别标明书名与题型，请勿混合题干。"
             )
-        for source, exercise in matches[:4]:
+        for source, exercise in matches:
             pages = sorted(exercise.pages)
             page_label = ", ".join(map(str, pages)) or "未知"
             text = "\n\n".join(exercise.parts)
@@ -352,6 +361,10 @@ def lookup_exercises(query: str, kb_dir: Path, cache_root: Path) -> dict[str, An
                 {
                     "title": title,
                     "content": text[:200],
+                    "evidence_text": text,
+                    "document_key": source.relative_to(raw).as_posix(),
+                    "page_indices": [p - 1 for p in pages],
+                    "completeness": "unknown",
                     "source": str(source),
                     "page": page_label,
                     "chunk_id": chunk_id,
@@ -370,4 +383,6 @@ def lookup_exercises(query: str, kb_dir: Path, cache_root: Path) -> dict[str, An
         "provider": "llamaindex",
         "retrieval_method": "exercise_exact",
         "exercise_status": statuses,
+        **({"error_type": "evidence_budget_exceeded"}
+           if any(s["status"] == "needs_single_query" for s in statuses) else {}),
     }

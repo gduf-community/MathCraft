@@ -220,7 +220,7 @@ def retrieve_nodes(
 
 
 @lru_cache(maxsize=4)
-def _scoped_index(index: Any, document_keys: tuple[str, ...]) -> Any:
+def _scoped_index(index: Any, document_keys: tuple[str, ...], unit_ids: tuple[str, ...] = ()) -> Any:
     """Reuse stored vectors in an isolated corpus; FAISS ignores node_ids filters.
 
     This never embeds the documents again. The small LRU dies with the loaded
@@ -245,12 +245,14 @@ def _scoped_index(index: Any, document_keys: tuple[str, ...]) -> Any:
             if documents[node_id].metadata.get("document_key") in allowed
         }
     else:
-        raise ValueError("This vector backend cannot enforce selected-document retrieval scope.")
+        from MathCraft.services.rag.evidence import KnowledgeError
+        raise KnowledgeError("document_scope_unsupported", "此向量存储不支持召回前限定文档范围。")
     nodes = []
     for node in documents.values():
         if (
             node.metadata.get("document_key") not in allowed
-            or node.metadata.get("page_status") != "searchable"
+            or node.metadata.get("page_status") in {"needs_ocr", "unlocated"}
+            or (unit_ids and node.metadata.get("evidence_unit_id") not in unit_ids)
             or node.node_id not in by_node
         ):
             continue
@@ -267,17 +269,18 @@ def _scoped_index(index: Any, document_keys: tuple[str, ...]) -> Any:
 
 
 def retrieve_scoped_nodes(
-    index: Any, query: str, document_keys: list[str], *, top_k: int = 8
+    index: Any, query: str, document_keys: list[str], *, top_k: int = 8,
+    unit_ids: tuple[str, ...] = (),
 ) -> list[Any]:
     """Restrict the corpus before retrieval, including the BM25 component."""
-    index = _scoped_index(index, tuple(sorted(set(document_keys))))
+    index = _scoped_index(index, tuple(sorted(set(document_keys))), unit_ids)
     if index is None:
         return []
     nodes = list(index.docstore.docs.values())
     ids = {node.node_id for node in nodes}
     count = min(top_k, len(nodes))
     vector = index.as_retriever(similarity_top_k=count)
-    bm25_cls = _import_bm25_retriever()
+    bm25_cls = _import_bm25_retriever() if retrieval_config_from_settings().profile == HYBRID_PROFILE else None
     if bm25_cls is not None:
         lexical = bm25_cls.from_defaults(nodes=nodes, similarity_top_k=count)
         retriever = QueryFusionRetriever(

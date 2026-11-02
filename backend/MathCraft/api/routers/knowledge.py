@@ -1003,7 +1003,18 @@ def _matching_index_is_valid(kb_name: str, matching_version: dict | None) -> boo
                 probe.failure_summary or probe.diagnostics,
             )
             return False
-        validate_storage_embeddings(Path(str(matching_version["storage_path"])))
+        directory = Path(str(matching_version["storage_path"]))
+        validate_storage_embeddings(directory)
+        from MathCraft.services.rag.evidence import load_units, verify_unit_sources
+
+        units = load_units(directory)
+        if not units:
+            return False  # Legacy reads remain available, but a rebuild must upgrade provenance.
+        verify_unit_sources(directory.parent, directory)
+        raw_keys = {p.relative_to(directory.parent / "raw").as_posix()
+                    for p in (directory.parent / "raw").rglob("*") if p.is_file()}
+        if raw_keys != {u["document_key"] for u in units.values()}:
+            return False
         return True
     except Exception as exc:
         logger.warning(
@@ -3242,13 +3253,17 @@ async def serve_kb_raw_file_text_preview(kb_name: str, filename: str):
 
 
 @router.get("/knowledge-bases/{kb_name}/files/{filename:path}")
-async def serve_kb_raw_file(kb_name: str, filename: str):
+async def serve_kb_raw_file(kb_name: str, filename: str, source_hash: str = ""):
     """Serve a single raw document for inline preview / download.
 
     Resolution is sandboxed to the KB's raw/ directory; any path that
     escapes via traversal yields 403.
     """
     target = _resolve_kb_raw_file_or_404(kb_name, filename)
+    if source_hash:
+        from MathCraft.services.rag.source_pages import source_digest
+        if source_digest(target) != source_hash:
+            raise HTTPException(409, {"kind": "source_changed", "message": "来源文件已变化，不能作为保存时的原文件读取。"})
     media_type, _ = mimetypes.guess_type(target.name)
     active_content_extensions = {
         ".css",
@@ -5303,6 +5318,7 @@ class KnowledgeQueryRequest(BaseModel):
     """One retrieval call against a knowledge base."""
 
     query: str = Field(..., min_length=1, description="Natural-language question")
+    document_keys: list[str] | None = Field(default=None, description="raw 相对路径；省略为全库，空列表为空范围")
     top_k: int | None = Field(default=None, ge=1, le=50, description="Passages to retrieve")
     search_mode: str | None = Field(
         default=None,
@@ -5367,6 +5383,7 @@ async def get_query_options(kb_name: str):
         synthesize_ready = False
 
     statistics = manager.get_info(resource.name).get("statistics", {})
+    from MathCraft.services.rag.factory import retrieval_capabilities
     return {
         "kb_name": resource.name,
         "provider": provider,
@@ -5376,7 +5393,24 @@ async def get_query_options(kb_name: str):
         "max_top_k": 50,
         "synthesize_available": synthesize_ready,
         "index_ready": bool(statistics.get("rag_initialized")),
+        "capabilities": retrieval_capabilities(provider),
     }
+
+
+from MathCraft.services.rag.evidence import DocumentReadiness, KnowledgeError
+
+
+@router.get("/knowledge-bases/{kb_name}/document-readiness", response_model=list[DocumentReadiness])
+async def document_readiness(kb_name: str):
+    from MathCraft.services.rag.service import RAGService
+
+    resource = resolve_kb(kb_name)
+    try:
+        return await RAGService(kb_base_dir=str(resource.base_dir)).document_status(resource.name)
+    except KnowledgeError as exc:
+        raise HTTPException(422, exc.detail()) from exc
+    except ValueError as exc:
+        raise HTTPException(422, {"kind": "embedding_binding_unavailable", "message": str(exc)}) from exc
 
 
 @router.post("/knowledge-bases/{kb_name}/query")
@@ -5392,7 +5426,7 @@ async def query_knowledge_base(kb_name: str, body: KnowledgeQueryRequest):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_name}' not found") from exc
 
-    kwargs: dict[str, object] = {}
+    kwargs: dict[str, object] = {"document_keys": body.document_keys}
     if body.top_k is not None:
         kwargs["top_k"] = body.top_k
     if body.search_mode:
@@ -5424,6 +5458,12 @@ async def query_knowledge_base(kb_name: str, body: KnowledgeQueryRequest):
         "provider": result.get("provider"),
         "mode": result.get("mode") or body.search_mode,
         "sources": sources,
+        "index_version": result.get("index_version"),
+        "warnings": result.get("warnings", []),
+        "scope_status": result.get("scope_status"),
+        "retrieval_profile": result.get("retrieval_profile"),
+        "retrieval_method": result.get("retrieval_method"),
+        "exercise_status": result.get("exercise_status", []),
     }
     if body.synthesize:
         payload["answer"] = result.get("answer") or result.get("content") or ""

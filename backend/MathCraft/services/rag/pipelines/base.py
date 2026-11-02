@@ -29,7 +29,8 @@ class RAGPipeline(Protocol):
         """Retrieve grounded context for ``query`` from ``kb_name``.
 
         Returns a dict with at least ``query``, ``content``/``answer``,
-        ``sources`` and ``provider`` keys.
+        ``sources`` and ``provider`` keys. Strict ``document_keys`` support is
+        declared by the factory; accepting **kwargs does not establish support.
         """
         ...
 

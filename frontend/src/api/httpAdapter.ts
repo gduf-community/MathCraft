@@ -1,7 +1,7 @@
 /**
  * HTTP 适配器：调用 FastAPI 后端（vite dev 通过 /api 代理到 localhost:8000）。
  * 实现与 mockAdapter 相同的 ApiClient 接口，可随时切回 mock。
- * 题目编辑/删除/收藏/组卷发布暂由前端本地状态维护，后端持久化后续补充。
+ * 题目与来源保存、读取和编辑接正式后端；收藏、组卷和学习空间保持演示状态。
  */
 import type {
   AssembleRecord,
@@ -65,6 +65,11 @@ export interface ChatResult {
   slot_state: Record<string, unknown>
   questions: Question[]
   done: boolean
+  error_type?: string | null
+}
+
+export function readSavedQuestion(id: string): Promise<Question> {
+  return http<Question>(`/api/questions/${encodeURIComponent(id)}`)
 }
 
 export function chat(body: {
@@ -132,6 +137,7 @@ async function waitForKnowledgeTask(taskId: string, onProgress?: UploadProgressH
 }
 
 export const httpAdapter: ApiClient = {
+  async listSavedQuestions() { return http<Question[]>('/api/questions') },
   async listKnowledgeBases() {
     const bases = await http<Array<{ id?: string; name: string; available?: boolean; metadata?: { type?: string } | null }>>(
       '/api/knowledge-bases',
@@ -145,9 +151,21 @@ export const httpAdapter: ApiClient = {
     const result = await http<{ files: Array<{ name: string; type: string }> }>(
       `/api/knowledge-bases/${encodeURIComponent(kbId)}/files`,
     )
+    let readiness: Array<{ document_key: string; status: string; warnings: string[] }>
+    try {
+      readiness = await http(`/api/knowledge-bases/${encodeURIComponent(kbId)}/document-readiness`)
+    } catch (error) {
+      return result.files.filter((file) => file.type === 'file').map<KbDocument>((file) => ({
+        id: file.name, kbId, name: file.name, status: 'unavailable',
+        warnings: [error instanceof Error ? error.message : '资料检查失败'],
+      }))
+    }
     return result.files
       .filter((file) => file.type === 'file')
-      .map<KbDocument>((file) => ({ id: file.name, kbId, name: file.name }))
+      .map<KbDocument>((file) => {
+        const state = readiness.find((d) => d.document_key === file.name)
+        return { id: file.name, kbId, name: file.name, status: state?.status ?? 'unknown', warnings: state?.warnings }
+      })
   },
 
   async uploadDocument(kbId: string, file: File, onProgress?: UploadProgressHandler) {
@@ -202,12 +220,14 @@ export const httpAdapter: ApiClient = {
   },
 
   async updateQuestion(question: Question) {
-    // 后端持久化待接入：本地状态已即时生效
-    return question
+    const { type, score, difficulty, stem, options, answer, analysis, knowledgePoint } = question
+    return http<Question>(`/api/questions/${encodeURIComponent(question.id)}`, {
+      method: 'PUT', body: JSON.stringify({ type, score, difficulty, stem, options, answer, analysis, knowledgePoint }),
+    })
   },
 
   async deleteQuestion(_id: string) {
-    /* 本地状态已即时生效 */
+    /* 仅移出当前预览；持久化记录保留，重新加载仍可回查。 */
   },
 
   async toggleStar(_id: string, _starred: boolean) {

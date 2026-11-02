@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_PROVIDER = "llamaindex"
+
+
+def retrieval_capabilities(provider: str) -> dict[str, bool]:
+    """Capabilities proven for the current source-backed retrieval contract."""
+    return {"document_scope": provider == DEFAULT_PROVIDER,
+            "versioned_evidence": provider == DEFAULT_PROVIDER}
 PAGEINDEX_PROVIDER = "pageindex"
 PAGEINDEX_OSS_PROVIDER = "pageindex-oss"
 GRAPHRAG_PROVIDER = "graphrag"

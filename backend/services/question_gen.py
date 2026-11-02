@@ -10,6 +10,10 @@ from schemas.question import Difficulty, GenerateParams, Question, QuestionType
 from services import retrieval
 from services.llm import chat_json
 from services.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
+from MathCraft.services.rag.evidence import KnowledgeError
+from schemas.question import QuestionSource
+from MathCraft.services.llm.config import get_llm_config
+from MathCraft.services.llm.context_window import resolve_effective_context_window
 
 TYPE_LABELS: dict[QuestionType, str] = {
     QuestionType.single: "选择题",
@@ -65,7 +69,7 @@ def _section_matches(section: str, qtype: QuestionType) -> bool:
 
 
 def count_available_originals(kb_id: str, doc_id: str, qtype: QuestionType) -> int | None:
-    """正式 RAG 不维护旧 Chroma 的题目分段统计，交给模型按材料生成。"""
+    """完整原题结构和数量未确认；未知不能被当作足够。"""
     _ = (kb_id, doc_id, qtype)
     return None
 
@@ -77,7 +81,7 @@ def _norm_stem(s: str) -> str:
 def _build_context(hits: list[dict]) -> str:
     parts = []
     for i, h in enumerate(hits, 1):
-        parts.append(f"[片段{i} · {h['doc_name']}]\n{h['text']}")
+        parts.append(f"[证据 {h['evidence_id']} · {h['doc_name']}]\n{h['text']}")
     return "\n\n".join(parts)
 
 
@@ -88,12 +92,15 @@ async def _gen_for_type(
     scope: str | None,
     avoid_norm: set[str],
     mixed_difficulty: bool,
+    index_version: str,
 ) -> list[Question]:
     type_label = TYPE_LABELS[tc.type]
 
     # original 模式：先确认材料原题数量是否足够
     if params.source_mode == "original":
         available = count_available_originals(params.kb_id, params.doc_id, tc.type)
+        if available is None:
+            raise KnowledgeError("exercise_analysis_unavailable", "原题结构和可用数量尚未确认，不能生成后冒充教材原题。请改选变式或考点参考。")
         if available is not None and available < tc.count:
             raise NeedConfirmError(type_label, available, tc.count)
 
@@ -106,10 +113,13 @@ async def _gen_for_type(
         params.kb_id,
         query=" ".join(query_parts),
         top_k=max(8, tc.count * 2),
-        doc_id=params.doc_id or None,
+        doc_id=params.doc_id,
+        index_version=index_version,
     )
     if not hits:
-        raise ValueError(f"知识库中没有可参考的内容，请先上传文档（检索「{type_label}」无结果）")
+        raise KnowledgeError("no_match", f"选定文档内没有可参考内容（检索「{type_label}」无结果），未扩大搜索范围。")
+
+    trusted = {hit["evidence_id"]: hit for hit in hits}
 
     # 模型偶发不守题型或与已有题重复，最多重试 3 轮并逐轮收紧约束
     for _ in range(3):
@@ -130,6 +140,22 @@ async def _gen_for_type(
             score=DEFAULT_SCORES.get(tc.type, 5),
             extra=extra,
         )
+        config = get_llm_config()
+        window = resolve_effective_context_window(model=config.model, context_window=config.context_window)
+        # UTF-8 bytes are a conservative upper bound for the BPE-style token
+        # budgets used here; avoid a tokenizer that might download data in tests.
+        budget = max(0, window - config.max_tokens - 1024)
+        while len((QUESTION_SYSTEM + user_prompt).encode("utf-8")) + 256 > budget:
+            if len(hits) <= 1:
+                raise KnowledgeError("evidence_budget_exceeded", "完整原文和生成要求超过当前模型上下文预算，请缩小资料范围。")
+            hits.pop()
+            hits[0]["warnings"].append("模型预算限制减少了完整证据单元数量，未截断入选原文。")
+            trusted = {hit["evidence_id"]: hit for hit in hits}
+            user_prompt = QUESTION_USER_TEMPLATE.format(
+                context=_build_context(hits), type_label=type_label, count=tc.count,
+                difficulty=params.difficulty.value, source_mode=SOURCE_LABELS[params.source_mode],
+                score=DEFAULT_SCORES.get(tc.type, 5), extra=extra,
+            )
         data = await chat_json(
             [
                 {"role": "system", "content": QUESTION_SYSTEM},
@@ -140,11 +166,16 @@ async def _gen_for_type(
                 },
             ]
         )
-        raw = data.get("questions", data if isinstance(data, list) else [])
+        raw = data if isinstance(data, list) else data.get("questions", [])
         questions: list[Question] = []
         for item in raw:
+            ids = item.get("evidence_ids") if isinstance(item, dict) else None
+            if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in trusted for i in ids)):
+                raise KnowledgeError("invalid_evidence_reference", "模型返回未知、缺失或越界的证据编号，题目未保存。")
+            if item.get("sources") or item.get("relation"):
+                raise KnowledgeError("invalid_evidence_reference", "模型只能声明证据编号，不能自行提供来源定位或原题关系。")
             try:
-                q = Question.model_validate(item)
+                q = Question.model_validate({k: v for k, v in item.items() if k not in {"sources", "review_status"}})
             except Exception:
                 continue
             if q.type != tc.type:
@@ -156,6 +187,9 @@ async def _gen_for_type(
             q.score = DEFAULT_SCORES.get(tc.type, 5)
             q.difficulty = params.difficulty
             q.docName = doc_name
+            relation = "concept_reference" if params.source_mode == "new" else "variant_reference"
+            q.sources = [QuestionSource.model_validate({**trusted[i], "relation": relation}) for i in dict.fromkeys(ids)]
+            q.review_status = "unreviewed"
             if tc.type == QuestionType.judge and not q.options:
                 from schemas.question import OptionItem
 
@@ -174,10 +208,16 @@ async def generate_questions(
     scope: str | None = None,
     mixed_difficulty: bool = False,
     existing_stems: list[str] | None = None,
+    index_version: str | None = None,
 ) -> list[Question]:
+    if index_version is None:
+        from services.knowledge import check_document
+        index_version = (await check_document(params.kb_id, params.doc_id))["index_version"]
     avoid_norm = {_norm_stem(s) for s in (existing_stems or []) if s}
     out: list[Question] = []
     for tc in params.types:
-        fresh = await _gen_for_type(tc, params, doc_name, scope, avoid_norm, mixed_difficulty)
+        fresh = await _gen_for_type(tc, params, doc_name, scope, avoid_norm, mixed_difficulty, index_version)
         out.extend(fresh)
+    from services.questions import QuestionStore
+    QuestionStore().save_generated(out)
     return out

@@ -1,9 +1,10 @@
 """出题请求与响应模型：与前端 Question 结构严格对齐。"""
 
-from typing import Any
+from typing import Any, Literal
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from MathCraft.services.rag.evidence import Evidence
 
 
 class QuestionType(str, Enum):
@@ -27,6 +28,10 @@ class OptionItem(BaseModel):
     text: str
 
 
+class QuestionSource(Evidence):
+    relation: Literal["original", "variant_reference", "concept_reference"] = "concept_reference"
+
+
 class Question(BaseModel):
     id: str = ""
     type: QuestionType
@@ -40,6 +45,21 @@ class Question(BaseModel):
     knowledgePoint: str = ""
     starred: bool = False
     docName: str = ""
+    sources: list[QuestionSource] = Field(default_factory=list)
+    review_status: Literal["unreviewed", "edited_requires_review", "legacy_unknown"] = "legacy_unknown"
+
+
+class QuestionUpdate(BaseModel):
+    """Editable fields only; source identities cannot be supplied by a client."""
+    model_config = ConfigDict(extra="forbid")
+    type: QuestionType | None = None
+    score: int | None = Field(default=None, ge=1, le=100)
+    difficulty: Difficulty | None = None
+    stem: str | None = None
+    options: list[OptionItem] | None = None
+    answer: str | None = None
+    analysis: str | None = None
+    knowledgePoint: str | None = None
 
 
 class TypeCount(BaseModel):
@@ -53,7 +73,7 @@ class GenerateParams(BaseModel):
     types: list[TypeCount]
     difficulty: Difficulty = Difficulty.mid
     # original=书中原题 variant_data=改数据 variant_context=改背景 new=全新题
-    source_mode: str = "variant_data"
+    source_mode: Literal["original", "variant_data", "variant_context", "new"] = "variant_data"
     # 知识点或章节范围，用于检索与命题约束
     scope: str = ""
     # 已有题干，用于跨请求去重
@@ -76,3 +96,4 @@ class ChatResponse(BaseModel):
     slot_state: dict[str, Any]
     questions: list[Question]
     done: bool
+    error_type: str | None = None

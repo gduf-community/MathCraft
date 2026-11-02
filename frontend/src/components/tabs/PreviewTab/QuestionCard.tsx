@@ -7,6 +7,7 @@ import { Latex } from '../../../lib/latex'
 import AnswerPanel from './AnswerPanel'
 import ScoreEditor from './ScoreEditor'
 import FavoriteGroupModal from '../../ui/FavoriteGroupModal'
+import SourcePanel from './SourcePanel'
 
 interface Props {
   q: Question
@@ -214,7 +215,7 @@ export default function QuestionCard({ q, index, snapshot }: Props) {
                   onClick={() => void deleteQuestion(q.id)}
                   className="flex items-center gap-1 rounded-full border border-danger/40 bg-white px-3.5 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-[#fef2f2]"
                 >
-                  <Trash2 size={13} /> 删除
+                  <Trash2 size={13} /> 移出预览
                 </button>
               </>
             )}
@@ -223,6 +224,7 @@ export default function QuestionCard({ q, index, snapshot }: Props) {
       </div>
 
       <p className="mt-2 pl-[54px] text-xs text-ink-3">所属知识点：{q.knowledgePoint}</p>
+      <SourcePanel question={q} />
 
       {/* 收藏分组弹窗：选择收藏到哪个标签页 */}
       {starPicking && <FavoriteGroupModal question={q} onClose={() => setStarPicking(false)} />}

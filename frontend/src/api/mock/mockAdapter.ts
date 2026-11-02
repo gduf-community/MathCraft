@@ -26,6 +26,7 @@ function shuffle<T>(arr: T[]): T[] {
  * 与真实后端唯一的差别是数据不落盘，接口签名与 client.ts 中定义完全一致。
  */
 export const mockAdapter: ApiClient = {
+  async listSavedQuestions() { return [] },
   async listKnowledgeBases() {
     await delay(120)
     return KNOWLEDGE_BASES

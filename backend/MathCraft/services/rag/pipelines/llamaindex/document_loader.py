@@ -68,6 +68,7 @@ class LlamaIndexDocumentLoader:
         self.logger = logger or logging.getLogger(__name__)
         self.image_concurrency = max(1, int(image_concurrency))
         self._pdf_documents: dict[str, list[Any]] = {}
+        self._parser_signatures: dict[str, str] = {}
 
     async def load(
         self,
@@ -185,6 +186,13 @@ class LlamaIndexDocumentLoader:
                         reason="invalid_output",
                         detail="No usable document content.",
                     )
+        text_paths = set(classification.text_files)
+        for document in documents:
+            path = document.metadata.get("file_path", "")
+            if path in self._parser_signatures:
+                document.metadata.setdefault("parser_signature", self._parser_signatures[path])
+            elif path in text_paths:
+                document.metadata.setdefault("parser_signature", "direct-text-v1")
         return documents
 
     def _parse_document(
@@ -206,6 +214,7 @@ class LlamaIndexDocumentLoader:
 
         try:
             parsed = (parse_service or get_parse_service()).parse(file_path, engine=engine)
+            self._parser_signatures[str(file_path)] = parsed.parser_signature
         except ParserError as exc:
             if str(getattr(exc, "code", "")).startswith("scanned_pdf_mineru_cloud_"):
                 # Scanned PDFs have a strict OCR contract. Preserve the cloud

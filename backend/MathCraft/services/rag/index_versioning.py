@@ -327,9 +327,15 @@ def write_version_meta(
 
 
 def resolve_storage_dir_for_read(
-    kb_dir: Path, signature: Optional[EmbeddingSignature]
+    kb_dir: Path, signature: Optional[EmbeddingSignature], *, version: str | None = None
 ) -> Optional[Path]:
     """Return the storage dir to read for the active embedding signature."""
+    if version is not None:
+        for entry in list_kb_versions(kb_dir):
+            if (entry.get("version") == version and entry.get("ready")
+                    and (signature is None or entry.get("signature") == signature.hash())):
+                return Path(str(entry["storage_path"]))
+        return None  # A frozen version may never fall through to a newer one.
     if signature is not None:
         match = find_matching_version(kb_dir, signature)
         if match:

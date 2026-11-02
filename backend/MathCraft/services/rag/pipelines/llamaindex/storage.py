@@ -294,12 +294,26 @@ def prune_index_cache() -> int:
 
 
 def retrieve_nodes(
-    storage_dir: Path, query: str, *, top_k: int = 5, document_keys: list[str] | None = None
+    storage_dir: Path, query: str, *, top_k: int = 5, document_keys: list[str] | None = None,
+    unit_ids: tuple[str, ...] = (),
 ) -> list[Any]:
     index = _cached_index(Path(storage_dir))
     if document_keys is None:
         return retrievers.retrieve_nodes(index, Path(storage_dir), query, top_k=top_k)
-    return retrievers.retrieve_scoped_nodes(index, query, document_keys, top_k=top_k)
+    return retrievers.retrieve_scoped_nodes(index, query, document_keys, top_k=top_k, unit_ids=unit_ids)
+
+
+def indexed_document_keys(storage_dir: Path) -> set[str]:
+    return set(indexed_document_records(storage_dir))
+
+
+def indexed_document_records(storage_dir: Path) -> dict[str, list[dict]]:
+    records: dict[str, list[dict]] = {}
+    for node in _cached_index(Path(storage_dir)).docstore.docs.values():
+        key = node.metadata.get("document_key")
+        if key:
+            records.setdefault(key, []).append(node.metadata)
+    return records
 
 
 def delete_kb_dir(kb_dir: Path) -> bool:

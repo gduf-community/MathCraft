@@ -17,6 +17,7 @@ export type UploadProgressHandler = (progressPercent: number, stage: string) => 
 export interface ApiClient {
   listKnowledgeBases(): Promise<KnowledgeBase[]>
   listDocuments(kbId: string): Promise<KbDocument[]>
+  listSavedQuestions(): Promise<Question[]>
   uploadDocument(kbId: string, file: File, onProgress?: UploadProgressHandler): Promise<void>
   listStudySpaces(): Promise<StudySpace[]>
   generateQuestions(params: GenerateParams, onProgress?: GenerateProgressHandler): Promise<Question[]>

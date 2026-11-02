@@ -301,7 +301,8 @@ def with_kb_embedding(method):
             }
         from MathCraft.services.embedding.config import embedding_config_scope
 
-        locked_publication = entry["rag_provider"] == "lightrag" and method.__name__ != "search"
+        read_only = method.__name__ in {"search", "document_status"}
+        locked_publication = entry["rag_provider"] == "lightrag" and not read_only
         if locked_publication:
             expected_binding = (entry.get("embedding_selection"), entry.get("embedding_signature"))
 
@@ -324,7 +325,7 @@ def with_kb_embedding(method):
 
         with embedding_config_scope(config):
             result = await method(self, *args, **kwargs)
-            if result and method.__name__ != "search" and selection and not locked_publication:
+            if result and not read_only and selection and not locked_publication:
                 persist_binding(self.kb_base_dir, kb_name, selection, config)
             return result
 

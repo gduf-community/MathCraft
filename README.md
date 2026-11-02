@@ -34,16 +34,21 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   │   │   ├── worker_process.py # 固定 python -m 入口与 pickle 协议
 │   │   │   └── worker_tasks.py   # 文本提取与 UTF-8 Markdown 写入任务
 │   │   ├── services/profile/     # 资料校验与独立持久化
+│   │   ├── services/rag/evidence.py # 文档范围、版本内原文单元与来源校验
 │   │   ├── knowledge/model_references.py # 知识库嵌入绑定查询与删除保护
 │   │   ├── services/config/direct_model_config.py # 独立模型配置迁移与名称规则
 │   │   └── services/settings/direct_model_edit.py # 单模型合并与独立默认操作
 │   ├── tests/test_isolated_document_extraction.py # 真实子进程解析与预览回归
+│   ├── tests/test_knowledge_evidence.py # 范围、完整证据与生成保存回查验收
+│   ├── api/questions.py          # 题目及可信来源的读取与编辑
+│   ├── services/questions.py     # 最小单租户题目快照存储
 │   └── README.md                 # 后端目录结构与职责说明
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
 │   ├── 更详细的出题流程.md        # 给教师阅读的资料选择、出题修改、版本保存与组卷流程
 │   ├── design/                   # 新功能与模块设计文档
 │   │   ├── 统一知识库设计.md       # 考研数学出题知识库方案与实施验收
+│   │   ├── 知识库第一批实施记录.md # 范围检查、完整证据、题目保存与验收边界
 │   │   ├── PRD-智能出题智能体.md  # 考研全范围、多选解析结果、逐题版本及指定版本组卷的总体需求
 │   │   ├── 后端包统一与接口对齐.md # 包迁移、入口、接口契约与验收边界
 │   │   ├── 题目收藏页面设计.md   # 收藏页交互方案（当前为前端 mock）
@@ -64,6 +69,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   ├── adr/                      # 架构决策记录
 │   └── 智能体出题工作流程.docx  # 出题流程说明
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
+│   ├── src/components/tabs/PreviewTab/SourcePanel.tsx # 逐题原文、原页及来源状态
 │   ├── src/api/urls.ts          # 环境配置驱动的 HTTP 与 WebSocket 地址
 │   ├── src/components/settings/ # 模型、引擎、解析及知识库入口
 │   │   ├── model/DirectModelEditor.tsx # 完整模型表单与手动发现
@@ -253,10 +259,19 @@ data/
 │       ├── version-N/          # 索引产物 + meta.json
 │       └── visual_assets/
 ├── parse_cache/<hash>/<parser>/ # 解析结果缓存
-└── user/settings/*.json        # 模型目录、解析、引擎等设置
+├── user/settings/*.json        # 模型目录、解析、引擎等设置
+└── questions/<id>.json         # 生成题及来源快照；与收藏、发布和版本系统分开
 ```
 
 `MATHCRAFT_HOME` 默认使用进程启动时的当前工作目录；在仓库根目录启动时才对应仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
+
+### 知识库第一批使用边界
+
+选定文档出题使用 LlamaIndex，并先核对该文档在兼容发布版本中的来源身份。旧索引缺少证据字段时明确要求重建，保留普通兼容查询和旧数据。资料检查见 `/api/knowledge-bases/{kb}/document-readiness`，文件存在不代表已索引。
+
+模型使用完整解析文档单元，摘要只用于展示；单元过长或超出模型预算时要求缩小资料范围，不截断条件继续出题。图像未读取、缺页或无法定位内容会限制严格用途。本批尚无可靠原题结构和计数，原题模式返回未知 / 不可用。
+
+生成题及可信来源自动保存在 `data/questions/`。刷新或重启后可读取，编辑题干、答案等数学内容后标记待重新审核；每题“来源与审核状态”可回查原文和原页。来源删除或替换后显示失效，旧题无来源时保持未知。收藏、组卷和学习空间仍是原有演示流程，“移出预览”不会删除保存记录。详见[第一批实施记录](docs/design/知识库第一批实施记录.md)。
 
 ## RAG 引擎
 

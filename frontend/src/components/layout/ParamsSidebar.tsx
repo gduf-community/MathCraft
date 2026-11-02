@@ -138,8 +138,9 @@ export default function ParamsSidebar() {
                     }`}
                   >
                     <FileText size={16} className={selected ? 'text-primary' : 'text-ink-3'} />
-                    <span className={`flex-1 truncate ${selected ? 'font-medium text-ink' : 'text-ink-2'}`}>
+                    <span title={d.warnings?.join('；')} className={`flex-1 truncate ${selected ? 'font-medium text-ink' : 'text-ink-2'}`}>
                       {d.name}
+                      <small className="block text-xs text-ink-3">{d.status === 'ready' ? (d.warnings?.length ? '已索引，材料有使用限制' : '已索引') : '尚不可用于出题'}{d.status && d.status !== 'ready' ? `（${d.status}）` : ''}</small>
                     </span>
                     {selected && <span className="rounded bg-primary px-1.5 py-0.5 text-[11px] text-white">已选</span>}
                   </button>

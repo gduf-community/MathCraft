@@ -27,17 +27,20 @@ backend/
 │   │   └── worker_tasks.py # 惰性文本提取与 UTF-8 Markdown 写入
 │   ├── services/       # LLM、嵌入、RAG、解析、设置等业务服务
 │   │   ├── config/direct_model_config.py # 独立配置迁移、名称与有效参数快照
+│   │   ├── rag/evidence.py # 集中文档范围、版本证据与来源检查
 │   │   ├── settings/direct_model_edit.py # 当前项锁内合并、默认与任务模式
 │   │   └── profile/    # 单租户资料与头像独立存储
 │   ├── tools/          # RAG 检索、网页抓取等工具入口
 │   └── utils/          # 通用文件、JSON、网络与校验工具
-├── api/                # 出题编排路由：generate、chat
+├── api/                # 出题编排与最小题目保存路由
+│   └── questions.py    # 已保存题目读取、编辑与来源保护
 ├── services/           # 出题业务与正式知识库/LLM 适配器
 │   ├── chat_flow.py    # 多轮追问，必填信息齐备后生成
 │   ├── slots.py        # 累积要求与各题型数量检查
 │   ├── prompts.py      # 题目生成与信息抽取提示词
 │   ├── knowledge.py    # 正式知识库目录与文档访问
 │   ├── retrieval.py    # RAGService 检索适配器
+│   ├── questions.py    # 单租户题目及来源快照持久化
 │   └── llm.py          # 正式 LLM 配置适配器
 ├── schemas/            # 出题服务与个人资料的请求／响应契约
 │   └── profile.py      # 资料字段、只读身份与学段年级校验
@@ -45,6 +48,7 @@ backend/
 ├── tests/              # 后端测试套件
 │   ├── test_isolated_document_extraction.py # 真实子进程提取、预览、错误与回收
 │   ├── test_chat_requirements.py # 缺项阻止生成及多轮补齐回归
+│   ├── test_knowledge_evidence.py # 完整应用链路、文档范围与保存来源回查
 │   ├── test_direct_model_settings.py # 单项保存、并发与错误边界
 │   ├── test_direct_model_migration.py # 迁移、名称、掩码与环境优先级
 │   ├── test_direct_model_discovery.py # 本地假服务发现及 HTTP 反馈

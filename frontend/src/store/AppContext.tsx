@@ -236,9 +236,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 初始化：加载题库联动知识库与学习空间；知识库默认不选中（下拉显示未选择）
   useEffect(() => {
     void (async () => {
-      const [kbList, spaceList] = await Promise.all([api.listKnowledgeBases(), api.listStudySpaces()])
+      const [kbList, spaceList, savedQuestions] = await Promise.all([
+        api.listKnowledgeBases(), api.listStudySpaces(), api.listSavedQuestions(),
+      ])
       setKbs(kbList)
       setSpaces(spaceList)
+      setQuestions(savedQuestions)
     })()
   }, [])
 
@@ -402,7 +405,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setQuestions((prev) => prev.filter((item) => item.id !== id))
       setFavorites((prev) => prev.filter((item) => item.id !== id))
       setSelectedIds((prev) => prev.filter((v) => v !== id))
-      showToast('已删除该题')
+      showToast('已移出本次预览，保存的题目和来源仍保留')
     },
     [showToast],
   )
@@ -660,7 +663,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setQuestions((prev) => prev.filter((q) => !ids.includes(q.id)))
     setFavorites((prev) => prev.filter((q) => !ids.includes(q.id)))
     setSelectedIds([])
-    showToast(`已删除 ${ids.length} 道题目`)
+    showToast(`已移出本次预览 ${ids.length} 道题目，保存记录仍保留`)
   }, [selectedIds, showToast])
 
   /** 将文档拖入对话区上传并入库到当前知识库，成功后刷新文档列表 */

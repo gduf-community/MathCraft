@@ -8,7 +8,7 @@
 frontend/
 ├── src/
 │   ├── api/                  # 后端 HTTP 适配层与 mock 数据适配器
-│   │   ├── favorites.ts      # 收藏域 API 封装（当前转调 mock）
+│   │   ├── httpAdapter.ts    # 正式知识库、生成与已保存题目；其余演示保持原状
 │   │   ├── urls.ts           # 共享 HTTP / WebSocket 地址构造
 │   │   └── mock/             # 本地开发用模拟数据与适配器
 │   ├── components/
@@ -19,13 +19,13 @@ frontend/
 │   │   │       ├── directCatalog.ts # 当前项合并、名称校验、协议和请求头解析
 │   │   │       ├── ModelWorkspace.tsx # 旧模型列表与响应式详情兼容组件
 │   │   │       └── providerDirectory.ts # 旧目录能力映射兼容组件
-│   │   ├── profile/          # 教师资料与独立头像上传
 │   │   ├── layout/           # 顶部栏、侧边导航和标签栏
 │   │   ├── tabs/             # 生成题目、预览题目等页面标签
 │   │   │   ├── GenerateTab/  # 对话输入、快捷提示和机器人头像
 │   │   │   ├── FavoritesTab/ # 题目收藏页：收藏夹、筛选、只读卡片与批量操作
 │   │   │   ├── BankTab/      # 题库协作与既有题库演示
 │   │   │   └── PreviewTab/   # 题目卡片、答案、组卷和评分编辑
+│   │   │       └── SourcePanel.tsx # 原文、原页、来源有效性及审核状态
 │   │   └── ui/               # 通用下拉框、提示等基础组件
 │   │       └── ConfigurationDialog.tsx # 临时配置面板、焦点与关闭管理
 │   ├── lib/                  # LaTeX 等前端工具
@@ -59,6 +59,8 @@ npm run preview
 ```powershell
 .\node_modules\.bin\pyright.cmd
 ```
+
+题目及逐题来源接入后端最小保存，启动时从 `/api/questions` 读取。编辑只提交题目允许字段，证据定位由服务端保留；数学内容改变后显示待重新审核。来源面板打开时刷新原文件身份，未知、替换和删除状态不伪造定位。收藏、组卷、学习空间及题目版本管理不在本批持久化范围内。
 
 ## 共享环境配置
 

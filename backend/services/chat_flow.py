@@ -1,6 +1,7 @@
 """对话出题编排：槽位抽取 → 缺失追问 → 齐备生成。"""
 from services.question_gen import NeedConfirmError, generate_questions
 from services.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
+from MathCraft.services.rag.evidence import KnowledgeError
 
 DONE_REPLY = "题目已生成完成，共 {n} 道，已同步到「题目预览」标签页。还需要生成其他题型吗？"
 
@@ -19,6 +20,7 @@ async def handle_chat(
     history: list[dict],
     slot_state: dict,
     existing_stems: list[str] | None = None,
+    index_version: str | None = None,
 ) -> dict:
     state = merge_slots(slot_state or {}, await extract_slots(message, history))
     missing = missing_keys(state)
@@ -33,7 +35,11 @@ async def handle_chat(
             scope=scope,
             mixed_difficulty=bool(state.get("mixed_difficulty")),
             existing_stems=existing_stems,
+            index_version=index_version,
         )
+    except KnowledgeError as exc:
+        return {"reply": str(exc), "slot_state": state, "questions": [], "done": False,
+                "error_type": exc.code}
     except NeedConfirmError as exc:
         # 询问后清掉来源模式槽位，引导用户重新选择；题型数量保留
         state.pop("source_mode", None)

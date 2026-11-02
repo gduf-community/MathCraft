@@ -48,4 +48,26 @@ def ensure_document(kb_id: str, doc_id: str) -> str:
     return doc_id
 
 
+async def check_document(kb_id: str, doc_id: str) -> dict:
+    from fastapi import HTTPException
+    from MathCraft.services.rag.evidence import KnowledgeError
+    from MathCraft.services.rag.service import RAGService
+
+    try:
+        resource = resolve_for_rag(kb_id)
+        records = await RAGService(kb_base_dir=str(resource.base_dir)).document_status(resource.name, [doc_id])
+    except HTTPException as exc:
+        raise KnowledgeError("knowledge_base_unavailable", "知识库不存在或当前不可用。") from exc
+    except KnowledgeError:
+        raise
+    except ValueError as exc:
+        raise KnowledgeError("embedding_binding_unavailable", str(exc)) from exc
+    record = records[0]
+    if record["status"] != "ready":
+        raise KnowledgeError(record["status"], "；".join(record["warnings"]))
+    if record.get("completeness") != "complete":
+        raise KnowledgeError("evidence_incomplete", "；".join(record["warnings"]) or "当前材料完整性尚未确认。")
+    return record
+
+
 __all__ = ["ensure_document", "list_documents", "list_knowledge_bases", "resolve_for_rag"]
