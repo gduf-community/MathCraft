@@ -13,7 +13,7 @@ import pytest
 
 def _run(script: str, home: Path) -> None:
     env = dict(os.environ)
-    env["MATH_Q_HOME"] = str(home)
+    env["MATHCRAFT_HOME"] = str(home)
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
         env=env,
@@ -24,7 +24,7 @@ def _run(script: str, home: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("module", ["math_q_agent.api.main", "MathCraft.api.main"])
+@pytest.mark.parametrize("module", ["MathCraft.app", "MathCraft.api.main"])
 def test_import_only_declares_app(module: str, tmp_path: Path) -> None:
     _run(
         f'''
@@ -32,7 +32,7 @@ def test_import_only_declares_app(module: str, tmp_path: Path) -> None:
         import logging
         import os
         from pathlib import Path
-        import math_q_agent.runtime.env as runtime_env
+        import MathCraft.runtime.env as runtime_env
 
         def unexpected_load():
             raise AssertionError("import must not load .env")
@@ -45,13 +45,13 @@ def test_import_only_declares_app(module: str, tmp_path: Path) -> None:
         assert "/healthz" in schema["paths"]
         assert dict(os.environ) == before_env
         assert logging.getLogger().handlers == before_handlers
-        assert not Path(os.environ["MATH_Q_HOME"]).exists()
+        assert not Path(os.environ["MATHCRAFT_HOME"]).exists()
         ''',
         tmp_path / "unused-home",
     )
 
 
-@pytest.mark.parametrize("module", ["math_q_agent.api.main", "MathCraft.api.main"])
+@pytest.mark.parametrize("module", ["MathCraft.app", "MathCraft.api.main"])
 def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> None:
     _run(
         f'''
@@ -60,9 +60,9 @@ def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> N
         import os
         from pathlib import Path
         from fastapi.testclient import TestClient
-        import math_q_agent.runtime.env as runtime_env
+        import MathCraft.runtime.env as runtime_env
 
-        old_home = Path(os.environ["MATH_Q_HOME"])
+        old_home = Path(os.environ["MATHCRAFT_HOME"])
         home = old_home.parent / "startup-home"
         settings = home / "data" / "user" / "settings"
         settings.mkdir(parents=True)
@@ -78,7 +78,7 @@ def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> N
         calls = []
         def load_test_env():
             calls.append("load")
-            os.environ["MATH_Q_HOME"] = str(home)
+            os.environ["MATHCRAFT_HOME"] = str(home)
             return home / ".env"
 
         runtime_env.load_project_env = load_test_env
@@ -93,7 +93,7 @@ def test_startup_uses_home_loaded_after_import(module: str, tmp_path: Path) -> N
             assert not old_home.exists()
             assert "http://localhost:5678" in app.state.cors_kwargs["allow_origins"]
             assert app.state.cors_kwargs["allow_origin_regex"] is None
-            if {module!r} in ("math_q_agent.api.main", "MathCraft.api.main"):
+            if {module!r} in ("MathCraft.app", "MathCraft.api.main"):
                 response = client.options("/healthz", headers={{
                     "origin": "http://localhost:5678",
                     "access-control-request-method": "GET",
@@ -115,14 +115,15 @@ def test_failed_initialization_never_reports_ready(tmp_path: Path) -> None:
     _run(
         '''
         from fastapi.testclient import TestClient
-        import math_q_agent.runtime.env as runtime_env
+        import MathCraft.runtime.env as runtime_env
         runtime_env.load_project_env = lambda: None
-        import math_q_agent.api.main as main
+        import MathCraft.api.main as main
 
         def fail():
             raise PermissionError("startup settings unavailable")
 
-        main.ensure_runtime_settings_files = fail
+        import MathCraft.api.runtime as runtime
+        runtime.ensure_runtime_settings_files = fail
         try:
             with TestClient(main.app):
                 raise AssertionError("startup should have failed")
@@ -140,7 +141,7 @@ def test_cli_reads_environment_before_parsing_listen_options(tmp_path: Path) -> 
         import os
         import sys
         import uvicorn
-        import math_q_agent.runtime.env as runtime_env
+        import MathCraft.runtime.env as runtime_env
 
         def load_test_env():
             os.environ["BACKEND_HOST"] = "127.0.0.2"
@@ -170,9 +171,9 @@ def test_cli_loads_shared_dotenv_without_overriding_shell(
         import sys
         from pathlib import Path
         import uvicorn
-        import math_q_agent.runtime.env as runtime_env
+        import MathCraft.runtime.env as runtime_env
 
-        root = Path(os.environ["MATH_Q_HOME"]).parent / "project"
+        root = Path(os.environ["MATHCRAFT_HOME"]).parent / "project"
         root.mkdir()
         (root / ".env").write_text(
             "BACKEND_HOST=127.0.0.2\\nBACKEND_PORT=8234\\nFRONTEND_PORT=5234\\n",
@@ -190,7 +191,7 @@ def test_cli_loads_shared_dotenv_without_overriding_shell(
         run()
         assert calls[0]["host"] == "127.0.0.2"
         assert calls[0]["port"] == {expected_port}
-        from math_q_agent.services.config import load_launch_settings
+        from MathCraft.services.config import load_launch_settings
         assert load_launch_settings().frontend_port == 5234
         ''',
         tmp_path / "cli-home",
@@ -204,8 +205,8 @@ def test_cli_missing_dotenv_uses_matching_frontend_defaults(tmp_path: Path) -> N
         import sys
         from pathlib import Path
         import uvicorn
-        import math_q_agent.runtime.env as runtime_env
-        runtime_env.PROJECT_ROOT = Path(os.environ["MATH_Q_HOME"]).parent / "absent"
+        import MathCraft.runtime.env as runtime_env
+        runtime_env.PROJECT_ROOT = Path(os.environ["MATHCRAFT_HOME"]).parent / "absent"
         for key in ("BACKEND_HOST", "BACKEND_PORT", "FRONTEND_PORT"):
             os.environ.pop(key, None)
         from MathCraft.app import run
@@ -215,7 +216,7 @@ def test_cli_missing_dotenv_uses_matching_frontend_defaults(tmp_path: Path) -> N
         run()
         assert calls[0]["host"] == "127.0.0.1"
         assert calls[0]["port"] == 8000
-        from math_q_agent.services.config import load_launch_settings
+        from MathCraft.services.config import load_launch_settings
         assert load_launch_settings().frontend_port == 5173
         ''',
         tmp_path / "cli-home",
@@ -236,9 +237,9 @@ def test_cli_preserves_saved_port_and_override_priority(
         from pathlib import Path
         import sys
         import uvicorn
-        import math_q_agent.runtime.env as runtime_env
+        import MathCraft.runtime.env as runtime_env
 
-        home = Path(os.environ["MATH_Q_HOME"])
+        home = Path(os.environ["MATHCRAFT_HOME"])
         settings = home / "data" / "user" / "settings"
         settings.mkdir(parents=True)
         (settings / "system.json").write_text(

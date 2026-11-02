@@ -29,7 +29,7 @@ class _CloudMinerUProbe:
         self.calls = calls
 
     def resolve_config(self):
-        from math_q_agent.services.parsing.engines.mineru.config import MinerUConfig
+        from MathCraft.services.parsing.engines.mineru.config import MinerUConfig
 
         return MinerUConfig(mode="cloud", api_token="test-token", is_ocr=False)
 
@@ -37,14 +37,14 @@ class _CloudMinerUProbe:
         return frozenset({".pdf"})
 
     def signature(self, config):
-        from math_q_agent.services.parsing.signature import ParserSignature
+        from MathCraft.services.parsing.signature import ParserSignature
 
         return ParserSignature.build(
             "mineru", "test", {"mode": config.mode, "is_ocr": config.is_ocr}
         )
 
     def is_ready(self, _config):
-        from math_q_agent.services.parsing.base import ReadinessReport
+        from MathCraft.services.parsing.base import ReadinessReport
 
         return ReadinessReport(ready=True)
 
@@ -56,8 +56,8 @@ class _CloudMinerUProbe:
 
 
 def test_scanned_pdf_requires_mineru_cloud_ocr(client, tmp_path):
-    from math_q_agent.services.parsing.service import ParseService
-    from math_q_agent.services.parsing.types import ParserError
+    from MathCraft.services.parsing.service import ParseService
+    from MathCraft.services.parsing.types import ParserError
 
     scanned_pdf = _write_scanned_pdf(tmp_path / "scanned.pdf")
 
@@ -66,7 +66,7 @@ def test_scanned_pdf_requires_mineru_cloud_ocr(client, tmp_path):
 
 
 def test_scanned_pdf_forces_cloud_mineru_ocr(client, tmp_path, monkeypatch):
-    import math_q_agent.services.parsing.service as parsing_service
+    import MathCraft.services.parsing.service as parsing_service
 
     calls: list[object] = []
     parser_names: list[str] = []
@@ -90,8 +90,8 @@ def test_scanned_pdf_forces_cloud_mineru_ocr(client, tmp_path, monkeypatch):
 
 
 def test_loader_preserves_scanned_pdf_cloud_error(client, tmp_path):
-    from math_q_agent.services.parsing.types import ParserError
-    from math_q_agent.services.rag.pipelines.llamaindex.document_loader import (
+    from MathCraft.services.parsing.types import ParserError
+    from MathCraft.services.rag.pipelines.llamaindex.document_loader import (
         LlamaIndexDocumentLoader,
     )
 

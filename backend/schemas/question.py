@@ -1,4 +1,6 @@
-"""领域模型：与前端 frontend/src/types/index.ts 的 Question 结构严格对齐。"""
+"""出题请求与响应模型：与前端 Question 结构严格对齐。"""
+
+from typing import Any
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -32,7 +34,7 @@ class Question(BaseModel):
     difficulty: Difficulty = Difficulty.mid
     # 题干/选项/答案/解析中的公式一律用 $...$ 包裹的 LaTeX
     stem: str
-    options: list[OptionItem] = []
+    options: list[OptionItem] = Field(default_factory=list)
     answer: str
     analysis: str
     knowledgePoint: str = ""
@@ -55,13 +57,22 @@ class GenerateParams(BaseModel):
     # 知识点或章节范围，用于检索与命题约束
     scope: str = ""
     # 已有题干，用于跨请求去重
-    existing_stems: list[str] = []
+    existing_stems: list[str] = Field(default_factory=list)
 
 
 class ChatRequestBody(BaseModel):
     kb_id: str
     doc_id: str
     message: str
-    history: list[dict] = []
-    slot_state: dict = {}
-    existing_stems: list[str] = []
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    slot_state: dict[str, Any] = Field(default_factory=dict)
+    existing_stems: list[str] = Field(default_factory=list)
+
+
+class ChatResponse(BaseModel):
+    """一轮对话出题的稳定响应。"""
+
+    reply: str
+    slot_state: dict[str, Any]
+    questions: list[Question]
+    done: bool

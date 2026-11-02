@@ -31,15 +31,19 @@ def test_progress_websocket_streams_indexing(client):
         while time.time() < deadline:
             message = socket.receive_json()
             seen.append(message)
-            if message.get("type") in {"complete", "error"}:
-                break
             if message.get("type") == "progress":
                 data = message.get("data") or {}
                 if data.get("stage") in {"completed", "error"}:
                     break
 
     assert seen, "no progress messages received"
-    assert {message.get("type") for message in seen} <= {"progress", "error", "complete"}
-    assert any(message.get("type") == "progress" for message in seen)
+    assert {message.get("type") for message in seen} == {"progress"}
+    progress_messages = [message for message in seen if message.get("type") == "progress"]
+    assert progress_messages
+    for message in progress_messages:
+        data = message.get("data") or {}
+        assert "progress_percent" in data
+        assert "percent" not in data
+        assert 0 <= data["progress_percent"] <= 100
 
     client.delete("/api/knowledge-bases/ws-kb")

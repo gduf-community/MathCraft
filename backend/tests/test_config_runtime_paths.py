@@ -8,22 +8,22 @@ from pathlib import Path
 import pytest
 import yaml
 
-from math_q_agent.logging.config import load_logging_config
-from math_q_agent.multi_user.context import reset_current_user, set_current_user
-from math_q_agent.multi_user.models import CurrentUser, UserScope
-from math_q_agent.multi_user.paths import get_admin_path_service, local_admin_user
-from math_q_agent.services.config import get_runtime_settings_dir, load_launch_settings
-from math_q_agent.services.config.capabilities_settings import get_visualize_params
-from math_q_agent.services.config.loader import (
+from MathCraft.logging.config import load_logging_config
+from MathCraft.multi_user.context import reset_current_user, set_current_user
+from MathCraft.multi_user.models import CurrentUser, UserScope
+from MathCraft.multi_user.paths import get_admin_path_service, local_admin_user
+from MathCraft.services.config import get_runtime_settings_dir, load_launch_settings
+from MathCraft.services.config.capabilities_settings import get_visualize_params
+from MathCraft.services.config.loader import (
     get_agent_params,
     get_chat_params,
     load_config_with_main,
     load_config_with_main_async,
     resolve_config_path,
 )
-from math_q_agent.services.config.model_catalog import ModelCatalogService, get_model_catalog_service
-from math_q_agent.services.path_service import PathService, get_path_service
-from math_q_agent.services.search import _get_web_search_config
+from MathCraft.services.config.model_catalog import ModelCatalogService, get_model_catalog_service
+from MathCraft.services.path_service import PathService, get_path_service
+from MathCraft.services.search import _get_web_search_config
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ async def test_imported_configuration_follows_home_without_reset(tmp_path, monke
         (second_home, settings_b, "ERROR", 2400, 18002),
         (first_home, settings_a, "DEBUG", 1200, 18001),
     ):
-        monkeypatch.setenv("MATH_Q_HOME", str(home))
+        monkeypatch.setenv("MATHCRAFT_HOME", str(home))
         assert get_runtime_settings_dir() == settings
         assert get_path_service().project_root == home
         assert get_admin_path_service().get_settings_dir() == settings
@@ -103,7 +103,7 @@ async def test_imported_configuration_follows_home_without_reset(tmp_path, monke
 async def test_explicit_paths_survive_home_switch(tmp_path, monkeypatch):
     home = tmp_path / "explicit"
     settings = _seed(home, level="DEBUG", budget=1200, port=18001)
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "ambient"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "ambient"))
     for key in ("BACKEND_PORT", "FRONTEND_PORT"):
         monkeypatch.delenv(key, raising=False)
     assert get_runtime_settings_dir(home) == settings
@@ -113,7 +113,7 @@ async def test_explicit_paths_survive_home_switch(tmp_path, monkeypatch):
     assert load_launch_settings(home).backend_port == 18001
     catalog_path = tmp_path / "custom-catalog.json"
     catalog = ModelCatalogService(catalog_path)
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "changed"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "changed"))
     catalog.save({"version": 1, "connections": [], "services": {}})
     assert catalog.path == catalog_path
     assert catalog_path.is_file()
@@ -133,7 +133,7 @@ def test_explicit_scope_is_not_replaced_by_ambient_home(tmp_path, monkeypatch, k
     token = set_current_user(user)
     try:
         for ambient in (tmp_path / "first", tmp_path / "second"):
-            monkeypatch.setenv("MATH_Q_HOME", str(ambient))
+            monkeypatch.setenv("MATHCRAFT_HOME", str(ambient))
             assert get_runtime_settings_dir() == settings
             assert load_logging_config().level == "WARNING"
             assert ModelCatalogService().path == settings / "model_catalog.json"
@@ -151,6 +151,6 @@ def test_explicit_scope_is_not_replaced_by_ambient_home(tmp_path, monkeypatch, k
 def test_explicit_path_service_singleton_is_not_replaced(tmp_path, monkeypatch):
     service = PathService(tmp_path / "pinned-data")
     monkeypatch.setattr(PathService, "_instance", service)
-    monkeypatch.setenv("MATH_Q_HOME", str(tmp_path / "other"))
+    monkeypatch.setenv("MATHCRAFT_HOME", str(tmp_path / "other"))
     assert get_path_service() is service
     assert get_runtime_settings_dir() == service.get_settings_dir()

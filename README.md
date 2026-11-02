@@ -6,7 +6,7 @@ MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目�
 
 项目包含一个统一的 `MathCraft` 后端：同一进程提供知识库、模型配置、文档入库、检索和题目生成 API；`frontend` 是配套的 React 应用。前后端按独立进程启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
 
-`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATH_Q_HOME/data`。内部 `math_q_agent` 包作为兼容层保留，新的启动命令和公共模块名统一为 `MathCraft`。
+`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATHCRAFT_HOME/data`。主实现包统一位于 `backend/MathCraft/`，Python import 和启动入口统一使用 `MathCraft`。旧 `math_q_agent` import 与启动命令停止支持，不保留旧目录兼容壳；数据根环境变量现统一为 `MATHCRAFT_HOME`，不提供旧名回退。将其值指向原 home 目录即可继续读取既有 `data/`，无需移动数据。
 
 ## 目录结构
 
@@ -23,34 +23,54 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── .env.example                  # 环境变量样例
 ├── .gitignore                    # 忽略虚拟环境、运行时数据、缓存与 .env
 ├── backend/                      # Python 后端，详细结构见 backend/README.md
-│   ├── MathCraft/                # 对外 Python 模块与启动入口
-│   ├── math_q_agent/             # DeepTutor 兼容实现包
+│   ├── MathCraft/                # 唯一 Python 主实现包与统一启动入口
+│   │   ├── app.py               # 统一 FastAPI 应用装配
+│   │   ├── __main__.py          # python -m MathCraft 启动入口
+│   │   ├── api/main.py          # 导出同一个统一 app
+│   │   ├── api/runtime.py       # lifespan、运行时初始化与 CORS 中间件
 │   │   ├── api/routers/profile.py # 单租户教师资料与头像接口
+│   │   ├── runtime/              # 数据根与隔离文档解析进程
+│   │   │   ├── isolated_worker.py # 父进程超时、并发限制与取消回收
+│   │   │   ├── worker_process.py # 固定 python -m 入口与 pickle 协议
+│   │   │   └── worker_tasks.py   # 文本提取与 UTF-8 Markdown 写入任务
 │   │   ├── services/profile/     # 资料校验与独立持久化
 │   │   ├── knowledge/model_references.py # 知识库嵌入绑定查询与删除保护
 │   │   ├── services/config/direct_model_config.py # 独立模型配置迁移与名称规则
 │   │   └── services/settings/direct_model_edit.py # 单模型合并与独立默认操作
+│   ├── tests/test_isolated_document_extraction.py # 真实子进程解析与预览回归
 │   └── README.md                 # 后端目录结构与职责说明
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
+│   ├── 更详细的出题流程.md        # 给教师阅读的资料选择、出题修改、版本保存与组卷流程
 │   ├── design/                   # 新功能与模块设计文档
 │   │   ├── 统一知识库设计.md       # 考研数学出题知识库方案与实施验收
+│   │   ├── PRD-智能出题智能体.md  # 考研全范围、多选解析结果、逐题版本及指定版本组卷的总体需求
+│   │   ├── 后端包统一与接口对齐.md # 包迁移、入口、接口契约与验收边界
+│   │   ├── 题目收藏页面设计.md   # 收藏页交互方案（当前为前端 mock）
+│   │   ├── 题目收藏实施记录.md   # 收藏 mock 实施范围与持久化边界
+│   │   ├── 知识库模块说明.md       # 现有知识库架构、生命周期与接口分组
+│   │   ├── 模型配置来源与普通知识库流程.md # 模型配置来源、启动与知识库主链路
+│   │   ├── 扫描PDF云端OCR策略.md   # 扫描文档解析策略与异常处理
 │   │   ├── 个人中心与模型配置页面设计.md # 已确认的页面方案与能力边界
 │   │   ├── 个人中心与应用设置功能规格.md # 本地功能规格、用户故事与验收标准
 │   │   ├── 个人中心与应用设置实施记录.md # 验收结果、审查及验证边界
 │   │   ├── 模型与服务页面优化功能规格.md # 提供方与三种模型子页优化规格
 │   │   ├── 模型与服务页面优化实施记录.md # 实施范围、验收映射与环境说明
 │   │   ├── 模型直接配置功能规格.md # 三类直接配置及迁移契约
-│   │   └── 模型直接配置实施记录.md # 实现、接口与验收证据
+│   │   ├── 模型直接配置实施记录.md # 实现、接口与验收证据
+│   │   ├── 对话出题必填信息检查.md # 多轮追问与各题型数量生成门槛
+│   │   └── 临时配置弹出面板设计.md # 新建与绑定配置的弹层交互和验收
 │   ├── deeptutor参考前端/         # 提供方与模型页面布局参考截图
 │   ├── adr/                      # 架构决策记录
 │   └── 智能体出题工作流程.docx  # 出题流程说明
 ├── frontend/                     # React 前端，详细结构见 frontend/README.md
+│   ├── src/api/urls.ts          # 环境配置驱动的 HTTP 与 WebSocket 地址
 │   ├── src/components/settings/ # 模型、引擎、解析及知识库入口
 │   │   ├── model/DirectModelEditor.tsx # 完整模型表单与手动发现
 │   │   └── model/directCatalog.ts # 单模型编辑合并与校验
+│   ├── src/components/ui/ConfigurationDialog.tsx # 通用临时配置模态面板
 │   ├── src/components/profile/  # 教师资料表单与头像上传
-│   ├── src/api/urls.ts          # 环境配置驱动的 HTTP 与 WebSocket 地址
+│   ├── src/components/tabs/FavoritesTab/ # 题目收藏页（mock 数据，前端演示）
 │   └── README.md                 # 前端目录结构与开发命令
 └── tools/                        # 仓库维护脚本
 ```
@@ -104,7 +124,9 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 应用导入不会加载 `.env` 或写入运行时设置。ASGI 启动时加载 `.env`、初始化设置和日志，再开始接收请求；初始化失败会直接终止启动。命令行入口会先读取 `.env` 和已保存的启动配置。端口优先级为 `--port` > shell / `.env` 中的 `BACKEND_PORT` > `system.json` > 内置默认值 `8000`，与 Vite 默认代理端口一致。监听地址按 `--host` > shell / `.env` 中的 `BACKEND_HOST` > `127.0.0.1` 确定。
 
-Python 启动模块和公共 API 模块名统一为 `MathCraft`。知识库、模型配置和出题接口都由这个进程提供，内部 `math_q_agent` 代码已直接装配进统一应用。
+Python 主实现包与启动模块统一为 `MathCraft`。`MathCraft.app` 装配应用，`MathCraft.api.main:app` 导出同一个应用，`python -m MathCraft` 启动该应用；知识库、模型配置、资料和出题接口都由这一进程提供。生命周期与中间件位于 `MathCraft/api/runtime.py`，正式业务路由位于 `MathCraft/api/routers/`。
+
+旧 `math_q_agent` import 与命令停止支持，不提供旧目录兼容壳；开发脚本、动态 import 和 worker 命令需要使用 `MathCraft`。HTTP 与 WebSocket 路径不随 Python 包名改变，迁移范围和验收见 [后端包统一与接口对齐](docs/design/后端包统一与接口对齐.md)。
 
 知识库统一使用 DeepTutor 正式知识库模块，默认 RAG provider 为 `llamaindex`。出题服务只调用正式知识库的文件列表和 RAG 查询，不再提供独立的 Chroma/Ollama 入库链路。
 
@@ -147,7 +169,7 @@ MINERU_API_TOKEN=
 
 | 变量 | 说明 |
 | --- | --- |
-| `MATH_Q_HOME` | 数据根，默认当前工作目录（在仓库根启动时即仓库根）；可在 shell 或 `.env` 中设置，须在 ASGI 启动前确定；运行时数据落在 `<MATH_Q_HOME>/data` |
+| `MATHCRAFT_HOME` | 数据根，默认当前工作目录（在仓库根启动时即仓库根）；可在 shell 或 `.env` 中设置，须在 ASGI 启动前确定；运行时数据落在 `<MATHCRAFT_HOME>/data` |
 | `MATH_Q_MODE` | 运行模式，本服务只使用 `server` |
 | `CORS_ORIGIN` / `CORS_ORIGINS` | 默认空；两个应用均读取的额外浏览器来源，逗号分隔；当前无认证模式仍默认放行跨域 |
 | `BACKEND_HOST` / `BACKEND_PORT` | 统一后端绑定地址和端口，默认 `127.0.0.1` / `8000`；同时供 Vite 推导代理目标 |
@@ -218,7 +240,7 @@ npm run dev
 
 ## 数据目录
 
-服务持久化的全部内容位于 `$MATH_Q_HOME/data`：
+服务持久化的全部内容位于 `$MATHCRAFT_HOME/data`；当前仅使用 `MATHCRAFT_HOME`，不提供旧名回退。将其值指向原 home 目录时，继续读取同一 `data/` 下的原设置、知识库、索引与教师资料，不要求搬迁或重建：
 
 ```
 data/
@@ -234,7 +256,7 @@ data/
 └── user/settings/*.json        # 模型目录、解析、引擎等设置
 ```
 
-`MATH_Q_HOME` 默认使用进程启动时的当前工作目录；在仓库根目录启动时才对应仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
+`MATHCRAFT_HOME` 默认使用进程启动时的当前工作目录；在仓库根目录启动时才对应仓库根目录。真实部署时应指向独立挂载的卷，并保证该目录可写、不进版本库。
 
 ## RAG 引擎
 
@@ -267,7 +289,32 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 .venv\Scripts\python.exe -m pytest -q
 ```
 
+开发依赖同时包含 Ruff。提交到 GitHub 后，`.github/workflows/ci.yml` 会对 `backend/` 执行 Ruff lint 检查；本地可使用相同命令复现：
+
+```powershell
+.venv\Scripts\python.exe -m ruff check backend
+```
+
+前端静态检查和 Pyright 使用 `frontend` 的 Node 开发依赖：
+
+```powershell
+Push-Location frontend
+npm ci
+npm run typecheck
+npm run lint
+Pop-Location
+.\frontend\node_modules\.bin\pyright.cmd
+```
+
 `pyproject.toml` 的 `testpaths` 已指向 `backend/tests`，直接运行即可。套件通过 `TestClient` 驱动真实 ASGI 应用，数据根指向一次性的 `backend/tests/.data-home`；它会启动一个假的 OpenAI 兼容 `/embeddings` 端点，因此默认 LlamaIndex 流水线无需任何外部凭证即可完成索引与检索。端到端用例会建库、上传文档、等待索引完成并断言召回片段。
+
+## 隔离文档解析恢复
+
+基线 `6045b32` 缺失 `runtime/worker_process.py` 与 `runtime/worker_tasks.py`，导致已有文本预览和 `TextOnlyParser.parse()` 的隔离调用失败。本次补齐固定入口 `python -m MathCraft.runtime.worker_process <request_path> <result_path>` 和文档任务，复用现有提取器；不增加依赖，恢复范围仅限隔离文档提取，不恢复上游多租户能力。
+
+父子进程通过临时文件交换 pickle：请求为 `callable_path`、`args`、`kwargs`，成功返回 `ok/result`，失败返回 `ok/message/module/type/traceback/attrs`。异常属性至少保留 `filename`，忽略不可序列化属性；公开文档异常与 HTTP 预览契约沿用现有转换。父进程继续负责超时、并发限制、取消后的进程回收与临时目录清理。详细流程和异常边界见[设计文档第 10 节](docs/design/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收)。
+
+2026-10-31 在 Windows / Python 3.14 上验证：新增真实子进程回归 **25 项通过**，覆盖文本与 PDF 提取、Markdown 输出、HTTP 文本预览、错误传回及超时/取消；既有解析相关测试 **9 项通过**，完整后端套件 **322 项通过、1 项跳过**。验证命令与边界见设计文档第 10 节。
 
 ## 已知限制
 
@@ -277,11 +324,12 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 2. **只有默认引擎做过端到端索引。** 测试用 LlamaIndex 对着假嵌入端点建索引。每个引擎都能解析到各自的流水线类，安装对应 extra 后会从 `configured: false` 变为 `true`，但真实的 GraphRAG / LightRAG / PageIndex 索引没有在这里构建过。
 3. **隔离文档解析需要真实临时目录。** PDF 解析通过 worker 子进程完成；在禁止子进程管道的沙箱中，解析器会报失败而不是静默降级。PDF 入库请在普通环境运行服务。
 4. **按设计没有认证。** 请绑定回环地址或用网关前置。
+5. **题目收藏为前端内存 mock。** 收藏与收藏夹用于界面演示，刷新后重置；尚未接入后端持久化，本轮包统一不新增收藏后端。
 
 ## 配置初始化与兼容约定
 
 1. 应用模块导入仅装配路由；运行时设置初始化、环境变量导出和日志配置在 ASGI lifespan 启动阶段完成。导出 OpenAPI 不会创建运行时设置或日志。
-2. 配置默认路径通过当前路径服务解析，导入后、启动前设置 `MATH_Q_HOME` 仍然有效；显式路径注入继续受支持，已创建的服务实例仍绑定原目录。运行期间请通过设置 API 修改配置，切换数据根请重启进程。
+2. 配置默认路径通过当前路径服务解析，导入后、启动前设置 `MATHCRAFT_HOME` 仍然有效；显式路径注入继续受支持，已创建的服务实例仍绑定原目录。运行期间请通过设置 API 修改配置，切换数据根请重启进程。
 3. 设置接口只有在模型目录内容实际改变时才重置 LLM/嵌入客户端；重复保存相同配置不会重置。
 4. 模型环境变量负责首次初始化目录；已保存的有效目录（包括明确保存的空目录）优先，不会被环境变量再次覆盖。
 
@@ -289,8 +337,10 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 
 | 文档 | 内容 |
 | --- | --- |
+| [docs/design/后端包统一与接口对齐.md](docs/design/后端包统一与接口对齐.md) | 统一实现包与入口、运行时路径保留、接口和前端对齐边界及验收标准 |
 | [docs/api.md](docs/api.md) | HTTP API 参考：端点、参数、curl 示例、WebSocket 契约 |
-| [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 智能出题产品需求、范围和验收标准 |
+| [docs/更详细的出题流程.md](docs/更详细的出题流程.md) | 教师操作版：按上传资料、指定范围、逐题修改、手动保存版本和组卷的顺序说明操作 |
+| [docs/design/PRD-智能出题智能体.md](docs/design/PRD-智能出题智能体.md) | 考研全章节总体需求：整份解析结果多选与原文预览、对话范围、手动版本保存与清理、待组卷及独立组卷页；含确认状态和待决策事项 |
 | [docs/design/模型直接配置功能规格.md](docs/design/模型直接配置功能规格.md) | 三类直接配置、名称规则、手动发现、单项保存与迁移契约 |
 | [docs/design/模型直接配置实施记录.md](docs/design/模型直接配置实施记录.md) | 直接配置实现、验收证据及验证边界 |
 | [docs/design/模型与服务页面优化功能规格.md](docs/design/模型与服务页面优化功能规格.md) | 提供方优先导航、卡片与模型列表交互、48 条用户故事及 18 项验收 |
@@ -343,3 +393,9 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 不知道标识时，可在未保存表单中手动点击「获取模型列表」。失败保留输入并显示原因及可用 HTTP 状态，仍可手填标识并保存；保存不自动发现、推理或嵌入。任务提供跟随主模型和独立配置两种模式，切换保留备用项。
 
 旧正式连接与任务引用自动展开为独立模型，保留稳定 ID、默认和知识库嵌入绑定；历史重名的调整可在页面查看。旧草稿通过明确选项逐项恢复，不会因迁移、打开页面或保存另一项而被应用。共享字段在迁移后不再覆盖模型的独立配置。正式目录继续优先于环境初始化配置，前端不回写 `.env`；损坏或迁移失败的既有文件保留原样并报告错误。详细范围见[功能规格](docs/design/模型直接配置功能规格.md)，检查证据见[实施记录](docs/design/模型直接配置实施记录.md)。
+
+临时配置入口采用居中弹出面板：新建知识库、更改引擎绑定和新增模型的交互、异常边界与验收见[临时配置弹出面板设计](docs/design/临时配置弹出面板设计.md)。现有 HTTP 字段与数据契约继续见 [API 文档](docs/api.md)。
+
+## 对话出题的信息确认
+
+`/api/chat` 在题型、各题型数量、范围、来源和难度齐备前持续追问。未提供数量时不再默认 5 道；每种题型数量沿用 1–20 道约束，已明确的要求在多轮对话中保留。详见 [对话出题必填信息检查](docs/design/对话出题必填信息检查.md)。

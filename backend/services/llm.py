@@ -1,12 +1,12 @@
 """正式 LLM 配置适配器。
 
-模型、提供方和密钥全部由 math_q_agent 的 /api/settings 管理。
+模型、提供方和密钥全部由 MathCraft 的 /api/settings 管理。
 """
 
 from __future__ import annotations
 
-from math_q_agent.services.llm import complete
-from math_q_agent.utils.json_parser import parse_json_response
+from MathCraft.services.llm import complete
+from MathCraft.utils.json_parser import parse_json_response
 
 
 class LLMError(RuntimeError):

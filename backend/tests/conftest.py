@@ -1,7 +1,7 @@
 """Shared fixtures: an isolated data root, a fake embedding endpoint, a client.
 
 The application initializes its runtime settings during ASGI startup.
-``MATH_Q_HOME`` is set before the test client starts its lifespan. Tests that
+``MATHCRAFT_HOME`` is set before the test client starts its lifespan. Tests that
 need a clean tree remove ``tests/.data-home`` first.
 """
 
@@ -138,7 +138,7 @@ def client(embedding_server: str):
 
     shutil.rmtree(DATA_HOME, ignore_errors=True)
     DATA_HOME.mkdir(parents=True, exist_ok=True)
-    os.environ["MATH_Q_HOME"] = str(DATA_HOME)
+    os.environ["MATHCRAFT_HOME"] = str(DATA_HOME)
     # Tests must not inherit a developer's local MinerU deployment overrides.
     # The env override itself is covered with an explicit RuntimeSettingsService
     # process_env fixture in test_settings_parsing.py.
@@ -152,7 +152,7 @@ def client(embedding_server: str):
 
     from fastapi.testclient import TestClient
 
-    import math_q_agent.api.main as main
+    import MathCraft.api.main as main
 
     settings_dir = DATA_HOME / "data" / "user" / "settings"
     settings_dir.mkdir(parents=True, exist_ok=True)

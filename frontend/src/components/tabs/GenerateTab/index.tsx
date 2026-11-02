@@ -1,16 +1,37 @@
-import { Bot } from 'lucide-react'
+import { useState } from 'react'
+import type { DragEvent } from 'react'
+import { Bot, FileUp } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import RobotAvatar from './RobotAvatar'
 import QuickPrompts from './QuickPrompts'
 import ChatInput from './ChatInput'
 
-/** 智能生成标签页：欢迎态（机器人 + 快捷提问）与对话态 */
+/** Agent出题标签页：欢迎态（机器人 + 快捷提问）与对话态；支持拖拽文档到对话区上传 */
 export default function GenerateTab() {
-  const { messages, botThinking } = useApp()
+  const { messages, botThinking, uploadDocument, profile } = useApp()
   const showWelcome = messages.length === 0 && !botThinking
+  const [dragOver, setDragOver] = useState(false)
+
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) void uploadDocument(file)
+  }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      className="relative flex h-full min-h-0 flex-col"
+      onDragOver={(e) => {
+        e.preventDefault()
+        setDragOver(true)
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault()
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false)
+      }}
+      onDrop={onDrop}
+    >
       <div className="min-h-0 flex-1 overflow-y-auto">
         {showWelcome ? (
           <div className="flex h-full flex-col items-center justify-center px-8 pb-4">
@@ -33,7 +54,7 @@ export default function GenerateTab() {
                       m.role === 'user' ? 'bg-primary font-semibold text-white' : 'bg-primary-light text-primary'
                     }`}
                   >
-                    {m.role === 'user' ? '张' : <Bot size={16} />}
+                    {m.role === "user" ? <img src={profile.avatar} alt="" className="h-8 w-8 rounded-full object-cover" /> : <Bot size={16} />}
                   </span>
                   <div
                     className={`rounded-2xl px-4 py-2.5 text-[15px] leading-7 ${
@@ -60,6 +81,17 @@ export default function GenerateTab() {
         )}
       </div>
       <ChatInput />
+
+      {/* 拖拽上传遮罩 */}
+      {dragOver && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-primary-light/70 backdrop-blur-[1px]">
+          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-primary shadow-lg">
+            <FileUp size={26} />
+          </span>
+          <p className="text-sm font-semibold text-primary">松开以上传文档到当前知识库</p>
+          <p className="text-xs text-ink-2">支持 PDF / DOCX / XLSX / MD，上传后自动入库</p>
+        </div>
+      )}
     </div>
   )
 }

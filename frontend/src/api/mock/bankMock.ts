@@ -50,63 +50,63 @@ function member(name: string, isAdmin = false): BankMember {
 }
 
 function makeBank(
+  id: string,
   name: string,
   code: string,
-  memberCount: number,
-  creator: string,
   docs: [string, string, string][],
   members: string[],
   meAdmin: boolean,
   adminLevel: AdminLevel = 'normal',
 ): ManagedBank {
   return {
-    id: uid('bank'),
+    id,
     name,
     code,
-    memberCount,
+    // 人数以成员名单为准，避免表格与成员管理弹窗对不上
+    memberCount: members.length,
     capacity: 200,
-    creator,
+    creator: members[0] ?? CURRENT_USER,
     docs: docs.map(([n, f, s]) => ({ id: uid('d'), name: n, format: f, size: s })),
-    members: members.map((m) => member(m, m === creator || (meAdmin && m === CURRENT_USER))),
+    members: members.map((m) => member(m, m === members[0] || (meAdmin && m === CURRENT_USER))),
     adminLevel,
   }
 }
 
-/** 我创建的题库（当前用户为创建者=超级管理员） */
+/** 我创建的题库（当前用户为创建者=超级管理员）；id 固定，与后端 collection 对齐 */
 const ownedBanks: ManagedBank[] = [
-  makeBank('2024级高等代数', 'TK20240001', 1, CURRENT_USER,
+  makeBank('bank-daishu-2024', '2024级高等代数', 'TK20240001',
     [['高等代数第一章讲义.pdf', 'PDF', '2.4 MB'], ['线性空间习题集.docx', 'DOCX', '368 KB'], ['章节知识点梳理.md', 'MD', '42 KB']],
     [CURRENT_USER, '李老师', '王老师'], true, 'super'),
-  makeBank('2025级线性代数', 'TK20250002', 1, CURRENT_USER,
+  makeBank('bank-xiandai-2025', '2025级线性代数', 'TK20250002',
     [['矩阵运算基础.pdf', 'PDF', '1.8 MB'], ['行列式专项练习.xlsx', 'XLSX', '126 KB']],
     [CURRENT_USER, '赵老师'], true, 'normal'),
-  makeBank('高数基础题库', 'TK20240003', 1, CURRENT_USER,
-    [['极限与连续.pdf', 'PDF', '3.1 MB'], ['导数应用50题.docx', 'DOCX', '522 KB'], ['公式速查表.md', 'MD', '18 KB'], ['期末模拟卷.xlsx', 'XLSX', '204 KB']],
+  makeBank('bank-gaoshu', '高数基础题库', 'TK20240003',
+    [['导数与微分_50题练习卷.pdf', 'PDF', '1.2 MB'], ['极限与连续.pdf', 'PDF', '3.1 MB'], ['导数应用50题.docx', 'DOCX', '522 KB'], ['公式速查表.md', 'MD', '18 KB'], ['期末模拟卷.xlsx', 'XLSX', '204 KB']],
     [CURRENT_USER, '陈老师', '刘老师'], true, 'super'),
-  makeBank('概率论与数理统计', 'TK20240004', 1, CURRENT_USER,
+  makeBank('bank-gailv', '概率论与数理统计', 'TK20240004',
     [['随机变量分布.pdf', 'PDF', '2.2 MB'], ['数理统计习题.docx', 'DOCX', '410 KB']],
     [CURRENT_USER, '王老师'], true, 'super'),
-  makeBank('大学物理（力学）', 'TK20240005', 1, CURRENT_USER,
+  makeBank('bank-wuli', '大学物理（力学）', 'TK20240005',
     [['牛顿定律专题.pdf', 'PDF', '2.9 MB']],
     [CURRENT_USER, '李老师'], true, 'normal'),
-  makeBank('高等数学综合练习', 'TK20240006', 1, CURRENT_USER,
+  makeBank('bank-zonghe', '高等数学综合练习', 'TK20240006',
     [['综合模拟卷一.pdf', 'PDF', '1.5 MB'], ['综合模拟卷二.pdf', 'PDF', '1.6 MB']],
     [CURRENT_USER], true, 'super'),
 ]
 
 /** 我加入的题库（「高数基础题库」当前用户为超级管理员，用于演示权限门控） */
 const joinedBanks: ManagedBank[] = [
-  makeBank('2024级高等代数', 'TK20240001', 1, '李老师',
+  makeBank('jbank-daishu-2024', '2024级高等代数', 'TK20240001',
     [['高等代数课件.pdf', 'PDF', '4.2 MB']], ['李老师', CURRENT_USER], false, 'normal'),
-  makeBank('2025级线性代数', 'TK20250002', 3, '王老师',
+  makeBank('jbank-xiandai-2025', '2025级线性代数', 'TK20250002',
     [['线性代数讲义.pdf', 'PDF', '3.6 MB'], ['习题解答.docx', 'DOCX', '288 KB']], ['王老师', CURRENT_USER, '李老师'], false, 'normal'),
-  makeBank('高数基础题库', 'TK20240003', 2, CURRENT_USER,
+  makeBank('jbank-gaoshu', '高数基础题库', 'TK20240003',
     [['函数与极限.pdf', 'PDF', '2.8 MB'], ['微积分基础.docx', 'DOCX', '455 KB']], [CURRENT_USER, '刘老师'], true, 'super'),
-  makeBank('概率论与数理统计', 'TK20240004', 1, '陈老师',
+  makeBank('jbank-gailv', '概率论与数理统计', 'TK20240004',
     [['概率基础.pdf', 'PDF', '1.9 MB']], ['陈老师', CURRENT_USER], false, 'normal'),
-  makeBank('大学物理（力学）', 'TK20240005', 4, '刘老师',
+  makeBank('jbank-wuli', '大学物理（力学）', 'TK20240005',
     [['力学讲义.pdf', 'PDF', '5.1 MB'], ['习题册.docx', 'DOCX', '640 KB'], ['实验报告模板.md', 'MD', '12 KB']], ['刘老师', CURRENT_USER, '王老师', '赵老师'], false, 'normal'),
-  makeBank('高等数学综合练习', 'TK20240006', 2, '赵老师',
+  makeBank('jbank-zonghe', '高等数学综合练习', 'TK20240006',
     [['综合练习册.pdf', 'PDF', '3.3 MB']], ['赵老师', CURRENT_USER], false, 'normal'),
 ]
 
@@ -122,6 +122,36 @@ export async function listOwned(): Promise<ManagedBank[]> {
 export async function listJoined(): Promise<ManagedBank[]> {
   await delay()
   return joinedBanks.map(clone)
+}
+
+/** 按题库 id 取文档清单（出题侧文档列表与题库管理同源的回退数据） */
+export function getBankDocsById(id: string): BankDoc[] {
+  const bank = findBank(id)
+  return bank ? bank.docs.map((d) => ({ ...d })) : []
+}
+
+export interface BankBrief {
+  id: string
+  name: string
+  /** 来源：owned=我创建的题库 joined=我加入的题库 */
+  source: 'owned' | 'joined'
+}
+
+/** 全部题库（我创建的 + 我加入的，按编号去重），供智能出题的知识库下拉联动 */
+export function listAllBanks(): BankBrief[] {
+  const seen = new Set<string>()
+  const out: BankBrief[] = []
+  for (const [source, list] of [
+    ['owned', ownedBanks],
+    ['joined', joinedBanks],
+  ] as const) {
+    for (const b of list) {
+      if (seen.has(b.code)) continue
+      seen.add(b.code)
+      out.push({ id: b.id, name: b.name, source })
+    }
+  }
+  return out
 }
 
 export async function updateBank(id: string, patch: { name?: string; adminLevel?: AdminLevel }): Promise<ManagedBank> {
@@ -153,6 +183,29 @@ export async function removeDoc(bankId: string, docId: string): Promise<void> {
   const bank = findBank(bankId)
   if (!bank) throw new Error('题库不存在')
   bank.docs = bank.docs.filter((d) => d.id !== docId)
+}
+
+/** 新建题库：编号自动生成，创建者为当前用户（超级管理员） */
+export async function createBank(
+  name: string,
+  docs: { name: string; format: string; size: string }[],
+): Promise<ManagedBank> {
+  await delay(260)
+  const year = new Date().getFullYear()
+  const code = `TK${year}${String(ownedBanks.length + 1).padStart(2, '0')}${Math.floor(Math.random() * 90 + 10)}`
+  const bank: ManagedBank = {
+    id: uid('bank'),
+    name,
+    code,
+    memberCount: 1,
+    capacity: 200,
+    creator: CURRENT_USER,
+    docs: docs.map((d) => ({ id: uid('d'), ...d })),
+    members: [member(CURRENT_USER, true)],
+    adminLevel: 'super',
+  }
+  ownedBanks.push(bank)
+  return clone(bank)
 }
 
 /** 设为管理员（级别跟随题库 adminLevel；创建者恒为超级管理员） */

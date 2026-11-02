@@ -1,7 +1,7 @@
-import { FileUp, Loader2, Paperclip, SendHorizontal } from 'lucide-react'
+import { Loader2, SendHorizontal } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 
-/** 底部输入区：消息输入、字数统计、上传与发送 */
+/** 底部输入区：消息输入、字数统计与发送；文档通过拖拽到对话区上传 */
 export default function ChatInput() {
   const { inputDraft, setInputDraft, sendChat, botThinking, showToast, selectedDocId } = useApp()
   const canSend = inputDraft.trim().length > 0 && !botThinking
@@ -35,24 +35,7 @@ export default function ChatInput() {
           className="block w-full resize-none bg-transparent px-1 text-sm leading-6 text-ink outline-none placeholder:text-ink-3"
         />
         <div className="mt-1 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              title="附件"
-              onClick={() => showToast('演示环境暂不支持上传附件')}
-              className="rounded-md p-1.5 text-ink-3 transition-colors hover:bg-primary-weak hover:text-primary"
-            >
-              <Paperclip size={16} />
-            </button>
-            <button
-              type="button"
-              onClick={() => showToast('演示环境暂不支持上传文件')}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-ink-2 transition-colors hover:bg-primary-weak hover:text-primary"
-            >
-              <FileUp size={15} />
-              上传文件
-            </button>
-          </div>
+          <span className="text-xs text-ink-3">支持将文档直接拖拽到对话区上传</span>
           <div className="flex items-center gap-4">
             <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
             <button

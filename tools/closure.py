@@ -4,13 +4,13 @@ Used by the extraction workflow to answer two questions without installing
 dependencies and without importing anything:
 
 1. Given one or more root modules, which files does the graph reach?
-2. Which ``math_q_agent.*`` modules are referenced by the surviving tree but
+2. Which ``MathCraft.*`` modules are referenced by the surviving tree but
    no longer exist?  Those references are exactly the points that need a stub,
    an adapter, or deletion.
 
 Usage::
 
-    python tools/closure.py roots math_q_agent.api.main math_q_agent.knowledge.manager
+    python tools/closure.py roots MathCraft.api.main MathCraft.knowledge.manager
     python tools/closure.py dangling
     python tools/closure.py dangling --json out.json
     python tools/closure.py stats
@@ -28,7 +28,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ROOT = REPO_ROOT / "backend"
-PACKAGE_NAME = "math_q_agent"
+PACKAGE_NAME = "MathCraft"
 CODE_ROOT = SOURCE_ROOT / PACKAGE_NAME
 
 

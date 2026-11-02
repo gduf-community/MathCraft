@@ -8,26 +8,18 @@ import type {
   StudySpace,
 } from '../types'
 
-/**
- * 后端 API 端点预留。
- * 接入真实后端时，按此清单实现 httpAdapter 并在文件末尾替换默认导出即可，
- * 页面组件不需要任何改动。
- */
-export const ENDPOINTS = {
-  knowledgeBases: '/api/knowledge-bases',
-  documents: '/api/knowledge-bases/:kbId/files',
-  generate: '/api/generate',
-  question: '/api/questions/:id',
-  publish: '/api/papers/publish',
-  spaces: '/api/study-spaces',
-  records: '/api/assemble-records',
-} as const
+/** 生成进度回调：进度百分比与阶段文案。 */
+export type GenerateProgressHandler = (progressPercent: number, stage: string) => void
+
+/** 知识库后台任务回调：进度百分比与阶段文案。 */
+export type UploadProgressHandler = (progressPercent: number, stage: string) => void
 
 export interface ApiClient {
   listKnowledgeBases(): Promise<KnowledgeBase[]>
   listDocuments(kbId: string): Promise<KbDocument[]>
+  uploadDocument(kbId: string, file: File, onProgress?: UploadProgressHandler): Promise<void>
   listStudySpaces(): Promise<StudySpace[]>
-  generateQuestions(params: GenerateParams): Promise<Question[]>
+  generateQuestions(params: GenerateParams, onProgress?: GenerateProgressHandler): Promise<Question[]>
   updateQuestion(question: Question): Promise<Question>
   deleteQuestion(id: string): Promise<void>
   toggleStar(id: string, starred: boolean): Promise<void>
@@ -35,7 +27,7 @@ export interface ApiClient {
 }
 
 /**
- * 当前接入 FastAPI 后端（httpAdapter），开发时 Vite 将 /api 代理到根目录 .env 配置的出题服务。
+ * 当前接入 FastAPI 后端（httpAdapter），开发时 vite 将 /api 代理到 localhost:8000。
  * 若要切回纯前端演示模式，把下面一行换回 mockAdapter 即可。
  */
 import { httpAdapter } from './httpAdapter'
