@@ -91,7 +91,7 @@ export default function PreviewTab() {
           }`}
         >
           <Trash2 size={12} />
-          删除
+          移出预览
         </button>
         <span className="text-sm text-ink-3">共 {filtered.length} 道题</span>
         <div className="flex-1" />
@@ -128,9 +128,10 @@ export default function PreviewTab() {
       {assembling && <AssembleModal onClose={() => setAssembling(false)} />}
       {confirmDelete && (
         <ConfirmDialog
-          title="删除题目"
-          message={`确定删除已选的 ${selectedIds.length} 道题目吗？删除后不可恢复。`}
-          confirmText="确认删除"
+          title="移出本次预览"
+          message={`将已选的 ${selectedIds.length} 道题目移出本次预览？保存的题目及来源仍保留，刷新后可以重新读取。`}
+          confirmText="移出预览"
+          danger={false}
           onConfirm={() => void deleteSelected()}
           onClose={() => setConfirmDelete(false)}
         />
