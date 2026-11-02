@@ -170,14 +170,14 @@ export default function FavoritesTab() {
         </button>
       </div>
 
-      {/* 标签页内容 */}
+      {/* 标签页内容：无题目时显示方框空态，样式与组卷记录空态一致 */}
       {groupQuestions.length === 0 ? (
-        <div className="flex h-full flex-col items-center justify-center gap-3 text-ink-3">
-          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-light text-star">
-            <Star size={30} />
-          </span>
-          <p className="text-sm">「{activeGroup?.name}」暂无收藏题目</p>
-          <p className="text-xs">在「Agent出题」或「题目预览」中点亮题目卡片的星标即可收藏到本标签页</p>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <div className="rounded-xl border border-line/70 bg-white shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
+            <p className="py-12 text-center text-sm text-ink-3">
+              「{activeGroup?.name}」暂无收藏题目，在「Agent出题」或「题目预览」中点亮题目卡片的星标即可收藏到本标签页
+            </p>
+          </div>
         </div>
       ) : (
         <>

@@ -1,6 +1,6 @@
-/** 头像裁剪弹窗：图片拖拽平移 + 滑块缩放，圆形区域导出 dataURL */
+/** 头像裁剪弹窗：鼠标滚轮缩放 + 拖拽平移 + 重置，圆形区域导出 dataURL */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RotateCcw, X, ZoomIn } from 'lucide-react'
+import { RotateCcw, X } from 'lucide-react'
 
 const VIEW = 260 // 预览区边长
 const OUT = 240 // 导出尺寸
@@ -16,6 +16,8 @@ export default function AvatarCropModal({ imageSrc, fileName, onConfirm, onClose
   const imgRef = useRef<HTMLImageElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [ready, setReady] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const [minScale, setMinScale] = useState(1)
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null)
@@ -26,9 +28,15 @@ export default function AvatarCropModal({ imageSrc, fileName, onConfirm, onClose
     img.onload = () => {
       imgRef.current = img
       const base = VIEW / Math.min(img.width, img.height)
+      setMinScale(base)
       setScale(base)
       setOffset({ x: 0, y: 0 })
+      setLoadError(false)
       setReady(true)
+    }
+    img.onerror = () => {
+      setReady(false)
+      setLoadError(true)
     }
     img.src = imageSrc
   }, [imageSrc])
@@ -81,6 +89,22 @@ export default function AvatarCropModal({ imageSrc, fileName, onConfirm, onClose
     dragRef.current = null
   }
 
+  /** 滚轮缩放：向上放大、向下缩小，缩放后夹住偏移避免露底 */
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault()
+    const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08
+    setScale((prev) => {
+      const next = Math.min(minScale * 3, Math.max(minScale, prev * factor))
+      setOffset((p) => clampOffset(p.x, p.y))
+      return next
+    })
+  }
+
+  const reset = () => {
+    setScale(minScale)
+    setOffset({ x: 0, y: 0 })
+  }
+
   const confirm = () => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -101,13 +125,14 @@ export default function AvatarCropModal({ imageSrc, fileName, onConfirm, onClose
         </div>
 
         <div className="flex flex-col items-center gap-4 px-5 py-5">
-          {/* 裁剪预览区：圆形遮罩，图片可拖拽 */}
+          {/* 裁剪预览区：圆形遮罩，拖拽平移，滚轮缩放 */}
           <div
             className="relative cursor-grab select-none overflow-hidden rounded-full bg-page active:cursor-grabbing"
             style={{ width: VIEW, height: VIEW }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
+            onWheel={onWheel}
           >
             {ready ? (
               <img
@@ -122,41 +147,24 @@ export default function AvatarCropModal({ imageSrc, fileName, onConfirm, onClose
                   top: `calc(50% + ${offset.y}px - ${(imgRef.current?.height ?? 0) * scale / 2}px)`,
                 }}
               />
+            ) : loadError ? (
+              <div className="flex h-full items-center justify-center text-xs text-ink-3">图片加载失败，请重新选择</div>
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-ink-3">图片加载中…</div>
             )}
           </div>
 
-          {/* 缩放滑块 */}
-          <div className="flex w-full items-center gap-3 px-2">
-            <ZoomIn size={15} className="shrink-0 text-ink-3" />
-            <input
-              type="range"
-              min={scale}
-              max={Math.max(scale, 3)}
-              step={0.01}
-              value={scale}
-              onChange={(e) => {
-                const next = Number(e.target.value)
-                setScale(next)
-                setOffset((prev) => clampOffset(prev.x, prev.y))
-              }}
-              className="h-1.5 flex-1 accent-primary"
-            />
+          <div className="flex w-full items-center justify-between px-2">
+            <p className="text-xs text-ink-3">拖动调整位置，滚轮缩放大小</p>
             <button
               type="button"
-              title="重置"
-              onClick={() => {
-                const base = VIEW / Math.min(imgRef.current?.width ?? VIEW, imgRef.current?.height ?? VIEW)
-                setScale(base)
-                setOffset({ x: 0, y: 0 })
-              }}
-              className="rounded-md p-1.5 text-ink-3 transition-colors hover:bg-page hover:text-primary"
+              onClick={reset}
+              className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs text-ink-2 transition-colors hover:border-primary hover:text-primary"
             >
-              <RotateCcw size={14} />
+              <RotateCcw size={13} />
+              重置
             </button>
           </div>
-          <p className="text-xs text-ink-3">拖动图片调整位置，滑块缩放大小</p>
           <canvas ref={canvasRef} className="hidden" />
         </div>
 

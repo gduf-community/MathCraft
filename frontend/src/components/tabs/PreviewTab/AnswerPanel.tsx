@@ -8,20 +8,26 @@ interface Props {
   expanded: boolean
   onToggle: () => void
   onChange?: (patch: Partial<Question>) => void
+  /** 刷题模式：交卷前答案与解析锁定（灰显且不可展开） */
+  disabled?: boolean
 }
 
 /** 答案与解析：默认折叠；编辑模式下自动展开并支持修改（LaTeX 以源码形式编辑） */
-export default function AnswerPanel({ q, editing, expanded, onToggle, onChange }: Props) {
+export default function AnswerPanel({ q, editing, expanded, onToggle, onChange, disabled = false }: Props) {
   const objective = q.options.length > 0
   return (
     <div className="rounded-lg bg-[#fafbfd]">
       <button
         type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-1 px-3 py-2 text-[14px] font-medium text-ink-2 transition-colors hover:text-primary"
+        onClick={disabled ? undefined : onToggle}
+        disabled={disabled}
+        className={`flex w-full items-center gap-1 px-3 py-2 text-[14px] font-medium transition-colors ${
+          disabled ? 'cursor-not-allowed text-ink-3/70' : 'text-ink-2 hover:text-primary'
+        }`}
       >
         {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         答案与解析
+        {disabled && <span className="ml-1 text-xs font-normal text-ink-3/70">（交卷后开放）</span>}
       </button>
       {expanded && (
         <div className="space-y-2.5 px-3 pb-3 text-sm leading-6">

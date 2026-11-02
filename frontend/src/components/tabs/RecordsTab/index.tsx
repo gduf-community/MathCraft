@@ -9,20 +9,37 @@ import {
   X,
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
-import { TYPE_LABELS, TYPE_ORDER } from '../../../constants'
-import type { AssembleRecord, QuestionType } from '../../../types'
+import { DIFFICULTIES, TYPE_LABELS, TYPE_ORDER } from '../../../constants'
+import type { AssembleRecord, Difficulty, QuestionType } from '../../../types'
 import QuestionCard from '../PreviewTab/QuestionCard'
 import AssembleModal from '../PreviewTab/AssembleModal'
 import ConfirmDialog from '../../ui/ConfirmDialog'
+import AnswerView from './AnswerView'
 
 interface OpenTab {
+  /** 标签 id：查看为记录 id，作答为 answer-{记录 id} */
   id: string
   name: string
+  /** 关联的组卷记录 id */
+  recordId: string
+  /** 作答模式：学生答题页（交互作答 + AI 批卷） */
+  practice?: boolean
 }
 
-/** 状态标签：已发布 / 未发布 */
-function StatusTag({ published }: { published?: boolean }) {
-  return published ? (
+/** 状态标签：教师看发布状态，学生看作答状态 */
+function StatusTag({ record, isStudent }: { record: AssembleRecord; isStudent: boolean }) {
+  if (isStudent) {
+    return record.answered ? (
+      <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-600">
+        已作答
+      </span>
+    ) : (
+      <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-600">
+        未作答
+      </span>
+    )
+  }
+  return record.published ? (
     <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-600">
       已发布
     </span>
@@ -34,7 +51,8 @@ function StatusTag({ published }: { published?: boolean }) {
 }
 
 export default function RecordsTab() {
-  const { records: allRecords, deleteRecord, deleteRecordQuestions, showToast, openPaperId, clearOpenPaper } = useApp()
+  const { records: allRecords, role, deleteRecord, deleteRecordQuestions, showToast, openPaperId, clearOpenPaper } = useApp()
+  const isStudent = role === 'student'
   // 发布时未勾选「保存到组卷记录」的记录仅用于学习空间展示，不进本页列表
   const records = useMemo(() => allRecords.filter((r) => r.savedToRecords !== false), [allRecords])
   // 第一个标签为组卷记录列表，固定不可关闭
@@ -50,8 +68,19 @@ export default function RecordsTab() {
       setActiveTab(record.id)
       return
     }
-    setTabs((prev) => [...prev, { id: record.id, name: record.name }])
+    setTabs((prev) => [...prev, { id: record.id, name: record.name, recordId: record.id }])
     setActiveTab(record.id)
+  }
+
+  /** 学生作答：新开标签打开答题页，交卷 AI 批卷后可查看答案与解析 */
+  const startPractice = (record: AssembleRecord) => {
+    const tabId = `answer-${record.id}`
+    if (tabs.some((t) => t.id === tabId)) {
+      setActiveTab(tabId)
+      return
+    }
+    setTabs((prev) => [...prev, { id: tabId, name: record.name, recordId: record.id, practice: true }])
+    setActiveTab(tabId)
   }
 
   // 学习空间页点「查看」跨页联动：打开对应试卷标签
@@ -67,7 +96,7 @@ export default function RecordsTab() {
       setActiveTab(record.id)
       return
     }
-    setTabs((prev) => [...prev, { id: record.id, name: record.name }])
+    setTabs((prev) => [...prev, { id: record.id, name: record.name, recordId: record.id }])
     setActiveTab(record.id)
   }, [openPaperId, records, tabs, clearOpenPaper, showToast])
 
@@ -76,7 +105,8 @@ export default function RecordsTab() {
     if (activeTab === id) setActiveTab('list')
   }
 
-  const active = records.find((r) => r.id === activeTab)
+  const activeTabObj = tabs.find((t) => t.id === activeTab)
+  const active = records.find((r) => r.id === activeTabObj?.recordId)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -112,9 +142,15 @@ export default function RecordsTab() {
             setConfirmDelete(true)
           }}
           onEdit={(r) => setEditingRecord(r)}
+          onStartPractice={startPractice}
+          isStudent={isStudent}
         />
       ) : active ? (
-        <PaperDetail record={active} onDeleteQuestions={(ids) => deleteRecordQuestions(active.id, ids)} />
+        activeTabObj?.practice ? (
+          <AnswerView key={active.id} record={active} />
+        ) : (
+          <PaperDetail record={active} onDeleteQuestions={(ids) => deleteRecordQuestions(active.id, ids)} />
+        )
       ) : null}
 
       {editingRecord && (
@@ -173,6 +209,8 @@ function RecordList({
   onOpen,
   onDelete,
   onEdit,
+  onStartPractice,
+  isStudent,
 }: {
   records: AssembleRecord[]
   checked: string[]
@@ -180,6 +218,8 @@ function RecordList({
   onOpen: (r: AssembleRecord) => void
   onDelete: (id: string) => void
   onEdit: (r: AssembleRecord) => void
+  onStartPractice: (r: AssembleRecord) => void
+  isStudent: boolean
 }) {
   const allChecked = records.length > 0 && records.every((r) => checked.includes(r.id))
   const viewBtn = 'inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary-light/50 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary-light'
@@ -256,21 +296,34 @@ function RecordList({
                 </td>
                 <td className="px-3 py-3.5 text-sm text-ink-2">{r.createdAt}</td>
                 <td className="px-3 py-3.5">
-                  <StatusTag published={r.published} />
+                  <StatusTag record={r} isStudent={isStudent} />
                 </td>
                 <td className="px-5 py-3.5">
                   <div className="flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onEdit(r)}
-                      title="编辑试卷信息并发布"
-                      className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-100"
-                    >
-                      <Users size={12} /> 发布
-                    </button>
-                    <button type="button" onClick={() => onOpen(r)} className={viewBtn}>
-                      <Pencil size={12} /> 查看
-                    </button>
+                    {isStudent ? (
+                      <button
+                        type="button"
+                        onClick={() => onStartPractice(r)}
+                        title="新开标签页作答，交卷 AI 批卷后可查看答案与解析"
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-100"
+                      >
+                        <Pencil size={12} /> 作答
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onEdit(r)}
+                        title="编辑试卷信息并发布"
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-100"
+                      >
+                        <Users size={12} /> 发布
+                      </button>
+                    )}
+                    {!isStudent && (
+                      <button type="button" onClick={() => onOpen(r)} className={viewBtn}>
+                        <Pencil size={12} /> 查看
+                      </button>
+                    )}
                     <button type="button" onClick={() => onDelete(r.id)} className={delBtn}>
                       <Trash2 size={12} /> 删除
                     </button>
@@ -285,7 +338,7 @@ function RecordList({
   )
 }
 
-/** 试卷详情：筛选 + 全选/批量删除 + 题目卡片（快照上下文） */
+/** 试卷详情：筛选 + 全选/批量删除 + 题目卡片（快照上下文），教师查看用 */
 function PaperDetail({
   record,
   onDeleteQuestions,
@@ -294,9 +347,10 @@ function PaperDetail({
   onDeleteQuestions: (ids: string[]) => void
 }) {
   const { unfavoriteQuestion } = useApp()
-  const questions = useMemo(() => record.questions ?? [], [record.questions])
+  const questions = record.questions ?? []
   const [checked, setChecked] = useState<string[]>([])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
+  const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
 
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: questions.length }
@@ -308,9 +362,9 @@ function PaperDetail({
     () =>
       questions.filter(
         (q) =>
-          typeFilter === 'all' || q.type === typeFilter,
+          (typeFilter === 'all' || q.type === typeFilter) && (diffFilter === 'all' || q.difficulty === diffFilter),
       ),
-    [questions, typeFilter],
+    [questions, typeFilter, diffFilter],
   )
 
   const allChecked = filtered.length > 0 && filtered.every((q) => checked.includes(q.id))
@@ -373,7 +427,7 @@ function PaperDetail({
         <div className="flex-1" />
         <div className="flex items-center gap-2 text-sm text-ink-2">
           <span className="text-xs text-ink-3">创建于 {record.createdAt}</span>
-          <StatusTag published={record.published} />
+          <StatusTag record={record} isStudent={false} />
         </div>
       </div>
 

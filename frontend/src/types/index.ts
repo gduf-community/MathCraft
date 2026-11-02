@@ -63,8 +63,8 @@ export interface ExamWindow {
 }
 
 export interface GenerateParams {
-  /** 正式知识库 id，与后端向量库 collection 对应。 */
-  kbId: string
+  /** 题库（知识库）id，与后端向量库 collection 对应；缺省用内置 kb-math */
+  kbId?: string
   docId: string
   docName: string
   difficulty: Difficulty
@@ -83,6 +83,8 @@ export interface PaperModule {
 
 export interface PublishPayload {
   modules: PaperModule[]
+  /** 组卷时用户调整后的题型模块顺序快照，供讲解视图分区使用 */
+  modulesOrder?: PaperModule[]
   spaceIds: string[]
   /** 发布目标空间名称（与 spaceIds 一一对应；新建空间不在演示静态表内，由调用方解析传入） */
   spaceNames: string[]
@@ -116,6 +118,10 @@ export interface AssembleRecord {
   stopped?: boolean
   /** 是否保存到组卷记录；发布时未勾选保存则为 false，仅用于学习空间展示，不出现在组卷记录页 */
   savedToRecords?: boolean
+  /** 组卷时的题型模块顺序快照（用户可调整），讲解视图按此分区 */
+  modulesOrder?: PaperModule[]
+  /** 学生作答状态：已交卷为 true；重新作答后回到 false（学生视角状态标签用） */
+  answered?: boolean
 }
 
 export interface ChatMessage {

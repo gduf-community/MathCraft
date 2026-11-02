@@ -19,10 +19,12 @@ interface Props {
     deleteQuestion: (id: string) => Promise<unknown> | unknown
     toggleStar: (id: string, starred?: boolean) => Promise<unknown> | unknown
   }
+  /** 刷题模式：答案与解析锁定 */
+  disableAnswer?: boolean
 }
 
 /** 题目卡片：题号/收藏、题干选项、答案解析折叠区、右侧分值与操作 */
-export default function QuestionCard({ q, index, snapshot }: Props) {
+export default function QuestionCard({ q, index, snapshot, disableAnswer = false }: Props) {
   const app = useApp()
   const { selectedIds, toggleSelect, updateQuestion, deleteQuestion, toggleStar } = snapshot ?? app
   const [editing, setEditing] = useState(false)
@@ -172,7 +174,8 @@ export default function QuestionCard({ q, index, snapshot }: Props) {
             <AnswerPanel
               q={editing ? draft : q}
               editing={editing}
-              expanded={expanded}
+              expanded={expanded && !disableAnswer}
+              disabled={disableAnswer}
               onToggle={() => setExpanded((v) => !v)}
               onChange={patchDraft}
             />

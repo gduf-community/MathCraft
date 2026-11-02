@@ -8,16 +8,33 @@ import type {
   StudySpace,
 } from '../types'
 
-/** 生成进度回调：进度百分比与阶段文案。 */
-export type GenerateProgressHandler = (progressPercent: number, stage: string) => void
+/**
+ * 后端 API 端点预留。
+ * 接入真实后端时，按此清单实现 httpAdapter 并在文件末尾替换默认导出即可，
+ * 页面组件不需要任何改动。
+ */
+export const ENDPOINTS = {
+  knowledgeBases: '/api/knowledge-bases',
+  documents: '/api/knowledge-bases/:kbId/documents',
+  generate: '/api/questions/generate',
+  generateStart: '/api/generate/start',
+  generateProgress: '/api/generate/progress/:taskId',
+  question: '/api/questions/:id',
+  publish: '/api/papers/publish',
+  spaces: '/api/study-spaces',
+  records: '/api/assemble-records',
+  /** 题库管理联动的全部题库（我创建的 + 我加入的），用于知识库下拉 */
+  banks: '/api/banks',
+} as const
 
-/** 知识库后台任务回调：进度百分比与阶段文案。 */
-export type UploadProgressHandler = (progressPercent: number, stage: string) => void
+/** 生成进度回调：percent 为后端打点的真实百分比，stage 为阶段文案 */
+export type GenerateProgressHandler = (percent: number, stage: string) => void
 
 export interface ApiClient {
   listKnowledgeBases(): Promise<KnowledgeBase[]>
+  /** 题库管理联动：我创建的 + 我加入的全部题库（与题库管理 mock/后端同源） */
+  listAllBanks(): Promise<KnowledgeBase[]>
   listDocuments(kbId: string): Promise<KbDocument[]>
-  uploadDocument(kbId: string, file: File, onProgress?: UploadProgressHandler): Promise<void>
   listStudySpaces(): Promise<StudySpace[]>
   generateQuestions(params: GenerateParams, onProgress?: GenerateProgressHandler): Promise<Question[]>
   updateQuestion(question: Question): Promise<Question>

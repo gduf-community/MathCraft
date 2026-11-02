@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, X } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { TYPE_LABELS, TYPE_ORDER } from '../../../constants'
+import { orderQuestionsByModules } from '../../../lib/order'
 import type { AssembleRecord, ExamWindow, PaperModule, Question } from '../../../types'
 
 interface Props {
@@ -29,7 +30,8 @@ function nowLocal(): string {
  * - 传入 editingRecord 时为编辑模式：沿用记录的命名/空间/时间/题目，保存后更新记录
  */
 export default function AssembleModal({ onClose, poolOverride, editingRecord }: Props) {
-  const { questions, selectedIds, spaces, records, publishPaper, showToast, updateRecord } = useApp()
+  // 学生组卷只保存到组卷记录：不发布到学习空间、不规定做题时间
+  const { questions, selectedIds, spaces, records, role, publishPaper, showToast, updateRecord } = useApp()
 
   // 已勾选题目参与组卷；未勾选时默认使用当前全部题目；传入 poolOverride/editingRecord 时以对应集合为准
   const pool = useMemo(
@@ -58,6 +60,7 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
   const [chosenSpaces, setChosenSpaces] = useState<string[]>(() =>
     editingRecord ? spaces.filter((s) => editingRecord.spaces.includes(s.name)).map((s) => s.id) : [],
   )
+  const isStudent = role === 'student'
   const [saveRecord, setSaveRecord] = useState(true)
   const [paperName, setPaperName] = useState(
     () => editingRecord?.name ?? `试卷_${new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}`,
@@ -90,6 +93,7 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
   }
 
   const validateTime = (): ExamWindow | null | undefined => {
+    if (isStudent) return null
     if (noTimeLimit) return null
     if (!timeStart || !timeEnd) {
       showToast('请选择做题的开始与结束时间，或勾选「不规定做题时间」')
@@ -123,7 +127,8 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
         spaces: spaceNames,
         examWindow,
         published: true,
-        questions: pool,
+        // 按调整后的模块顺序重排，题号同步更新
+        questions: orderQuestionsByModules(pool, modules),
         stopped: false,
       })
       showToast('试卷已更新并发布')
@@ -132,10 +137,10 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
     }
     const ok = await publishPaper(
       modules,
-      chosenSpaces,
-      saveRecord,
+      isStudent ? [] : chosenSpaces,
+      isStudent ? true : saveRecord,
       name,
-      true,
+      !isStudent,
       pool,
       examWindow,
     )
@@ -153,7 +158,7 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
         spaces: chosenSpaces.map((id) => spaces.find((s) => s.id === id)?.name ?? '').filter(Boolean),
         examWindow,
         published: false,
-        questions: pool,
+        questions: orderQuestionsByModules(pool, modules),
       })
       showToast('试卷已暂存为草稿')
       onClose()
@@ -196,10 +201,11 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
             />
           </section>
 
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+          <label className={`flex items-center gap-2 text-sm text-ink ${isStudent ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}>
             <input
               type="checkbox"
               checked={saveRecord}
+              disabled={isStudent}
               onChange={(e) => setSaveRecord(e.target.checked)}
               className="h-4 w-4 accent-primary"
             />
@@ -244,6 +250,7 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
             </ul>
           </section>
 
+          {!isStudent && (
           <section>
             <h4 className="mb-2 text-sm font-bold text-ink">
               发布到学习空间 <span className="ml-1 text-xs font-normal text-ink-3">（可多选）</span>
@@ -277,7 +284,9 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
               })}
             </div>
           </section>
+          )}
           {/* 做题时间 */}
+          {!isStudent && (
           <section>
             <h4 className="mb-2 text-sm font-bold text-ink">
               做题时间 <span className="ml-1 text-xs font-normal text-ink-3">（可选，暂不发布时不必填写）</span>
@@ -330,6 +339,7 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
               </div>
             )}
           </section>
+          )}
         </div>
 
         <div className="flex items-center justify-between border-t border-line px-6 py-4">
@@ -344,19 +354,21 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
             >
               取消
             </button>
-            <button
-              type="button"
-              onClick={saveDraft}
-              className="rounded-lg border border-primary/40 bg-primary-light/60 px-5 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary-light"
-            >
-              暂不发布
-            </button>
+            {!isStudent && (
+              <button
+                type="button"
+                onClick={saveDraft}
+                className="rounded-lg border border-primary/40 bg-primary-light/60 px-5 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary-light"
+              >
+                暂不发布
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void publish()}
               className="rounded-lg bg-primary px-6 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
             >
-              发布
+              {isStudent ? '保存' : '发布'}
             </button>
           </div>
         </div>

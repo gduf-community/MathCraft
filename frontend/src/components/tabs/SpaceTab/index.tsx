@@ -16,10 +16,14 @@ import {
 import { useApp } from '../../../store/AppContext'
 import type { AssembleRecord, StudySpace } from '../../../types'
 import ConfirmDialog from '../../ui/ConfirmDialog'
+import ExplainView from './ExplainView'
+import AnswerView from '../RecordsTab/AnswerView'
 
 interface OpenTab {
   id: string
   name: string
+  /** 讲解标签关联的组卷记录 */
+  recordId?: string
 }
 
 interface RemainInfo {
@@ -50,12 +54,14 @@ function remainInfo(record: AssembleRecord): RemainInfo {
 }
 
 export default function SpaceTab() {
-  const { spaces, dissolveSpace, records } = useApp()
+  const { spaces, role, createSpace, joinSpaceByCode, leaveSpace, dissolveSpace, records } = useApp()
   // 第一个标签为空间列表，固定不可关闭；查看空间时打开动态标签
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activeTab, setActiveTab] = useState('list')
   const [createOpen, setCreateOpen] = useState(false)
-  const [dissolving, setDissolving] = useState<StudySpace | null>(null)
+  const [leaving, setLeaving] = useState<StudySpace | null>(null)
+  const [joinCode, setJoinCode] = useState('')
+  const [joinError, setJoinError] = useState(false)
 
   const openSpace = (space: StudySpace) => {
     if (tabs.some((t) => t.id === space.id)) {
@@ -66,12 +72,36 @@ export default function SpaceTab() {
     setActiveTab(space.id)
   }
 
+  /** 教师：讲解题目，新开标签页（左侧题目 + 右侧导航与作答分布） */
+  const openExplain = (record: AssembleRecord) => {
+    const tabId = `explain-${record.id}`
+    if (tabs.some((t) => t.id === tabId)) {
+      setActiveTab(tabId)
+      return
+    }
+    setTabs((prev) => [...prev, { id: tabId, name: record.name, recordId: record.id }])
+    setActiveTab(tabId)
+  }
+
+  /** 学生：作答空间内发布的试卷，新开标签页（答题 + AI 批卷） */
+  const openAnswer = (record: AssembleRecord) => {
+    const tabId = `answer-${record.id}`
+    if (tabs.some((t) => t.id === tabId)) {
+      setActiveTab(tabId)
+      return
+    }
+    setTabs((prev) => [...prev, { id: tabId, name: record.name, recordId: record.id }])
+    setActiveTab(tabId)
+  }
+
   const closeTab = (id: string) => {
     setTabs((prev) => prev.filter((t) => t.id !== id))
     if (activeTab === id) setActiveTab('list')
   }
 
+  const activeTabObj = tabs.find((t) => t.id === activeTab)
   const active = spaces.find((s) => s.id === activeTab)
+  const explainRecord = activeTabObj?.recordId ? records.find((r) => r.id === activeTabObj.recordId) : undefined
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -114,26 +144,81 @@ export default function SpaceTab() {
             </button>
           </div>
         ))}
-        <button
-          type="button"
-          onClick={() => setCreateOpen(true)}
-          className="ml-auto flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
-        >
-          <Plus size={14} />
-          创建学习空间
-        </button>
+        {role === 'student' ? (
+          <>
+            <input
+              type="text"
+              value={joinCode}
+              onChange={(e) => {
+                setJoinCode(e.target.value)
+                setJoinError(false)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const space = joinSpaceByCode(joinCode)
+                  if (space) {
+                    setJoinCode('')
+                    openSpace(space)
+                  } else {
+                    setJoinError(true)
+                  }
+                }
+              }}
+              placeholder="输入空间编号"
+              maxLength={20}
+              className={`ml-auto w-44 shrink-0 rounded-lg border bg-white px-3 py-1.5 text-xs text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-primary ${
+                joinError ? 'border-red-300' : 'border-line'
+              }`}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const space = joinSpaceByCode(joinCode)
+                if (space) {
+                  setJoinCode('')
+                  openSpace(space)
+                } else {
+                  setJoinError(true)
+                }
+              }}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
+            >
+              <Plus size={14} />
+              加入学习空间
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="ml-auto flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
+          >
+            <Plus size={14} />
+            创建学习空间
+          </button>
+        )}
       </div>
 
-      {activeTab === 'list' ? (
+      {activeTab.startsWith('answer-') && explainRecord ? (
+        <AnswerView key={explainRecord.id} record={explainRecord} />
+      ) : activeTab.startsWith('explain-') && explainRecord ? (
+        <ExplainView record={explainRecord} space={active ?? spaces[0]} />
+      ) : activeTab === 'list' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid grid-cols-4 gap-4">
             {spaces.map((s) => (
-              <SpaceCard key={s.id} space={s} onOpen={openSpace} onDissolve={() => setDissolving(s)} />
+              <SpaceCard
+                key={s.id}
+                space={s}
+                isStudent={role === 'student'}
+                onOpen={openSpace}
+                onLeave={() => setLeaving(s)}
+              />
             ))}
           </div>
         </div>
       ) : active ? (
-        <SpaceDetail space={active} records={records} />
+        <SpaceDetail space={active} records={records} onExplain={openExplain} onAnswer={openAnswer} />
       ) : null}
 
       {createOpen && (
@@ -146,31 +231,45 @@ export default function SpaceTab() {
         />
       )}
 
-      {dissolving && (
-        <ConfirmDialog
-          title="解散学习空间"
-          message={`确定解散「${dissolving.name}」吗？空间内的成员将全部移出，已发布的试卷记录仍会保留。`}
-          confirmText="确认解散"
-          onConfirm={async () => {
-            dissolveSpace(dissolving.id)
-            closeTab(dissolving.id)
-          }}
-          onClose={() => setDissolving(null)}
-        />
-      )}
+      {leaving &&
+        (role === 'student' ? (
+          <ConfirmDialog
+            title="退出学习空间"
+            message={`确定退出「${leaving.name}」吗？退出后需要通过空间编号重新加入。`}
+            confirmText="确认退出"
+            onConfirm={async () => {
+              leaveSpace(leaving.id)
+              closeTab(leaving.id)
+            }}
+            onClose={() => setLeaving(null)}
+          />
+        ) : (
+          <ConfirmDialog
+            title="解散学习空间"
+            message={`确定解散「${leaving.name}」吗？空间内的成员将全部移出，已发布的试卷记录仍会保留。`}
+            confirmText="确认解散"
+            onConfirm={async () => {
+              dissolveSpace(leaving.id)
+              closeTab(leaving.id)
+            }}
+            onClose={() => setLeaving(null)}
+          />
+        ))}
     </div>
   )
 }
 
-/** 空间卡片：名称、可点击复制的编号、人数、解散与查看 */
+/** 空间卡片：名称、可点击复制的编号、人数、退出（学生）/解散（教师）与查看 */
 function SpaceCard({
   space,
+  isStudent,
   onOpen,
-  onDissolve,
+  onLeave,
 }: {
   space: StudySpace
+  isStudent: boolean
   onOpen: (s: StudySpace) => void
-  onDissolve: () => void
+  onLeave: () => void
 }) {
   const { showToast } = useApp()
   const [copied, setCopied] = useState(false)
@@ -209,18 +308,18 @@ function SpaceCard({
             {copied ? <Check size={11} className="text-emerald-500" /> : <Copy size={11} />}
           </button>
         </p>
-        <p className="flex items-center gap-1">
+        <p className="flex items-center gap-1" title={`学生 ${Math.max(0, space.memberCount - 1)} 人（不含创建者）`}>
           <Users size={12} />
-          {space.memberCount} / {space.capacity}
+          {Math.max(0, space.memberCount - 1)} / {space.capacity}
         </p>
       </div>
       <div className="mt-3 flex justify-end gap-2 border-t border-line/60 pt-2.5">
         <button
           type="button"
-          onClick={onDissolve}
+          onClick={onLeave}
           className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-500 transition-colors hover:bg-red-100"
         >
-          <X size={12} /> 解散
+          <X size={12} /> {isStudent ? '退出' : '解散'}
         </button>
         <button
           type="button"
@@ -234,118 +333,22 @@ function SpaceCard({
   )
 }
 
-/** 成员/作答情况通用弹窗：搜索 + 滚动名单 + 行操作 */
-function MemberListModal({
-  title,
-  space,
-  onClose,
-  onRemove,
-  submittedNames,
-}: {
-  title: string
-  space: StudySpace
-  onClose: () => void
-  onRemove?: (name: string) => void
-  submittedNames?: string[]
-}) {
-  const { showToast } = useApp()
-  const [search, setSearch] = useState('')
-  const list = useMemo(
-    () => space.members.filter((m) => m.includes(search.trim())),
-    [space.members, search],
-  )
-  const submittedSet = useMemo(() => new Set(submittedNames ?? []), [submittedNames])
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={onClose}>
-      <div
-        className="flex max-h-[80vh] w-[460px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div>
-            <h3 className="text-base font-bold text-ink">{title}</h3>
-            <p className="mt-0.5 text-xs text-ink-3">
-              {space.name} · {space.memberCount} 人
-              {submittedNames && ` · 已提交 ${submittedNames.length} 人`}
-            </p>
-          </div>
-          <button type="button" aria-label="关闭" onClick={onClose} className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="px-5 pt-3.5">
-          <div className="relative">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索成员姓名"
-              className="block w-full rounded-lg border border-line py-2 pl-8 pr-3 text-sm text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-primary"
-            />
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
-          <ul className="space-y-1.5">
-            {list.map((m) => {
-              const isCreator = m === space.creator
-              const submitted = submittedSet.has(m)
-              return (
-                <li key={m} className="flex items-center justify-between gap-2 rounded-lg border border-line/60 px-3 py-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-light text-[11px] font-semibold text-primary">
-                      {m.charAt(0)}
-                    </span>
-                    <span className="text-sm text-ink">{m}</span>
-                    {isCreator && <span className="rounded bg-page px-1.5 py-0.5 text-[10px] text-ink-3">创建者</span>}
-                  </div>
-                  {submittedNames ? (
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                        submitted ? 'bg-emerald-50 text-emerald-600' : 'bg-page text-ink-3'
-                      }`}
-                    >
-                      {submitted ? '已提交' : '未提交'}
-                    </span>
-                  ) : (
-                    onRemove &&
-                    !isCreator && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onRemove(m)
-                          showToast(`已将 ${m} 移出空间`)
-                        }}
-                        className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-medium text-red-500 transition-colors hover:bg-red-100"
-                      >
-                        <UserMinus size={11} />
-                        移出
-                      </button>
-                    )
-                  )}
-                </li>
-              )
-            })}
-            {list.length === 0 && <li className="py-8 text-center text-sm text-ink-3">没有匹配的成员</li>}
-          </ul>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 /** 空间详情：可编辑名称、成员管理、发布试卷条目（时间/交卷/停止/作答情况） */
 function SpaceDetail({
   space,
   records,
+  onExplain,
+  onAnswer,
 }: {
   space: StudySpace
   records: AssembleRecord[]
+  onExplain: (r: AssembleRecord) => void
+  onAnswer: (r: AssembleRecord) => void
 }) {
-  const { showToast, updateRecord, deleteRecord, removeSpaceMember, renameSpace } = useApp()
+  const { role, showToast, updateRecord, deleteRecord, removeSpaceMember, renameSpace } = useApp()
+  const isStudent = role === 'student'
+  // 学生人数：不含创建者（老师）
+  const studentCount = Math.max(0, space.memberCount - 1)
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState(space.name)
   const [memberModal, setMemberModal] = useState(false)
@@ -383,11 +386,7 @@ function SpaceDetail({
     showToast(`已删除试卷「${record.name}」`)
   }
 
-  /** 查看与作答情况暂未开发，占位提示 */
-  const notDeveloped = () => showToast('该功能暂未开发，将在后续版本开放')
-
   const iconBtn = 'inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors'
-  const disabledBtn = 'cursor-not-allowed border-line bg-page text-ink-3 opacity-60'
 
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
@@ -419,7 +418,7 @@ function SpaceDetail({
         </div>
         <div className="rounded-xl border border-line bg-white p-4">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-ink-3">人数</p>
+            <p className="text-xs text-ink-3">学生人数</p>
             <button
               type="button"
               onClick={() => setMemberModal(true)}
@@ -428,8 +427,8 @@ function SpaceDetail({
               查看
             </button>
           </div>
-          <p className="mt-1 text-sm font-semibold text-ink">
-            {space.memberCount} / {space.capacity}
+          <p className="mt-1 text-sm font-semibold text-ink" title={`不含创建者（${space.creator}）`}>
+            {studentCount} / {space.capacity}
           </p>
         </div>
         <div className="rounded-xl border border-line bg-white p-4">
@@ -484,42 +483,52 @@ function SpaceDetail({
                       <span className="flex items-baseline gap-1">
                         <span className="text-sm font-medium text-ink-2">作答</span>
                         <span className="text-xl font-bold leading-none text-ink">{r.submittedCount ?? 0}</span>
-                        <span className="text-sm text-ink-2">/ {space.memberCount}</span>
+                        <span className="text-sm text-ink-2">/ {studentCount}</span>
                       </span>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={notDeveloped}
-                        className={`${iconBtn} ${disabledBtn}`}
-                      >
-                        查看
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => toggleStop(r)}
-                        className={`${iconBtn} ${
-                          stopped
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                            : 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
-                        }`}
-                      >
-                        {stopped ? '恢复作答' : '停止作答'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={notDeveloped}
-                        className={`${iconBtn} ${disabledBtn}`}
-                      >
-                        作答情况
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDeletingPaper(r)}
-                        className={`${iconBtn} border-red-200 bg-red-50 text-red-500 hover:bg-red-100`}
-                      >
-                        删除
-                      </button>
+                      {isStudent ? (
+                        // 学生：只保留作答入口
+                        <button
+                          type="button"
+                          onClick={() => onAnswer(r)}
+                          className={`${iconBtn} border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100`}
+                        >
+                          作答
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => toggleStop(r)}
+                            className={`${iconBtn} ${
+                              stopped
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                                : 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
+                            }`}
+                          >
+                            {stopped ? '恢复作答' : '停止作答'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onExplain(r)}
+                            className={`${iconBtn} border border-primary/30 bg-primary-light/50 text-primary hover:bg-primary-light`}
+                          >
+                            讲解题目
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!stopped}
+                            title={stopped ? undefined : '请先停止作答，才能删除试卷'}
+                            onClick={() => setDeletingPaper(r)}
+                            className={`${iconBtn} border-red-200 bg-red-50 text-red-500 hover:bg-red-100 ${
+                              stopped ? '' : 'cursor-not-allowed opacity-50'
+                            }`}
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                   <p className="mt-2 text-xs text-ink-3">
@@ -532,13 +541,13 @@ function SpaceDetail({
         )}
       </section>
 
-      {/* 成员管理弹窗 */}
+      {/* 成员查看弹窗 */}
       {memberModal && (
         <MemberListModal
           title="空间成员"
           space={space}
           onClose={() => setMemberModal(false)}
-          onRemove={(name) => removeSpaceMember(space.id, name)}
+          onRemove={isStudent ? undefined : (name) => removeSpaceMember(space.id, name)}
         />
       )}
 
@@ -552,6 +561,82 @@ function SpaceDetail({
           onClose={() => setDeletingPaper(null)}
         />
       )}
+    </div>
+  )
+}
+
+/** 成员查看弹窗：搜索 + 滚动名单；教师可移出普通成员，创建者受保护 */
+function MemberListModal({
+  title,
+  space,
+  onClose,
+  onRemove,
+}: {
+  title: string
+  space: StudySpace
+  onClose: () => void
+  onRemove?: (name: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const list = useMemo(
+    () => space.members.filter((m) => m.includes(query.trim())),
+    [space.members, query],
+  )
+  return (
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-[#0f1b33]/45 p-4" onClick={onClose}>
+      <div
+        className="flex max-h-[70vh] w-[400px] animate-pop flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h3 className="text-base font-bold text-ink">{title}</h3>
+          <button type="button" onClick={onClose} className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="px-5 pt-3.5">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索成员姓名"
+              className="block w-full rounded-lg border border-line py-2 pl-8 pr-3 text-sm text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-primary"
+            />
+          </div>
+          <p className="mt-2 text-xs text-ink-3">
+            共 {space.members.length} 人 · 学生 {Math.max(0, space.memberCount - 1)} 人（不含创建者）
+          </p>
+        </div>
+        <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3">
+          {list.map((m) => {
+            const isCreator = m === space.creator
+            return (
+              <li key={m} className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-page">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
+                  {m.slice(0, 1)}
+                </span>
+                <span className="flex-1 truncate text-sm text-ink">{m}</span>
+                {isCreator && (
+                  <span className="rounded bg-primary-light px-1.5 py-0.5 text-[11px] font-medium text-primary">创建者</span>
+                )}
+                {onRemove && !isCreator && (
+                  <button
+                    type="button"
+                    onClick={() => onRemove(m)}
+                    title="移出空间"
+                    className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-medium text-red-500 transition-colors hover:bg-red-100"
+                  >
+                    <UserMinus size={11} /> 移出
+                  </button>
+                )}
+              </li>
+            )
+          })}
+          {!list.length && <li className="py-8 text-center text-sm text-ink-3">没有匹配的成员</li>}
+        </ul>
+      </div>
     </div>
   )
 }
@@ -579,7 +664,6 @@ function CreateSpaceModal({
     const cap = Math.max(1, Math.min(500, Number(capacity) || 50))
     const space = createSpace(name.trim(), cap)
     setCreated(space)
-    onCreate?.(space)
   }
 
   const copyCode = async () => {

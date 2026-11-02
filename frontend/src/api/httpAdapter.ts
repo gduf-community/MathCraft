@@ -13,8 +13,8 @@ import type {
   Question,
   StudySpace,
 } from '../types'
-import type { ApiClient, GenerateProgressHandler, UploadProgressHandler } from './client'
-import { apiUrl } from './urls'
+import type { ApiClient, GenerateProgressHandler } from './client'
+import { getBankDocsById, listAllBanks as listManagedBanks } from './mock/bankMock'
 
 /** 生成空间成员名单（首项为创建者，其余为演示学生） */
 const gen = (capacity: number, creator: string, count: number): string[] => [
@@ -42,7 +42,7 @@ const DEMO_SPACES: StudySpace[] = [
 ]
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(apiUrl(path), {
+  const resp = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
@@ -57,6 +57,14 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(typeof detail === 'object' && detail !== null ? String((detail as { message?: string }).message) : String(detail))
   }
   return resp.json() as Promise<T>
+}
+
+/** 请求并容忍 404（后端未实现预留端点时由调用方回退） */
+async function httpAllow404<T>(path: string, init?: RequestInit): Promise<T | null> {
+  const resp = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...init })
+  if (resp.status === 404) return null
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  return (await resp.json()) as T
 }
 
 /** 对话出题：后端维护槽位状态机，questions 有值即表示本轮生成了题目 */
@@ -78,105 +86,44 @@ export function chat(body: {
   return http<ChatResult>('/api/chat', { method: 'POST', body: JSON.stringify(body) })
 }
 
-async function waitForKnowledgeTask(taskId: string, onProgress?: UploadProgressHandler): Promise<void> {
-  const resp = await fetch(apiUrl(`/api/knowledge-bases/tasks/${encodeURIComponent(taskId)}/stream`), {
-    headers: { Accept: 'text/event-stream' },
-  })
-  if (!resp.ok) throw new Error(`任务跟踪失败：HTTP ${resp.status}`)
-  if (!resp.body) throw new Error('任务跟踪失败：响应没有可读流')
+interface GenerateTaskState {
+  progress: number
+  stage: string
+  done: boolean
+  questions: Question[] | null
+  error: { kind?: string; message: string } | null
+}
 
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let eventName = ''
-  let dataLines: string[] = []
-  const consume = (block: string): boolean => {
-    for (const line of block.split('\n')) {
-      if (line.startsWith('event:')) eventName = line.slice(6).trim()
-      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
-      else if (line === '') {
-        if (!dataLines.length) continue
-        let payload: { detail?: string; message?: string } = {}
-        try {
-          payload = JSON.parse(dataLines.join('\n')) as typeof payload
-        } catch {
-          throw new Error('任务跟踪失败：收到无效进度消息')
-        }
-        const detail = payload.detail || payload.message || ''
-        if (eventName === 'failed') throw new Error(detail || '知识库处理失败')
-        if (eventName === 'complete') {
-          onProgress?.(100, detail || '处理完成')
-          return true
-        }
-        eventName = ''
-        dataLines = []
-      }
-    }
-    return false
-  }
-
+/** 轮询生成任务，把后端打点的真实进度透传给 onProgress；出错抛出结构化信息 */
+async function pollGenerateTask(taskId: string, onProgress?: GenerateProgressHandler): Promise<Question[]> {
   for (;;) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-    const blocks = buffer.split('\n\n')
-    buffer = blocks.pop() ?? ''
-    for (const block of blocks) {
-      if (consume(block)) {
-        await reader.cancel()
-        return
+    const state = await http<GenerateTaskState>(`/api/generate/progress/${taskId}`)
+    onProgress?.(state.progress, state.stage)
+    if (state.done) {
+      if (state.error) {
+        throw new Error(state.error.message || '生成失败')
       }
+      return state.questions ?? []
     }
-    if (done) break
+    await new Promise((r) => setTimeout(r, 300))
   }
-  throw new Error('知识库处理流提前结束')
 }
 
 export const httpAdapter: ApiClient = {
   async listKnowledgeBases() {
-    const bases = await http<Array<{ id?: string; name: string; available?: boolean; metadata?: { type?: string } | null }>>(
-      '/api/knowledge-bases',
-    )
-    return bases
-      .filter((base) => base.available !== false && !base.metadata?.type)
-      .map<KnowledgeBase>((base) => ({ id: base.id || base.name, name: base.name }))
+    // 知识库实体暂为固定项，上传接口按 kb_id 建 collection
+    return [{ id: 'kb-math', name: '高等数学知识库' }]
   },
 
   async listDocuments(kbId: string) {
-    const result = await http<{ files: Array<{ name: string; type: string }> }>(
-      `/api/knowledge-bases/${encodeURIComponent(kbId)}/files`,
-    )
-    return result.files
-      .filter((file) => file.type === 'file')
-      .map<KbDocument>((file) => ({ id: file.name, kbId, name: file.name }))
-  },
-
-  async uploadDocument(kbId: string, file: File, onProgress?: UploadProgressHandler) {
-    const form = new FormData()
-    form.append('files', file)
-    const resp = await fetch(apiUrl(`/api/knowledge-bases/${encodeURIComponent(kbId)}/upload`), {
-      method: 'POST',
-      body: form,
-    })
-    if (!resp.ok) {
-      let detail: unknown = `HTTP ${resp.status}`
-      try {
-        detail = (await resp.json()).detail
-      } catch {
-        /* 保持默认错误 */
-      }
-      throw new Error(
-        typeof detail === 'object' && detail !== null
-          ? String((detail as { message?: string }).message ?? detail)
-          : String(detail),
-      )
+    const docs = await http<{ doc_id: string; doc_name: string; chunks: number }[]>(
+      `/api/kb/documents?kb_id=${encodeURIComponent(kbId)}`,
+    ).catch(() => [] as { doc_id: string; doc_name: string; chunks: number }[])
+    // 后端该题库尚未入库任何文档时，回退展示题库管理里的演示文档清单
+    if (docs.length) {
+      return docs.map<KbDocument>((d) => ({ id: d.doc_id, kbId, name: d.doc_name }))
     }
-    const result = (await resp.json()) as { task_id?: string }
-    if (!result.task_id) {
-      onProgress?.(100, '处理完成')
-      return
-    }
-    onProgress?.(0, '已提交，后台处理中')
-    await waitForKnowledgeTask(result.task_id, onProgress)
+    return getBankDocsById(kbId).map<KbDocument>((d) => ({ id: d.id, kbId, name: d.name }))
   },
 
   async listStudySpaces() {
@@ -184,10 +131,17 @@ export const httpAdapter: ApiClient = {
     return DEMO_SPACES.map((s) => ({ ...s, members: [...s.members] }))
   },
 
+  async listAllBanks() {
+    // 题库管理联动：后端按 /api/banks 返回全部题库；未实现时回退到前端题库管理数据（我创建的 + 我加入的）
+    const banks = await httpAllow404<{ id: string; name: string }[]>(`/api/banks`)
+    if (banks?.length) return banks.map((b) => ({ id: b.id, name: b.name }))
+    return listManagedBanks().map((b) => ({ id: b.id, name: b.name }))
+  },
+
   async generateQuestions(params: GenerateParams, onProgress?: GenerateProgressHandler) {
     const body = JSON.stringify({
       // 题库即知识库：出题请求按所选题库 id 检索对应向量库 collection
-      kb_id: params.kbId,
+      kb_id: params.kbId || 'kb-math',
       doc_id: params.docId,
       types: params.types,
       difficulty: params.difficulty,
@@ -195,10 +149,21 @@ export const httpAdapter: ApiClient = {
       scope: params.scope ?? '',
       existing_stems: params.existingStems ?? [],
     })
-    onProgress?.(0, '已提交，正在生成')
-    const result = await http<Question[]>('/api/generate', { method: 'POST', body })
-    onProgress?.(100, '生成完成')
-    return result
+    // 任务式生成：start 建任务，轮询 progress 拿后端打点的真实百分比；旧后端无 start 时回退同步端点
+    try {
+      const started = await httpAllow404<{ task_id: string }>('/api/generate/start', {
+        method: 'POST',
+        body,
+      })
+      if (started?.task_id) {
+        return await pollGenerateTask(started.task_id, onProgress)
+      }
+    } catch (err) {
+      // start/progress 链路异常（含 422 need_confirm）直接抛给上层
+      throw err
+    }
+    // 回退：同步端点（无进度打点）
+    return http<Question[]>('/api/generate', { method: 'POST', body })
   },
 
   async updateQuestion(question: Question) {
@@ -230,9 +195,12 @@ export const httpAdapter: ApiClient = {
       spaces: spaceNames,
       published: payload.published !== false,
       questions: payload.questions ?? [],
+      modulesOrder: payload.modulesOrder,
       examWindow: payload.examWindow ?? null,
-      // 演示：随机生成已提交作答人数
-      submittedCount: payload.published === false ? 0 : Math.floor(Math.random() * 20),
+      // 学生作答状态：新发布默认未作答
+      answered: false,
+      // 演示：已提交作答人数（3~19 人，保证讲解视图分布有数据可展示）
+      submittedCount: payload.published === false ? 0 : Math.floor(Math.random() * 17) + 3,
       // 发布时未勾选保存则不进组卷记录页，但记录必须存在，学习空间页据此展示试卷
       savedToRecords: payload.published === false ? true : payload.saveRecord,
     }

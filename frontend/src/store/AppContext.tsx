@@ -16,8 +16,10 @@ import type {
   StudySpace,
   TeacherProfile,
 } from '../types'
-import { CURRENT_USER } from '../constants'
 import defaultAvatar from '../assets/teacher_avatar.png'
+import { orderQuestionsByModules } from '../lib/order'
+import { useAuth } from './AuthContext'
+import type { AuthRole, AuthUser } from '../api/auth'
 
 export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
 
@@ -68,8 +70,8 @@ interface AppState {
   knowledgeScope: string
   setKnowledgeScope: (v: string) => void
   generating: boolean
-  /** 生成进度：null=空闲；progressPercent 为当前阶段百分比 */
-  genProgress: { progressPercent: number; stage: string } | null
+  /** 生成进度：null=空闲；percent 为后端打点的真实百分比 */
+  genProgress: { percent: number; stage: string } | null
   generate: (opts?: { silent?: boolean }) => Promise<boolean>
 
   // 题目与筛选
@@ -117,11 +119,20 @@ interface AppState {
   deleteRecord: (id: string) => Promise<void>
   deleteRecordQuestions: (recordId: string, ids: string[]) => void
   publishRecords: (ids: string[]) => void
+  /** 当前登录角色；null 表示未登录（理论上主应用仅在登录后挂载） */
+  role: AuthRole | null
   createSpace: (name: string, capacity: number) => StudySpace
   updateRecord: (record: AssembleRecord) => void
+  /** 按空间编号加入空间（学生演示流程），成功返回空间，编号不存在返回 null */
+  joinSpaceByCode: (code: string) => StudySpace | null
+  /** 学生退出空间：从空间列表移除 */
+  leaveSpace: (id: string) => void
+  /** 教师解散空间：空间整体移除（演示态），关联的组卷记录保留 */
   dissolveSpace: (id: string) => void
   removeSpaceMember: (spaceId: string, name: string) => void
   renameSpace: (spaceId: string, newName: string) => void
+  /** 学生交卷后标记作答状态（重新作答时置回 false） */
+  markRecordAnswered: (recordId: string, answered: boolean) => void
   openPaperId: string | null
   requestOpenPaper: (recordId: string) => void
   clearOpenPaper: () => void
@@ -140,7 +151,39 @@ interface AppState {
 
 const AppContext = createContext<AppState | null>(null)
 
+/** 按登录身份生成教师资料：学生用姓氏头像（avatar 留空），教师沿用默认头像 */
+function buildProfile(user: AuthUser | null): TeacherProfile {
+  if (user?.role === 'student') {
+    return {
+      name: user.displayName,
+      avatar: '',
+      gender: '男',
+      phone: '13800138000',
+      email: 'xiaoming@stu.edu.cn',
+      teacherId: 'ST20250001',
+      school: '广东金融学院',
+      identity: user.identity,
+    }
+  }
+  return {
+    name: user?.displayName ?? '张老师',
+    avatar: defaultAvatar,
+    gender: '男',
+    phone: '13800138000',
+    email: 'zhang@163.com',
+    teacherId: 'TK20240001',
+    school: '广东金融学院',
+    identity: user?.identity ?? '教师',
+  }
+}
+
+/** AppProvider 挂载在 AuthProvider 内，登录态已就绪 */
+function useAuthUser(): AuthUser | null {
+  return useAuth().user
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
+  const user = useAuthUser()
   const [activeTab, setActiveTabState] = useState<TabKey>('generate')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [settingsTarget, setSettingsTarget] = useState<{ engine: string; request: number } | null>(null)
@@ -171,7 +214,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
   /** 设置页保存模型配置后刷新题库（知识库）列表 */
   const refreshKnowledgeBases = useCallback(async () => {
-    setKbs(await api.listKnowledgeBases())
+    setKbs(await api.listAllBanks())
   }, [])
 
   useEffect(() => {
@@ -196,22 +239,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [difficulty, setDifficulty] = useState<Difficulty>('中')
   const [knowledgeScope, setKnowledgeScope] = useState('')
   const [generating, setGenerating] = useState(false)
-  const [genProgress, setGenProgress] = useState<{ progressPercent: number; stage: string } | null>(null)
+  const [genProgress, setGenProgress] = useState<{ percent: number; stage: string } | null>(null)
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
   // 收藏分组：default 组固定存在，其余由用户在收藏页新建
   const [favGroups, setFavGroups] = useState<FavoriteGroup[]>([{ id: 'default', name: '默认' }])
-  const [profile, setProfile] = useState<TeacherProfile>({
-    name: CURRENT_USER,
-    avatar: defaultAvatar,
-    gender: '男',
-    phone: '13800138000',
-    email: 'zhang@163.com',
-    teacherId: 'TK20240001',
-    school: '广东金融学院',
-    identity: '教师',
-  })
+  const [profile, setProfile] = useState<TeacherProfile>(() => buildProfile(useAuthUser()))
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
   const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
@@ -236,8 +270,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 初始化：加载题库联动知识库与学习空间；知识库默认不选中（下拉显示未选择）
   useEffect(() => {
     void (async () => {
-      const [kbList, spaceList] = await Promise.all([api.listKnowledgeBases(), api.listStudySpaces()])
-      setKbs(kbList)
+      const [kbList, spaceList] = await Promise.all([api.listAllBanks(), api.listStudySpaces()])
+      // 题库联动端点异常时回退到内置知识库列表
+      const bases = kbList.length ? kbList : await api.listKnowledgeBases()
+      setKbs(bases)
       setSpaces(spaceList)
     })()
   }, [])
@@ -245,11 +281,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const selectKb = useCallback(async (id: string) => {
     setSelectedKbId(id)
     setSelectedDocId('')
-    setTypeConfigs(initialTypeConfigs)
-    setDifficulty('中')
-    setKnowledgeScope('')
-    chatSlotState.current = {}
-    setDocs(await api.listDocuments(id))
+    // 后端未收录该题库时视为空文档列表，不阻塞界面
+    setDocs(await api.listDocuments(id).catch(() => []))
   }, [])
 
   const selectDoc = useCallback((id: string) => setSelectedDocId(id), [])
@@ -273,12 +306,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return false
       }
       setGenerating(true)
-      setGenProgress({ progressPercent: 0, stage: '准备生成' })
+      setGenProgress({ percent: 0, stage: '准备生成' })
       try {
         const list = await api.generateQuestions(
           {
             // 题库即知识库：把所选题库 id 传给后端检索对应 collection
-            kbId: selectedKbId,
+            kbId: selectedKbId || undefined,
             docId: doc.id,
             docName: doc.name,
             difficulty,
@@ -288,22 +321,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
             existingStems: questions.map((q) => q.stem),
           },
           // 后端打点的真实进度：百分比 + 阶段文案
-          (progressPercent, stage) => setGenProgress({ progressPercent, stage }),
+          (percent, stage) => setGenProgress({ percent, stage }),
         )
         setGenProgress(null)
         // 追加合并，不覆盖已出的题目（对话出题与参数出题共存）
-        setQuestions((prev) => {
-          const seenIds = new Set(prev.map((question) => question.id))
-          const seenStems = new Set(prev.map((question) => question.stem.replace(/\s+/g, '')))
-          const additions = list.filter((question) => {
-            const stem = question.stem.replace(/\s+/g, '')
-            if (seenIds.has(question.id) || seenStems.has(stem)) return false
-            seenIds.add(question.id)
-            seenStems.add(stem)
-            return true
-          })
-          return [...prev, ...additions]
-        })
+        setQuestions((prev) => [...prev, ...list.filter((n) => !prev.some((p) => p.id === n.id))])
         setSelectedIds([])
         setTypeFilter('all')
         setDiffFilter('all')
@@ -318,37 +340,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setGenProgress(null)
       }
     },
-    [docs, selectedDocId, selectedKbId, typeConfigs, difficulty, knowledgeScope, questions, showToast, setActiveTab],
+    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, showToast],
   )
 
   const sendChat = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed) return
-      // 出题必须绑定正式知识库中的具体文档
-      if (!selectedKbId || !selectedDocId) {
+      // 未选择知识库文档时禁止对话出题
+      if (!selectedDocId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
       setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
       setBotThinking(true)
       try {
-        const configuredTypes = (Object.keys(typeConfigs) as QuestionType[])
-          .filter((type) => typeConfigs[type].checked && typeConfigs[type].count > 0)
-          .map((type) => ({ type, count: typeConfigs[type].count }))
-        const slotState = Object.keys(chatSlotState.current).length
-          ? chatSlotState.current
-          : {
-              ...(configuredTypes.length ? { types: configuredTypes } : {}),
-              difficulty,
-              ...(knowledgeScope.trim() ? { scope: knowledgeScope.trim() } : {}),
-            }
         const res = await chat({
-          kb_id: selectedKbId,
+          kb_id: selectedKbId || 'kb-math',
           doc_id: selectedDocId,
           message: trimmed,
           history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
-          slot_state: slotState,
+          slot_state: chatSlotState.current,
           // 全局去重：把当前已有题目题干传给后端
           existing_stems: questions.map((q) => q.stem),
         })
@@ -356,18 +368,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
         if (res.questions?.length) {
           // 对话路径不强制切页：AI 回复先可见，题目已在「题目预览」标签页等候
-          setQuestions((prev) => {
-            const seenIds = new Set(prev.map((question) => question.id))
-            const seenStems = new Set(prev.map((question) => question.stem.replace(/\s+/g, '')))
-            const additions = res.questions.filter((question) => {
-              const stem = question.stem.replace(/\s+/g, '')
-              if (seenIds.has(question.id) || seenStems.has(stem)) return false
-              seenIds.add(question.id)
-              seenStems.add(stem)
-              return true
-            })
-            return [...prev, ...additions]
-          })
+          setQuestions(res.questions)
           setSelectedIds([])
           setTypeFilter('all')
           setDiffFilter('all')
@@ -382,7 +383,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setBotThinking(false)
       }
     },
-    [selectedDocId, selectedKbId, messages, questions, typeConfigs, difficulty, knowledgeScope, showToast],
+    [selectedDocId, selectedKbId, messages, questions, showToast],
   )
 
   const updateQuestion = useCallback(
@@ -512,6 +513,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const record = await api.publishPaper({
         modules,
+        // 记住组卷时调整后的题型模块顺序，讲解视图按此分区
+        modulesOrder: modules,
         spaceIds,
         // 新建空间不在适配器静态演示表内，空间名称由前端解析后随载荷传入
         spaceNames: spaceIds
@@ -520,7 +523,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         saveRecord,
         name,
         published,
-        questions,
+        // 按调整后的模块顺序重排题目，题号与讲解/作答视图分区保持一致
+        questions: orderQuestionsByModules(questions, modules),
         examWindow,
       })
       if (record) setRecords((prev) => [record, ...prev])
@@ -530,7 +534,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ? saveRecord
             ? '组卷已发布，并保存到组卷记录'
             : '组卷已发布到所选学习空间'
-          : `试卷「${name ?? '未命名'}」已暂存为草稿`,
+          : `试卷「${name ?? '未命名'}」已保存到组卷记录`,
       )
       return true
     },
@@ -585,7 +589,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  /** 解散学习空间（关联的组卷记录保留） */
+  /** 按编号加入空间：成员数与成员名单同步更新 */
+  const joinSpaceByCode = useCallback(
+    (code: string) => {
+      const found = spaces.find((s) => s.code.toUpperCase() === code.trim().toUpperCase())
+      if (!found) return null
+      const displayName = profile.name
+      setSpaces((prev) =>
+        prev.map((s) =>
+          s.id === found.id && !s.members.includes(displayName)
+            ? { ...s, members: [...s.members, displayName], memberCount: Math.min(s.capacity, s.memberCount + 1) }
+            : s,
+        ),
+      )
+      showToast(`已加入学习空间「${found.name}」`)
+      return found
+    },
+    [spaces, profile.name, showToast],
+  )
+
+  /** 学生退出空间：从列表移除，关联的组卷记录保留 */
+  const leaveSpace = useCallback(
+    (id: string) => {
+      setSpaces((prev) => prev.filter((s) => s.id !== id))
+      showToast('已退出学习空间')
+    },
+    [showToast],
+  )
+
+  /** 教师解散空间：空间整体移除，成员全部移出（演示态） */
   const dissolveSpace = useCallback(
     (id: string) => {
       setSpaces((prev) => prev.filter((s) => s.id !== id))
@@ -616,6 +648,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  /** 学生交卷 / 重新作答：同步更新组卷记录的作答状态 */
+  const markRecordAnswered = useCallback((recordId: string, answered: boolean) => {
+    setRecords((prev) => prev.map((r) => (r.id === recordId ? { ...r, answered } : r)))
+  }, [])
+
   /** 跨页联动：请求打开某份试卷的查看标签（组卷记录页消费） */
   const [openPaperId, setOpenPaperId] = useState<string | null>(null)
   const requestOpenPaper = useCallback((recordId: string) => setOpenPaperId(recordId), [])
@@ -631,14 +668,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         code,
         memberCount: 1,
         capacity,
-        creator: CURRENT_USER,
-        members: [CURRENT_USER],
+        creator: profile.name,
+        members: [profile.name],
       }
       setSpaces((prev) => [...prev, space])
       showToast(`学习空间「${name}」创建成功`)
       return space
     },
-    [showToast],
+    [profile.name, showToast],
   )
 
   /** 一键清空：题目、对话记录与对话记忆全部重置 */
@@ -650,7 +687,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     chatSlotState.current = {}
     setActiveTab('generate')
     showToast('已清空全部题目与对话记录')
-  }, [showToast, setActiveTab])
+  }, [showToast])
 
   /** 批量删除选中的题目 */
   const deleteSelected = useCallback(async () => {
@@ -670,13 +707,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast('请先在右侧选择知识库')
         return
       }
-      showToast(`已提交「${file.name}」，后台处理中…`)
+      const form = new FormData()
+      form.append('file', file)
+      form.append('kb_id', selectedKbId)
+      showToast(`正在上传「${file.name}」…`)
       try {
-        await api.uploadDocument(selectedKbId, file, (_progressPercent, stage) => {
-          if (stage) showToast(`「${file.name}」${stage}`)
-        })
-        setDocs(await api.listDocuments(selectedKbId))
-        showToast(`「${file.name}」已处理完成`)
+        const resp = await fetch('/api/kb/upload', { method: 'POST', body: form })
+        if (!resp.ok) {
+          let detail: unknown = `HTTP ${resp.status}`
+          try {
+            detail = (await resp.json()).detail
+          } catch {
+            /* 保持默认 */
+          }
+          throw new Error(typeof detail === 'object' && detail !== null ? String((detail as { message?: string }).message) : String(detail))
+        }
+        const result = (await resp.json()) as { doc_id: string; doc_name: string }
+        const docs = await api.listDocuments(selectedKbId)
+        setDocs(docs)
+        if (docs.some((d) => d.id === result.doc_id)) setSelectedDocId(result.doc_id)
+        showToast(`「${result.doc_name}」已上传并入库`)
       } catch (err) {
         showToast(err instanceof Error ? err.message : '上传失败，请检查后端服务')
       }
@@ -742,11 +792,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteRecord,
     deleteRecordQuestions,
     publishRecords,
+    role: user?.role ?? null,
     createSpace,
     updateRecord,
+    joinSpaceByCode,
+    leaveSpace,
     dissolveSpace,
     removeSpaceMember,
     renameSpace,
+    markRecordAnswered,
     openPaperId,
     requestOpenPaper,
     clearOpenPaper,

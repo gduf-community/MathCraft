@@ -6,7 +6,7 @@ const NAV_ITEMS: {
   key: string
   label: string
   icon: LucideIcon
-  tab?: 'generate' | 'bank' | 'records' | 'fav' | 'space' | 'me'
+  tab?: 'generate' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
 }[] = [
   { key: 'home', label: '智能出题', icon: Home, tab: 'generate' },
   { key: 'space', label: '学习空间', icon: BookOpen, tab: 'space' },
@@ -14,6 +14,7 @@ const NAV_ITEMS: {
   { key: 'paper', label: '组卷记录', icon: FileText, tab: 'records' },
   { key: 'bank', label: '题库管理', icon: Database, tab: 'bank' },
   { key: 'me', label: '个人中心', icon: User, tab: 'me' },
+  { key: 'settings', label: '设置', icon: Settings, tab: 'settings' },
 ]
 
 export default function SideNav() {
@@ -51,21 +52,6 @@ export default function SideNav() {
             </li>
           )
         })}
-          <li key="settings">
-            <button
-              type="button"
-              title="设置"
-              onClick={() => setActiveTab('settings')}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
-                activeTab === 'settings'
-                  ? 'bg-primary-light font-semibold text-primary'
-                  : 'text-ink-2 hover:bg-primary-weak hover:text-primary'
-              } ${navCollapsed ? 'justify-center px-0' : ''}`}
-            >
-              <Settings size={18} className="shrink-0" />
-              {!navCollapsed && <span className="truncate">设置</span>}
-            </button>
-          </li>
       </ul>
       <div className="border-t border-line/60 px-2 pt-2">
         <button
