@@ -1,8 +1,5 @@
 import type { Difficulty, QuestionType } from './types'
 
-/** 当前登录用户（演示身份） */
-export const CURRENT_USER = '张老师'
-
 export const TYPE_LABELS: Record<QuestionType, string> = {
   single: '选择题',
   multiple: '多选题',

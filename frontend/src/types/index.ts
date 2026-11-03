@@ -86,7 +86,7 @@ export interface PublishPayload {
   /** 组卷时用户调整后的题型模块顺序快照，供讲解视图分区使用 */
   modulesOrder?: PaperModule[]
   spaceIds: string[]
-  /** 发布目标空间名称（与 spaceIds 一一对应；新建空间不在演示静态表内，由调用方解析传入） */
+  /** 发布目标空间名称（与 spaceIds 一一对应，由调用方解析传入） */
   spaceNames: string[]
   saveRecord: boolean
   /** 组卷命名（可选，缺省用日期） */
@@ -112,10 +112,15 @@ export interface AssembleRecord {
   questions?: Question[]
   /** 做题时间窗口（不限时间时不传） */
   examWindow?: ExamWindow | null
-  /** 已提交作答的人数（演示数据） */
+  /** 已提交作答的人数 */
   submittedCount?: number
   /** 是否已停止作答（提前结束） */
   stopped?: boolean
+  /** 最近一次催交时间（空间试卷视图，用于 24 小时冷却置灰） */
+  lastUrgeAt?: string | null
+  /** 交卷后的操作：是否允许查看答案与解析 / 是否允许修改答案重新提交 */
+  allowReview?: boolean
+  allowRetake?: boolean
   /** 是否保存到组卷记录；发布时未勾选保存则为 false，仅用于学习空间展示，不出现在组卷记录页 */
   savedToRecords?: boolean
   /** 组卷时的题型模块顺序快照（用户可调整），讲解视图按此分区 */
@@ -134,6 +139,8 @@ export interface ChatMessage {
 export interface FavoriteGroup {
   id: string
   name: string
+  /** 是否为默认分组 */
+  isDefault?: boolean
 }
 
 /** 教师个人信息（个人中心展示与编辑） */
