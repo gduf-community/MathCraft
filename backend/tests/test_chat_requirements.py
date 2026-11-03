@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from schemas.question import Question, QuestionType, TypeCount
-from services import chat_flow
-from services.slots import build_followup, build_params, missing_keys
+from questions.schemas.question import Question, QuestionType, TypeCount
+from questions.services import chat_flow
+from questions.services.slots import build_followup, build_params, missing_keys
 
 
 @pytest.fixture

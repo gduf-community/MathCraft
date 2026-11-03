@@ -113,11 +113,11 @@ dev = [
 
 [tool.setuptools]
 include-package-data = true
-package-dir = {"" = "backend"}
+package-dir = {"" = "backend/src"}
 
 [tool.setuptools.packages.find]
-where = ["backend"]
-include = ["MathCraft*", "api*", "services*", "schemas*"]
+where = ["backend/src"]
+include = ["MathCraft*", "questions*", "knowledge*", "app*", "settings*", "transport*", "shared*"]
 
 [tool.setuptools.package-data]
 MathCraft = [
@@ -132,13 +132,14 @@ MathCraft = [
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
+pythonpath = ["backend/src"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["backend"]
+src = ["backend/src"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
@@ -146,16 +147,16 @@ select = ["E4", "E7", "E9", "F"]
 [tool.ruff.lint.per-file-ignores]
 # These modules intentionally keep compatibility or lazy imports below runtime
 # declarations so optional engines do not become import-time requirements.
-"backend/MathCraft/api/routers/knowledge.py" = ["E402"]
-"backend/MathCraft/api/routers/settings.py" = ["E402", "F401"]
-"backend/MathCraft/knowledge/progress_tracker.py" = ["E402"]
-"backend/MathCraft/services/rag/linked_kb.py" = ["E402"]
-"backend/MathCraft/services/setup/init.py" = ["F821"]
-"backend/MathCraft/services/web_source/sync.py" = ["E402"]
-"backend/MathCraft/services/config/test_runner.py" = ["F401"]
-"backend/MathCraft/utils/bibtex_converter.py" = ["F841"]
+"backend/src/MathCraft/api/routers/knowledge.py" = ["E402"]
+"backend/src/MathCraft/api/routers/settings.py" = ["E402", "F401"]
+"backend/src/knowledge/progress_tracker.py" = ["E402"]
+"backend/src/MathCraft/services/rag/linked_kb.py" = ["E402"]
+"backend/src/MathCraft/services/setup/init.py" = ["F821"]
+"backend/src/MathCraft/services/web_source/sync.py" = ["E402"]
+"backend/src/MathCraft/services/config/test_runner.py" = ["F401"]
+"backend/src/MathCraft/utils/bibtex_converter.py" = ["F841"]
 "backend/main.py" = ["F401"]
-"backend/services/question_gen.py" = ["F401"]
+"backend/src/questions/services/question_gen.py" = ["F401"]
 # Pytest fixtures are imported for registration and then injected by name.
 "backend/tests/**/*.py" = ["F401", "F811"]
 
@@ -163,31 +164,31 @@ select = ["E4", "E7", "E9", "F"]
 # Incremental baseline: keep the CI check actionable while legacy modules are
 # annotated and their existing diagnostics are migrated in follow-up changes.
 include = [
-    "backend/MathCraft/core",
-    "backend/MathCraft/config",
-    "backend/MathCraft/logging",
-    "backend/MathCraft/runtime/env.py",
-    "backend/MathCraft/runtime/home.py",
-    "backend/MathCraft/runtime/mode.py",
-    "backend/MathCraft/runtime/worker_tasks.py",
-    "backend/MathCraft/services/base_sync.py",
-    "backend/MathCraft/services/file_io.py",
-    "backend/MathCraft/services/path_service.py",
-    "backend/MathCraft/services/provider_registry.py",
-    "backend/MathCraft/services/tool_names.py",
-    "backend/MathCraft/services/voice/base.py",
-    "backend/MathCraft/services/voice/config.py",
-    "backend/MathCraft/services/voice/audio.py",
-    "backend/MathCraft/services/voice/speech_text.py",
-    "backend/MathCraft/services/voice/discovery.py",
-    "backend/MathCraft/services/voice/preview.py",
-    "backend/MathCraft/services/search/base.py",
-    "backend/MathCraft/services/search/types.py",
-    "backend/MathCraft/services/search/consolidation.py",
-    "backend/MathCraft/services/search/source_filter.py",
+    "backend/src/MathCraft/core",
+    "backend/src/MathCraft/config",
+    "backend/src/MathCraft/logging",
+    "backend/src/MathCraft/runtime/env.py",
+    "backend/src/MathCraft/runtime/home.py",
+    "backend/src/MathCraft/runtime/mode.py",
+    "backend/src/MathCraft/runtime/worker_tasks.py",
+    "backend/src/MathCraft/services/base_sync.py",
+    "backend/src/MathCraft/services/file_io.py",
+    "backend/src/MathCraft/services/path_service.py",
+    "backend/src/MathCraft/services/provider_registry.py",
+    "backend/src/MathCraft/services/tool_names.py",
+    "backend/src/MathCraft/services/voice/base.py",
+    "backend/src/MathCraft/services/voice/config.py",
+    "backend/src/MathCraft/services/voice/audio.py",
+    "backend/src/MathCraft/services/voice/speech_text.py",
+    "backend/src/MathCraft/services/voice/discovery.py",
+    "backend/src/MathCraft/services/voice/preview.py",
+    "backend/src/MathCraft/services/search/base.py",
+    "backend/src/MathCraft/services/search/types.py",
+    "backend/src/MathCraft/services/search/consolidation.py",
+    "backend/src/MathCraft/services/search/source_filter.py",
 ]
 exclude = ["backend/tests", "backend/scripts", "**/__pycache__"]
-extraPaths = ["backend"]
+extraPaths = ["backend/src"]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"

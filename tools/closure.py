@@ -10,7 +10,7 @@ dependencies and without importing anything:
 
 Usage::
 
-    python tools/closure.py roots MathCraft.api.main MathCraft.knowledge.manager
+    python tools/closure.py roots MathCraft.api.main knowledge.manager
     python tools/closure.py dangling
     python tools/closure.py dangling --json out.json
     python tools/closure.py stats
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE_ROOT = REPO_ROOT / "backend"
+SOURCE_ROOT = REPO_ROOT / "backend" / "src"
 PACKAGE_NAME = "MathCraft"
 CODE_ROOT = SOURCE_ROOT / PACKAGE_NAME
 

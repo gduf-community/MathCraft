@@ -3,12 +3,12 @@ import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.stdout.reconfigure(encoding="utf-8")
 
-from schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount  # noqa: E402
-from services.knowledge import list_documents  # noqa: E402
-from services.question_gen import generate_questions  # noqa: E402
+from questions.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount  # noqa: E402
+from questions.services.knowledge import list_documents  # noqa: E402
+from questions.services.question_gen import generate_questions  # noqa: E402
 
 
 def main():

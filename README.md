@@ -6,7 +6,7 @@ MathCraft 是一个包含 Python 后端与 React 前端的数学智能体项目�
 
 项目包含一个统一的 `MathCraft` 后端：同一进程提供知识库、模型配置、文档入库、检索和题目生成 API；`frontend` 是配套的 React 应用。前后端按独立进程启动，详细目录职责见 [backend/README.md](backend/README.md) 和 [frontend/README.md](frontend/README.md)。
 
-`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATHCRAFT_HOME/data`。主实现包统一位于 `backend/MathCraft/`，Python import 和启动入口统一使用 `MathCraft`。旧 `math_q_agent` import 与启动命令停止支持，不保留旧目录兼容壳；数据根环境变量现统一为 `MATHCRAFT_HOME`，不提供旧名回退。将其值指向原 home 目录即可继续读取既有 `data/`，无需移动数据。
+`MathCraft` 从 [DeepTutor](https://github.com/landing-ai/DeepTutor) 的 `a31d8262` 提交裁剪而来，缩减为单租户快照，不跟踪上游，运行时数据全部落在 `$MATHCRAFT_HOME/data`。主实现包统一位于 `backend/src/MathCraft/`，Python import 和启动入口统一使用 `MathCraft`。旧 `math_q_agent` import 与启动命令停止支持，不保留旧目录兼容壳；数据根环境变量现统一为 `MATHCRAFT_HOME`，不提供旧名回退。将其值指向原 home 目录即可继续读取既有 `data/`，无需移动数据。
 
 ## 目录结构
 
@@ -23,22 +23,22 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 ├── .env.example                  # 环境变量样例
 ├── .gitignore                    # 忽略虚拟环境、运行时数据、缓存与 .env
 ├── backend/                      # Python 后端，详细结构见 backend/README.md
-│   ├── MathCraft/                # 唯一 Python 主实现包与统一启动入口
-│   │   ├── app.py               # 统一 FastAPI 应用装配
-│   │   ├── __main__.py          # python -m MathCraft 启动入口
-│   │   ├── api/main.py          # 导出同一个统一 app
-│   │   ├── api/runtime.py       # lifespan、运行时初始化与 CORS 中间件
-│   │   ├── api/routers/profile.py # 单租户教师资料与头像接口
-│   │   ├── runtime/              # 数据根与隔离文档解析进程
-│   │   │   ├── isolated_worker.py # 父进程超时、并发限制与取消回收
-│   │   │   ├── worker_process.py # 固定 python -m 入口与 pickle 协议
-│   │   │   └── worker_tasks.py   # 文本提取与 UTF-8 Markdown 写入任务
-│   │   ├── services/profile/     # 资料校验与独立持久化
-│   │   ├── knowledge/model_references.py # 知识库嵌入绑定查询与删除保护
-│   │   ├── services/config/direct_model_config.py # 独立模型配置迁移与名称规则
-│   │   └── services/settings/direct_model_edit.py # 单模型合并与独立默认操作
-│   ├── tests/test_isolated_document_extraction.py # 真实子进程解析与预览回归
+│   ├── src/                      # Python 源码根
+│   │   ├── MathCraft/            # 迁移期间保留的正式运行时兼容包
+│   │   ├── knowledge/            # 独立知识库领域
+│   │   ├── questions/            # 出题 API、服务与 Schema
+│   │   ├── agents/               # Agent 领域预留目录，不作为顶层 SDK 包
+│   │   ├── app/                  # 应用装配迁移入口
+│   │   ├── settings/             # 设置领域迁移入口
+│   │   ├── transport/            # HTTP、SSE、WebSocket 迁移入口
+│   │   └── shared/               # 少量共享类型
+│   ├── scripts/                  # 出题和对话联测脚本
+│   ├── tests/                  # 后端测试套件
 │   └── README.md                 # 后端目录结构与职责说明
+├── apps/                         # 跨端客户端入口
+│   └── desktop/                  # Windows/macOS 客户端预留目录
+├── packages/                     # 跨端共享契约与包
+│   └── contracts/                # OpenAPI、JSON Schema、事件契约预留目录
 ├── docs/                         # API 文档、设计资料与项目流程文档
 │   ├── api.md                    # HTTP API 参考
 │   ├── 更详细的出题流程.md        # 给教师阅读的资料选择、出题修改、版本保存与组卷流程
@@ -58,6 +58,7 @@ MathCraft/                        # 仓库根：工程配置、跨端契约与�
 │   │   ├── 模型直接配置功能规格.md # 三类直接配置及迁移契约
 │   │   ├── 模型直接配置实施记录.md # 实现、接口与验收证据
 │   │   ├── 对话出题必填信息检查.md # 多轮追问与各题型数量生成门槛
+│   │   ├── Agent与跨端目录架构方案.md # Agent、知识库、题目和跨端协议的目标分层
 │   │   └── 临时配置弹出面板设计.md # 新建与绑定配置的弹层交互和验收
 │   ├── deeptutor参考前端/         # 提供方与模型页面布局参考截图
 │   ├── adr/                      # 架构决策记录
@@ -123,7 +124,7 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"       # 可选：�
 
 应用导入不会加载 `.env` 或写入运行时设置。ASGI 启动时加载 `.env`、初始化设置和日志，再开始接收请求；初始化失败会直接终止启动。命令行入口会先读取 `.env` 和已保存的启动配置。端口优先级为 `--port` > shell / `.env` 中的 `BACKEND_PORT` > `system.json` > 内置默认值 `8000`，与 Vite 默认代理端口一致。监听地址按 `--host` > shell / `.env` 中的 `BACKEND_HOST` > `127.0.0.1` 确定。
 
-Python 主实现包与启动模块统一为 `MathCraft`。`MathCraft.app` 装配应用，`MathCraft.api.main:app` 导出同一个应用，`python -m MathCraft` 启动该应用；知识库、模型配置、资料和出题接口都由这一进程提供。生命周期与中间件位于 `MathCraft/api/runtime.py`，正式业务路由位于 `MathCraft/api/routers/`。
+Python 主实现包与启动模块统一为 `MathCraft`。`MathCraft.app` 装配应用，`MathCraft.api.main:app` 导出同一个应用，`python -m MathCraft` 启动该应用；知识库、模型配置、资料和出题接口都由这一进程提供。生命周期与中间件位于 `backend/src/MathCraft/api/runtime.py`，正式业务路由位于 `backend/src/MathCraft/api/routers/`。
 
 旧 `math_q_agent` import 与命令停止支持，不提供旧目录兼容壳；开发脚本、动态 import 和 worker 命令需要使用 `MathCraft`。HTTP 与 WebSocket 路径不随 Python 包名改变，迁移范围和验收见 [后端包统一与接口对齐](docs/design/后端包统一与接口对齐.md)。
 

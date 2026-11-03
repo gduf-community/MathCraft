@@ -61,8 +61,8 @@ PDF 进入 ParseService
 
 ## 实现入口
 
-- 扫描检测和云端配置校验：`backend/math_q_agent/services/parsing/service.py`
-- 统一解析错误分类：`backend/math_q_agent/services/parsing/types.py`
-- LlamaIndex 文档加载：`backend/math_q_agent/services/rag/pipelines/llamaindex/document_loader.py`
-- MinerU 云端请求：`backend/math_q_agent/services/parsing/engines/mineru/cloud.py`
+- 扫描检测和云端配置校验：`backend/src/MathCraft/services/parsing/service.py`
+- 统一解析错误分类：`backend/src/MathCraft/services/parsing/types.py`
+- LlamaIndex 文档加载：`backend/src/MathCraft/services/rag/pipelines/llamaindex/document_loader.py`
+- MinerU 云端请求：`backend/src/MathCraft/services/parsing/engines/mineru/cloud.py`
 - 回归测试：`backend/tests/test_scanned_pdf_ocr.py`
