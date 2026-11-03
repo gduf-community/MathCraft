@@ -69,6 +69,9 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
   const [noTimeLimit, setNoTimeLimit] = useState(() => (editingRecord ? !editingRecord.examWindow : false))
   const [timeStart, setTimeStart] = useState(() => editingRecord?.examWindow?.start ?? '')
   const [timeEnd, setTimeEnd] = useState(() => editingRecord?.examWindow?.end ?? '')
+  // 交卷后的操作：交卷后查看答案解析（默认允许）/ 修改答案重新提交（默认不允许）
+  const [allowReview, setAllowReview] = useState(() => editingRecord?.allowReview ?? true)
+  const [allowRetake, setAllowRetake] = useState(() => editingRecord?.allowRetake ?? false)
 
   const move = (idx: number, dir: -1 | 1) => {
     setModules((prev) => {
@@ -127,6 +130,8 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
         spaces: spaceNames,
         examWindow,
         published: true,
+        allowReview,
+        allowRetake,
         // 按调整后的模块顺序重排，题号同步更新
         questions: orderQuestionsByModules(pool, modules),
         stopped: false,
@@ -143,6 +148,8 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
       !isStudent,
       pool,
       examWindow,
+      allowReview,
+      allowRetake,
     )
     if (ok) onClose()
   }
@@ -158,6 +165,8 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
         spaces: chosenSpaces.map((id) => spaces.find((s) => s.id === id)?.name ?? '').filter(Boolean),
         examWindow,
         published: false,
+        allowReview,
+        allowRetake,
         questions: orderQuestionsByModules(pool, modules),
       })
       showToast('试卷已暂存为草稿')
@@ -282,6 +291,34 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
                   </button>
                 )
               })}
+            </div>
+          </section>
+          )}
+          {/* 交卷后的操作：位于做题时间上方 */}
+          {!isStudent && (
+          <section>
+            <h4 className="mb-2 text-sm font-bold text-ink">
+              交卷后的操作 <span className="ml-1 text-xs font-normal text-ink-3">（可多选）</span>
+            </h4>
+            <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={allowReview}
+                  onChange={(e) => setAllowReview(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                允许交卷后查看答案和解析
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={allowRetake}
+                  onChange={(e) => setAllowRetake(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                允许修改答案并重新提交
+              </label>
             </div>
           </section>
           )}

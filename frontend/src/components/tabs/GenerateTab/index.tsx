@@ -54,7 +54,7 @@ export default function GenerateTab() {
                       m.role === 'user' ? 'bg-primary font-semibold text-white' : 'bg-primary-light text-primary'
                     }`}
                   >
-                    {m.role === "user" ? <img src={profile.avatar} alt="" className="h-8 w-8 rounded-full object-cover" /> : <Bot size={16} />}
+                    {m.role === "user" ? profile.name.charAt(0) : <Bot size={16} />}
                   </span>
                   <div
                     className={`rounded-2xl px-4 py-2.5 text-[15px] leading-7 ${

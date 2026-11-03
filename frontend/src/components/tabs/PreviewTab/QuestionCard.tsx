@@ -60,6 +60,16 @@ export default function QuestionCard({ q, index, snapshot, disableAnswer = false
   const setOptionText = (label: string, text: string) =>
     patchDraft({ options: draft.options.map((o) => (o.label === label ? { ...o, text } : o)) })
 
+  /** 选项过长时独占一行，短选项可与相邻选项同行；编辑框宽度随文字长度自适应 */
+  const isLongOption = (text: string) => {
+    const width = [...text].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 2 : 1), 0)
+    return width > 22
+  }
+  const optionInputWidth = (text: string) => {
+    const width = [...text].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 2 : 1), 0)
+    return `${Math.min(72, Math.max(6, width + 2))}ch`
+  }
+
   const toggleCorrect = (label: string) => {
     if (q.type === 'single' || q.type === 'judge') {
       patchDraft({ answer: label })
@@ -136,20 +146,26 @@ export default function QuestionCard({ q, index, snapshot, disableAnswer = false
             </p>
           )}
 
-          {/* 选项 */}
+          {/* 选项：长选项独占一行，短选项与相邻选项同行 */}
           {objective && (
-            <div className="mt-2.5 flex flex-wrap gap-x-10 gap-y-2">
+            <div className="mt-2.5 flex flex-wrap items-start gap-x-8 gap-y-2">
               {draft.options.map((o) => (
-                <div key={o.label} className="flex items-center gap-1.5 text-sm text-ink-2">
-                  <span className="font-medium">{o.label}.</span>
+                <div
+                  key={o.label}
+                  className={`flex items-center gap-1.5 text-sm text-ink-2 ${
+                    isLongOption(o.text) ? 'w-full' : ''
+                  }`}
+                >
+                  <span className="shrink-0 font-medium">{o.label}.</span>
                   {editing ? (
                     <>
                       <input
                         value={o.text}
                         onChange={(e) => setOptionText(o.label, e.target.value)}
-                        className="w-44 rounded-md border border-primary/40 bg-primary-weak/40 px-2 py-1 text-sm text-ink outline-none focus:border-primary"
+                        style={{ width: optionInputWidth(o.text) }}
+                        className="min-w-0 rounded-md border border-primary/40 bg-primary-weak/40 px-2 py-1 text-sm text-ink outline-none focus:border-primary"
                       />
-                      <label className="flex cursor-pointer items-center gap-1 text-xs text-ink-3">
+                      <label className="flex shrink-0 cursor-pointer items-center gap-1 text-xs text-ink-3">
                         <input
                           type="checkbox"
                           checked={draft.answer.includes(o.label)}
@@ -160,7 +176,7 @@ export default function QuestionCard({ q, index, snapshot, disableAnswer = false
                       </label>
                     </>
                   ) : (
-                    <span>
+                    <span className="min-w-0">
                       <Latex text={o.text} />
                     </span>
                   )}
