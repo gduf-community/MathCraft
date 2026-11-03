@@ -1,27 +1,50 @@
-/** 个人中心页：教师信息展示与编辑、头像上传裁剪、模型配置与安全设置（演示） */
-import { useRef, useState } from 'react'
-import type { ChangeEvent, DragEvent } from 'react'
+/** 个人中心页：资料、模型配置、密码修改（全部走后端）。头像为系统默认，不可修改。 */
+import { useEffect, useState } from 'react'
 import {
   BadgeCheck,
   Building2,
   KeyRound,
+  Loader2,
   Pencil,
   Save,
   Settings2,
   ShieldCheck,
   User,
   UserRound,
+  X,
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
-import AvatarCropModal from '../../ui/AvatarCropModal'
+import { useAuth } from '../../../store/AuthContext'
+import {
+  getModelSettings,
+  saveModelSettings,
+  testDeepSeek,
+  testMinerU,
+  type ModelSettings,
+} from '../../../api/backend'
+import { changePasswordCurrent } from '../../../api/auth'
 
 export default function ProfileTab() {
   const { profile, updateProfile, showToast } = useApp()
+  const { logout } = useAuth()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
-  const [modelMode, setModelMode] = useState<'default' | 'custom'>('default')
-  const [cropSrc, setCropSrc] = useState<string | null>(null)
-  const fileInput = useRef<HTMLInputElement>(null)
+  const [model, setModel] = useState<ModelSettings | null>(null)
+  const [deepseekKey, setDeepseekKey] = useState('')
+  const [mineruToken, setMineruToken] = useState('')
+  const [testing, setTesting] = useState<'deepseek' | 'mineru' | null>(null)
+  const [savingModel, setSavingModel] = useState(false)
+  const [pwdOpen, setPwdOpen] = useState(false)
+  const [pwdOld, setPwdOld] = useState('')
+  const [pwdNew, setPwdNew] = useState('')
+  const [pwdConfirm, setPwdConfirm] = useState('')
+  const [savingPwd, setSavingPwd] = useState(false)
+
+  useEffect(() => {
+    void getModelSettings()
+      .then(setModel)
+      .catch((err) => showToast(err instanceof Error ? err.message : '加载模型配置失败'))
+  }, [showToast])
 
   const startEdit = () => {
     setDraft({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
@@ -51,20 +74,61 @@ export default function ProfileTab() {
     showToast('个人信息已保存')
   }
 
-  const onPickFile = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) {
-      showToast('仅支持 PNG / JPG / WebP 图片')
-      return
+  const patchDraft = (patch: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...patch }))
+
+  const saveModel = async () => {
+    setSavingModel(true)
+    try {
+      await saveModelSettings({
+        ...(deepseekKey.trim() ? { deepseek_api_key: deepseekKey.trim() } : {}),
+        ...(mineruToken.trim() ? { mineru_token: mineruToken.trim() } : {}),
+      })
+      const fresh = await getModelSettings()
+      setModel(fresh)
+      setDeepseekKey('')
+      setMineruToken('')
+      showToast('模型配置已保存')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSavingModel(false)
     }
-    const reader = new FileReader()
-    reader.onload = () => setCropSrc(String(reader.result))
-    reader.readAsDataURL(file)
-    e.target.value = ''
   }
 
-  const patchDraft = (patch: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...patch }))
+  const runTest = async (which: 'deepseek' | 'mineru') => {
+    setTesting(which)
+    try {
+      if (which === 'deepseek') await testDeepSeek()
+      else await testMinerU()
+      showToast(which === 'deepseek' ? 'DeepSeek 连接正常' : 'MinerU Token 有效')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '测试失败')
+    } finally {
+      setTesting(null)
+    }
+  }
+
+  const submitPassword = async () => {
+    if (pwdNew.length < 6) {
+      showToast('新密码至少 6 位')
+      return
+    }
+    if (pwdNew !== pwdConfirm) {
+      showToast('两次输入的新密码不一致')
+      return
+    }
+    setSavingPwd(true)
+    try {
+      await changePasswordCurrent(pwdOld, pwdNew)
+      showToast('密码已修改，请重新登录')
+      setPwdOpen(false)
+      logout()
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '修改密码失败')
+    } finally {
+      setSavingPwd(false)
+    }
+  }
 
   const fieldCls =
     'block w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary'
@@ -82,36 +146,17 @@ export default function ProfileTab() {
 
       {/* 头部信息卡 */}
       <div className="mb-4 flex flex-wrap items-center gap-6 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
-        {/* 头像：悬停显示编辑，点击上传裁剪 */}
-        <div
-          className="group relative h-[104px] w-[104px] shrink-0 cursor-pointer overflow-visible"
-          onClick={() => fileInput.current?.click()}
-          title="点击更换头像"
-        >
-          {profile.avatar ? (
-            <img
-              src={profile.avatar}
-              alt={`${profile.identity}头像`}
-              className="h-[96px] w-[96px] rounded-full border border-line/60 object-cover"
-            />
-          ) : (
-            <span className="flex h-[96px] w-[96px] items-center justify-center rounded-full border border-line/60 bg-primary-light text-3xl font-semibold text-primary">
-              {profile.name.charAt(0)}
-            </span>
-          )}
+        {/* 头像：系统默认（昵称首字），不可修改 */}
+        <div className="relative h-[104px] w-[104px] shrink-0">
+          <span className="flex h-[96px] w-[96px] items-center justify-center rounded-full border border-line/60 bg-primary-light text-3xl font-semibold text-primary">
+            {profile.name.charAt(0)}
+          </span>
           <BadgeCheck
             size={22}
             className="absolute -bottom-1 right-0 rounded-full bg-white text-primary"
             fill="white"
           />
-          <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
-            <span className="flex items-center gap-1 text-xs font-medium text-white">
-              <Pencil size={12} />
-              编辑
-            </span>
-          </div>
         </div>
-        <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={onPickFile} />
 
         <div className="min-w-[180px]">
           <div className="flex items-center gap-2">
@@ -214,38 +259,76 @@ export default function ProfileTab() {
           </h3>
           <button
             type="button"
-            onClick={() => showToast('自定义模型配置将在后续版本开放')}
-            className="rounded-lg border border-primary/30 bg-primary-light/50 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary-light"
+            onClick={() => void saveModel()}
+            disabled={savingModel}
+            className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1a5fe6] disabled:opacity-60"
           >
-            自定义配置
+            {savingModel && <Loader2 size={12} className="animate-spin" />}
+            保存
           </button>
         </div>
-        <div className="space-y-3 px-2">
-          {(
-            [
-              { key: 'default', title: '系统默认', desc: '使用平台默认的模型配置，满足大部分使用场景' },
-              { key: 'custom', title: '自定义', desc: '根据个人需求配置模型参数' },
-            ] as const
-          ).map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              onClick={() => setModelMode(opt.key)}
-              className="flex w-full items-start gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-page"
-            >
-              <span
-                className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
-                  modelMode === opt.key ? 'border-primary' : 'border-ink-3/60'
-                }`}
+
+        <div className="space-y-4 px-2">
+          <div className="rounded-xl border border-line p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-ink">{model?.deepseek_model ?? 'DeepSeek Flash'}</span>
+              <span className={`rounded px-1.5 py-0.5 text-[11px] ${model?.deepseek_key_configured ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                {model?.deepseek_key_configured ? `已配置 ${model.deepseek_key_masked ?? ''}` : '未配置'}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-ink-3">用于出题、HyDE 查询优化与主观题批卷</p>
+            <div className="mt-2.5 flex gap-2">
+              <input
+                type="password"
+                value={deepseekKey}
+                onChange={(e) => setDeepseekKey(e.target.value)}
+                placeholder="填写新的 DeepSeek API Key，留空表示不修改"
+                className={fieldCls}
+              />
+              <button
+                type="button"
+                onClick={() => void runTest('deepseek')}
+                disabled={testing === 'deepseek'}
+                className="shrink-0 rounded-lg border border-line px-3 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
               >
-                {modelMode === opt.key && <span className="h-2 w-2 rounded-full bg-primary" />}
+                {testing === 'deepseek' ? '测试中…' : '测试连接'}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-line p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-ink">MinerU OCR</span>
+              <span className={`rounded px-1.5 py-0.5 text-[11px] ${model?.mineru_token_configured ? 'bg-emerald-50 text-emerald-600' : 'bg-page text-ink-3'}`}>
+                {model?.mineru_token_configured ? `已配置 ${model.mineru_token_masked ?? ''}` : '使用系统默认 Token'}
               </span>
-              <span>
-                <span className="block text-sm text-ink">{opt.title}</span>
-                <span className="mt-0.5 block text-xs text-ink-3">{opt.desc}</span>
-              </span>
-            </button>
-          ))}
+            </div>
+            <p className="mt-1 text-xs text-ink-3">
+              扫描件解析，单文件 ≤ {model?.mineru_limits.max_file_mb ?? 200} MB，页数 ≤ {model?.mineru_limits.max_pages ?? 200} 页
+            </p>
+            <div className="mt-2.5 flex gap-2">
+              <input
+                type="password"
+                value={mineruToken}
+                onChange={(e) => setMineruToken(e.target.value)}
+                placeholder="填写新的 MinerU Token，留空表示不修改"
+                className={fieldCls}
+              />
+              <button
+                type="button"
+                onClick={() => void runTest('mineru')}
+                disabled={testing === 'mineru'}
+                className="shrink-0 rounded-lg border border-line px-3 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
+              >
+                {testing === 'mineru' ? '测试中…' : '测试连接'}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dashed border-line bg-page/60 p-3 text-xs text-ink-3">
+            <p>系统内置向量模型：{model?.embedding_model ?? 'BAAI/bge-m3'}（不可配置）</p>
+            <p className="mt-1">系统内置重排模型：{model?.rerank_model ?? 'BAAI/bge-reranker-v2-m3'}（不可配置）</p>
+          </div>
         </div>
       </div>
 
@@ -260,12 +343,17 @@ export default function ProfileTab() {
             <KeyRound size={16} className="text-primary" />
             <div>
               <p className="text-sm text-ink">修改密码</p>
-              <p className="mt-0.5 text-xs text-ink-3">定期修改密码，保障账号安全</p>
+              <p className="mt-0.5 text-xs text-ink-3">修改后需要重新登录</p>
             </div>
           </div>
           <button
             type="button"
-            onClick={() => showToast('修改密码功能将在后端接入后开放')}
+            onClick={() => {
+              setPwdOld('')
+              setPwdNew('')
+              setPwdConfirm('')
+              setPwdOpen(true)
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
           >
             <KeyRound size={14} />
@@ -274,18 +362,59 @@ export default function ProfileTab() {
         </div>
       </div>
 
-      {/* 头像裁剪弹窗 */}
-      {cropSrc && (
-        <AvatarCropModal
-          imageSrc={cropSrc}
-          fileName="avatar"
-          onClose={() => setCropSrc(null)}
-          onConfirm={(dataUrl) => {
-            updateProfile({ avatar: dataUrl })
-            setCropSrc(null)
-            showToast('头像已更新')
-          }}
-        />
+      {/* 修改密码弹窗 */}
+      {pwdOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={() => setPwdOpen(false)}>
+          <div className="w-[420px] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-line px-5 py-4">
+              <h3 className="text-base font-bold text-ink">修改密码</h3>
+              <button type="button" onClick={() => setPwdOpen(false)} className="rounded p-1 text-ink-3 hover:bg-page">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <input
+                type="password"
+                value={pwdOld}
+                onChange={(e) => setPwdOld(e.target.value)}
+                placeholder="当前密码"
+                className={fieldCls}
+              />
+              <input
+                type="password"
+                value={pwdNew}
+                onChange={(e) => setPwdNew(e.target.value)}
+                placeholder="新密码（至少 6 位）"
+                className={fieldCls}
+              />
+              <input
+                type="password"
+                value={pwdConfirm}
+                onChange={(e) => setPwdConfirm(e.target.value)}
+                placeholder="确认新密码"
+                className={fieldCls}
+              />
+            </div>
+            <div className="flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
+              <button
+                type="button"
+                onClick={() => setPwdOpen(false)}
+                className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitPassword()}
+                disabled={savingPwd}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {savingPwd && <Loader2 size={13} className="animate-spin" />}
+                确认修改
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

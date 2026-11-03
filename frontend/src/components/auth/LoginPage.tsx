@@ -4,7 +4,7 @@
  * 登录成功后整页淡出并与主应用淡入衔接。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { login as apiLogin } from '../../api/auth'
+import { login as apiLogin, changePassword } from '../../api/auth'
 import type { AuthRole, AuthUser } from '../../api/auth'
 import { useAuth } from '../../store/AuthContext'
 import '../../styles/login.css'
@@ -34,6 +34,13 @@ export default function LoginPage() {
   const [accountHint, setAccountHint] = useState<FieldHint>(EMPTY_HINT)
   const [passwordHint, setPasswordHint] = useState<FieldHint>(EMPTY_HINT)
   const [status, setStatus] = useState<{ text: string; tone?: 'warn' | 'ok' } | null>(null)
+  const [pwdOpen, setPwdOpen] = useState(false)
+  const [pwdAccount, setPwdAccount] = useState('')
+  const [pwdOld, setPwdOld] = useState('')
+  const [pwdNew, setPwdNew] = useState('')
+  const [pwdConfirm, setPwdConfirm] = useState('')
+  const [pwdBusy, setPwdBusy] = useState(false)
+  const [pwdStatus, setPwdStatus] = useState<{ text: string; tone?: 'warn' | 'ok' } | null>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const dustRef = useRef<HTMLCanvasElement>(null)
 
@@ -255,6 +262,35 @@ export default function LoginPage() {
     }
   }
 
+  /* ---------- 未登录修改密码 ---------- */
+  const submitPassword = async () => {
+    if (!pwdAccount.trim() || !pwdOld || !pwdNew) {
+      setPwdStatus({ text: '请填写账号、原密码和新密码', tone: 'warn' })
+      return
+    }
+    if (pwdNew.length < 6) {
+      setPwdStatus({ text: '新密码至少 6 位', tone: 'warn' })
+      return
+    }
+    if (pwdNew !== pwdConfirm) {
+      setPwdStatus({ text: '两次输入的新密码不一致', tone: 'warn' })
+      return
+    }
+    setPwdBusy(true)
+    try {
+      await changePassword(pwdAccount.trim(), pwdOld, pwdNew, role)
+      setPwdStatus({ text: '密码已修改，请使用新密码登录', tone: 'ok' })
+      setPwdOld('')
+      setPwdNew('')
+      setPwdConfirm('')
+      setPassword('')
+    } catch (err) {
+      setPwdStatus({ text: err instanceof Error ? err.message : '修改密码失败', tone: 'warn' })
+    } finally {
+      setPwdBusy(false)
+    }
+  }
+
   return (
     <div className="stage" data-leaving={leaving ? 'true' : undefined}>
       {/* 背景与质感层 */}
@@ -436,6 +472,17 @@ export default function LoginPage() {
                 <button
                   type="button"
                   className="login-link"
+                  onClick={() => {
+                    setPwdAccount(account)
+                    setPwdStatus(null)
+                    setPwdOpen(true)
+                  }}
+                >
+                  修改密码
+                </button>
+                <button
+                  type="button"
+                  className="login-link"
                   onClick={() => setStatus({ text: '功能暂未开发', tone: 'warn' })}
                 >
                   忘记密码？
@@ -462,6 +509,70 @@ export default function LoginPage() {
           v0.1.0
         </span>
       </footer>
+
+      {pwdOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={() => setPwdOpen(false)}>
+          <div className="w-[420px] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-line px-5 py-4">
+              <h3 className="text-base font-bold text-ink">修改密码</h3>
+              <button type="button" onClick={() => setPwdOpen(false)} className="rounded p-1 text-ink-3 hover:bg-page">
+                ×
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <p className="text-xs text-ink-3">身份：{role === 'teacher' ? '老师' : '学生'}</p>
+              <input
+                type="text"
+                value={pwdAccount}
+                onChange={(e) => setPwdAccount(e.target.value)}
+                placeholder="账号"
+                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
+              />
+              <input
+                type="password"
+                value={pwdOld}
+                onChange={(e) => setPwdOld(e.target.value)}
+                placeholder="原密码"
+                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
+              />
+              <input
+                type="password"
+                value={pwdNew}
+                onChange={(e) => setPwdNew(e.target.value)}
+                placeholder="新密码（至少 6 位）"
+                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
+              />
+              <input
+                type="password"
+                value={pwdConfirm}
+                onChange={(e) => setPwdConfirm(e.target.value)}
+                placeholder="确认新密码"
+                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
+              />
+              {pwdStatus && (
+                <p className={`text-xs ${pwdStatus.tone === 'ok' ? 'text-emerald-600' : 'text-amber-600'}`}>{pwdStatus.text}</p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
+              <button
+                type="button"
+                onClick={() => setPwdOpen(false)}
+                className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitPassword()}
+                disabled={pwdBusy}
+                className="rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {pwdBusy ? '提交中…' : '确认修改'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
