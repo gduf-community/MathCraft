@@ -1,12 +1,12 @@
 import type { LucideIcon } from 'lucide-react'
-import { BookOpen, Database, FileText, Home, PanelLeftClose, PanelLeftOpen, Star, User } from 'lucide-react'
+import { BookOpen, Database, FileText, Home, PanelLeftClose, PanelLeftOpen, Settings, Star, User } from 'lucide-react'
 import { useApp } from '../../store/AppContext'
 
 const NAV_ITEMS: {
   key: string
   label: string
   icon: LucideIcon
-  tab?: 'generate' | 'bank' | 'records' | 'fav' | 'space' | 'me'
+  tab?: 'generate' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
 }[] = [
   { key: 'home', label: '智能出题', icon: Home, tab: 'generate' },
   { key: 'space', label: '学习空间', icon: BookOpen, tab: 'space' },
@@ -14,6 +14,7 @@ const NAV_ITEMS: {
   { key: 'paper', label: '组卷记录', icon: FileText, tab: 'records' },
   { key: 'bank', label: '题库管理', icon: Database, tab: 'bank' },
   { key: 'me', label: '个人中心', icon: User, tab: 'me' },
+  { key: 'settings', label: '设置', icon: Settings, tab: 'settings' },
 ]
 
 export default function SideNav() {

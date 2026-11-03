@@ -20,7 +20,7 @@ import { orderQuestionsByModules } from '../lib/order'
 import { useAuth } from './AuthContext'
 import type { AuthRole, AuthUser } from '../api/auth'
 
-export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me'
+export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
 
 export interface TypeConfig {
   checked: boolean
@@ -76,6 +76,14 @@ interface AppState {
   selectDoc: (id: string) => void
   /** 重新拉取题库列表（题库新建/加入/退出后侧边栏实时同步） */
   refreshKbs: () => Promise<void>
+
+  /** 设置页（社区设置模块）：定位引擎与未保存提醒 */
+  settingsTarget: { engine: string; request: number } | null
+  openEngineSettings: (engine?: string) => void
+  hasUnsavedChanges: boolean
+  setHasUnsavedChanges: (v: boolean) => void
+  /** 设置页保存后刷新题库列表的别名入口 */
+  refreshKnowledgeBases: () => Promise<void>
 
   typeConfigs: Record<QuestionType, TypeConfig>
   setTypeConfig: (type: QuestionType, patch: Partial<TypeConfig>) => void
@@ -203,6 +211,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [urgeUnread, setUrgeUnread] = useState(0)
   const [urgeItems, setUrgeItems] = useState<api.ApiUrge[]>([])
   const [pendingSpacePaper, setPendingSpacePaper] = useState<{ spaceId: string; paperId: string } | null>(null)
+  // 设置页：跳转定位（引擎）与未保存提醒
+  const [settingsTarget, setSettingsTarget] = useState<{ engine: string; request: number } | null>(null)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const toastTimer = useRef<number | undefined>(undefined)
   const activeBatchRef = useRef<string | null>(null)
   const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
@@ -306,9 +317,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearPendingSpacePaper = useCallback(() => setPendingSpacePaper(null), [])
 
+  /** 从知识库连接等入口跳转到设置页并定位到指定引擎 */
+  const openEngineSettings = useCallback((engine = 'llamaindex') => {
+    setSettingsTarget((previous) => ({ engine, request: (previous?.request ?? 0) + 1 }))
+    setActiveTab('settings')
+  }, [])
+
   const switchTab = useCallback(
     (tab: TabKey) => {
       setActiveTab(tab)
+      if (tab === 'settings') setSettingsTarget(null)
       if (tab === 'records') void loadRecords()
       if (tab === 'space') {
         void refreshSpaces()
@@ -913,6 +931,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectKb,
     selectDoc,
     refreshKbs,
+    settingsTarget,
+    openEngineSettings,
+    hasUnsavedChanges,
+    setHasUnsavedChanges,
+    refreshKnowledgeBases: refreshKbs,
     typeConfigs,
     setTypeConfig,
     difficulty,
