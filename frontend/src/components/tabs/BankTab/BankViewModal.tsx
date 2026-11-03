@@ -12,8 +12,8 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import * as bankMock from '../../../api/mock/bankMock'
-import type { ManagedBank } from '../../../api/mock/bankMock'
+import * as bankApi from '../../../api/banks'
+import type { ManagedBank } from '../../../api/banks'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
 import { useDocUpload } from './useDocUpload'
@@ -31,9 +31,9 @@ export default function BankViewModal({
   const [docs, setDocs] = useState(bank.docs)
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
-  const isAdmin = bankMock.isMyAdmin(bank)
-  const isSuper = bankMock.isMySuperAdmin(bank)
-  const canUpload = isAdmin
+  const isAdmin = bankApi.isMyAdmin(bank)
+  const isSuper = bankApi.isMySuperAdmin(bank)
+  const canUpload = bank.canUpload
   const { upload, start } = useDocUpload(bank.id, (doc) => setDocs((prev) => [...prev, doc]), showToast)
 
   const onDrop = (e: DragEvent) => {
@@ -41,7 +41,7 @@ export default function BankViewModal({
     setDragOver(false)
     if (!canUpload) return
     const file = e.dataTransfer.files?.[0]
-    if (file) start(file.name, `${(file.size / 1024 / 1024).toFixed(1)} MB`)
+    if (file) start(file)
   }
 
   return (
@@ -111,22 +111,22 @@ export default function BankViewModal({
             <SectionTitle icon={Users}>题库成员（{bank.members.length} 人）</SectionTitle>
             <ul className="divide-y divide-line/60 rounded-xl border border-line">
               {bank.members.map((m) => {
-                const isCreator = m.name === bank.creator
                 return (
                   <li key={m.id} className="flex items-center gap-2.5 px-3 py-2.5">
                     <Avatar name={m.name} size="sm" />
                     <span className="text-sm text-ink">{m.name}</span>
-                    {isCreator && (
+                    {/* 创建者以成员角色为准（转让后自动跟随新 owner） */}
+                    {m.isCreator && (
                       <span className="inline-flex items-center gap-0.5 rounded bg-primary-light px-1.5 py-0.5 text-[10px] font-semibold text-primary">
                         <Crown size={10} /> 创建者
                       </span>
                     )}
-                    {!isCreator && m.isAdmin && (
+                    {!m.isCreator && m.isAdmin && (
                       <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
-                        {bank.adminLevel === 'super' ? '超级管理员' : '普通管理员'}
+                        {m.adminLevel === 'super' ? '超级管理员' : '普通管理员'}
                       </span>
                     )}
-                    {m.name === bankMock.CURRENT_USER && (
+                    {m.isMe && (
                       <span className="rounded bg-page px-1.5 py-0.5 text-[10px] text-ink-3">我</span>
                     )}
                   </li>
@@ -148,7 +148,7 @@ export default function BankViewModal({
                   <button
                     type="button"
                     title="下载文档"
-                    onClick={() => showToast(`已开始下载「${d.name}」（演示）`)}
+                    onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
                     className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
                   >
                     <Download size={14} />
@@ -158,7 +158,7 @@ export default function BankViewModal({
                       type="button"
                       title="删除文档（超级管理员）"
                       onClick={async () => {
-                        await bankMock.removeDoc(bank.id, d.id)
+                        await bankApi.removeDoc(bank.id, d.id)
                         setDocs((prev) => prev.filter((x) => x.id !== d.id))
                         onChanged()
                       }}
@@ -195,7 +195,7 @@ export default function BankViewModal({
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0]
-                      if (f) start(f.name, `${(f.size / 1024 / 1024).toFixed(1)} MB`)
+                      if (f) start(f)
                       e.target.value = ''
                     }}
                   />

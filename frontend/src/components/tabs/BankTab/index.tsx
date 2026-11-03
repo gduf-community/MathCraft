@@ -1,7 +1,9 @@
 /** 题库管理页：我创建的题库 / 我加入的题库 两个标签页 */
 import { useCallback, useEffect, useState } from 'react'
 import {
+  Check,
   ClipboardList,
+  Copy,
   Folder,
   FolderPlus,
   Loader2,
@@ -11,8 +13,8 @@ import {
   UserMinus,
   Users,
 } from 'lucide-react'
-import * as bankMock from '../../../api/mock/bankMock'
-import type { ManagedBank } from '../../../api/mock/bankMock'
+import * as bankApi from '../../../api/banks'
+import type { ManagedBank } from '../../../api/banks'
 import { useApp } from '../../../store/AppContext'
 import { Avatar } from './shared'
 import BankEditModal from './BankEditModal'
@@ -39,8 +41,35 @@ function MemberCount({ count, capacity }: { count: number; capacity: number }) {
   )
 }
 
-export default function BankTab() {
+/** 题库编号：点击复制到剪贴板 */
+function BankCode({ code }: { code: string }) {
   const { showToast } = useApp()
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+    } catch {
+      /* 剪贴板不可用时忽略 */
+    }
+    setCopied(true)
+    showToast(`题库编号 ${code} 已复制`)
+    window.setTimeout(() => setCopied(false), 1200)
+  }
+  return (
+    <button
+      type="button"
+      title="点击复制题库编号"
+      onClick={() => void copy()}
+      className="inline-flex items-center gap-1 rounded px-1 font-mono text-sm text-ink-2 transition-colors hover:bg-primary-light hover:text-primary"
+    >
+      {code}
+      {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} className="text-ink-3" />}
+    </button>
+  )
+}
+
+export default function BankTab() {
+  const { showToast, refreshKbs } = useApp()
   const [tab, setTab] = useState<SubTab>('owned')
   const [owned, setOwned] = useState<ManagedBank[]>([])
   const [joined, setJoined] = useState<ManagedBank[]>([])
@@ -54,10 +83,12 @@ export default function BankTab() {
   const [joining, setJoining] = useState(false)
 
   const refresh = useCallback(async () => {
-    const [o, j] = await Promise.all([bankMock.listOwned(), bankMock.listJoined()])
+    const [o, j] = await Promise.all([bankApi.listOwned(), bankApi.listJoined()])
     setOwned(o)
     setJoined(j)
-  }, [])
+    // 同步刷新智能出题侧边栏的「选择题库文档」选项
+    void refreshKbs()
+  }, [refreshKbs])
 
   useEffect(() => {
     void refresh().finally(() => setLoading(false))
@@ -71,7 +102,7 @@ export default function BankTab() {
     }
     setJoining(true)
     try {
-      const bank = await bankMock.joinByCode(code)
+      const bank = await bankApi.joinByCode(code)
       showToast(`已加入题库「${bank.name}」`)
       setSearch('')
       await refresh()
@@ -81,8 +112,6 @@ export default function BankTab() {
       setJoining(false)
     }
   }
-
-  const filteredOwned = owned.filter((b) => b.name.includes(search.trim()))
 
   const rowButton = 'inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors'
   const editBtn = `${rowButton} border border-primary/30 bg-primary-light/50 text-primary hover:bg-primary-light`
@@ -118,25 +147,13 @@ export default function BankTab() {
         <div className="mt-4 rounded-xl border border-line/70 bg-white shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
           <div className="flex items-center justify-between gap-4 px-5 pt-4 pb-3">
             <h3 className="text-sm font-bold text-ink">题库管理</h3>
-            <div className="flex items-center gap-2.5">
-              <div className="relative">
-                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="请输入题库名称进行搜索"
-                  className="w-56 rounded-lg border border-line py-2 pl-8 pr-3 text-sm text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-primary"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => setCreateOpen(true)}
-                className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
-              >
-                <FolderPlus size={15} /> 新建题库
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
+            >
+              <FolderPlus size={15} /> 新建题库
+            </button>
           </div>
 
           <table className="w-full">
@@ -157,14 +174,14 @@ export default function BankTab() {
                   </td>
                 </tr>
               )}
-              {!loading && filteredOwned.length === 0 && (
+              {!loading && owned.length === 0 && (
                 <tr>
                   <td colSpan={4} className="py-10 text-center text-sm text-ink-3">
-                    {search ? '没有匹配的题库' : '还没有创建题库'}
+                    还没有创建题库
                   </td>
                 </tr>
               )}
-              {filteredOwned.map((b) => (
+              {owned.map((b) => (
                 <tr key={b.id} className="border-b border-line/50 transition-colors last:border-0 hover:bg-page/50">
                   <td className="px-5 py-3.5">
                     <div className="flex items-center gap-3">
@@ -172,7 +189,9 @@ export default function BankTab() {
                       <span className="text-sm font-medium text-ink">{b.name}</span>
                     </div>
                   </td>
-                  <td className="px-3 py-3.5 text-sm text-ink-2">{b.code}</td>
+                  <td className="px-3 py-3.5">
+                    <BankCode code={b.code} />
+                  </td>
                   <td className="px-3 py-3.5">
                     <MemberCount count={b.memberCount} capacity={b.capacity} />
                   </td>
@@ -254,7 +273,9 @@ export default function BankTab() {
                       <span className={`text-sm font-medium ${b.quitted ? 'text-ink-3' : 'text-ink'}`}>{b.name}</span>
                     </div>
                   </td>
-                  <td className="px-3 py-3.5 text-sm text-ink-2">{b.code}</td>
+                  <td className="px-3 py-3.5">
+                    <BankCode code={b.code} />
+                  </td>
                   <td className="px-3 py-3.5">
                     <MemberCount count={b.memberCount} capacity={b.capacity} />
                   </td>
@@ -303,7 +324,7 @@ export default function BankTab() {
           message={`确定删除题库「${deleteTarget.name}」吗？题库内的文档与索引将一并移除，操作不可恢复。`}
           confirmText="确认删除"
           onConfirm={async () => {
-            await bankMock.deleteBank(deleteTarget.id)
+            await bankApi.deleteBank(deleteTarget.id)
             showToast(`题库「${deleteTarget.name}」已删除`)
             await refresh()
           }}
@@ -316,7 +337,7 @@ export default function BankTab() {
           message={`确定退出题库「${quitTarget.name}」吗？退出后需重新申请加入。`}
           confirmText="确认退出"
           onConfirm={async () => {
-            await bankMock.quitBank(quitTarget.id)
+            await bankApi.quitBankById(quitTarget.id)
             showToast(`已退出题库「${quitTarget.name}」`)
             await refresh()
           }}

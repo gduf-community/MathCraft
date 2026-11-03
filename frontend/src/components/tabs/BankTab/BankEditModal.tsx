@@ -16,8 +16,8 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import * as bankMock from '../../../api/mock/bankMock'
-import type { AdminLevel, ManagedBank } from '../../../api/mock/bankMock'
+import * as bankApi from '../../../api/banks'
+import type { AdminLevel, ManagedBank } from '../../../api/banks'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
 import ConfirmDialog from '../../ui/ConfirmDialog'
@@ -54,7 +54,7 @@ export default function BankEditModal({
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files?.[0]
-    if (file) start(file.name, `${(file.size / 1024 / 1024).toFixed(1)} MB`)
+    if (file) start(file)
   }
 
   const save = async () => {
@@ -62,7 +62,7 @@ export default function BankEditModal({
       showToast('题库名称不能为空')
       return
     }
-    await bankMock.updateBank(bank.id, { name: name.trim(), adminLevel })
+    await bankApi.updateBank(bank.id, { name: name.trim(), adminLevel })
     showToast('题库信息已保存')
     onChanged()
     onClose()
@@ -142,8 +142,8 @@ export default function BankEditModal({
             <SectionTitle icon={Users}>题库成员（{members.length} 人）</SectionTitle>
             <ul className="divide-y divide-line/60 rounded-xl border border-line">
               {members.map((m) => {
-                const isCreator = m.name === bank.creator
-                const isMe = m.name === bankMock.CURRENT_USER
+                const isCreator = m.isCreator
+                const isMe = m.isMe
                 return (
                   <li key={m.id} className="flex items-center justify-between gap-2 px-3 py-2.5">
                     <div className="flex items-center gap-2.5">
@@ -169,7 +169,7 @@ export default function BankEditModal({
                             title="取消管理员"
                             onClick={async () => {
                               try {
-                                await bankMock.unsetAdmin(bank.id, m.id)
+                                await bankApi.unsetAdmin(bank.id, m.id)
                                 setMembers((prev) => prev.map((x) => (x.id === m.id ? { ...x, isAdmin: false } : x)))
                                 showToast(`已取消 ${m.name} 的管理员权限`)
                               } catch (err) {
@@ -185,7 +185,7 @@ export default function BankEditModal({
                             type="button"
                             title={`设为${levelLabel}`}
                             onClick={async () => {
-                              await bankMock.setAdmin(bank.id, m.id)
+                              await bankApi.setAdmin(bank.id, m.id)
                               setMembers((prev) => prev.map((x) => (x.id === m.id ? { ...x, isAdmin: true } : x)))
                               showToast(`已将 ${m.name} 设为${levelLabel}`)
                             }}
@@ -207,7 +207,7 @@ export default function BankEditModal({
                           title="移出题库"
                           onClick={async () => {
                             try {
-                              await bankMock.removeMember(bank.id, m.id)
+                              await bankApi.removeMember(bank.id, m.id)
                               setMembers((prev) => prev.filter((x) => x.id !== m.id))
                               showToast(`已将 ${m.name} 移出题库`)
                               onChanged()
@@ -241,7 +241,7 @@ export default function BankEditModal({
                   <button
                     type="button"
                     title="下载文档"
-                    onClick={() => showToast(`已开始下载「${d.name}」（演示）`)}
+                    onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
                     className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
                   >
                     <Download size={14} />
@@ -250,7 +250,7 @@ export default function BankEditModal({
                     type="button"
                     title="删除文档"
                     onClick={async () => {
-                      await bankMock.removeDoc(bank.id, d.id)
+                      await bankApi.removeDoc(bank.id, d.id)
                       setDocs((prev) => prev.filter((x) => x.id !== d.id))
                       onChanged()
                     }}
@@ -277,14 +277,15 @@ export default function BankEditModal({
             >
               <FileUp size={20} className="text-primary" />
               <p className="text-sm text-ink-2">点击选择或拖拽文件到此处上传</p>
-              <p className="text-xs text-ink-3">支持 PDF / DOCX / XLSX / MD，上传后自动向量化</p>
+              <p className="text-xs text-ink-3">支持 PDF / DOCX / XLSX / MD / TXT，上传后自动向量化</p>
               <input
                 ref={fileInput}
                 type="file"
+                accept=".pdf,.docx,.xlsx,.md,.markdown,.txt"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0]
-                  if (f) start(f.name, `${(f.size / 1024 / 1024).toFixed(1)} MB`)
+                  if (f) start(f)
                   e.target.value = ''
                 }}
               />
@@ -341,7 +342,7 @@ export default function BankEditModal({
           confirmText="确认转让"
           danger={false}
           onConfirm={async () => {
-            await bankMock.transferBank(bank.id, transferTarget.id)
+            await bankApi.transferBank(bank.id, transferTarget.id)
             showToast(`题库已转让给 ${transferTarget.name}`)
             onChanged()
             onClose()

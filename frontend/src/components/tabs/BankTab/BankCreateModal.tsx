@@ -1,13 +1,13 @@
-/** 新建题库弹窗：填写名称（编号自动生成）、上传文档（暂存，随创建一并入库）；不含权限与成员设置 */
+/** 新建题库弹窗：先建题库，再逐个上传暂存文件并等待入库完成。 */
 import { useRef, useState } from 'react'
 import type { DragEvent } from 'react'
-import { FileUp, FolderPlus, Trash2, X } from 'lucide-react'
-import * as bankMock from '../../../api/mock/bankMock'
-import type { BankDoc } from '../../../api/mock/bankMock'
+import { FileUp, FolderPlus, Loader2, Trash2, X } from 'lucide-react'
+import * as bankApi from '../../../api/banks'
+import { formatFileSize } from '../../../api/backend'
 import { useApp } from '../../../store/AppContext'
 import { FormatBadge, SectionTitle } from './shared'
 
-const FORMATS = ['PDF', 'DOCX', 'XLSX', 'MD']
+const FORMATS = ['PDF', 'DOCX', 'XLSX', 'MD', 'TXT']
 const fmtOf = (name: string) => {
   const ext = name.split('.').pop()?.toUpperCase() ?? 'PDF'
   return FORMATS.includes(ext) ? ext : 'PDF'
@@ -17,57 +17,26 @@ interface UploadState {
   name: string
   phase: 'upload' | 'vector' | 'done'
   pct: number
+  stage?: string
 }
 
 export default function BankCreateModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const { showToast } = useApp()
   const year = new Date().getFullYear()
   const [name, setName] = useState('')
-  const [docs, setDocs] = useState<BankDoc[]>([])
+  const [files, setFiles] = useState<File[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [upload, setUpload] = useState<UploadState | null>(null)
-  const uploadState = useRef<UploadState | null>(null)
+  const [submitting, setSubmitting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
-  const start = (name: string, size: string) => {
-    if (uploadState.current) return
-    const format = fmtOf(name)
-    uploadState.current = { name, phase: 'upload', pct: 0 }
-    setUpload({ ...uploadState.current })
-    const iv = window.setInterval(() => {
-      const u = uploadState.current
-      if (!u) {
-        clearInterval(iv)
-        return
-      }
-      if (u.phase === 'upload') {
-        u.pct = Math.min(100, u.pct + 8 + Math.random() * 10)
-        if (u.pct >= 100) {
-          u.phase = 'vector'
-          u.pct = 0
-        }
-      } else if (u.phase === 'vector') {
-        u.pct = Math.min(100, u.pct + 6 + Math.random() * 9)
-        if (u.pct >= 100) {
-          u.phase = 'done'
-          u.pct = 100
-          clearInterval(iv)
-          setDocs((prev) => [...prev, { id: `d-${Date.now()}`, name, format, size }])
-          window.setTimeout(() => {
-            uploadState.current = null
-            setUpload(null)
-          }, 500)
-        }
-      }
-      setUpload({ ...u })
-    }, 160)
-  }
+  const addFile = (file: File) => setFiles((prev) => [...prev, file])
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files?.[0]
-    if (file) start(file.name, `${(file.size / 1024 / 1024).toFixed(1)} MB`)
+    if (file) addFile(file)
   }
 
   const submit = async () => {
@@ -75,10 +44,28 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
       showToast('请输入题库名称')
       return
     }
-    await bankMock.createBank(name.trim(), docs.map((d) => ({ name: d.name, format: d.format, size: d.size })))
-    showToast(`题库「${name.trim()}」创建成功`)
-    onChanged()
-    onClose()
+    setSubmitting(true)
+    try {
+      const bank = await bankApi.createBank(name.trim())
+      for (const file of files) {
+        setUpload({ name: file.name, phase: 'upload', pct: 0 })
+        await bankApi.uploadAndWait(bank.id, file, (phase, pct, stage) =>
+          setUpload({ name: file.name, phase, pct, stage }),
+        )
+      }
+      showToast(
+        files.length
+          ? `题库「${name.trim()}」创建成功，${files.length} 个文档已入库`
+          : `题库「${name.trim()}」创建成功`,
+      )
+      onChanged()
+      onClose()
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '创建题库失败')
+    } finally {
+      setSubmitting(false)
+      setUpload(null)
+    }
   }
 
   return (
@@ -87,7 +74,6 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
         className="flex max-h-[80vh] w-[520px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* 弹窗头部 */}
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <div className="flex items-center gap-2">
             <FolderPlus size={18} className="text-primary" />
@@ -99,7 +85,6 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-          {/* 基本信息 */}
           <section className="space-y-2.5">
             <SectionTitle icon={FolderPlus}>基本信息</SectionTitle>
             <label className="block">
@@ -124,19 +109,18 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
             </label>
           </section>
 
-          {/* 文档上传 */}
           <section className="space-y-2.5">
-            <SectionTitle icon={FileUp}>上传文档（{docs.length}）</SectionTitle>
-            {docs.length === 0 && <p className="text-xs text-ink-3">题库文档为空，可现在上传，也可以创建后再上传</p>}
+            <SectionTitle icon={FileUp}>上传文档（{files.length}）</SectionTitle>
+            {files.length === 0 && <p className="text-xs text-ink-3">题库文档为空，可现在上传，也可以创建后再上传</p>}
             <ul className="space-y-1.5">
-              {docs.map((d) => (
-                <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
-                  <FormatBadge format={d.format} />
+              {files.map((d, idx) => (
+                <li key={`${d.name}-${idx}`} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
+                  <FormatBadge format={fmtOf(d.name)} />
                   <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
-                  <span className="text-xs text-ink-3">{d.size}</span>
+                  <span className="text-xs text-ink-3">{formatFileSize(d.size)}</span>
                   <button
                     type="button"
-                    onClick={() => setDocs((prev) => prev.filter((x) => x.id !== d.id))}
+                    onClick={() => setFiles((prev) => prev.filter((_x, i) => i !== idx))}
                     className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
                     title="移除文档"
                   >
@@ -159,14 +143,15 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
             >
               <FileUp size={20} className="text-primary" />
               <p className="text-sm text-ink-2">点击选择或拖拽文件到此处上传</p>
-              <p className="text-xs text-ink-3">支持 PDF / DOCX / XLSX / MD，上传后自动向量化</p>
+              <p className="text-xs text-ink-3">支持 PDF / DOCX / XLSX / MD / TXT，创建后自动解析入库</p>
               <input
                 ref={fileInput}
                 type="file"
+                accept=".pdf,.docx,.xlsx,.md,.markdown,.txt"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0]
-                  if (f) start(f.name, `${(f.size / 1024 / 1024).toFixed(1)} MB`)
+                  if (f) addFile(f)
                   e.target.value = ''
                 }}
               />
@@ -177,22 +162,22 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
                   <span className="truncate font-medium text-ink">{upload.name}</span>
                   <span className={upload.phase === 'done' ? 'text-emerald-600' : 'text-primary'}>
                     {upload.phase === 'upload' && `上传中 ${Math.floor(upload.pct)}%`}
-                    {upload.phase === 'vector' && `向量化中 ${Math.floor(upload.pct)}%`}
+                    {upload.phase === 'vector' && `入库中 ${Math.floor(upload.pct)}%`}
                     {upload.phase === 'done' && '已完成'}
                   </span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-white">
                   <div
                     className={`h-full rounded-full transition-all duration-150 ${upload.phase === 'vector' ? 'bg-violet-500' : 'bg-primary'}`}
-                    style={{ width: `${upload.pct}%` }}
+                    style={{ width: `${upload.phase === 'done' ? 100 : upload.pct}%` }}
                   />
                 </div>
+                {upload.stage && <p className="mt-1 text-[11px] text-ink-3">{upload.stage}</p>}
               </div>
             )}
           </section>
         </div>
 
-        {/* 底部操作 */}
         <div className="flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
           <button
             type="button"
@@ -204,9 +189,11 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
           <button
             type="button"
             onClick={() => void submit()}
-            className="rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
+            disabled={submitting}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6] disabled:opacity-60"
           >
-            新建
+            {submitting && <Loader2 size={14} className="animate-spin" />}
+            {submitting ? '创建中…' : '新建'}
           </button>
         </div>
       </div>
