@@ -1,12 +1,12 @@
 import type { LucideIcon } from 'lucide-react'
-import { BookOpen, Database, FileText, Home, PanelLeftClose, PanelLeftOpen, Settings, Star, User } from 'lucide-react'
+import { BookOpen, Database, FileText, Home, PanelLeftClose, PanelLeftOpen, Star, User } from 'lucide-react'
 import { useApp } from '../../store/AppContext'
 
 const NAV_ITEMS: {
   key: string
   label: string
   icon: LucideIcon
-  tab?: 'generate' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
+  tab?: 'generate' | 'bank' | 'records' | 'fav' | 'space' | 'me'
 }[] = [
   { key: 'home', label: '智能出题', icon: Home, tab: 'generate' },
   { key: 'space', label: '学习空间', icon: BookOpen, tab: 'space' },
@@ -14,11 +14,10 @@ const NAV_ITEMS: {
   { key: 'paper', label: '组卷记录', icon: FileText, tab: 'records' },
   { key: 'bank', label: '题库管理', icon: Database, tab: 'bank' },
   { key: 'me', label: '个人中心', icon: User, tab: 'me' },
-  { key: 'settings', label: '设置', icon: Settings, tab: 'settings' },
 ]
 
 export default function SideNav() {
-  const { navCollapsed, toggleNav, showToast, activeTab, setActiveTab } = useApp()
+  const { navCollapsed, toggleNav, activeTab, setActiveTab } = useApp()
   return (
     <nav
       className={`z-10 flex shrink-0 flex-col border-r border-line/60 bg-white py-3 transition-all duration-300 ${
@@ -34,11 +33,7 @@ export default function SideNav() {
                 type="button"
                 title={navCollapsed ? label : undefined}
                 onClick={() => {
-                  if (tab) {
-                    setActiveTab(tab)
-                  } else {
-                    showToast('演示版当前仅开放「智能出题」与「题库管理」模块')
-                  }
+                  if (tab) setActiveTab(tab)
                 }}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
                   active

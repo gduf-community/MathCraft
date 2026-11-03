@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { api } from '../api/client'
-import { chat } from '../api/httpAdapter'
+import * as api from '../api/backend'
+import * as banksApi from '../api/banks'
 import type {
   AssembleRecord,
   ChatMessage,
@@ -16,12 +16,11 @@ import type {
   StudySpace,
   TeacherProfile,
 } from '../types'
-import defaultAvatar from '../assets/teacher_avatar.png'
 import { orderQuestionsByModules } from '../lib/order'
 import { useAuth } from './AuthContext'
 import type { AuthRole, AuthUser } from '../api/auth'
 
-export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
+export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me'
 
 export interface TypeConfig {
   checked: boolean
@@ -37,24 +36,37 @@ const initialTypeConfigs = (): Record<QuestionType, TypeConfig> => ({
   essay: { checked: false, count: 1 },
 })
 
+function buildProfile(user: AuthUser | null): TeacherProfile {
+  return {
+    name: user?.displayName ?? '',
+    avatar: user?.avatarUrl ?? '',
+    gender: (user?.gender as '男' | '女') || '男',
+    phone: user?.phone ?? '',
+    email: user?.email ?? '',
+    teacherId: user?.userNo ?? '',
+    school: user?.school ?? '',
+    identity: user?.identity ?? '',
+  }
+}
+
+function profileFromApi(user: api.ApiUser, token: string): TeacherProfile {
+  const mapped = api.mapAuthUser(user, token)
+  return buildProfile(mapped)
+}
+
+function dedupeQuestions(prev: Question[], next: Question[]): Question[] {
+  const seen = new Set(prev.map((q) => q.id))
+  return [...prev, ...next.filter((q) => !seen.has(q.id))]
+}
+
 interface AppState {
-  // 布局
   activeTab: TabKey
   setActiveTab: (t: TabKey) => void
-  /** 设置页未保存更改标记（切换导航与离开页面前确认） */
-  hasUnsavedChanges: boolean
-  setHasUnsavedChanges: (dirty: boolean) => void
-  /** 设置页跳转目标：引擎名 + 请求序号，用于重复跳转时强制重挂载 */
-  settingsTarget: { engine: string; request: number } | null
-  openEngineSettings: (engine?: string) => void
-  /** 重新拉取题库（知识库）列表，供设置页改动后刷新 */
-  refreshKnowledgeBases: () => Promise<void>
   navCollapsed: boolean
   toggleNav: () => void
   paramsCollapsed: boolean
   toggleParams: () => void
 
-  // 知识库与文档
   kbs: KnowledgeBase[]
   docs: KbDocument[]
   spaces: StudySpace[]
@@ -62,7 +74,9 @@ interface AppState {
   selectedDocId: string
   selectKb: (id: string) => void
   selectDoc: (id: string) => void
-  // 出题参数
+  /** 重新拉取题库列表（题库新建/加入/退出后侧边栏实时同步） */
+  refreshKbs: () => Promise<void>
+
   typeConfigs: Record<QuestionType, TypeConfig>
   setTypeConfig: (type: QuestionType, patch: Partial<TypeConfig>) => void
   difficulty: Difficulty
@@ -70,26 +84,21 @@ interface AppState {
   knowledgeScope: string
   setKnowledgeScope: (v: string) => void
   generating: boolean
-  /** 生成进度：null=空闲；percent 为后端打点的真实百分比 */
   genProgress: { percent: number; stage: string } | null
   generate: (opts?: { silent?: boolean }) => Promise<boolean>
 
-  // 题目与筛选
   questions: Question[]
   favorites: Question[]
-  /** 收藏分组：default 组固定存在 */
   favGroups: FavoriteGroup[]
-  addFavGroup: () => FavoriteGroup
+  addFavGroup: () => Promise<FavoriteGroup>
   renameFavGroup: (id: string, name: string) => void
   removeFavGroup: (id: string) => void
-  /** 点亮收藏：写入收藏夹并归入指定分组，同步全局题目星标 */
   addToFavorites: (q: Question, groupId: string) => void
-  /** 取消收藏：从收藏夹移除并同步各处星标 */
   unfavoriteQuestion: (questionId: string) => void
-  /** 已收藏题目更换分组 */
   setFavoriteGroup: (questionId: string, groupId: string) => void
   profile: TeacherProfile
   updateProfile: (patch: Partial<TeacherProfile>) => void
+
   selectedIds: string[]
   toggleSelect: (id: string) => void
   selectAll: (ids: string[]) => void
@@ -102,7 +111,6 @@ interface AppState {
   deleteQuestion: (id: string) => Promise<void>
   toggleStar: (id: string) => Promise<void>
 
-  // 组卷
   records: AssembleRecord[]
   publishPaper: (
     modules: PaperModule[],
@@ -112,120 +120,57 @@ interface AppState {
     published?: boolean,
     questions?: Question[],
     examWindow?: ExamWindow | null,
+    allowReview?: boolean,
+    allowRetake?: boolean,
   ) => Promise<boolean>
   clearAll: () => void
   deleteSelected: () => Promise<void>
   uploadDocument: (file: File) => Promise<void>
-  deleteRecord: (id: string) => Promise<void>
+  deleteRecord: (id: string, opts?: { withPaper?: boolean }) => Promise<void>
+  deleteRecords: (ids: string[]) => Promise<void>
   deleteRecordQuestions: (recordId: string, ids: string[]) => void
   publishRecords: (ids: string[]) => void
-  /** 当前登录角色；null 表示未登录（理论上主应用仅在登录后挂载） */
   role: AuthRole | null
-  createSpace: (name: string, capacity: number) => StudySpace
+  createSpace: (name: string, capacity: number) => Promise<StudySpace>
   updateRecord: (record: AssembleRecord) => void
-  /** 按空间编号加入空间（学生演示流程），成功返回空间，编号不存在返回 null */
-  joinSpaceByCode: (code: string) => StudySpace | null
-  /** 学生退出空间：从空间列表移除 */
+  joinSpaceByCode: (code: string) => Promise<StudySpace | null>
   leaveSpace: (id: string) => void
-  /** 教师解散空间：空间整体移除（演示态），关联的组卷记录保留 */
   dissolveSpace: (id: string) => void
   removeSpaceMember: (spaceId: string, name: string) => void
   renameSpace: (spaceId: string, newName: string) => void
-  /** 学生交卷后标记作答状态（重新作答时置回 false） */
   markRecordAnswered: (recordId: string, answered: boolean) => void
   openPaperId: string | null
   requestOpenPaper: (recordId: string) => void
   clearOpenPaper: () => void
 
-  // 对话
+  /** 催交：学生未读角标、通知列表、清除红点 */
+  urgeUnread: number
+  urgeItems: api.ApiUrge[]
+  clearUrgeBadge: () => void
+  /** 单条催交标记已读（点击立即查看时消除该条红点） */
+  markUrgeRead: (urgeId: string) => void
+  /** 删除单条催交通知 */
+  deleteUrge: (urgeId: string) => void
+  /** 通知「立即查看」：跳转到学习空间中该试卷的作答标签页 */
+  pendingSpacePaper: { spaceId: string; paperId: string } | null
+  requestOpenSpacePaper: (spaceId: string, paperId: string) => void
+  clearPendingSpacePaper: () => void
+
   messages: ChatMessage[]
   botThinking: boolean
   inputDraft: string
   setInputDraft: (v: string) => void
   sendChat: (text: string) => Promise<void>
 
-  // 全局提示
   toast: { id: number; text: string } | null
   showToast: (text: string) => void
 }
 
 const AppContext = createContext<AppState | null>(null)
 
-/** 按登录身份生成教师资料：学生用姓氏头像（avatar 留空），教师沿用默认头像 */
-function buildProfile(user: AuthUser | null): TeacherProfile {
-  if (user?.role === 'student') {
-    return {
-      name: user.displayName,
-      avatar: '',
-      gender: '男',
-      phone: '13800138000',
-      email: 'xiaoming@stu.edu.cn',
-      teacherId: 'ST20250001',
-      school: '广东金融学院',
-      identity: user.identity,
-    }
-  }
-  return {
-    name: user?.displayName ?? '张老师',
-    avatar: defaultAvatar,
-    gender: '男',
-    phone: '13800138000',
-    email: 'zhang@163.com',
-    teacherId: 'TK20240001',
-    school: '广东金融学院',
-    identity: user?.identity ?? '教师',
-  }
-}
-
-/** AppProvider 挂载在 AuthProvider 内，登录态已就绪 */
-function useAuthUser(): AuthUser | null {
-  return useAuth().user
-}
-
 export function AppProvider({ children }: { children: ReactNode }) {
-  const user = useAuthUser()
-  const [activeTab, setActiveTabState] = useState<TabKey>('generate')
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const [settingsTarget, setSettingsTarget] = useState<{ engine: string; request: number } | null>(null)
-  const dirtyRef = useRef(false)
-  dirtyRef.current = hasUnsavedChanges
-  const confirmLeave = useCallback(
-    () => !dirtyRef.current || window.confirm('当前页面有未保存的更改，确定离开并放弃这些更改？'),
-    [],
-  )
-  const setActiveTab = useCallback(
-    (tab: TabKey) => {
-      if (tab === activeTab || !confirmLeave()) return
-      setHasUnsavedChanges(false)
-      if (tab === 'settings') setSettingsTarget(null)
-      setActiveTabState(tab)
-    },
-    [activeTab, confirmLeave],
-  )
-  /** 从知识库连接等入口跳转到设置页并定位到指定引擎 */
-  const openEngineSettings = useCallback(
-    (engine = 'llamaindex') => {
-      if (!confirmLeave()) return
-      setHasUnsavedChanges(false)
-      setSettingsTarget((previous) => ({ engine, request: (previous?.request ?? 0) + 1 }))
-      setActiveTabState('settings')
-    },
-    [confirmLeave],
-  )
-  /** 设置页保存模型配置后刷新题库（知识库）列表 */
-  const refreshKnowledgeBases = useCallback(async () => {
-    setKbs(await api.listAllBanks())
-  }, [])
-
-  useEffect(() => {
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dirtyRef.current) return
-      event.preventDefault()
-      event.returnValue = ''
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [])
+  const user = useAuth().user
+  const [activeTab, setActiveTab] = useState<TabKey>('generate')
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [paramsCollapsed, setParamsCollapsed] = useState(false)
 
@@ -243,49 +188,186 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
-  // 收藏分组：default 组固定存在，其余由用户在收藏页新建
-  const [favGroups, setFavGroups] = useState<FavoriteGroup[]>([{ id: 'default', name: '默认' }])
-  const [profile, setProfile] = useState<TeacherProfile>(() => buildProfile(useAuthUser()))
+  const [favGroups, setFavGroups] = useState<FavoriteGroup[]>([])
+  const [profile, setProfile] = useState<TeacherProfile>(() => buildProfile(user))
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
   const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
 
   const [records, setRecords] = useState<AssembleRecord[]>([])
-
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [botThinking, setBotThinking] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
-
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null)
+  const [openPaperId, setOpenPaperId] = useState<string | null>(null)
+  const [urgeUnread, setUrgeUnread] = useState(0)
+  const [urgeItems, setUrgeItems] = useState<api.ApiUrge[]>([])
+  const [pendingSpacePaper, setPendingSpacePaper] = useState<{ spaceId: string; paperId: string } | null>(null)
   const toastTimer = useRef<number | undefined>(undefined)
-  // 对话出题的槽位状态，由后端每轮回传，前端原样带回
-  const chatSlotState = useRef<Record<string, unknown>>({})
+  const activeBatchRef = useRef<string | null>(null)
+  const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
 
   const showToast = useCallback((text: string) => {
-    setToast({ id: Date.now(), text })
+    // 相同文案连续触发时只重置计时，不重新挂载，避免 toast 重复闪现
+    setToast((prev) => (prev?.text === text ? prev : { id: Date.now(), text }))
     window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
   }, [])
 
-  // 初始化：加载题库联动知识库与学习空间；知识库默认不选中（下拉显示未选择）
+  const loadFavorites = useCallback(async () => {
+    const [apiFavs, apiGroups] = await Promise.all([api.listFavorites(), api.listFavoriteGroups()])
+    setFavorites(apiFavs.map(api.mapQuestion))
+    setFavGroups(apiGroups.map((g) => ({ id: g.id, name: g.name, isDefault: g.is_default })))
+  }, [])
+
+  const loadRecords = useCallback(async () => {
+    const rows = await api.listPapers()
+    const details = await Promise.all(
+      rows.map(async (p) => {
+        try {
+          return await api.getPaperApi(p.id)
+        } catch {
+          return p
+        }
+      }),
+    )
+    setRecords(details.map(api.mapPaper))
+  }, [])
+
+  const refreshSpaces = useCallback(async () => {
+    const rows = await api.listSpaces()
+    setSpaces(rows.map(api.mapSpace))
+  }, [])
+
+  // 题库列表刷新：新建/加入/退出题库后侧边栏「选择题库文档」实时同步
+  const refreshKbs = useCallback(async () => {
+    try {
+      const bankRows = await api.listBanks('all')
+      setKbs(bankRows.map(api.mapBankToKnowledgeBase))
+    } catch {
+      /* 刷新失败静默忽略，下次进入页面会重新加载 */
+    }
+  }, [])
+
+  // 催交：学生每 30 秒轮询角标与通知列表
+  const loadUrges = useCallback(async () => {
+    try {
+      const feed = await api.listMyUrges()
+      setUrgeUnread(feed.unread_count)
+      setUrgeItems(feed.items)
+    } catch {
+      /* 轮询失败静默忽略 */
+    }
+  }, [])
+
+  const clearUrgeBadge = useCallback(() => {
+    void api.clearUrgeBadge().then(loadUrges).catch(() => undefined)
+  }, [loadUrges])
+
+  const markUrgeRead = useCallback(
+    (urgeId: string) => {
+      void api
+        .markUrgeRead(urgeId)
+        .then(loadUrges)
+        .catch(() => undefined)
+    },
+    [loadUrges],
+  )
+
+  const deleteUrge = useCallback(
+    (urgeId: string) => {
+      void api
+        .deleteUrge(urgeId)
+        .then(() => {
+          setUrgeItems((prev) => prev.filter((u) => u.id !== urgeId))
+          return loadUrges()
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '删除通知失败'))
+    },
+    [loadUrges, showToast],
+  )
+
   useEffect(() => {
+    if (user?.role !== 'student') {
+      setUrgeUnread(0)
+      setUrgeItems([])
+      return
+    }
+    void loadUrges()
+    const timer = window.setInterval(() => void loadUrges(), 30000)
+    return () => window.clearInterval(timer)
+  }, [user, loadUrges])
+
+  const requestOpenSpacePaper = useCallback((spaceId: string, paperId: string) => {
+    setPendingSpacePaper({ spaceId, paperId })
+    // 切到学习空间页：未打开时挂载 SpaceTab 后由其消费 pending 打开作答标签
+    setActiveTab('space')
+  }, [])
+
+  const clearPendingSpacePaper = useCallback(() => setPendingSpacePaper(null), [])
+
+  const switchTab = useCallback(
+    (tab: TabKey) => {
+      setActiveTab(tab)
+      if (tab === 'records') void loadRecords()
+      if (tab === 'space') {
+        void refreshSpaces()
+        void loadRecords()
+      }
+    },
+    [loadRecords, refreshSpaces],
+  )
+
+  useEffect(() => {
+    if (!user) return
+    setProfile(buildProfile(user))
+    banksApi.setCurrentUser(user.displayName)
     void (async () => {
-      const [kbList, spaceList] = await Promise.all([api.listAllBanks(), api.listStudySpaces()])
-      // 题库联动端点异常时回退到内置知识库列表
-      const bases = kbList.length ? kbList : await api.listKnowledgeBases()
-      setKbs(bases)
-      setSpaces(spaceList)
+      try {
+        const [bankRows, latest] = await Promise.all([api.listBanks('all'), api.latestBatch()])
+        setKbs(bankRows.map(api.mapBankToKnowledgeBase))
+        await Promise.all([loadFavorites(), loadRecords(), refreshSpaces()])
+        if (latest.batch_id) {
+          activeBatchRef.current = latest.batch_id
+          setQuestions(latest.questions.map(api.mapQuestion))
+        }
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加载数据失败，请检查后端服务')
+      }
     })()
-  }, [])
+  }, [user, loadFavorites, loadRecords, refreshSpaces, showToast])
 
-  const selectKb = useCallback(async (id: string) => {
-    setSelectedKbId(id)
-    setSelectedDocId('')
-    // 后端未收录该题库时视为空文档列表，不阻塞界面
-    setDocs(await api.listDocuments(id).catch(() => []))
-  }, [])
+  const selectKb = useCallback(
+    (id: string) => {
+      setSelectedKbId(id)
+      setSelectedDocId('')
+      setDocs([])
+      if (!id) return
+      void api
+        .listDocuments(id)
+        .then((rows) => setDocs(rows.map(api.mapDocument)))
+        .catch((err) => showToast(err instanceof Error ? err.message : '加载文档失败'))
+    },
+    [showToast],
+  )
 
-  const selectDoc = useCallback((id: string) => setSelectedDocId(id), [])
+  const selectDoc = useCallback(
+    (id: string) => {
+      setSelectedDocId(id)
+      if (!id) return
+      void api
+        .latestBatch(selectedKbId || undefined, id)
+        .then((latest) => {
+          if (latest.batch_id) {
+            activeBatchRef.current = latest.batch_id
+            setQuestions(latest.questions.map(api.mapQuestion))
+            setSelectedIds([])
+          }
+        })
+        .catch(() => undefined)
+    },
+    [selectedKbId],
+  )
 
   const setTypeConfig = useCallback((type: QuestionType, patch: Partial<TypeConfig>) => {
     setTypeConfigs((prev) => ({ ...prev, [type]: { ...prev[type], ...patch } }))
@@ -308,28 +390,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setGenerating(true)
       setGenProgress({ percent: 0, stage: '准备生成' })
       try {
-        const list = await api.generateQuestions(
-          {
-            // 题库即知识库：把所选题库 id 传给后端检索对应 collection
-            kbId: selectedKbId || undefined,
-            docId: doc.id,
-            docName: doc.name,
-            difficulty,
-            types,
-            scope: knowledgeScope.trim() || undefined,
-            // 全局去重：把当前已有题目题干传给后端
-            existingStems: questions.map((q) => q.stem),
-          },
-          // 后端打点的真实进度：百分比 + 阶段文案
-          (percent, stage) => setGenProgress({ percent, stage }),
-        )
-        setGenProgress(null)
-        // 追加合并，不覆盖已出的题目（对话出题与参数出题共存）
-        setQuestions((prev) => [...prev, ...list.filter((n) => !prev.some((p) => p.id === n.id))])
+        const started = await api.startGeneration({
+          bank_id: selectedKbId,
+          document_id: doc.id,
+          types,
+          difficulty,
+          scope: knowledgeScope.trim() || undefined,
+          source_mode: 'variant_data',
+          existing_stems: questions.map((q) => q.stem),
+        })
+        let state = await api.getGenerationProgress(started.task_id)
+        while (!state.done) {
+          setGenProgress({ percent: state.progress, stage: state.stage })
+          await new Promise((r) => setTimeout(r, 500))
+          state = await api.getGenerationProgress(started.task_id)
+        }
+        if (state.error?.message) throw new Error(state.error.message)
+        const incoming = state.questions.map(api.mapQuestion)
+        setQuestions((prev) => dedupeQuestions(prev, incoming))
+        activeBatchRef.current = state.batch_id
         setSelectedIds([])
         setTypeFilter('all')
         setDiffFilter('all')
-        if (!opts?.silent) showToast(`已生成 ${list.length} 道题目，累计 ${questions.length + list.length} 道`)
+        if (!opts?.silent) showToast(`已生成 ${incoming.length} 道题目`)
         setActiveTab('preview')
         return true
       } catch (err) {
@@ -340,39 +423,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setGenProgress(null)
       }
     },
-    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, showToast],
+    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, showToast],
   )
 
   const sendChat = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed) return
-      // 未选择知识库文档时禁止对话出题
-      if (!selectedDocId) {
+      if (!selectedDocId || !selectedKbId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
       setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
       setBotThinking(true)
       try {
-        const res = await chat({
-          kb_id: selectedKbId || 'kb-math',
-          doc_id: selectedDocId,
-          message: trimmed,
-          history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
-          slot_state: chatSlotState.current,
-          // 全局去重：把当前已有题目题干传给后端
-          existing_stems: questions.map((q) => q.stem),
-        })
-        chatSlotState.current = res.slot_state
+        let session = chatSessionRef.current
+        if (!session || session.bankId !== selectedKbId || session.docId !== selectedDocId) {
+          const created = await api.createChatSession(selectedKbId, selectedDocId)
+          session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
+          chatSessionRef.current = session
+        }
+        const res = await api.sendChatMessage(session.id, trimmed, questions.map((q) => q.stem))
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
-        if (res.questions?.length) {
-          // 对话路径不强制切页：AI 回复先可见，题目已在「题目预览」标签页等候
-          setQuestions(res.questions)
+        if (res.questions.length) {
+          const incoming = res.questions.map(api.mapQuestion)
+          // 对话出题与快速出题合并保留，互不覆盖
+          setQuestions((prev) => dedupeQuestions(prev, incoming))
+          activeBatchRef.current = res.batch_id
           setSelectedIds([])
-          setTypeFilter('all')
-          setDiffFilter('all')
-          showToast(`已生成 ${res.questions.length} 道题目，已同步到「题目预览」标签页`)
+          showToast(`已生成 ${incoming.length} 道题目，已合并到「题目预览」`)
         }
       } catch (err) {
         setMessages((prev) => [
@@ -383,118 +462,172 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setBotThinking(false)
       }
     },
-    [selectedDocId, selectedKbId, messages, questions, showToast],
+    [selectedDocId, selectedKbId, questions, showToast],
   )
 
   const updateQuestion = useCallback(
     async (q: Question) => {
-      const saved = await api.updateQuestion(q)
-      setQuestions((prev) => prev.map((item) => (item.id === saved.id ? saved : item)))
-      // 收藏夹中的副本同步更新
-      setFavorites((prev) => prev.map((item) => (item.id === saved.id ? saved : item)))
-      showToast('修改已保存')
+      try {
+        const saved = api.mapQuestion(await api.updateQuestionApi(q))
+        setQuestions((prev) => prev.map((item) => (item.id === saved.id ? saved : item)))
+        setFavorites((prev) => prev.map((item) => (item.id === saved.id ? saved : item)))
+        showToast('修改已保存')
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '保存失败')
+      }
     },
     [showToast],
   )
 
   const deleteQuestion = useCallback(
     async (id: string) => {
-      await api.deleteQuestion(id)
-      setQuestions((prev) => prev.filter((item) => item.id !== id))
-      setFavorites((prev) => prev.filter((item) => item.id !== id))
-      setSelectedIds((prev) => prev.filter((v) => v !== id))
-      showToast('已删除该题')
+      try {
+        await api.deleteQuestionApi(id)
+        setQuestions((prev) => prev.filter((item) => item.id !== id))
+        setFavorites((prev) => prev.filter((item) => item.id !== id))
+        setSelectedIds((prev) => prev.filter((v) => v !== id))
+        showToast('已删除该题')
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '删除失败')
+      }
     },
     [showToast],
   )
 
   const toggleStar = useCallback(
     async (id: string) => {
-      const target = questions.find((q) => q.id === id)
-      const next = target ? !target.starred : false
-      if (target) {
-        setQuestions((prev) => prev.map((item) => (item.id === id ? { ...item, starred: next } : item)))
-      }
-      await api.toggleStar(id, next)
-      // 同步收藏夹：收藏则置顶加入（默认组），取消则移出
-      setFavorites((prev) => {
-        if (next && target) {
-          return prev.some((f) => f.id === id)
-            ? prev.map((f) => (f.id === id ? { ...target, starred: true } : f))
-            : [{ ...target, starred: true, favGroupId: 'default' }, ...prev]
+      const target = questions.find((q) => q.id === id) ?? favorites.find((q) => q.id === id)
+      if (!target) return
+      try {
+        if (target.starred) {
+          await api.removeFavorite(id)
+          setQuestions((prev) => prev.map((item) => (item.id === id ? { ...item, starred: false } : item)))
+          setFavorites((prev) => prev.filter((item) => item.id !== id))
+        } else {
+          const defaultGroup = favGroups.find((g) => g.isDefault || g.name === '默认')?.id ?? 'default'
+          await api.addFavorite(id, defaultGroup)
+          setQuestions((prev) => prev.map((item) => (item.id === id ? { ...item, starred: true } : item)))
+          setFavorites((prev) =>
+            prev.some((f) => f.id === id)
+              ? prev
+              : [{ ...target, starred: true, favGroupId: defaultGroup }, ...prev],
+          )
         }
-        return prev.filter((f) => f.id !== id)
-      })
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '收藏操作失败')
+      }
     },
-    [questions],
+    [questions, favorites, favGroups, showToast],
   )
 
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]))
   }, [])
-
   const selectAll = useCallback((ids: string[]) => setSelectedIds(ids), [])
   const clearSelection = useCallback(() => setSelectedIds([]), [])
 
-  /** 新建收藏分组：依次命名为未命名、未命名(1)、未命名(2)… */
-  const addFavGroup = useCallback(() => {
-    const names = new Set(favGroups.map((g) => g.name))
-    let name = '未命名'
-    let i = 0
-    while (names.has(name)) {
-      i += 1
-      name = `未命名(${i})`
+  const addFavGroup = useCallback(async () => {
+    // 默认名去重：未命名、未命名(1)、未命名(2)…
+    const nextName = () => {
+      const names = new Set(favGroups.map((g) => g.name))
+      if (!names.has('未命名')) return '未命名'
+      let i = 1
+      while (names.has(`未命名(${i})`)) i += 1
+      return `未命名(${i})`
     }
-    const group: FavoriteGroup = { id: `fg-${Date.now()}`, name }
-    setFavGroups((prev) => [...prev, group])
-    return group
-  }, [favGroups])
+    const desired = nextName()
+    try {
+      const created = await api.createFavoriteGroup(desired)
+      const group: FavoriteGroup = { id: created.id, name: created.name, isDefault: false }
+      setFavGroups((prev) => [...prev, group])
+      return group
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '新建分组失败')
+      const fallback: FavoriteGroup = { id: `tmp-${Date.now()}`, name: desired, isDefault: false }
+      setFavGroups((prev) => [...prev, fallback])
+      return fallback
+    }
+  }, [favGroups, showToast])
 
-  const renameFavGroup = useCallback((id: string, name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    setFavGroups((prev) => prev.map((g) => (g.id === id ? { ...g, name: trimmed } : g)))
-  }, [])
+  const renameFavGroup = useCallback(
+    (id: string, name: string) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      void api
+        .renameFavoriteGroup(id, trimmed)
+        .then(() => setFavGroups((prev) => prev.map((g) => (g.id === id ? { ...g, name: trimmed } : g))))
+        .catch((err) => showToast(err instanceof Error ? err.message : '重命名失败'))
+    },
+    [showToast],
+  )
 
-  /** 删除收藏分组：组内收藏题移入默认组，分组本身移除 */
-  const removeFavGroup = useCallback((id: string) => {
-    if (id === 'default') return
-    setFavGroups((prev) => prev.filter((g) => g.id !== id))
-    setFavorites((prev) => prev.map((f) => (f.favGroupId === id ? { ...f, favGroupId: 'default' } : f)))
-  }, [])
+  const removeFavGroup = useCallback(
+    (id: string) => {
+      void api
+        .deleteFavoriteGroup(id)
+        .then(() => loadFavorites())
+        .catch((err) => showToast(err instanceof Error ? err.message : '删除分组失败'))
+    },
+    [loadFavorites, showToast],
+  )
 
-  /** 点亮收藏：题目副本按分组写入收藏夹，全局星标同步点亮（含组卷记录中的题目快照） */
-  const addToFavorites = useCallback((q: Question, groupId: string) => {
-    const fav: Question = { ...q, starred: true, favGroupId: groupId }
-    setQuestions((prev) => prev.map((item) => (item.id === q.id ? { ...item, starred: true } : item)))
-    setFavorites((prev) => prev.some((f) => f.id === q.id) ? prev.map((f) => (f.id === q.id ? fav : f)) : [fav, ...prev])
-    // 组卷记录的快照题目同步点亮，保证试卷详情页星标立即生效
-    setRecords((prev) =>
-      prev.map((r) =>
-        r.questions?.some((x) => x.id === q.id)
-          ? { ...r, questions: r.questions.map((x) => (x.id === q.id ? { ...x, starred: true } : x)) }
-          : r,
-      ),
-    )
-  }, [])
+  const addToFavorites = useCallback(
+    (q: Question, groupId: string) => {
+      void api
+        .addFavorite(q.id, groupId || 'default')
+        .then(() => {
+          setQuestions((prev) => prev.map((item) => (item.id === q.id ? { ...item, starred: true } : item)))
+          setFavorites((prev) =>
+            prev.some((f) => f.id === q.id)
+              ? prev.map((f) => (f.id === q.id ? { ...q, starred: true, favGroupId: groupId } : f))
+              : [{ ...q, starred: true, favGroupId: groupId }, ...prev],
+          )
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '收藏失败'))
+    },
+    [showToast],
+  )
 
-  /** 取消收藏：从收藏夹移除，全局题目与组卷快照的星标同步熄灭 */
-  const unfavoriteQuestion = useCallback((questionId: string) => {
-    setFavorites((prev) => prev.filter((f) => f.id !== questionId))
-    setQuestions((prev) => prev.map((item) => (item.id === questionId ? { ...item, starred: false } : item)))
-    setRecords((prev) =>
-      prev.map((r) =>
-        r.questions?.some((x) => x.id === questionId)
-          ? { ...r, questions: r.questions.map((x) => (x.id === questionId ? { ...x, starred: false } : x)) }
-          : r,
-      ),
-    )
-  }, [])
+  const unfavoriteQuestion = useCallback(
+    (questionId: string) => {
+      void api
+        .removeFavorite(questionId)
+        .then(() => {
+          setFavorites((prev) => prev.filter((f) => f.id !== questionId))
+          setQuestions((prev) => prev.map((item) => (item.id === questionId ? { ...item, starred: false } : item)))
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '取消收藏失败'))
+    },
+    [showToast],
+  )
 
-  /** 已收藏题目更换分组 */
-  const setFavoriteGroup = useCallback((questionId: string, groupId: string) => {
-    setFavorites((prev) => prev.map((f) => (f.id === questionId ? { ...f, favGroupId: groupId } : f)))
-  }, [])
+  const setFavoriteGroup = useCallback(
+    (questionId: string, groupId: string) => {
+      void api
+        .moveFavorite(questionId, groupId)
+        .then(() => setFavorites((prev) => prev.map((f) => (f.id === questionId ? { ...f, favGroupId: groupId } : f))))
+        .catch((err) => showToast(err instanceof Error ? err.message : '移动分组失败'))
+    },
+    [showToast],
+  )
+
+  const updateProfile = useCallback(
+    (patch: Partial<TeacherProfile>) => {
+      setProfile((prev) => ({ ...prev, ...patch }))
+      if (!user) return
+      void api
+        .updateProfile({
+          name: patch.name,
+          gender: patch.gender,
+          phone: patch.phone,
+          email: patch.email,
+          school: patch.school,
+        })
+        .then((updated) => setProfile(profileFromApi(updated, user.token)))
+        .catch((err) => showToast(err instanceof Error ? err.message : '资料保存失败'))
+    },
+    [user, showToast],
+  )
 
   const publishPaper = useCallback(
     async (
@@ -503,245 +636,271 @@ export function AppProvider({ children }: { children: ReactNode }) {
       saveRecord: boolean,
       name?: string,
       published = true,
-      questions?: Question[],
+      qs?: Question[],
       examWindow?: ExamWindow | null,
+      allowReview = true,
+      allowRetake = false,
     ) => {
-      // 发布必须选择学习空间；暂不发布（草稿）不要求
       if (published && !spaceIds.length) {
         showToast('请至少选择一个学习空间')
         return false
       }
-      const record = await api.publishPaper({
-        modules,
-        // 记住组卷时调整后的题型模块顺序，讲解视图按此分区
-        modulesOrder: modules,
-        spaceIds,
-        // 新建空间不在适配器静态演示表内，空间名称由前端解析后随载荷传入
-        spaceNames: spaceIds
-          .map((id) => spaces.find((s) => s.id === id)?.name ?? '')
-          .filter(Boolean),
-        saveRecord,
-        name,
-        published,
-        // 按调整后的模块顺序重排题目，题号与讲解/作答视图分区保持一致
-        questions: orderQuestionsByModules(questions, modules),
-        examWindow,
-      })
-      if (record) setRecords((prev) => [record, ...prev])
-      setSelectedIds([])
-      showToast(
-        published
-          ? saveRecord
-            ? '组卷已发布，并保存到组卷记录'
-            : '组卷已发布到所选学习空间'
-          : `试卷「${name ?? '未命名'}」已保存到组卷记录`,
-      )
-      return true
+      const pool = orderQuestionsByModules(qs, modules)
+      try {
+        const created = await api.createPaperApi({
+          name: name || `试卷_${new Date().toLocaleDateString('zh-CN')}`,
+          questions: pool.map((q) => q.id),
+          space_ids: spaceIds,
+          save_to_records: saveRecord,
+          is_published: published,
+          exam_window: examWindow ?? null,
+          allow_review: allowReview,
+          allow_retake: allowRetake,
+        })
+        setRecords((prev) => [api.mapPaper(created), ...prev])
+        setSelectedIds([])
+        showToast(published ? '组卷已发布' : '已保存到组卷记录')
+        return true
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '组卷失败')
+        return false
+      }
+    },
+    [showToast],
+  )
+
+  const updateRecord = useCallback(
+    (record: AssembleRecord) => {
+      const spaceIds = record.spaces
+        .map((name) => spaces.find((s) => s.name === name)?.id)
+        .filter((x): x is string => !!x)
+      void api
+        .updatePaperApi(record.id, {
+          name: record.name,
+          space_ids: spaceIds,
+          is_published: !!record.published,
+          exam_window: record.examWindow ?? null,
+          modules_order: record.modulesOrder,
+          allow_review: record.allowReview,
+          allow_retake: record.allowRetake,
+        })
+        .then((updated) => setRecords((prev) => prev.map((r) => (r.id === updated.id ? api.mapPaper(updated) : r))))
+        .catch((err) => showToast(err instanceof Error ? err.message : '试卷更新失败'))
     },
     [spaces, showToast],
   )
 
-  /** 删除一条组卷记录 */
   const deleteRecord = useCallback(
-    async (id: string) => {
-      setRecords((prev) => prev.filter((r) => r.id !== id))
-      showToast('组卷记录已删除')
+    async (id: string, opts?: { withPaper?: boolean }) => {
+      try {
+        // 默认仅删组卷记录（已发布到空间的试卷保留）；withPaper 时整卷删除
+        await api.deletePaperApi(id, opts?.withPaper ? 'paper' : 'record')
+        setRecords((prev) => prev.filter((r) => r.id !== id))
+        showToast(opts?.withPaper ? '试卷已删除' : '组卷记录已删除')
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '删除失败')
+      }
     },
     [showToast],
   )
 
-  /** 从组卷记录的题目快照中删除若干题目 */
-  const deleteRecordQuestions = useCallback((recordId: string, ids: string[]) => {
-    setRecords((prev) =>
-      prev.map((r) =>
-        r.id === recordId
-          ? {
-              ...r,
-              questions: (r.questions ?? []).filter((q) => !ids.includes(q.id)),
-              questionCount: (r.questions ?? []).filter((q) => !ids.includes(q.id)).length,
-            }
-          : r,
-      ),
-    )
-  }, [])
+  const deleteRecords = useCallback(
+    async (ids: string[]) => {
+      if (!ids.length) return
+      try {
+        await api.batchDeletePapers(ids)
+        setRecords((prev) => prev.filter((r) => !ids.includes(r.id)))
+        showToast(`已删除 ${ids.length} 条组卷记录`)
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '批量删除失败')
+      }
+    },
+    [showToast],
+  )
 
-  /** 批量发布选中的组卷记录（仅对草稿生效） */
+  const deleteRecordQuestions = useCallback(
+    (recordId: string, ids: string[]) => {
+      void api
+        .removePaperQuestions(recordId, ids)
+        .then((updated) =>
+          setRecords((prev) => prev.map((r) => (r.id === recordId ? api.mapPaper(updated) : r))),
+        )
+        .catch((err) => showToast(err instanceof Error ? err.message : '删除题目失败'))
+    },
+    [showToast],
+  )
+
   const publishRecords = useCallback(
     (ids: string[]) => {
-      let n = 0
-      setRecords((prev) =>
-        prev.map((r) => {
-          if (!ids.includes(r.id) || r.published) return r
-          n += 1
-          return { ...r, published: true }
+      const targets = records.filter((r) => ids.includes(r.id) && !r.published)
+      if (!targets.length) {
+        showToast('所选试卷均已发布')
+        return
+      }
+      void Promise.all(
+        targets.map(async (r) => {
+          const spaceIds = r.spaces
+            .map((name) => spaces.find((s) => s.name === name)?.id)
+            .filter((x): x is string => !!x)
+          if (!spaceIds.length) throw new Error(`「${r.name}」未选择学习空间`)
+          const updated = await api.publishPaperApi(r.id, spaceIds, r.examWindow ?? null)
+          return api.mapPaper(updated)
         }),
       )
-      showToast(n ? `已发布 ${n} 份试卷` : '所选试卷均已发布')
+        .then((updated) => {
+          setRecords((prev) => prev.map((r) => updated.find((u) => u.id === r.id) ?? r))
+          showToast(`已发布 ${targets.length} 份试卷`)
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '发布失败'))
     },
-    [showToast],
+    [records, spaces, showToast],
   )
 
-  /** 编辑模式保存组卷记录（命名/空间/做题时间/发布状态） */
-  const updateRecord = useCallback(
-    (record: AssembleRecord) => {
-      setRecords((prev) => prev.map((r) => (r.id === record.id ? record : r)))
-    },
-    [],
-  )
-
-  /** 按编号加入空间：成员数与成员名单同步更新 */
-  const joinSpaceByCode = useCallback(
-    (code: string) => {
-      const found = spaces.find((s) => s.code.toUpperCase() === code.trim().toUpperCase())
-      if (!found) return null
-      const displayName = profile.name
-      setSpaces((prev) =>
-        prev.map((s) =>
-          s.id === found.id && !s.members.includes(displayName)
-            ? { ...s, members: [...s.members, displayName], memberCount: Math.min(s.capacity, s.memberCount + 1) }
-            : s,
-        ),
-      )
-      showToast(`已加入学习空间「${found.name}」`)
-      return found
-    },
-    [spaces, profile.name, showToast],
-  )
-
-  /** 学生退出空间：从列表移除，关联的组卷记录保留 */
-  const leaveSpace = useCallback(
-    (id: string) => {
-      setSpaces((prev) => prev.filter((s) => s.id !== id))
-      showToast('已退出学习空间')
-    },
-    [showToast],
-  )
-
-  /** 教师解散空间：空间整体移除，成员全部移出（演示态） */
-  const dissolveSpace = useCallback(
-    (id: string) => {
-      setSpaces((prev) => prev.filter((s) => s.id !== id))
-      showToast('学习空间已解散')
-    },
-    [showToast],
-  )
-
-  /** 从空间移出成员（人数同步） */
-  const removeSpaceMember = useCallback((spaceId: string, name: string) => {
-    setSpaces((prev) =>
-      prev.map((s) =>
-        s.id === spaceId && s.members.includes(name) && name !== s.creator
-          ? { ...s, members: s.members.filter((m) => m !== name), memberCount: Math.max(0, s.memberCount - 1) }
-          : s,
-      ),
-    )
-  }, [])
-
-  /** 重命名学习空间，并同步组卷记录中的空间名 */
-  const renameSpace = useCallback((spaceId: string, newName: string) => {
-    setSpaces((prev) => {
-      const target = prev.find((s) => s.id === spaceId)
-      if (!target || target.name === newName) return prev
-      const old = target.name
-      setRecords((rs) => rs.map((r) => ({ ...r, spaces: r.spaces.map((n) => (n === old ? newName : n)) })))
-      return prev.map((s) => (s.id === spaceId ? { ...s, name: newName } : s))
-    })
-  }, [])
-
-  /** 学生交卷 / 重新作答：同步更新组卷记录的作答状态 */
-  const markRecordAnswered = useCallback((recordId: string, answered: boolean) => {
-    setRecords((prev) => prev.map((r) => (r.id === recordId ? { ...r, answered } : r)))
-  }, [])
-
-  /** 跨页联动：请求打开某份试卷的查看标签（组卷记录页消费） */
-  const [openPaperId, setOpenPaperId] = useState<string | null>(null)
-  const requestOpenPaper = useCallback((recordId: string) => setOpenPaperId(recordId), [])
-  const clearOpenPaper = useCallback(() => setOpenPaperId(null), [])
-
-  /** 创建学习空间（编号自动生成，创建者为当前用户） */
-  const createSpace = useCallback(
-    (name: string, capacity: number) => {
-      const code = `SP${new Date().getFullYear()}${Math.floor(Math.random() * 9000 + 1000)}`
-      const space: StudySpace = {
-        id: `sp-${Date.now()}`,
-        name,
-        code,
-        memberCount: 1,
-        capacity,
-        creator: profile.name,
-        members: [profile.name],
-      }
-      setSpaces((prev) => [...prev, space])
-      showToast(`学习空间「${name}」创建成功`)
-      return space
-    },
-    [profile.name, showToast],
-  )
-
-  /** 一键清空：题目、对话记录与对话记忆全部重置 */
   const clearAll = useCallback(() => {
+    if (questions.length) {
+      void api.batchDeleteQuestions(questions.map((q) => q.id)).catch(() => undefined)
+    }
+    if (chatSessionRef.current) {
+      void api.deleteChatSession(chatSessionRef.current.id).catch(() => undefined)
+      chatSessionRef.current = null
+    }
     setQuestions([])
     setSelectedIds([])
     setMessages([])
     setInputDraft('')
-    chatSlotState.current = {}
+    activeBatchRef.current = null
     setActiveTab('generate')
     showToast('已清空全部题目与对话记录')
-  }, [showToast])
+  }, [questions, showToast])
 
-  /** 批量删除选中的题目 */
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
     if (!ids.length) return
-    await Promise.all(ids.map((id) => api.deleteQuestion(id)))
-    setQuestions((prev) => prev.filter((q) => !ids.includes(q.id)))
-    setFavorites((prev) => prev.filter((q) => !ids.includes(q.id)))
-    setSelectedIds([])
-    showToast(`已删除 ${ids.length} 道题目`)
+    try {
+      await api.batchDeleteQuestions(ids)
+      setQuestions((prev) => prev.filter((q) => !ids.includes(q.id)))
+      setFavorites((prev) => prev.filter((q) => !ids.includes(q.id)))
+      setSelectedIds([])
+      showToast(`已删除 ${ids.length} 道题目`)
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '批量删除失败')
+    }
   }, [selectedIds, showToast])
 
-  /** 将文档拖入对话区上传并入库到当前知识库，成功后刷新文档列表 */
   const uploadDocument = useCallback(
     async (file: File) => {
       if (!selectedKbId) {
         showToast('请先在右侧选择知识库')
         return
       }
-      const form = new FormData()
-      form.append('file', file)
-      form.append('kb_id', selectedKbId)
       showToast(`正在上传「${file.name}」…`)
       try {
-        const resp = await fetch('/api/kb/upload', { method: 'POST', body: form })
-        if (!resp.ok) {
-          let detail: unknown = `HTTP ${resp.status}`
-          try {
-            detail = (await resp.json()).detail
-          } catch {
-            /* 保持默认 */
-          }
-          throw new Error(typeof detail === 'object' && detail !== null ? String((detail as { message?: string }).message) : String(detail))
-        }
-        const result = (await resp.json()) as { doc_id: string; doc_name: string }
-        const docs = await api.listDocuments(selectedKbId)
-        setDocs(docs)
-        if (docs.some((d) => d.id === result.doc_id)) setSelectedDocId(result.doc_id)
-        showToast(`「${result.doc_name}」已上传并入库`)
+        await banksApi.uploadAndWait(selectedKbId, file)
+        const rows = await api.listDocuments(selectedKbId)
+        setDocs(rows.map(api.mapDocument))
+        const match = rows.find((d) => d.name === file.name)
+        if (match) setSelectedDocId(match.id)
+        showToast(`「${file.name}」已上传并入库`)
       } catch (err) {
-        showToast(err instanceof Error ? err.message : '上传失败，请检查后端服务')
+        showToast(err instanceof Error ? err.message : '上传失败')
       }
     },
     [selectedKbId, showToast],
   )
 
+  const createSpace = useCallback(
+    async (name: string, capacity: number) => {
+      const created = await api.createSpace(name, capacity)
+      const mapped = api.mapSpace(created)
+      setSpaces((prev) => [...prev, mapped])
+      showToast(`学习空间「${name}」创建成功`)
+      return mapped
+    },
+    [showToast],
+  )
+
+  const joinSpaceByCode = useCallback(
+    async (code: string) => {
+      try {
+        const joined = api.mapSpace(await api.joinSpace(code))
+        setSpaces((prev) => (prev.some((s) => s.id === joined.id) ? prev : [...prev, joined]))
+        await loadRecords()
+        showToast(`已加入学习空间「${joined.name}」`)
+        return joined
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加入失败')
+        return null
+      }
+    },
+    [loadRecords, showToast],
+  )
+
+  const leaveSpace = useCallback(
+    (id: string) => {
+      void api
+        .leaveSpace(id)
+        .then(() => setSpaces((prev) => prev.filter((s) => s.id !== id)))
+        .catch((err) => showToast(err instanceof Error ? err.message : '退出失败'))
+    },
+    [showToast],
+  )
+
+  const dissolveSpace = useCallback(
+    (id: string) => {
+      void api
+        .dissolveSpace(id)
+        .then(() => setSpaces((prev) => prev.filter((s) => s.id !== id)))
+        .catch((err) => showToast(err instanceof Error ? err.message : '解散失败'))
+    },
+    [showToast],
+  )
+
+  const removeSpaceMember = useCallback(
+    (spaceId: string, name: string) => {
+      const target = spaces.find((s) => s.id === spaceId)
+      if (!target) return
+      void api
+        .listSpaceMembers(spaceId)
+        .then(async (members) => {
+          const member = members.find((m) => m.user.display_name === name)
+          if (!member) throw new Error('成员不存在')
+          await api.removeSpaceMember(spaceId, member.user.id)
+          setSpaces((prev) =>
+            prev.map((s) =>
+              s.id === spaceId
+                ? { ...s, members: s.members.filter((m) => m !== name), memberCount: Math.max(0, s.memberCount - 1) }
+                : s,
+            ),
+          )
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '移出成员失败'))
+    },
+    [spaces, showToast],
+  )
+
+  const renameSpace = useCallback(
+    (spaceId: string, newName: string) => {
+      void api
+        .updateSpace(spaceId, newName)
+        .then((updated) => {
+          setSpaces((prev) => prev.map((s) => (s.id === spaceId ? api.mapSpace(updated) : s)))
+          void loadRecords()
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '重命名失败'))
+    },
+    [loadRecords, showToast],
+  )
+
+  const markRecordAnswered = useCallback((recordId: string, answered: boolean) => {
+    setRecords((prev) => prev.map((r) => (r.id === recordId ? { ...r, answered } : r)))
+  }, [])
+
+  const requestOpenPaper = useCallback((recordId: string) => setOpenPaperId(recordId), [])
+  const clearOpenPaper = useCallback(() => setOpenPaperId(null), [])
+
   const value: AppState = {
     activeTab,
-    setActiveTab,
-    hasUnsavedChanges,
-    setHasUnsavedChanges,
-    settingsTarget,
-    openEngineSettings,
-    refreshKnowledgeBases,
+    setActiveTab: switchTab,
     navCollapsed,
     toggleNav: () => setNavCollapsed((v) => !v),
     paramsCollapsed,
@@ -751,8 +910,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     spaces,
     selectedKbId,
     selectedDocId,
-    selectKb: (id) => void selectKb(id),
+    selectKb,
     selectDoc,
+    refreshKbs,
     typeConfigs,
     setTypeConfig,
     difficulty,
@@ -772,7 +932,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     unfavoriteQuestion,
     setFavoriteGroup,
     profile,
-    updateProfile: (patch) => setProfile((prev) => ({ ...prev, ...patch })),
+    updateProfile,
     selectedIds,
     toggleSelect,
     selectAll,
@@ -790,6 +950,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteSelected,
     uploadDocument,
     deleteRecord,
+    deleteRecords,
     deleteRecordQuestions,
     publishRecords,
     role: user?.role ?? null,
@@ -804,6 +965,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     openPaperId,
     requestOpenPaper,
     clearOpenPaper,
+    urgeUnread,
+    urgeItems,
+    clearUrgeBadge,
+    markUrgeRead,
+    deleteUrge,
+    pendingSpacePaper,
+    requestOpenSpacePaper,
+    clearPendingSpacePaper,
     messages,
     botThinking,
     inputDraft,

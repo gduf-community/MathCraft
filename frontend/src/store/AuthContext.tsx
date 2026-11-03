@@ -1,18 +1,16 @@
-/** 登录态上下文：持久化到 localStorage，刷新页面不掉线；主应用仅在登录后挂载 */
+/** 登录态上下文：真实 token 持久化到 localStorage，刷新后调 /api/auth/me 恢复。 */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { fetchAuthUser, login as authLogin } from '../api/auth'
+import { fetchAuthUser, login as authLogin, logout as authLogout } from '../api/auth'
 import type { AuthRole, AuthUser } from '../api/auth'
+import { setApiToken } from '../api/backend'
 
 const STORAGE_KEY = 'mathcraft-auth'
 
 interface AuthContextValue {
   user: AuthUser | null
-  /** 登录：校验账号密码并写入状态与本地存储 */
   login: (account: string, password: string, role: AuthRole) => Promise<AuthUser>
-  /** 写入已通过校验的用户（供登录页先播离场动画再切换到主应用） */
   signIn: (user: AuthUser) => void
-  /** 退出登录：清空状态与本地存储 */
   logout: () => void
 }
 
@@ -32,28 +30,35 @@ function readStoredUser(): AuthUser | null {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
-  // 初始挂载时按令牌恢复登录态（演示实现仅校验令牌格式）
   useEffect(() => {
     const stored = readStoredUser()
     if (!stored) return
+    setApiToken(stored.token)
     void fetchAuthUser(stored.token).then((fresh) => {
       if (fresh) setUser(fresh)
-      else localStorage.removeItem(STORAGE_KEY)
+      else {
+        localStorage.removeItem(STORAGE_KEY)
+        setApiToken(null)
+      }
     })
   }, [])
 
   const login = useCallback(async (account: string, password: string, role: AuthRole) => {
     const authUser = await authLogin(account, password, role)
+    setApiToken(authUser.token)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(authUser))
     return authUser
   }, [])
 
   const signIn = useCallback((authUser: AuthUser) => {
+    setApiToken(authUser.token)
     setUser(authUser)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(authUser))
   }, [])
 
   const logout = useCallback(() => {
+    void authLogout()
+    setApiToken(null)
     setUser(null)
     localStorage.removeItem(STORAGE_KEY)
   }, [])

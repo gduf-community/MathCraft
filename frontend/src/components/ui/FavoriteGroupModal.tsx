@@ -12,7 +12,7 @@ interface Props {
 export default function FavoriteGroupModal({ question, onClose }: Props) {
   const { favGroups, favorites, addToFavorites, setFavoriteGroup, showToast } = useApp()
   const [search, setSearch] = useState('')
-  const [picked, setPicked] = useState<string>(() => favorites.find((f) => f.id === question.id)?.favGroupId ?? 'default')
+  const [picked, setPicked] = useState<string>(() => favorites.find((f) => f.id === question.id)?.favGroupId ?? favGroups.find((g) => g.isDefault)?.id ?? 'default')
 
   const kw = search.trim()
   const list = useMemo(() => (kw ? favGroups.filter((g) => g.name.includes(kw)) : favGroups), [favGroups, kw])
