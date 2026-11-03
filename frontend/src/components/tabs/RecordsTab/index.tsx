@@ -9,8 +9,8 @@ import {
   X,
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
-import { DIFFICULTIES, TYPE_LABELS, TYPE_ORDER } from '../../../constants'
-import type { AssembleRecord, Difficulty, QuestionType } from '../../../types'
+import { TYPE_LABELS, TYPE_ORDER } from '../../../constants'
+import type { AssembleRecord, QuestionType } from '../../../types'
 import QuestionCard from '../PreviewTab/QuestionCard'
 import AssembleModal from '../PreviewTab/AssembleModal'
 import ConfirmDialog from '../../ui/ConfirmDialog'
@@ -350,7 +350,6 @@ function PaperDetail({
   const questions = record.questions ?? []
   const [checked, setChecked] = useState<string[]>([])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
-  const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
 
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: questions.length }
@@ -359,12 +358,8 @@ function PaperDetail({
   }, [questions])
 
   const filtered = useMemo(
-    () =>
-      questions.filter(
-        (q) =>
-          (typeFilter === 'all' || q.type === typeFilter) && (diffFilter === 'all' || q.difficulty === diffFilter),
-      ),
-    [questions, typeFilter, diffFilter],
+    () => questions.filter((q) => typeFilter === 'all' || q.type === typeFilter),
+    [questions, typeFilter],
   )
 
   const allChecked = filtered.length > 0 && filtered.every((q) => checked.includes(q.id))

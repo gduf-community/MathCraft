@@ -1,13 +1,12 @@
 /** 个人中心页：教师信息展示与编辑、头像上传裁剪、模型配置与安全设置（演示） */
 import { useRef, useState } from 'react'
-import type { ChangeEvent, DragEvent } from 'react'
+import type { ChangeEvent } from 'react'
 import {
   BadgeCheck,
   Building2,
   KeyRound,
   Pencil,
   Save,
-  Settings2,
   ShieldCheck,
   User,
   UserRound,

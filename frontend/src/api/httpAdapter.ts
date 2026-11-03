@@ -150,17 +150,12 @@ export const httpAdapter: ApiClient = {
       existing_stems: params.existingStems ?? [],
     })
     // 任务式生成：start 建任务，轮询 progress 拿后端打点的真实百分比；旧后端无 start 时回退同步端点
-    try {
-      const started = await httpAllow404<{ task_id: string }>('/api/generate/start', {
-        method: 'POST',
-        body,
-      })
-      if (started?.task_id) {
-        return await pollGenerateTask(started.task_id, onProgress)
-      }
-    } catch (err) {
-      // start/progress 链路异常（含 422 need_confirm）直接抛给上层
-      throw err
+    const started = await httpAllow404<{ task_id: string }>('/api/generate/start', {
+      method: 'POST',
+      body,
+    })
+    if (started?.task_id) {
+      return await pollGenerateTask(started.task_id, onProgress)
     }
     // 回退：同步端点（无进度打点）
     return http<Question[]>('/api/generate', { method: 'POST', body })

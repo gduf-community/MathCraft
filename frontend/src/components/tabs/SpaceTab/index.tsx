@@ -54,7 +54,7 @@ function remainInfo(record: AssembleRecord): RemainInfo {
 }
 
 export default function SpaceTab() {
-  const { spaces, role, createSpace, joinSpaceByCode, leaveSpace, dissolveSpace, records } = useApp()
+  const { spaces, role, joinSpaceByCode, leaveSpace, dissolveSpace, records } = useApp()
   // 第一个标签为空间列表，固定不可关闭；查看空间时打开动态标签
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activeTab, setActiveTab] = useState('list')
@@ -222,13 +222,7 @@ export default function SpaceTab() {
       ) : null}
 
       {createOpen && (
-        <CreateSpaceModal
-          onClose={() => setCreateOpen(false)}
-          onCreate={(space) => {
-            setTabs((prev) => [...prev, { id: space.id, name: space.name }])
-            setActiveTab(space.id)
-          }}
-        />
+        <CreateSpaceModal onClose={() => setCreateOpen(false)} />
       )}
 
       {leaving &&
@@ -644,10 +638,8 @@ function MemberListModal({
 /** 创建学习空间弹窗：名称 + 人数上限，编号自动生成；创建后展示成功态与可复制的编号 */
 function CreateSpaceModal({
   onClose,
-  onCreate,
 }: {
   onClose: () => void
-  onCreate: (space: StudySpace) => void
 }) {
   const year = new Date().getFullYear()
   const { showToast, createSpace } = useApp()

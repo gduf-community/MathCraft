@@ -1,6 +1,6 @@
 /** 题目收藏页：多标签分组管理，标签可新建/重命名/关闭（二次确认），筛选嵌入标签页内部 */
 import { useMemo, useState } from 'react'
-import { ListFilter, Plus, Star, Trash2, Users, X } from 'lucide-react'
+import { ListFilter, Plus, Trash2, Users, X } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { DIFFICULTIES, TYPE_LABELS, TYPE_ORDER } from '../../../constants'
 import type { Difficulty, Question, QuestionType } from '../../../types'

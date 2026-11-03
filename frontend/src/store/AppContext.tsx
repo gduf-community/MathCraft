@@ -245,7 +245,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [favorites, setFavorites] = useState<Question[]>([])
   // 收藏分组：default 组固定存在，其余由用户在收藏页新建
   const [favGroups, setFavGroups] = useState<FavoriteGroup[]>([{ id: 'default', name: '默认' }])
-  const [profile, setProfile] = useState<TeacherProfile>(() => buildProfile(useAuthUser()))
+  const [profile, setProfile] = useState<TeacherProfile>(() => buildProfile(user))
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
   const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
