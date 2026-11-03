@@ -1,5 +1,5 @@
 /** 题目收藏页：多标签分组管理，标签可新建/重命名/关闭（二次确认），筛选嵌入标签页内部 */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ListFilter, Plus, Star, Trash2, Users, X } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { DIFFICULTIES, TYPE_LABELS, TYPE_ORDER } from '../../../constants'
@@ -22,6 +22,13 @@ export default function FavoritesTab() {
     showToast,
   } = useApp()
   const [activeGroupId, setActiveGroupId] = useState('default')
+  // 默认分组 id 由后端返回，首次加载后自动对齐
+  useEffect(() => {
+    if (!favGroups.length) return
+    if (!favGroups.some((g) => g.id === activeGroupId)) {
+      setActiveGroupId(favGroups.find((g) => g.isDefault)?.id ?? favGroups[0].id)
+    }
+  }, [favGroups, activeGroupId])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
   const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
   const [checked, setChecked] = useState<string[]>([])
@@ -66,11 +73,12 @@ export default function FavoritesTab() {
   const poolOverride = useMemo(() => groupQuestions, [groupQuestions])
 
   const createGroup = () => {
-    const group = addFavGroup()
-    setActiveGroupId(group.id)
-    setTypeFilter('all')
-    setDiffFilter('all')
-    setChecked([])
+    void addFavGroup().then((group) => {
+      setActiveGroupId(group.id)
+      setTypeFilter('all')
+      setDiffFilter('all')
+      setChecked([])
+    })
   }
 
   const startRename = (id: string, name: string) => {
@@ -87,7 +95,9 @@ export default function FavoritesTab() {
     if (!closingGroup) return
     const name = favGroups.find((g) => g.id === closingGroup)?.name ?? ''
     removeFavGroup(closingGroup)
-    if (activeGroupId === closingGroup) setActiveGroupId('default')
+    if (activeGroupId === closingGroup) {
+      setActiveGroupId(favGroups.find((g) => g.isDefault)?.id ?? favGroups[0]?.id ?? 'default')
+    }
     showToast(`标签页「${name}」已关闭，组内收藏移入「默认」`)
     setClosingGroup(null)
   }
@@ -105,7 +115,7 @@ export default function FavoritesTab() {
         {favGroups.map((g) => {
           const active = activeGroup?.id === g.id
           const renaming = renamingId === g.id
-          const isDefault = g.id === 'default'
+          const isDefault = g.isDefault || g.id === 'default'
           return (
             <div key={g.id} className="relative shrink-0">
               {renaming ? (
@@ -125,16 +135,18 @@ export default function FavoritesTab() {
               ) : (
                 <button
                   type="button"
-                  title={isDefault ? undefined : '单击重命名'}
+                  title={isDefault ? undefined : '双击重命名'}
                   onClick={() => {
                     if (activeGroupId !== g.id) {
                       setActiveGroupId(g.id)
                       resetFilters()
                     }
-                    // 默认标签页不可重命名
+                  }}
+                  onDoubleClick={() => {
+                    // 仅加号新建的标签页支持双击重命名，默认标签页不可重命名
                     if (!isDefault) startRename(g.id, g.name)
                   }}
-                  className={`relative flex items-center gap-1.5 pr-4 py-3 text-sm transition-colors ${
+                  className={`relative flex items-center gap-1.5 pr-4 py-3 text-sm transition-colors select-none ${
                     active ? 'font-semibold text-primary' : 'text-ink-2 hover:text-primary'
                   }`}
                 >
@@ -143,7 +155,7 @@ export default function FavoritesTab() {
                 </button>
               )}
               {/* 默认标签页不可关闭，其余标签带关闭按钮 */}
-              {g.id !== 'default' && !renaming && (
+              {!isDefault && !renaming && (
                 <button
                   type="button"
                   title="关闭标签页"

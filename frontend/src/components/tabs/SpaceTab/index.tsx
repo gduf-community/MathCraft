@@ -1,10 +1,13 @@
 /** 学习空间页：横向卡片行 + 查看子标签（名称编辑、成员管理、试卷联动）+ 创建/解散空间 */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Check,
   ClipboardList,
+  Clock,
   Copy,
+  FileText,
   FolderOpen,
+  Megaphone,
   Pencil,
   Plus,
   Save,
@@ -15,6 +18,8 @@ import {
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import type { AssembleRecord, StudySpace } from '../../../types'
+import * as api from '../../../api/backend'
+import { stopPublication, resumePublication } from '../../../api/backend'
 import ConfirmDialog from '../../ui/ConfirmDialog'
 import ExplainView from './ExplainView'
 import AnswerView from '../RecordsTab/AnswerView'
@@ -22,8 +27,40 @@ import AnswerView from '../RecordsTab/AnswerView'
 interface OpenTab {
   id: string
   name: string
-  /** 讲解标签关联的组卷记录 */
-  recordId?: string
+  /** 打开标签时固定的组卷记录（学生看到的可能是空间发布卷，不在其组卷记录内） */
+  record?: AssembleRecord
+}
+
+/** 空间发布卷 → 组卷记录视图模型（题目由作答/讲解接口按需拉取） */
+function spacePaperToRecord(p: api.ApiSpacePaper, spaceName: string): AssembleRecord {
+  return {
+    id: p.id,
+    name: p.name,
+    createdAt: api.formatDateTime(p.created_at),
+    questionCount: p.question_count,
+    totalScore: p.total_score,
+    spaces: [spaceName],
+    published: p.status === 'published',
+    questions: [],
+    examWindow: p.exam_window
+      ? { start: api.toLocalInput(p.exam_window.start), end: api.toLocalInput(p.exam_window.end) }
+      : null,
+    submittedCount: p.submitted_count,
+    stopped: p.stopped,
+    answered: p.answered,
+    allowReview: p.allow_review,
+    allowRetake: p.allow_retake,
+    lastUrgeAt: p.last_urge_at ?? null,
+  }
+}
+
+/** 催交 24 小时冷却剩余小时数；null 表示不在冷却期 */
+function urgeCooldownHours(lastUrgeAt: string | null | undefined): number | null {
+  if (!lastUrgeAt) return null
+  const elapsed = Date.now() - new Date(lastUrgeAt).getTime()
+  const remain = 24 * 3600 * 1000 - elapsed
+  if (remain <= 0) return null
+  return Math.ceil(remain / 3600000)
 }
 
 interface RemainInfo {
@@ -54,7 +91,18 @@ function remainInfo(record: AssembleRecord): RemainInfo {
 }
 
 export default function SpaceTab() {
-  const { spaces, role, createSpace, joinSpaceByCode, leaveSpace, dissolveSpace, records } = useApp()
+  const {
+    spaces,
+    role,
+    createSpace,
+    joinSpaceByCode,
+    leaveSpace,
+    dissolveSpace,
+    records,
+    pendingSpacePaper,
+    clearPendingSpacePaper,
+    showToast,
+  } = useApp()
   // 第一个标签为空间列表，固定不可关闭；查看空间时打开动态标签
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activeTab, setActiveTab] = useState('list')
@@ -79,18 +127,22 @@ export default function SpaceTab() {
       setActiveTab(tabId)
       return
     }
-    setTabs((prev) => [...prev, { id: tabId, name: record.name, recordId: record.id }])
+    setTabs((prev) => [...prev, { id: tabId, name: record.name, record }])
     setActiveTab(tabId)
   }
 
-  /** 学生：作答空间内发布的试卷，新开标签页（答题 + AI 批卷） */
+  /** 学生：作答空间内发布的试卷，新开标签页（答题 + AI 批卷）；已过作答时间禁止进入 */
   const openAnswer = (record: AssembleRecord) => {
+    if (remainInfo(record).label === '已结束') {
+      showToast('已过作答时间')
+      return
+    }
     const tabId = `answer-${record.id}`
     if (tabs.some((t) => t.id === tabId)) {
       setActiveTab(tabId)
       return
     }
-    setTabs((prev) => [...prev, { id: tabId, name: record.name, recordId: record.id }])
+    setTabs((prev) => [...prev, { id: tabId, name: record.name, record }])
     setActiveTab(tabId)
   }
 
@@ -99,9 +151,45 @@ export default function SpaceTab() {
     if (activeTab === id) setActiveTab('list')
   }
 
+  // 通知「立即查看」：打开对应空间并直接进入该试卷的作答标签页
+  useEffect(() => {
+    if (!pendingSpacePaper) return
+    const { spaceId, paperId } = pendingSpacePaper
+    clearPendingSpacePaper()
+    const space = spaces.find((s) => s.id === spaceId)
+    if (!space) {
+      showToast('未找到该学习空间，可能已退出或被解散')
+      return
+    }
+    let cancelled = false
+    void api
+      .listSpacePapers(spaceId)
+      .then((rows) => {
+        if (cancelled) return
+        const p = rows.find((r) => r.id === paperId)
+        if (!p) {
+          showToast('该试卷不存在或已被删除')
+          return
+        }
+        const record = spacePaperToRecord(p, space.name)
+        const tabId = `answer-${paperId}`
+        setTabs((prev) => {
+          let next = prev.some((t) => t.id === spaceId) ? prev : [...prev, { id: spaceId, name: space.name }]
+          if (!next.some((t) => t.id === tabId)) next = [...next, { id: tabId, name: record.name, record }]
+          return next
+        })
+        setActiveTab(tabId)
+      })
+      .catch(() => showToast('打开试卷失败'))
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSpacePaper])
+
   const activeTabObj = tabs.find((t) => t.id === activeTab)
   const active = spaces.find((s) => s.id === activeTab)
-  const explainRecord = activeTabObj?.recordId ? records.find((r) => r.id === activeTabObj.recordId) : undefined
+  const explainRecord = activeTabObj?.record
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -155,13 +243,14 @@ export default function SpaceTab() {
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  const space = joinSpaceByCode(joinCode)
-                  if (space) {
-                    setJoinCode('')
-                    openSpace(space)
-                  } else {
-                    setJoinError(true)
-                  }
+                  void joinSpaceByCode(joinCode).then((space) => {
+                    if (space) {
+                      setJoinCode('')
+                      openSpace(space)
+                    } else {
+                      setJoinError(true)
+                    }
+                  })
                 }
               }}
               placeholder="输入空间编号"
@@ -173,13 +262,14 @@ export default function SpaceTab() {
             <button
               type="button"
               onClick={() => {
-                const space = joinSpaceByCode(joinCode)
-                if (space) {
-                  setJoinCode('')
-                  openSpace(space)
-                } else {
-                  setJoinError(true)
-                }
+                void joinSpaceByCode(joinCode).then((space) => {
+                  if (space) {
+                    setJoinCode('')
+                    openSpace(space)
+                  } else {
+                    setJoinError(true)
+                  }
+                })
               }}
               className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
             >
@@ -345,7 +435,7 @@ function SpaceDetail({
   onExplain: (r: AssembleRecord) => void
   onAnswer: (r: AssembleRecord) => void
 }) {
-  const { role, showToast, updateRecord, deleteRecord, removeSpaceMember, renameSpace } = useApp()
+  const { role, spaces, showToast, updateRecord, deleteRecord, removeSpaceMember, renameSpace } = useApp()
   const isStudent = role === 'student'
   // 学生人数：不含创建者（老师）
   const studentCount = Math.max(0, space.memberCount - 1)
@@ -354,9 +444,25 @@ function SpaceDetail({
   const [memberModal, setMemberModal] = useState(false)
   const [deletingPaper, setDeletingPaper] = useState<AssembleRecord | null>(null)
 
+  // 组卷记录按账号隔离：学生看空间发布卷走独立接口，教师看自己创建的试卷（来自组卷记录）
+  const [spacePapers, setSpacePapers] = useState<AssembleRecord[]>([])
+  useEffect(() => {
+    if (!isStudent) return
+    let cancelled = false
+    api
+      .listSpacePapers(space.id)
+      .then((rows) => {
+        if (!cancelled) setSpacePapers(rows.map((p) => spacePaperToRecord(p, space.name)))
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [isStudent, space.id, space.name])
+
   const papers = useMemo(
-    () => records.filter((r) => r.published && r.spaces.includes(space.name)),
-    [records, space.name],
+    () => (isStudent ? spacePapers : records.filter((r) => r.published && r.spaces.includes(space.name))),
+    [isStudent, spacePapers, records, space.name],
   )
 
   const startEdit = () => {
@@ -374,15 +480,38 @@ function SpaceDetail({
     showToast('空间名称已更新')
   }
 
+  /** 催交：24 小时冷却，成功后本地同步最近催交时间 */
+  const [urgeAtMap, setUrgeAtMap] = useState<Record<string, string>>({})
+  const urge = (record: AssembleRecord) => {
+    const spaceId = spaces.find((s) => s.name === record.spaces[0])?.id ?? space.id
+    void api
+      .urgePaper(record.id, spaceId)
+      .then(() => {
+        const nowIso = new Date().toISOString()
+        setUrgeAtMap((prev) => ({ ...prev, [record.id]: nowIso }))
+        showToast('已催促学生提交试卷')
+      })
+      .catch((err) => showToast(err instanceof Error ? err.message : '催交失败'))
+  }
+
+  const lastUrgeOf = (record: AssembleRecord) => urgeAtMap[record.id] ?? record.lastUrgeAt ?? null
+
   /** 停止 / 恢复作答切换 */
   const toggleStop = (record: AssembleRecord) => {
     const next = !record.stopped
-    updateRecord({ ...record, stopped: next })
-    showToast(next ? `「${record.name}」已停止作答` : `「${record.name}」已恢复作答`)
+    const target = spaces.find((s) => record.spaces.includes(s.name))
+    if (!target) {
+      showToast('找不到试卷所属空间')
+      return
+    }
+    void (next ? stopPublication(record.id, target.id) : resumePublication(record.id, target.id))
+      .then(() => updateRecord({ ...record, stopped: next }))
+      .catch((err) => showToast(err instanceof Error ? err.message : '操作失败'))
   }
 
   const deletePaper = (record: AssembleRecord) => {
-    deleteRecord(record.id)
+    // 空间侧删除为整卷删除（组卷记录一并移除）
+    void deleteRecord(record.id, { withPaper: true })
     showToast(`已删除试卷「${record.name}」`)
   }
 
@@ -399,9 +528,12 @@ function SpaceDetail({
                 <Save size={13} />
               </button>
             ) : (
-              <button type="button" onClick={startEdit} title="编辑" className="rounded p-0.5 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary">
-                <Pencil size={13} />
-              </button>
+              // 学生无编辑权限，不显示编辑按钮
+              !isStudent && (
+                <button type="button" onClick={startEdit} title="编辑" className="rounded p-0.5 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary">
+                  <Pencil size={13} />
+                </button>
+              )
             )}
           </div>
           {editingName ? (
@@ -467,24 +599,54 @@ function SpaceDetail({
               const ended = r.examWindow ? new Date(r.examWindow.end).toLocaleString('zh-CN', { hour12: false }) : null
               const stopped = !!r.stopped
               const remain = remainInfo(r)
+              // 作答进度：已交卷人数 / 空间学生数
+              const pct = studentCount > 0 ? Math.min(100, Math.round(((r.submittedCount ?? 0) / studentCount) * 100)) : 0
               return (
-                <li key={r.id} className="rounded-xl border border-line bg-white p-4">
-                  {/* 三列网格：名称 | 居中的剩余时间与作答情况 | 右侧按钮，全部垂直居中 */}
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
-                    <p className="min-w-0 truncate text-sm font-semibold text-ink" title={r.name}>
-                      {r.name}
-                    </p>
-                    <div className="flex items-center justify-center gap-5 whitespace-nowrap">
-                      <span className="flex items-baseline gap-1">
-                        <span className={`text-sm font-medium ${remain.muted ? 'text-ink-3' : 'text-ink-2'}`}>{remain.label}</span>
-                        {remain.num && <span className="text-xl font-bold leading-none text-primary">{remain.num}</span>}
-                        {remain.unit && <span className="text-sm font-medium text-ink">{remain.unit}</span>}
+                <li
+                  key={r.id}
+                  className="group relative overflow-hidden rounded-xl border border-line bg-white p-4 pl-5 transition-colors hover:bg-primary-light/15"
+                >
+                  {/* 悬停左侧蓝色竖条 */}
+                  <span className="absolute inset-y-0 left-0 w-1 rounded-r bg-primary opacity-0 transition-opacity group-hover:opacity-100" />
+                  {/* 三列网格：图标与名称 | 剩余/作答与进度条 | 操作按钮 */}
+                  <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.2fr)_auto] items-center gap-6">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary-light">
+                        <FileText size={18} className="text-primary" />
                       </span>
-                      <span className="flex items-baseline gap-1">
-                        <span className="text-sm font-medium text-ink-2">作答</span>
-                        <span className="text-xl font-bold leading-none text-ink">{r.submittedCount ?? 0}</span>
-                        <span className="text-sm text-ink-2">/ {studentCount}</span>
-                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-ink" title={r.name}>
+                          {r.name}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-ink-3">
+                          {r.examWindow ? `开始 ${started} · 结束 ${ended}` : '不限时间'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-6 whitespace-nowrap">
+                        <span className="flex items-baseline gap-1">
+                          <Clock size={14} className="translate-y-0.5 text-ink-3" />
+                          <span className={`text-sm font-medium ${remain.muted ? 'text-ink-3' : 'text-ink-2'}`}>{remain.label}</span>
+                          {remain.num && <span className="text-xl font-bold leading-none text-primary">{remain.num}</span>}
+                          {remain.unit && <span className="text-sm font-medium text-ink">{remain.unit}</span>}
+                        </span>
+                        <span className="flex items-baseline gap-1">
+                          <Pencil size={13} className="translate-y-0.5 text-ink-3" />
+                          <span className="text-sm font-medium text-ink-2">作答</span>
+                          <span className="text-xl font-bold leading-none text-ink">{r.submittedCount ?? 0}</span>
+                          <span className="text-sm text-ink-2">/ {studentCount}</span>
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-page">
+                          <div
+                            className="h-full rounded-full bg-primary transition-[width] duration-300"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="w-8 shrink-0 text-right text-xs text-ink-3">{pct}%</span>
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       {isStudent ? (
@@ -498,6 +660,27 @@ function SpaceDetail({
                         </button>
                       ) : (
                         <>
+                          {(() => {
+                            const coolHours = urgeCooldownHours(lastUrgeOf(r))
+                            return (
+                              <button
+                                type="button"
+                                title={coolHours ? `还有 ${coolHours} 小时可再次点击` : '催促未交卷的学生提交'}
+                                onClick={() => {
+                                  // 冷却期内不禁用按钮，点击仅提示剩余等待时间
+                                  if (coolHours) {
+                                    showToast(`还有 ${coolHours} 小时可再次点击`)
+                                    return
+                                  }
+                                  urge(r)
+                                }}
+                                className={`${iconBtn} border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100`}
+                              >
+                                <Megaphone size={12} />
+                                催交
+                              </button>
+                            )
+                          })()}
                           <button
                             type="button"
                             onClick={() => toggleStop(r)}
@@ -531,9 +714,6 @@ function SpaceDetail({
                       )}
                     </div>
                   </div>
-                  <p className="mt-2 text-xs text-ink-3">
-                    {r.examWindow ? `开始 ${started} · 结束 ${ended}` : '不限做题时间'}
-                  </p>
                 </li>
               )
             })}
@@ -662,8 +842,9 @@ function CreateSpaceModal({
       return
     }
     const cap = Math.max(1, Math.min(500, Number(capacity) || 50))
-    const space = createSpace(name.trim(), cap)
-    setCreated(space)
+    void createSpace(name.trim(), cap)
+      .then((space) => setCreated(space))
+      .catch((err) => showToast(err instanceof Error ? err.message : '创建失败'))
   }
 
   const copyCode = async () => {

@@ -51,7 +51,7 @@ function StatusTag({ record, isStudent }: { record: AssembleRecord; isStudent: b
 }
 
 export default function RecordsTab() {
-  const { records: allRecords, role, deleteRecord, deleteRecordQuestions, showToast, openPaperId, clearOpenPaper } = useApp()
+  const { records: allRecords, role, deleteRecord, deleteRecords, deleteRecordQuestions, showToast, openPaperId, clearOpenPaper } = useApp()
   const isStudent = role === 'student'
   // 发布时未勾选「保存到组卷记录」的记录仅用于学习空间展示，不进本页列表
   const records = useMemo(() => allRecords.filter((r) => r.savedToRecords !== false), [allRecords])
@@ -60,6 +60,7 @@ export default function RecordsTab() {
   const [activeTab, setActiveTab] = useState('list')
   const [checked, setChecked] = useState<string[]>([])
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [batchConfirm, setBatchConfirm] = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [editingRecord, setEditingRecord] = useState<AssembleRecord | null>(null)
 
@@ -72,8 +73,15 @@ export default function RecordsTab() {
     setActiveTab(record.id)
   }
 
-  /** 学生作答：新开标签打开答题页，交卷 AI 批卷后可查看答案与解析 */
+  /** 学生作答：新开标签打开答题页，交卷 AI 批卷后可查看答案与解析；已过作答时间禁止进入 */
   const startPractice = (record: AssembleRecord) => {
+    if (record.examWindow) {
+      const end = new Date(record.examWindow.end).getTime()
+      if (Date.now() >= end) {
+        showToast('已过作答时间')
+        return
+      }
+    }
     const tabId = `answer-${record.id}`
     if (tabs.some((t) => t.id === tabId)) {
       setActiveTab(tabId)
@@ -143,6 +151,7 @@ export default function RecordsTab() {
           }}
           onEdit={(r) => setEditingRecord(r)}
           onStartPractice={startPractice}
+          onBatchDelete={() => setBatchConfirm(true)}
           isStudent={isStudent}
         />
       ) : active ? (
@@ -169,6 +178,19 @@ export default function RecordsTab() {
             setChecked((prev) => prev.filter((id) => id !== deleting))
           }}
           onClose={() => setConfirmDelete(false)}
+        />
+      )}
+      {batchConfirm && (
+        <ConfirmDialog
+          title="批量删除组卷记录"
+          message={`确定删除选中的 ${checked.length} 份试卷吗？删除后不可恢复。`}
+          confirmText="全部删除"
+          onConfirm={async () => {
+            const ids = [...checked]
+            await deleteRecords(ids)
+            setChecked([])
+          }}
+          onClose={() => setBatchConfirm(false)}
         />
       )}
     </div>
@@ -210,6 +232,7 @@ function RecordList({
   onDelete,
   onEdit,
   onStartPractice,
+  onBatchDelete,
   isStudent,
 }: {
   records: AssembleRecord[]
@@ -219,6 +242,7 @@ function RecordList({
   onDelete: (id: string) => void
   onEdit: (r: AssembleRecord) => void
   onStartPractice: (r: AssembleRecord) => void
+  onBatchDelete: () => void
   isStudent: boolean
 }) {
   const allChecked = records.length > 0 && records.every((r) => checked.includes(r.id))
@@ -241,10 +265,7 @@ function RecordList({
           <button
             type="button"
             disabled={!checked.length}
-            onClick={() => {
-              checked.forEach((id) => onDelete(id))
-              setChecked([])
-            }}
+            onClick={onBatchDelete}
             className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
               checked.length
                 ? 'border-red-200 bg-red-50 text-red-500 hover:bg-red-100'
