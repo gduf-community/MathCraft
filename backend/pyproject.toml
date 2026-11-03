@@ -1,0 +1,33 @@
+[project]
+name = "riddleme-backend"
+version = "0.2.0"
+description = "MathCraft 出题平台后端：用户系统 + 题库 + RAG 混合检索 + DeepSeek 出题"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic-settings>=2.6.0",
+    "python-multipart>=0.0.12",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "redis>=5.0",
+    "bcrypt>=4.2",
+    "jieba>=0.42",
+    "chromadb>=0.5.20",
+    "pymupdf>=1.24.0",
+    "python-docx>=1.1.2",
+    "openpyxl>=3.1.5",
+    "openai>=1.55.0",
+    "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
