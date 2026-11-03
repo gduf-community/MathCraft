@@ -82,8 +82,28 @@ chore(deps): 升级 fastapi 至 0.115
 - 运行测试：`.venv\Scripts\python.exe -m pytest -q`（`testpaths` 已指向 `backend/tests`）；改动索引、解析、设置写入等核心路径后必须全绿。
 - 保持单租户边界：需要多用户能力时先读 `STUBS.md`，不要顺手恢复上游的多用户行为。
 - 可选引擎与解析器必须惰性导入：缺依赖时报告 unavailable，不能让服务启动失败。
-- 不要在 import 阶段扩散副作用：现有的 import-time 设置（见 `README.md`「上游遗留的怪癖」）保持现状，新代码不要效仿。
 - `backend/MathCraft/api/routers/knowledge.py`、`backend/MathCraft/api/routers/settings.py` 已经很大，新增端点放进对应分组的既有结构里，不要整段复制粘贴。
+
+### 4.1 Python 语言规范与风格
+
+- 遵循 PEP 8、PEP 257 和现有 `pyproject.toml` 配置；使用 4 个空格缩进，行宽保持在 100 字符以内，命名分别采用 `snake_case`、`PascalCase` 和 `UPPER_SNAKE_CASE`。
+- 新增或修改的公共函数、类和模块应补充必要的类型标注与文档字符串；优先使用具体类型，避免新增 `Any`、通配符导入和无理由的类型忽略。
+- 按标准库、第三方依赖、本地模块分组导入；依赖注入优先于隐式全局状态，模块导入阶段保持轻量，不新增 import-time 网络、文件写入或设置持久化副作用。
+- 使用小而内聚的函数和明确的数据边界；外部 HTTP、WebSocket、文件和用户输入在边界处校验，接口数据优先使用现有 Pydantic schema，资源使用上下文管理器及时释放。
+- 异步代码不得在事件循环中执行阻塞 I/O；异常应使用具体类型并保留上下文，禁止用空的 `except` 或静默降级掩盖错误；日志和异常信息不得包含密钥、Token、Cookie 或用户隐私。
+- 格式与静态检查以 Ruff 和 Pyright 为准：至少运行 `.venv\Scripts\python.exe -m ruff check backend`；改动 Pyright 覆盖范围时同步运行 `frontend\node_modules\.bin\pyright.cmd`；行为改动运行 `.venv\Scripts\python.exe -m pytest -q`。
+
+### 代码审查：
+当使用skill或者插件进行代码审查时，需要使用没有附带编写代码的上下文的智能体或者子智能体来完成。
+
+### 4.2 React 与 TypeScript 规范与风格
+
+- 前端使用 React 19 + Vite + TypeScript strict；使用函数组件和 Hooks，组件文件及组件、类型名采用 `PascalCase`，变量、函数和 Hooks 采用 `camelCase`，API 与工具模块文件遵循现有小写命名，自定义 Hook 以 `use` 开头。
+- Props、API 请求和响应使用明确的 TypeScript 类型；禁止新增 `any` 和无依据的类型断言，外部数据先校验或收窄为安全类型；后端契约类型与 `backend/schemas/`、`frontend/src/types/` 保持同步。
+- 组件保持单一职责，优先复用现有组件、API 模块和状态上下文；派生值直接计算，副作用集中在 `useEffect`，依赖数组完整，状态通过不可变更新维护，不直接修改 Props、Context 或数组对象。
+- 列表使用稳定且有业务含义的 `key`；异步交互明确处理 loading、error、empty 和成功状态；API 调用放在现有 `src/api/` 层，组件不重复实现请求、鉴权和错误转换。
+- 优先使用语义化 HTML 和可访问控件，表单控件提供 label，交互行为支持键盘操作；颜色、焦点、禁用和错误状态遵循现有样式体系，不在单个组件中另建平行设计系统。
+- 提交前在 `frontend/` 运行 `npm run typecheck` 和 `npm run lint`；涉及生产构建、路由、资源或打包配置时再运行 `npm run build`，并修复新增的 TypeScript、ESLint 和 React Hooks 诊断。
 
 ## 5. 目录约定
 
