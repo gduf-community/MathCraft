@@ -1,84 +1,84 @@
-# backend 目录说明
+# RiddleMe 后端
 
-`backend/` 包含统一的 MathCraft Python 后端，知识库、模型配置和出题路由运行在同一个 FastAPI 进程中。
+FastAPI + Chroma + Ollama(qwen3-embedding) + DeepSeek 的出题服务。RAG 检索教学材料，按槽位状态机引导对话出题，输出与前端 Question 结构对齐的 JSON。
 
-## 目录结构
+## 模块结构
 
-```text
+```
 backend/
-├── src/
-│   ├── MathCraft/       # 现有正式运行时包，作为迁移期间的兼容锚点
-│   │   ├── __main__.py  # python -m MathCraft 启动入口
-│   │   ├── app.py       # 统一 FastAPI 应用与路由装配
-│   │   ├── api/         # 正式业务路由、运行时生命周期与公开导出
-│   │   ├── core/        # 跨层协议、工具和流事件
-│   │   ├── runtime/     # 数据根、运行模式与隔离 worker
-│   │   ├── services/    # LLM、嵌入、RAG、解析和设置基础实现
-│   │   └── utils/       # 通用文件、JSON、网络与校验工具
-│   ├── knowledge/       # 独立知识库领域、索引生命周期与进度事件
-│   ├── questions/       # 旧出题层迁移后的题目 API、服务和 Schema
-│   │   ├── api/         # generate、chat 路由
-│   │   ├── services/    # 多轮追问、题目生成和 RAG 适配
-│   │   └── schemas/     # 出题请求与响应契约
-│   ├── agents/          # Agent 领域预留目录；不作为顶层 Python 包导入
-│   ├── app/             # 后续应用装配与依赖注入迁移入口
-│   ├── settings/        # 设置领域迁移入口
-│   ├── transport/       # HTTP、SSE、WebSocket 迁移入口
-│   └── shared/          # 少量跨领域共享类型
-├── scripts/             # 出题和对话联测脚本
-└── tests/               # 后端测试套件
+├── app/
+│   ├── main.py              # FastAPI 入口 + /api/health
+│   ├── config.py            # .env 配置
+│   ├── schemas/question.py  # Question 模型（与前端字段对齐）
+│   ├── api/
+│   │   ├── kb.py            # 上传入库 / 文档清单 / 检索测试
+│   │   ├── generate.py      # 参数化出题
+│   │   └── chat.py          # 对话出题（槽位状态机）
+│   └── services/
+│       ├── parsing/         # pdf / docx / xlsx / md 解析，OCR 接口占位
+│       ├── chunking.py      # 练习卷按题号切，通用按长度聚合
+│       ├── embeddings.py    # qwen3-embedding:0.6b（langchain-ollama）
+│       ├── vectorstore.py   # Chroma 持久化（data/chroma）
+│       ├── ingestion.py     # 解析→切片→向量化→入库
+│       ├── retrieval.py     # top-k 检索
+│       ├── llm.py           # DeepSeek（OpenAI 兼容协议，JSON mode + 校验重试）
+│       ├── question_gen.py  # 出题：检索参考 + 题型校验 + 跨题去重
+│       ├── slots.py         # 对话槽位抽取/合并/追问模板
+│       ├── chat_flow.py     # 对话编排
+│       └── prompts.py       # 全部 prompt 模板
+├── scripts/                 # 命令行测试：upload / retrieval / generate / chat
+└── data/                    # chroma 库 + 上传文件（不进 git）
 ```
 
-## 运行边界
+## 启动
 
-- 使用 `python -m MathCraft` 启动统一后端；`MathCraft.api.main:app` 是对外 ASGI 入口，包含知识库、模型配置和出题路由。
-- `src/MathCraft/` 在迁移阶段继续承载正式实现和统一应用入口；出题服务通过 `questions` 领域调用正式 RAGService、LLM 和知识库访问层。旧 `math_q_agent` import 与命令停止支持，不保留旧目录兼容壳。
-- `MathCraft.app` 装配正式知识库、模型配置和出题编排服务。`python -m MathCraft` 启动时加载根目录 `.env`；监听地址按 `--host`、`BACKEND_HOST`、默认值 `127.0.0.1` 的优先级确定，端口按 `--port`、`BACKEND_PORT`、已保存系统设置、默认值 `8000` 的优先级确定。shell 中同名变量优先于 `.env`；默认前端端口为 `5173`。统一应用在启动后读取 `CORS_ORIGIN` / `CORS_ORIGINS`，默认无认证模式保持跨域放行。
-- `src/MathCraft/api/runtime.py` 保存原实现包 `api/main.py` 中的 lifespan 与中间件；`src/MathCraft/api/main.py` 仅导出统一 app。正式业务路由统一位于 `src/MathCraft/api/routers/`，HTTP 和 WebSocket 路径保持不变。
-- 数据根环境变量现统一为 `MATHCRAFT_HOME`，不提供旧名回退；将其值指向原 home 目录时，运行数据、索引和本地配置继续从同一 `data/` 读取，无需搬迁或重建。
+```bash
+cd backend
+uv sync                                          # 首次安装依赖
+uv run uvicorn app.main:app --port 8000          # 启动，Swagger 见 /docs
+```
 
-迁移范围、契约、协作边界与验收标准见 [后端包统一与接口对齐](../docs/design/后端包统一与接口对齐.md)。
+前置条件：ollama 已启动且拉取 qwen3-embedding:0.6b；.env 中配置 DeepSeek 密钥。
+模型名以平台实际为准（当前支持 deepseek-flash、deepseek-v4-pro），配置在 .env 的 DEEPSEEK_MODEL。
 
-前后端端口统一由根 `.env` 配置时，后端使用 `python -m MathCraft` 启动。直接运行 Uvicorn 并指定 `--port` 会使用其命令行端口；应用 lifespan 加载 `.env` 无法修改已经解析的监听参数，可能导致 Vite 按 `.env` 转发到没有监听的端口。
+## 测试流程
 
-应用模块导入仅装配路由，ASGI lifespan 负责加载 `.env`、初始化运行时设置、导出环境变量和配置日志。`MATHCRAFT_HOME` 可在导入后、启动前确定；配置默认目录由路径服务解析，已有实例继续绑定其原目录。启动顺序与异常边界见 [模型配置来源与普通知识库流程](../docs/design/模型配置来源与普通知识库流程.md)。
+```bash
+# 1. 入库（文字版 PDF / docx / xlsx / md）
+uv run python scripts/upload.py "../导数与微分_50题练习卷.pdf" --kb kb-math
 
-## 隔离文档提取
+# 2. RAG 检索测试
+uv run python scripts/test_retrieval.py "隐函数求导" --top-k 3
 
-本次补齐基线缺失的 `src/MathCraft/runtime/worker_process.py` 与 `worker_tasks.py`，恢复 `extract_text_from_path_isolated()` 和 `TextOnlyParser.parse()` 的既有调用链；不增加依赖，单租户边界保持有效。2026-10-31 在 Windows / Python 3.14 上完成真实子进程及完整后端验证。
+# 3. 参数化出题（题型:数量）
+uv run python scripts/test_generate.py --types single:2,compute:1
 
-- `isolated_worker.py` 使用当前 Python 解释器执行固定命令 `python -m MathCraft.runtime.worker_process <request_path> <result_path>`，不通过 shell；继续管理临时目录、超时、并发限制，以及异步取消后的终止和等待回收。
-- `worker_process.py` 读取 pickle 请求 `{callable_path, args, kwargs}`，按 `module:callable` 定位同步函数。成功写入 `{ok: True, result: ...}`；失败写入 `{ok: False, message, module, type, traceback, attrs}`。`attrs` 至少保留异常的 `filename`，忽略不可序列化属性，避免属性序列化失败掩盖原错误。该协议只用于父进程创建的可信临时文件，不是 HTTP 接口。
-- `worker_tasks.py` 在任务执行时惰性调用 `MathCraft.utils.document_extractor.extract_text_from_path`。`extract_document_text` 透传 `filename_hint`、`max_bytes`、`max_chars` 并返回字符串；`extract_document_to_markdown` 先完成提取，再创建目标父目录、以 UTF-8 写入 `.md`，返回 `None`。提取失败不提前创建输出目录或文件。
-- 远程失败先由父进程包装为 `IsolatedWorkerError`；公开提取入口继续恢复文档异常及 `filename`，并将既有内置文件异常映射为 `OSError`。`TextOnlyParser` 继续将既有 worker/文件错误包装为 `ParserError`。超时、取消、无结果或损坏结果沿用父进程原有异常边界，不转换为成功或静默回退。
-- HTTP 文本预览沿用 `GET /api/knowledge-bases/{kb_name}/file-preview-text/{filename:path}`：成功返回纯文本，文档提取失败返回 422，文件缺失返回 404；请求字段与响应格式不变。traceback 和内部属性不增加为 HTTP 响应字段。
+# 4. 对话状态机联测（需先启动服务）
+uv run python scripts/test_chat.py
+```
 
-验收入口为 `.venv\Scripts\python.exe -m pytest backend/tests/test_isolated_document_extraction.py -q`，要求真实子进程覆盖文本/PDF 成功、Markdown 输出、HTTP 预览成功、错误传回、超时与取消，并完成后端回归。验收细项及实际结果记录入口见[后端包统一与接口对齐第 10 节](../docs/design/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收)。新增回归 25 项通过、既有解析相关测试 9 项通过，完整后端套件 322 项通过、1 项跳过；仅有既有 PyMuPDF 弃用提示。
+## 接口一览
 
-## 教师个人资料
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | /api/health | 组件连通性自检 |
+| POST | /api/kb/upload | 上传文件入库（multipart: file, kb_id） |
+| GET | /api/kb/documents?kb_id= | 知识库下文档清单 |
+| POST | /api/kb/search | 检索测试（kb_id, query, top_k, doc_id） |
+| POST | /api/generate | 参数化出题（题型数量难度来源模式） |
+| POST | /api/chat | 对话出题（槽位状态由前端每轮回传） |
 
-`GET/PUT /api/user-profile` 独立读取与保存昵称、任教学段及年级，教师身份只读。`POST /api/user-profile/avatar` 上传经内容校验的位图，`GET /api/user-profile/avatar` 读取已保存头像；没有头像时返回 404。PNG、JPEG、WebP 上限 5 MiB，服务端拒绝非法路径、伪造格式、损坏或过大图片，失败保留旧头像。
+## 设计要点
 
-统一应用装配资料路由，所有公开入口导出或启动同一个 app。个人资料和头像位于运行时数据根，不进入模型 catalog/draft、配置导出或 Git。资料和头像接口独立持久化；前端先预览，用户确认后顺序提交，部分失败分别反馈，不提供跨请求事务。具体字段及错误状态见 [API 文档](../docs/api.md)，实现范围见[功能规格](../docs/design/个人中心与应用设置功能规格.md)，验证结果见[实施记录](../docs/design/个人中心与应用设置实施记录.md)。
+- **切片**：自动识别练习卷（行级题号统计 ≥5 触发），一道题一个 chunk；大题标题并入首题；「参考答案」之后整段聚合，保证原题模式可检索到答案。通用文档按 chunk_size 聚合 + overlap。
+- **OCR 预留**：PDF 每页可提取字符低于阈值判定为扫描版，调用 OCREngine 协议（`parsing/base.py`），当前为占位实现，接入 PaddleOCR / MinerU 时替换 `ocr_engine` 实例即可。
+- **出题质量**：JSON mode + Pydantic 校验 + 解析错误回喂重试；题型不符直接丢弃并重试（最多 3 轮）；跨题型传递已生成题干用于去重。
+- **对话状态机**：槽位抽取用独立的小调用（JSON 输出），追问文案为固定模板（缺啥问啥、动态重编号），全部槽位齐备才触发生成。分数默认每题 5 分。
+- **密钥安全**：DeepSeek key 只在 backend/.env（已 gitignore），前端通过 /api 代理访问，永不接触密钥。
 
-## 模型草稿与凭据历史回归
+## 待办
 
-历史[模型与服务页面优化](../docs/design/模型与服务页面优化功能规格.md)使用原设置接口；当前模型入口已采用下文直接配置方案。独立 Profile 明确清空凭据时，运行时必须保持为空，不能借用同提供方其他 Profile 的密钥；缺省凭据仍沿用已有继承行为。回归用例通过隔离设置路由、本地 HTTP 假服务与公共运行时配置读取验证暂存、无请求体应用、脱敏凭据和失败重试，执行结果见[实施记录](../docs/design/模型与服务页面优化实施记录.md)。
-
-## 模型直接配置
-
-每个模型以 `direct_config` 保存独立提供方、地址、凭据和高级连接参数，原 Profile/模型 ID 保持稳定。目录迁移原子、幂等，旧任务引用复制原目标，重名按稳定规则调整；纯结构迁移保留已有嵌入签名和索引绑定。损坏文件或迁移失败时保留原文件并返回安全错误，不使用环境值覆盖故障文件。
-
-`POST /api/settings/direct-model` 在锁内合并当前项，默认、删除和任务模式分别使用对应端点。名称统一去首尾空白并按大小写敏感规则全局校验；所有保留的旧写入入口同样校验，旧共享字段不覆盖已有独立模型。普通保存及发现只从同 ID 正式项恢复掩码；明确恢复草稿时还校验草稿版本。`GET /api/settings/direct-model/draft` 只生成安全迁移预览，不写入或启用草稿。
-
-两条保留的模型发现通路返回一致业务状态、模型列表、原因代码及存在的上游 HTTP 状态。请求只执行模型列表发现，不进行推理或嵌入，不回传上游错误正文。接口以[机器契约](../openapi.json)及[生成 API 文档](../docs/api.md)为准，行为范围见[功能规格](../docs/design/模型直接配置功能规格.md)。
-
-独立模型实现入口：`src/MathCraft/services/config/direct_model_config.py` 负责正式配置迁移和名称约束；`src/MathCraft/services/settings/direct_model_edit.py` 负责当前模型合并及默认操作。知识库兼容验证通过设置接口、公开运行时解析和本地假嵌入索引进行，详见[模型直接配置实施记录](../docs/design/模型直接配置实施记录.md)。
-
-## 对话出题必填检查
-
-`/api/chat` 累积教师要求，在题型、每种题型数量、范围、来源和难度齐备后才调用生成；数量缺失时按题型追问，每种题型数量为 1–20 道，不使用默认数量。设计与边界见 [对话出题必填信息检查](../docs/design/对话出题必填信息检查.md)。
-
-## 收藏功能边界
-
-收藏页沿用前端内存 mock，刷新后重置；收藏与收藏夹尚未接入后端持久化。本轮统一包与审计前端调用不新增收藏后端接口或存储。
+- 扫描版 PDF 的 OCR 引擎接入
+- 题目编辑/删除/组卷记录的后端持久化（当前前端本地状态）
+- 对话回复 SSE 流式输出
+- 知识库管理（多知识库增删）
