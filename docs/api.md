@@ -20,8 +20,6 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/auth/config` | Auth Config |
-| `GET` | `/api/auth/development-account` | Development Account |
-| `POST` | `/api/auth/development-account` | Development Account |
 | `POST` | `/api/auth/email-code` | Email Code |
 | `POST` | `/api/auth/login/email` | Login Email |
 | `POST` | `/api/auth/login/password` | Login Password |
@@ -162,4 +160,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 91 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 89 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
