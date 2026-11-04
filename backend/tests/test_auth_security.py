@@ -1,0 +1,244 @@
+"""认证安全 HTTP 验收：实际 SQLite/FakeRedis 竞争及外部边界故障。"""
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+import jwt
+import pytest
+import redis
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.services import auth as service, cache
+from test_auth import PASSWORD, bearer, csrf, delivery, issue, register
+
+
+def test_logout_only_revokes_current_device(client, delivery):
+    first = register(client, delivery, user_no="device01")
+    second = client.post("/api/auth/login/password", json={"user_no": "device01", "password": PASSWORD,
+        "role": "teacher", "turnstile_token": "test-challenge"}).json()
+    assert client.post("/api/auth/logout", json={}, headers=csrf(client)).status_code == 204
+    assert client.get("/api/auth/me", headers=bearer(second)).status_code == 401
+    assert client.get("/api/auth/me", headers=bearer(first)).status_code == 200
+
+
+def test_sql_failure_releases_proof_for_retry(client, delivery):
+    result = register(client, delivery, user_no="reset01")
+    challenge, code = issue(client, delivery, purpose="reset_password")
+    payload = {"email": "new@example.com", "challenge_id": challenge, "code": code,
+               "new_password": "changed-password", "confirm_password": "changed-password"}
+    calls = 0
+
+    def fail_once(session):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError("injected commit fault", {}, Exception("test only"))
+
+    event.listen(Session, "before_commit", fail_once)
+    try:
+        response = client.post("/api/auth/password/reset", json=payload)
+        assert response.status_code == 503, response.text
+        assert client.get("/api/auth/me", headers=bearer(result)).status_code == 200
+        assert client.post("/api/auth/password/reset", json=payload).status_code == 204
+    finally:
+        event.remove(Session, "before_commit", fail_once)
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 401
+
+
+def test_registration_session_failure_reports_account_created(client, delivery):
+    challenge, code = issue(client, delivery)
+    calls = 0
+
+    def fail_session_commit(session):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OperationalError("injected session failure", {}, Exception("test only"))
+
+    event.listen(Session, "before_commit", fail_session_commit)
+    try:
+        response = client.post("/api/auth/register", json={"email": "new@example.com",
+            "challenge_id": challenge, "code": code, "password": PASSWORD,
+            "confirm_password": PASSWORD, "role": "teacher", "display_name": "用户"})
+    finally:
+        event.remove(Session, "before_commit", fail_session_commit)
+    assert response.status_code == 503
+    assert response.json()["detail"]["account_created"] is True
+    challenge, code = issue(client, delivery, purpose="login")
+    assert client.post("/api/auth/login/email", json={"email": "new@example.com",
+        "challenge_id": challenge, "code": code, "role": "teacher"}).status_code == 200
+
+
+def test_concurrent_same_code_only_one_registration(client, delivery):
+    challenge, code = issue(client, delivery)
+    gate = Barrier(2)
+    payload = {"email": "new@example.com", "challenge_id": challenge, "code": code,
+        "password": PASSWORD, "confirm_password": PASSWORD, "role": "teacher", "display_name": "用户"}
+
+    def submit():
+        gate.wait(timeout=10)
+        return client.post("/api/auth/register", json=payload).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: submit(), range(2)))
+    assert outcomes.count(201) == 1, outcomes
+    assert all(code in {201, 400, 409} for code in outcomes), outcomes
+
+
+def test_concurrent_user_number_registration_constraint(client, delivery):
+    payloads = []
+    for email in ("one@example.com", "two@example.com"):
+        challenge, code = issue(client, delivery, email)
+        payloads.append({"email": email, "challenge_id": challenge, "code": code,
+            "password": PASSWORD, "confirm_password": PASSWORD, "role": "teacher",
+            "display_name": "用户", "user_no": "shared001"})
+    gate = Barrier(2)
+
+    def submit(payload):
+        gate.wait(timeout=10)
+        return client.post("/api/auth/register", json=payload).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(submit, payloads))
+    assert sorted(outcomes) == [201, 409], outcomes
+
+
+def test_code_binding_expiry_and_resend(client, delivery, monkeypatch):
+    challenge, code = issue(client, delivery)
+    payload = {"email": "different@example.com", "challenge_id": challenge, "code": code,
+        "password": PASSWORD, "confirm_password": PASSWORD, "role": "teacher", "display_name": "用户"}
+    assert client.post("/api/auth/register", json=payload).status_code == 400
+    issued = service.now()
+    monkeypatch.setattr(service, "now", lambda: issued + settings.auth_code_ttl_seconds + 1)
+    payload["email"] = "new@example.com"
+    assert client.post("/api/auth/register", json=payload).json()["detail"]["code"] == "CODE_EXPIRED"
+
+
+def test_redis_outage_fails_closed(client, delivery, monkeypatch):
+    def unavailable():
+        raise redis.ConnectionError("injected test outage")
+
+    monkeypatch.setattr(cache, "get_redis", unavailable)
+    response = client.post("/api/auth/email-code", json={"email": "new@example.com",
+        "purpose": "register", "turnstile_token": "test-challenge"})
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "AUTH_SERVICE_UNAVAILABLE"
+
+
+def test_jwt_claims_algorithm_and_signature_rejected(client, delivery):
+    result = register(client, delivery)
+    claims = jwt.decode(result["access_token"], settings.auth_jwt_secret,
+                        algorithms=["HS256"], audience=settings.auth_jwt_audience)
+    mutations = [{"iss": "wrong"}, {"aud": "wrong"}, {"type": "refresh"}, {"sub": "unknown"},
+                 {"auth_version": 999}, {"sid": "unknown"}, {"iat": service.now() + 1000}]
+    for change in mutations:
+        invalid = jwt.encode({**claims, **change}, settings.auth_jwt_secret, algorithm="HS256")
+        assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {invalid}"}).status_code == 401
+    wrong_algorithm = jwt.encode(claims, settings.auth_jwt_secret, algorithm="HS384")
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {wrong_algorithm}"}).status_code == 401
+    wrong_key = jwt.encode(claims, "test-wrong-key-long-enough-01234567890123456789", algorithm="HS256")
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {wrong_key}"}).status_code == 401
+
+
+def test_cookie_attributes_and_json_boundary(client, delivery):
+    result = register(client, delivery)
+    headers = csrf(client)
+    response = client.post("/api/auth/refresh", json={}, headers=headers)
+    cookie = response.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "samesite=lax" in cookie and "path=/api/auth" in cookie
+    assert "domain=" not in cookie
+    assert client.post("/api/auth/refresh", content="not-json",
+        headers={**headers, "Content-Type": "application/json"}).status_code == 422
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 200
+
+
+def test_login_old_password_cannot_cross_password_reset(client, delivery, monkeypatch):
+    result = register(client, delivery, user_no="race01")
+    entered = Barrier(2)
+    resume = Barrier(2)
+    original = service.verify_password
+
+    def paused_verify(password, hashed):
+        valid = original(password, hashed)
+        if password == PASSWORD:
+            entered.wait(timeout=10)
+            resume.wait(timeout=10)
+        return valid
+
+    challenge, code = issue(client, delivery, purpose="reset_password")
+    monkeypatch.setattr(service, "verify_password", paused_verify)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.post, "/api/auth/login/password", json={"user_no": "race01",
+            "password": PASSWORD, "role": "teacher", "turnstile_token": "test-challenge"})
+        entered.wait(timeout=10)
+        response = client.post("/api/auth/password/reset", json={"email": "new@example.com",
+            "challenge_id": challenge, "code": code,
+            "new_password": "replacement-password", "confirm_password": "replacement-password"})
+        assert response.status_code == 204, response.text
+        resume.wait(timeout=10)
+        response = future.result(timeout=15)
+    assert response.status_code == 401, response.text
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 401
+
+
+def test_resend_invalidates_old_code(client, delivery, isolated_redis):
+    challenge, code = issue(client, delivery)
+    # 只推进冷却键（系统边界），保留旧 challenge 与同一 SQL 数据库。
+    for key in isolated_redis.scan_iter("auth:otp:cool:*"):
+        isolated_redis.delete(key)
+    replacement, replacement_code = issue(client, delivery)
+    payload = {"email": "new@example.com", "challenge_id": challenge, "code": code,
+        "password": PASSWORD, "confirm_password": PASSWORD, "role": "teacher", "display_name": "用户"}
+    assert client.post("/api/auth/register", json=payload).status_code == 400
+    payload.update(challenge_id=replacement, code=replacement_code)
+    assert client.post("/api/auth/register", json=payload).status_code == 201
+
+
+def test_sensitive_number_change_cannot_use_pre_reset_password(client, delivery, monkeypatch):
+    result = register(client, delivery, user_no="sensitive01")
+    entered, resume = Barrier(2), Barrier(2)
+    original = service.verify_password
+
+    def paused_verify(password, hashed):
+        valid = original(password, hashed)
+        entered.wait(timeout=10)
+        resume.wait(timeout=10)
+        return valid
+
+    challenge, code = issue(client, delivery, purpose="reset_password")
+    monkeypatch.setattr(service, "verify_password", paused_verify)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.put, "/api/users/me/user-no", headers=bearer(result),
+            json={"user_no": "hijacked01", "current_password": PASSWORD})
+        entered.wait(timeout=10)
+        response = client.post("/api/auth/password/reset", json={"email": "new@example.com",
+            "challenge_id": challenge, "code": code, "new_password": "new-secret-password",
+            "confirm_password": "new-secret-password"})
+        assert response.status_code == 204
+        resume.wait(timeout=10)
+        assert future.result(timeout=15).status_code == 401
+
+
+def test_concurrent_refresh_replay_revokes_family(client, delivery):
+    from starlette.testclient import TestClient
+    from app.main import app
+
+    result = register(client, delivery)
+    cookie = client.cookies.get("mc_refresh")
+    csrf_token = client.get("/api/auth/config").json()["csrf_token"]
+    gate = Barrier(2)
+
+    def refresh_once():
+        with TestClient(app) as device:
+            device.cookies.set("mc_refresh", cookie, path="/api/auth")
+            device.cookies.set("mc_csrf", csrf_token, path="/api/auth")
+            gate.wait(timeout=10)
+            return device.post("/api/auth/refresh", json={}, headers={
+                "Origin": "http://127.0.0.1:5173", "X-CSRF-Token": csrf_token}).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: refresh_once(), range(2)))
+    assert sorted(outcomes) == [200, 401], outcomes
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 401
