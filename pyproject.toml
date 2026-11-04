@@ -1,0 +1,196 @@
+# MathCraft — standalone knowledge-base + model-configuration backend.
+#
+# Extracted from DeepTutor @ a31d8262. This project is a snapshot: it does not
+# track upstream. Optional RAG engines and parsing engines keep the upstream
+# split between the default (LlamaIndex) line and opt-in extras.
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "MathCraft"
+version = "0.1.0"
+description = "Knowledge-base and model-configuration backend extracted from DeepTutor"
+requires-python = ">=3.11,<3.15"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+dependencies = [
+    # Core runtime
+    "PyYAML>=6.0",
+    "jinja2>=3.1.0",
+    "openai>=1.30.0",
+    "tiktoken>=0.5.0",
+    "aiohttp>=3.9.4",
+    "httpx>=0.27.0",
+    "requests>=2.32.2",
+    "nest_asyncio>=1.5.8",
+    "tenacity>=8.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "packaging>=24.2",
+    "jsonschema>=4.20.0,<5.0.0",
+    "aiosqlite>=0.19.0",
+    "pageindex>=0.2.10,<0.3.0",
+    "tzdata>=2024.1",
+    # LLM provider SDKs
+    "anthropic>=0.30.0",
+    "dashscope>=1.14.0",
+    "perplexityai>=0.1.0",
+    "oauth-cli-kit>=0.1.1",
+    # Default RAG engine (LlamaIndex line)
+    "llama-index>=0.14.12",
+    "bm25s>=0.3.14,<0.4.0",
+    "llama-index-retrievers-bm25>=0.7.1,<0.8.0; python_version < '3.14'",
+    "llama-index-vector-stores-faiss>=0.4.0,<1.0.0",
+    "faiss-cpu>=1.8.0,<2.0.0; python_version < '3.14'",
+    "faiss-cpu>=1.12.0,<2.0.0; python_version >= '3.14'",
+    # Document handling
+    "PyMuPDF>=1.26.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0,<3.0.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=1.0.0",
+    "pypdf>=4.0.0",
+    "pdfplumber>=0.11.0",
+    "defusedxml>=0.7.1",
+    # HTTP service
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.24.0",
+    "websockets>=12.0",
+    "python-multipart>=0.0.6",
+    "loguru>=0.7.3,<1.0.0",
+    "json-repair>=0.57.0,<1.0.0",
+    "psutil>=5.9.0,<8.0.0",
+]
+
+[project.optional-dependencies]
+# CodeBuddy login / agent SDK (~130 MB headless CLI). Chat works over plain HTTP
+# without it, so it stays opt-in as upstream.
+codebuddy = ["codebuddy-agent-sdk>=0.3,<0.4"]
+
+# Optional document-parsing engines. Engines import lazily; an absent engine
+# reports unavailable in the parsing settings instead of failing.
+parse-markitdown = ["markitdown[all]>=0.1.7"]
+parse-docling = [
+    "docling[xbrl]>=2.123.1",
+    "docling-slim[format-iwork,format-opendocument,format-video]>=2.123.1",
+]
+parse-pymupdf4llm = ["pymupdf4llm>=1.28.2"]
+parse-liteparse = ["liteparse>=2.14.2"]
+parse = [
+    "MathCraft[parse-markitdown]",
+    "MathCraft[parse-docling]",
+    "MathCraft[parse-pymupdf4llm]",
+    "MathCraft[parse-liteparse]",
+]
+
+# Optional RAG engines. Heavy and/or externally hosted; the default install
+# only covers the LlamaIndex line.
+graphrag = ["graphrag>=3.0.1,<4.0.0; python_version < '3.14'"]
+rag-lightrag = ["lightrag-hku==1.5.7"]
+rag-rerank = ["sentence-transformers>=3.0.0,<6.0.0; python_version < '3.14'"]
+
+engines = [
+    "MathCraft[graphrag]",
+    "MathCraft[rag-lightrag]",
+    "MathCraft[rag-rerank]",
+]
+
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+    "import-linter>=2.1.0,<3.0.0",
+    "ruff>=0.15.22,<0.16.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=1.0.0",
+    "pypdf>=4.0.0",
+    "defusedxml>=0.7.1",
+]
+
+[tool.setuptools]
+include-package-data = true
+package-dir = {"" = "backend/src"}
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
+include = ["MathCraft*", "questions*", "knowledge*", "app*", "settings*", "transport*", "shared*"]
+
+[tool.setuptools.package-data]
+MathCraft = [
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.md",
+    "**/*.json",
+    "**/*.sh",
+    "**/*.j2",
+    "**/*.jinja",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend/src"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["backend/src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules intentionally keep compatibility or lazy imports below runtime
+# declarations so optional engines do not become import-time requirements.
+"backend/src/MathCraft/api/routers/knowledge.py" = ["E402"]
+"backend/src/MathCraft/api/routers/settings.py" = ["E402", "F401"]
+"backend/src/knowledge/progress_tracker.py" = ["E402"]
+"backend/src/MathCraft/services/rag/linked_kb.py" = ["E402"]
+"backend/src/MathCraft/services/setup/init.py" = ["F821"]
+"backend/src/MathCraft/services/web_source/sync.py" = ["E402"]
+"backend/src/MathCraft/services/config/test_runner.py" = ["F401"]
+"backend/src/MathCraft/utils/bibtex_converter.py" = ["F841"]
+"backend/main.py" = ["F401"]
+"backend/src/questions/services/question_gen.py" = ["F401"]
+# Pytest fixtures are imported for registration and then injected by name.
+"backend/tests/**/*.py" = ["F401", "F811"]
+
+[tool.pyright]
+# Incremental baseline: keep the CI check actionable while legacy modules are
+# annotated and their existing diagnostics are migrated in follow-up changes.
+include = [
+    "backend/src/MathCraft/core",
+    "backend/src/MathCraft/config",
+    "backend/src/MathCraft/logging",
+    "backend/src/MathCraft/runtime/env.py",
+    "backend/src/MathCraft/runtime/home.py",
+    "backend/src/MathCraft/runtime/mode.py",
+    "backend/src/MathCraft/runtime/worker_tasks.py",
+    "backend/src/MathCraft/services/base_sync.py",
+    "backend/src/MathCraft/services/file_io.py",
+    "backend/src/MathCraft/services/path_service.py",
+    "backend/src/MathCraft/services/provider_registry.py",
+    "backend/src/MathCraft/services/tool_names.py",
+    "backend/src/MathCraft/services/voice/base.py",
+    "backend/src/MathCraft/services/voice/config.py",
+    "backend/src/MathCraft/services/voice/audio.py",
+    "backend/src/MathCraft/services/voice/speech_text.py",
+    "backend/src/MathCraft/services/voice/discovery.py",
+    "backend/src/MathCraft/services/voice/preview.py",
+    "backend/src/MathCraft/services/search/base.py",
+    "backend/src/MathCraft/services/search/types.py",
+    "backend/src/MathCraft/services/search/consolidation.py",
+    "backend/src/MathCraft/services/search/source_filter.py",
+]
+exclude = ["backend/tests", "backend/scripts", "**/__pycache__"]
+extraPaths = ["backend/src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
