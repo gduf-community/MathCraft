@@ -78,7 +78,7 @@ MathCraft/
 | Web 框架 | FastAPI + Uvicorn |
 | ORM 与迁移 | SQLAlchemy 2.x + Alembic |
 | 数据库 | SQLite，开启 WAL 与 FTS5 全文索引 |
-| 会话与任务 | Redis，保存登录会话、出题任务、文档入库进度与对话槽位 |
+| 会话与任务 | Redis，保存邮箱验证码、限流、出题任务、文档入库进度与对话槽位；认证会话由数据库管理 |
 | 向量库 | Chroma，按题库持久化 |
 | 向量模型 | 硅基流动 `BAAI/bge-m3`，1024 维 |
 | 重排模型 | 硅基流动 `BAAI/bge-reranker-v2-m3` |
@@ -99,7 +99,7 @@ MathCraft/
 
 ### 1. 启动 Redis
 
-Redis 是后端的硬依赖，登录会话、出题任务与文档入库进度都存放在这里。默认地址为 `redis://127.0.0.1:6379/0`。
+Redis 是后端的硬依赖，邮箱验证码、限流、出题任务与文档入库进度存放在这里。默认地址为 `redis://127.0.0.1:6379/0`。
 
 ```powershell
 # Windows 示例，在 Redis 所在目录执行
@@ -116,20 +116,12 @@ cd backend
 Copy-Item .env.example .env
 uv sync
 uv run alembic upgrade head
-uv run python scripts/seed.py
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-`seed.py` 会创建三个测试账号，密码均为 `123123`：
+账号系统按 [用户系统实施规格](docs/design/用户系统实施规格.md)实施。开发默认账号不再硬编码：在 `backend/.env` 填写教师/学生的邮箱、学工号、密码、显示名，并显式开启 `DEV_ACCOUNTS_ENABLED`，再执行 `uv run python scripts/seed.py`。初始化只供开发环境使用，已有账号不重置密码，冲突会报错，生产禁止执行。开发登录按钮仅填充，仍需手动登录及人机验证；开发凭据不得复用个人或生产密码。
 
-| 账号 | 角色 |
-| --- | --- |
-| `teacher` | 教师 |
-| `student` | 学生 |
-| `student2` | 学生 |
-
-需要额外账号时可执行 `uv run python scripts/create_user.py`。
-
+上线需配置随机 JWT 与验证码摘要密钥、SMTP 及 Turnstile 真实密钥/hostname；生产 `APP_ENV=production`、`DEV_ACCOUNTS_ENABLED=false`。真实 `.env` 不入库。缺配置或验证服务故障不绕过认证。迁移前备份；旧账号缺邮箱或标识冲突时先处理审计报告，不自动合并或标记已验证。
 后端启动后：
 
 - 健康检查：`http://127.0.0.1:8000/api/health`
@@ -274,3 +266,14 @@ npm run build
 本项目以 Apache-2.0 发布，全文见 [LICENSE](LICENSE)，`pyproject.toml` 中同步声明 `license = {text = "Apache-2.0"}`。
 
 仓库最初从 DeepTutor 裁剪而来，`LICENSE` 中的版权行原样保留。第三方来源与对应的许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+### 认证开发验证
+
+后端测试使用临时 SQLite 与每测试独立的进程内 Redis（fakeredis），不连接或清空本机 Redis；SMTP、人机验证及外部模型使用假服务。先安装开发依赖，再在仓库根运行：
+
+```powershell
+uv sync --project backend --group dev
+backend\.venv\Scripts\python.exe -m pytest -q
+```
+
+接口契约修改后重新生成根 OpenAPI 和完整 API 索引；生成器按当前全部接口标签输出，不再套用历史无鉴权目录。

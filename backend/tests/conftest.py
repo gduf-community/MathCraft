@@ -1,16 +1,20 @@
-"""pytest 公共夹具：临时 SQLite + Redis 15 号库，外部模型全部打桩。"""
+"""pytest 公共夹具：临时 SQLite + 进程内隔离 Redis，外部模型全部打桩。"""
 import os
 import re
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # 必须在导入 app 之前设置环境变量（settings 在模块导入时实例化）
-TEST_ROOT = Path(tempfile.mkdtemp(prefix="mathcraft_test_"))
+TEST_ROOT = Path(tempfile.mkdtemp(prefix="mathcraft_test_", dir=os.environ.get("TEMP")))
 os.environ["DATABASE_URL"] = f"sqlite:///{(TEST_ROOT / 'test.db').as_posix()}?check_same_thread=false"
-os.environ["REDIS_URL"] = "redis://127.0.0.1:6379/15"
+os.environ["REDIS_URL"] = "redis://127.0.0.1:1/15"
+os.environ["APP_ENV"] = "test"
+os.environ["AUTH_JWT_SECRET"] = "test-only-jwt-secret-not-for-production-0123456789"
+os.environ["AUTH_CODE_SECRET"] = "test-only-code-secret-not-for-production-0123456789"
 os.environ["CHROMA_DIR"] = str(TEST_ROOT / "chroma")
 os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
 os.environ["OCR_DIR"] = str(TEST_ROOT / "ocr")
@@ -18,6 +22,13 @@ os.environ["AVATAR_DIR"] = str(TEST_ROOT / "avatars")
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["CORS_ORIGINS"] = "http://127.0.0.1:5173"
 
+# 测试从不读取个人 local_secrets.py；外部凭据固定为空。
+_test_secrets = ModuleType("app.local_secrets")
+_test_secrets.SILICONFLOW_API_KEY = ""
+_test_secrets.MINERU_DEFAULT_TOKEN = ""
+sys.modules["app.local_secrets"] = _test_secrets
+
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -149,10 +160,18 @@ def _seed_users() -> None:
         db.close()
 
 
+@pytest.fixture(autouse=True)
+def isolated_redis(monkeypatch):
+    """每个测试使用独立内存 Redis，绝不连接或清空本机实例。"""
+    instance = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(cache, "get_redis", lambda: instance)
+    yield instance
+    instance.close()
+
+
 @pytest.fixture()
 def client():
     _reset_database()
-    cache.get_redis().flushdb()
     _seed_users()
     with TestClient(fastapi_app) as c:
         yield c
