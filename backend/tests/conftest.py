@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
@@ -150,6 +151,10 @@ def _seed_users() -> None:
                 identity="教师" if role == "teacher" else "学生",
                 display_name=name,
                 user_no=user_no,
+                email=f"{account}@example.test",
+                email_normalized=f"{account}@example.test",
+                email_verified=True,
+                email_verified_at=datetime.now(timezone.utc),
                 school="广东金融学院",
                 status="active",
             )
@@ -159,6 +164,22 @@ def _seed_users() -> None:
         db.commit()
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def fake_auth_verification():
+    """在 HTTP 依赖边界替换 Turnstile，测试不访问外部验证服务。"""
+    from app.services.auth_delivery import get_turnstile_verifier
+
+    class Verifier:
+        def verify(self, token: str, action: str, remote_ip: str) -> None:
+            if token != "test-turnstile-token":
+                from app.errors import AppError
+                raise AppError("TURNSTILE_FAILED", "测试人机验证失败", 403)
+
+    fastapi_app.dependency_overrides[get_turnstile_verifier] = lambda: Verifier()
+    yield
+    fastapi_app.dependency_overrides.pop(get_turnstile_verifier, None)
 
 
 @pytest.fixture(autouse=True)
@@ -190,9 +211,13 @@ def db():
 @pytest.fixture()
 def auth(client):
     def _login(account: str, role: str, password: str = "123123") -> dict:
-        resp = client.post("/api/auth/login", json={"account": account, "password": password, "role": role})
+        user_no = {"teacher": "TK20240001", "student": "ST20250001"}.get(account, account)
+        resp = client.post("/api/auth/login/password", json={
+            "user_no": user_no, "password": password, "role": role,
+            "turnstile_token": "test-turnstile-token",
+        })
         assert resp.status_code == 200, resp.text
-        return {"Authorization": f"Bearer {resp.json()['token']}"}
+        return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
     return _login
 
