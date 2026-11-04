@@ -33,11 +33,13 @@ MathCraft/
 │   │   ├── api/                  # auth、banks、documents、generate、questions、
 │   │   │                         # favourites、chat、spaces、papers、attempts、
 │   │   │                         # urges、users 等路由
-│   │   ├── models/               # 21 张 SQLAlchemy 表
+│   │   ├── models/               # 业务用户与资源、认证会话及验证码消费凭证
 │   │   ├── schemas/              # Pydantic 请求与响应模型
 │   │   └── services/
 │   │       ├── rag/              # 向量、重排、HyDE、混合检索、出题与对话编排
-│   │       ├── auth.py           # bcrypt 与 Redis 会话
+│   │       ├── auth.py           # bcrypt、JWT、数据库会话与撤销
+│   │       ├── auth_codes.py     # Redis 验证码、限流与 SQL 消费凭证
+│   │       ├── auth_delivery.py  # SMTP 与 Turnstile 适配
 │   │       ├── documents.py      # 解析、OCR、切片、入库状态机
 │   │       ├── banks.py          # 题库与成员权限
 │   │       ├── spaces.py         # 学习空间
@@ -45,8 +47,8 @@ MathCraft/
 │   │       ├── attempts.py       # 作答、交卷、复盘
 │   │       └── grading.py        # 客观题判分与主观题 AI 批卷
 │   ├── alembic/                  # 数据库迁移
-│   ├── scripts/                  # seed、create_user、检索与真实链路冒烟
-│   ├── tests/                    # 103 项后端接口测试
+│   ├── scripts/                  # seed、auth_migration、检索与真实链路冒烟
+│   ├── tests/                    # 隔离的认证与业务接口测试
 │   ├── data/                     # 运行时数据，已被 .gitignore 忽略
 │   ├── alembic.ini
 │   ├── pyproject.toml            # 后端独立依赖与运行配置
@@ -61,7 +63,7 @@ MathCraft/
 │   └── package.json
 ├── docs/                         # 当前方案及社区历史设计、API 与流程资料
 │   ├── design/用户系统功能规格.md # 已接受的邮箱认证、JWT 与开发账号设计
-│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格（待实现）
+│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
@@ -69,7 +71,7 @@ MathCraft/
 
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
 
-用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；设计已获接受，实施范围及验收见 [用户系统实施规格](docs/design/用户系统实施规格.md)；功能待实现，配置项与接口尚未生效。
+用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；设计已获接受，实施范围及验收见 [用户系统实施规格](docs/design/用户系统实施规格.md)；当前实施进度与验证证据见实施规格，未配置 SMTP/Turnstile 时拒绝相关认证操作。
 
 ## 技术栈
 
@@ -159,6 +161,14 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 | --- | --- |
 | `DATABASE_URL` | SQLite 地址，默认 `sqlite:///./data/mathcraft.db` |
 | `REDIS_URL` | Redis 地址，默认 `redis://127.0.0.1:6379/0` |
+| `APP_ENV` | `development` / `test` / `production`；生产禁止开发账号能力 |
+| `AUTH_JWT_SECRET` / `AUTH_CODE_SECRET` | 两个独立且至少 32 字节的随机秘密值；不能使用样例或开发值 |
+| `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE` | JWT 发行方与受众，必须与部署约定一致 |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | 人机验证公钥/服务端密钥；生产拒绝测试密钥 |
+| `TURNSTILE_ALLOWED_HOSTNAMES` | 逗号分隔精确站点 hostname，不含协议/路径 |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_TLS_MODE` | 邮件服务地址、端口、`starttls` 或 `tls` |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | 发码邮箱认证与发件人，不提交真实值 |
+| `DEV_ACCOUNTS_ENABLED` / `DEV_TEACHER_*` / `DEV_STUDENT_*` | 仅开发显式初始化及本机填充能力，生产必须关闭 |
 | `DEEPSEEK_API_KEY` | DeepSeek 兜底密钥；用户在个人中心配置后优先使用个人密钥 |
 | `DEEPSEEK_BASE_URL` | DeepSeek 接口地址，默认 `https://api.deepseek.com` |
 | `CHROMA_DIR` | Chroma 持久化目录，默认 `data/chroma` |
@@ -208,7 +218,7 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 ### 个人中心
 
-个人中心维护昵称、头像和密码。模型配置支持按用户填写 DeepSeek 密钥并测试连通性，MinerU Token 也在同一页面配置。
+个人中心维护昵称、头像和安全资料。修改密码验证旧密码；更换邮箱验证旧、新邮箱；添加、修改或移除学工号需当前密码。修改密码和换绑邮箱后所有设备下线，普通退出只影响当前设备。普通资料更新不能绕过安全接口修改邮箱或学工号。模型配置支持按用户填写 DeepSeek 密钥并测试连通性，MinerU Token 也在同一页面配置。
 
 ## 数据目录
 
@@ -227,10 +237,11 @@ data/
 
 ## 测试
 
-后端测试位于 `backend/tests`，覆盖认证、题库、文档、出题、收藏、空间、组卷、作答、批卷、催交通知与个人资料。测试会使用临时 SQLite 与 Redis 15 号库，外部模型调用全部打桩，不需要真实密钥。
+后端测试位于 `backend/tests`，覆盖认证、题库、文档、出题、收藏、空间、组卷、作答、批卷、催交通知与个人资料。测试使用临时 SQLite 与每测试独立的 fakeredis，绝不连接或清空本机 Redis；邮件、人机验证及外部模型全部打桩，不需要真实密钥。
 
 ```powershell
 cd backend
+uv sync --group dev
 uv run pytest -q
 ```
 
@@ -239,6 +250,7 @@ uv run pytest -q
 ```powershell
 cd frontend
 npm run typecheck
+npm run lint
 npm run build
 ```
 
@@ -248,7 +260,7 @@ npm run build
 2. Redis 不可用时，登录、出题和文档入库都无法工作。
 3. DeepSeek、硅基流动与 MinerU 依赖外网，离线环境只能运行不涉及模型的部分。
 4. `docs/` 中的设计与流程文档来自社区早期版本，可能与当前实现不一致，接口以根 `openapi.json` 为准。
-5. `docs/api.md` 及 `tools/` 下的文档生成脚本仍保留社区旧逻辑，重新生成前需要按当前路由更新脚本分组。
+5. `docs/api.md` 由 `tools/gen_api_docs.py` 按当前 OpenAPI 的全部 HTTP 操作生成；修改接口须同时更新契约及索引。
 
 ## 文档入口
 

@@ -1,84 +1,67 @@
-# RiddleMe 后端
+# MathCraft 后端
 
-FastAPI + Chroma + Ollama(qwen3-embedding) + DeepSeek 的出题服务。RAG 检索教学材料，按槽位状态机引导对话出题，输出与前端 Question 结构对齐的 JSON。
+当前后端以 `app.main:app` 为入口，使用 FastAPI、SQLAlchemy、Alembic、SQLite、Redis 与 Chroma。历史 `/api/kb`、Ollama 和单租户入口不代表当前实现。
 
 ## 模块结构
 
-```
+```text
 backend/
 ├── app/
-│   ├── main.py              # FastAPI 入口 + /api/health
-│   ├── config.py            # .env 配置
-│   ├── schemas/question.py  # Question 模型（与前端字段对齐）
-│   ├── api/
-│   │   ├── kb.py            # 上传入库 / 文档清单 / 检索测试
-│   │   ├── generate.py      # 参数化出题
-│   │   └── chat.py          # 对话出题（槽位状态机）
+│   ├── main.py              # 应用装配与路由注册
+│   ├── config.py            # backend/.env 配置
+│   ├── db.py                # SQLite WAL、SQLAlchemy 会话和 FTS
+│   ├── deps.py              # 登录用户及角色依赖
+│   ├── api/                 # auth/users、题库/文档、出题/空间/试卷等
+│   ├── models/              # 业务数据与认证会话/消费凭证
+│   ├── schemas/             # 请求、响应与外部契约
 │   └── services/
-│       ├── parsing/         # pdf / docx / xlsx / md 解析，OCR 接口占位
-│       ├── chunking.py      # 练习卷按题号切，通用按长度聚合
-│       ├── embeddings.py    # qwen3-embedding:0.6b（langchain-ollama）
-│       ├── vectorstore.py   # Chroma 持久化（data/chroma）
-│       ├── ingestion.py     # 解析→切片→向量化→入库
-│       ├── retrieval.py     # top-k 检索
-│       ├── llm.py           # DeepSeek（OpenAI 兼容协议，JSON mode + 校验重试）
-│       ├── question_gen.py  # 出题：检索参考 + 题型校验 + 跨题去重
-│       ├── slots.py         # 对话槽位抽取/合并/追问模板
-│       ├── chat_flow.py     # 对话编排
-│       └── prompts.py       # 全部 prompt 模板
-├── scripts/                 # 命令行测试：upload / retrieval / generate / chat
-└── data/                    # chroma 库 + 上传文件（不进 git）
+│       ├── auth.py          # 密码、JWT、数据库会话、刷新与撤销
+│       ├── auth_codes.py    # 验证码、限流和数据库消费凭证
+│       ├── auth_delivery.py # SMTP 与 Turnstile 边界
+│       └── rag/             # 向量、检索、出题及对话编排
+├── alembic/                 # 数据库版本迁移
+├── scripts/                 # 显式开发账号初始化、只读认证迁移审计等
+├── tests/                   # HTTP、事务、迁移与命令测试
+├── .env.example             # 空凭据配置模板
+├── pyproject.toml
+└── uv.lock
 ```
 
-## 启动
+## 启动与配置
 
-```bash
+```powershell
 cd backend
-uv sync                                          # 首次安装依赖
-uv run uvicorn app.main:app --port 8000          # 启动，Swagger 见 /docs
+Copy-Item .env.example .env
+uv sync --group dev
+uv run alembic upgrade head
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-前置条件：ollama 已启动且拉取 qwen3-embedding:0.6b；.env 中配置 DeepSeek 密钥。
-模型名以平台实际为准（当前支持 deepseek-flash、deepseek-v4-pro），配置在 .env 的 DEEPSEEK_MODEL。
+配置以 `app/config.py` 和 `.env.example` 为准。Redis 存储验证码、限流和业务任务；认证会话在数据库中。独立配置随机 JWT 和验证码 HMAC 密钥，以及 SMTP 和 Turnstile；缺少配置不能通过认证。真实配置、数据库和上传文件不入库。本次不代为配置真实服务或迁移生产数据库。
 
-## 测试流程
+开发账号仅在 `APP_ENV=development` 且 `DEV_ACCOUNTS_ENABLED=true` 时显式运行 `uv run python scripts/seed.py`；教师与学生配置均需完整，重复执行不改已有密码、角色及归属。开发凭据接口只用于受控本机环境，前端按钮仅填充；生产禁止此能力及开发凭据配置。
 
-```bash
-# 1. 入库（文字版 PDF / docx / xlsx / md）
-uv run python scripts/upload.py "../导数与微分_50题练习卷.pdf" --kb kb-math
+## 认证与接口
 
-# 2. RAG 检索测试
-uv run python scripts/test_retrieval.py "隐函数求导" --top-k 3
+邮箱验证注册可不填学工号；注册自动登录。登录支持邮箱验证码或学工号密码，不支持邮箱密码及旧用户名登录。访问令牌仅驻留前端内存；刷新凭据由 HttpOnly Cookie 管理。刷新和退出需要精确可信 Origin、JSON 请求及 CSRF Token。修改/重置密码、换绑邮箱撤销全部设备；退出仅撤销当前设备。学工号变更需要当前密码。
 
-# 3. 参数化出题（题型:数量）
-uv run python scripts/test_generate.py --types single:2,compute:1
+完整接口见根 [openapi.json](../openapi.json) 与 [API 索引](../docs/api.md)，业务及错误边界见 [认证设计](../docs/design/用户系统功能规格.md) 和 [实施规格](../docs/design/用户系统实施规格.md)。
 
-# 4. 对话状态机联测（需先启动服务）
-uv run python scripts/test_chat.py
+## 迁移与验证
+
+迁移前保留只读备份；对受控副本运行：
+
+```powershell
+uv run python scripts/auth_migration.py audit --operator-confirmed --database <受控副本路径>
 ```
 
-## 接口一览
+该命令不修复数据，不输出邮箱或密码。缺失/未验证邮箱、重复标识及其他异常阻断发布；不能静默合并、认领或自动验证历史用户。迁移必须保留用户 ID 和资源归属，旧会话不得继续使用。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | /api/health | 组件连通性自检 |
-| POST | /api/kb/upload | 上传文件入库（multipart: file, kb_id） |
-| GET | /api/kb/documents?kb_id= | 知识库下文档清单 |
-| POST | /api/kb/search | 检索测试（kb_id, query, top_k, doc_id） |
-| POST | /api/generate | 参数化出题（题型数量难度来源模式） |
-| POST | /api/chat | 对话出题（槽位状态由前端每轮回传） |
+后端测试使用每测试独立 fakeredis 和临时 SQLite，SMTP、Turnstile、模型均为假服务，不连接或清空本机 Redis：
 
-## 设计要点
+```powershell
+uv run pytest -q
+uv run ruff check app tests
+```
 
-- **切片**：自动识别练习卷（行级题号统计 ≥5 触发），一道题一个 chunk；大题标题并入首题；「参考答案」之后整段聚合，保证原题模式可检索到答案。通用文档按 chunk_size 聚合 + overlap。
-- **OCR 预留**：PDF 每页可提取字符低于阈值判定为扫描版，调用 OCREngine 协议（`parsing/base.py`），当前为占位实现，接入 PaddleOCR / MinerU 时替换 `ocr_engine` 实例即可。
-- **出题质量**：JSON mode + Pydantic 校验 + 解析错误回喂重试；题型不符直接丢弃并重试（最多 3 轮）；跨题型传递已生成题干用于去重。
-- **对话状态机**：槽位抽取用独立的小调用（JSON 输出），追问文案为固定模板（缺啥问啥、动态重编号），全部槽位齐备才触发生成。分数默认每题 5 分。
-- **密钥安全**：DeepSeek key 只在 backend/.env（已 gitignore），前端通过 /api 代理访问，永不接触密钥。
-
-## 待办
-
-- 扫描版 PDF 的 OCR 引擎接入
-- 题目编辑/删除/组卷记录的后端持久化（当前前端本地状态）
-- 对话回复 SSE 流式输出
-- 知识库管理（多知识库增删）
+测试结果、认证竞争与生产构建检查记录在实施规格中。不要为运行测试读取个人 `.env` 或 `app/local_secrets.py`。
