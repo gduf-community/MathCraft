@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import AppError
-from app.models import AuthSession, RefreshUse, User
+from app.models import AuthSession, EmailChange, RefreshUse, User
 from app.models.base import new_id
 
 
@@ -199,3 +199,19 @@ def rotate_refresh(db: Session, refresh: str) -> tuple[str, int, str, User]:
     access = encode_access(session)
     db.commit()
     return access, min(settings.auth_access_ttl_seconds, session.expires_at - now()), replacement, user
+
+
+def get_change(db: Session, user: User, change_id: str) -> EmailChange:
+    """校验换绑事务归属、有效期和认证版本。"""
+    change = db.get(EmailChange, change_id)
+    if (change is None or change.user_id != user.id or change.status != "pending"
+            or change.expires_at <= now() or change.auth_version != user.auth_version
+            or change.old_email != user.email_normalized):
+        raise AppError("AUTH_FAILED", "邮箱变更已失效，请重新开始", 400)
+    return change
+
+
+def change_binding(change: EmailChange, purpose: str) -> str:
+    """将验证码绑定到具体换绑事务及认证版本。"""
+    return (f"{purpose}:{change.id}:{change.user_id}:{change.old_email}:"
+            f"{change.new_email}:{change.auth_version}")

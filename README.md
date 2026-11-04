@@ -48,12 +48,14 @@ MathCraft/
 │   │       └── grading.py        # 客观题判分与主观题 AI 批卷
 │   ├── alembic/                  # 数据库迁移
 │   ├── scripts/                  # seed、auth_migration、检索与真实链路冒烟
+│   ├── app/api/auth_http.py       # 认证路由共享的 Cookie HTTP 辅助函数
 │   ├── tests/                    # 隔离的认证与业务接口测试
 │   ├── data/                     # 运行时数据，已被 .gitignore 忽略
 │   ├── alembic.ini
 │   ├── pyproject.toml            # 后端独立依赖与运行配置
 │   └── uv.lock
 ├── frontend/                     # React 19 + Vite + TypeScript + Tailwind v4
+│   ├── auth-session-regression.mjs # 会话身份、认证响应及异步竞争回归
 │   ├── src/api/                  # 真实接口层与字段映射
 │   ├── src/components/           # 登录、导航、题库、出题、收藏、空间、组卷、个人中心
 │   │   └── settings/             # 社区保留的「设置」界面

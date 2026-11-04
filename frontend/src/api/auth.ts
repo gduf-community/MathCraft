@@ -1,7 +1,7 @@
 /** 用户认证契约；不提供邮箱密码或历史登录旁路。 */
 import { mapAuthUser } from './backend'
-import type { ApiUser, AuthRole, AuthUser, LoginResult } from './backend'
-import { clearSession, logoutSession, request, setApiToken } from './session'
+import type { AuthRole, AuthUser } from './backend'
+import { clearSession, establishSession, logoutSession, parseApiUser, request } from './session'
 export { getAuthConfig, ApiError } from './session'
 export type { AuthConfig } from './session'
 export type { AuthRole, AuthUser }
@@ -10,17 +10,18 @@ export interface EmailChallenge { challenge_id: string; expires_in: number; retr
 export interface EmailProof { email: string; challenge_id: string; code: string }
 export interface Registration extends EmailProof { password: string; confirm_password: string; display_name: string; role: AuthRole; user_no: string | null }
 async function authenticate(path: string, payload: unknown): Promise<AuthUser> {
-  const result = await request<LoginResult>(path, { method: 'POST', body: JSON.stringify(payload) }, false)
-  if (!result.access_token || result.token_type.toLowerCase() !== 'bearer') throw new Error('认证响应无效')
-  setApiToken(result.access_token, result.expires_in)
-  return mapAuthUser(result.user, result.access_token)
+  return establishSession(
+    () => request<unknown>(path, { method: 'POST', body: JSON.stringify(payload) }, false),
+    result => mapAuthUser(result.user, result.access_token),
+  )
 }
 export const register = (payload: Registration) => authenticate('/api/auth/register', payload)
 export const loginEmail = (payload: EmailProof & { role: AuthRole }) => authenticate('/api/auth/login/email', payload)
 export const loginPassword = (user_no: string, password: string, role: AuthRole, turnstile_token: string) => authenticate('/api/auth/login/password', { user_no, password, role, turnstile_token })
 export async function fetchAuthUser(): Promise<AuthUser> {
-  const { user } = await request<{ user: ApiUser }>('/api/auth/me')
-  return mapAuthUser(user, '')
+  const result = await request<unknown>('/api/auth/me')
+  if (!result || typeof result !== 'object' || !('user' in result)) throw new Error('认证响应无效')
+  return mapAuthUser(parseApiUser(result.user), '')
 }
 export function sendEmailCode(payload: { email: string; purpose: CodePurpose; turnstile_token: string; change_id?: string }) {
   return request<EmailChallenge>('/api/auth/email-code', { method: 'POST', body: JSON.stringify(payload) }, payload.purpose.startsWith('email_change'))
@@ -34,8 +35,8 @@ export async function changePasswordCurrent(old_password: string, new_password: 
   clearSession()
 }
 export async function changeUserNo(user_no: string | null, current_password: string): Promise<AuthUser> {
-  const user = await request<ApiUser>('/api/users/me/user-no', { method: 'PUT', body: JSON.stringify({ user_no, current_password }) })
-  return mapAuthUser(user, '')
+  const user = await request<unknown>('/api/users/me/user-no', { method: 'PUT', body: JSON.stringify({ user_no, current_password }) })
+  return mapAuthUser(parseApiUser(user), '')
 }
 export function startEmailChange(new_email: string) {
   return request<{ change_id: string; expires_in: number }>('/api/users/me/email-change', { method: 'POST', body: JSON.stringify({ new_email }) })
@@ -45,7 +46,7 @@ export async function changeEmail(payload: { change_id: string; old_challenge_id
   clearSession()
 }
 export function developmentAccount(role: AuthRole) {
-  return request<{ user_no: string; password: string }>('/api/auth/development-account?role=' + role, { cache: 'no-store' }, false)
+  return request<{ user_no: string; password: string }>('/api/auth/development-account?role=' + role, { method: 'POST', body: '{}', cache: 'no-store' }, false)
 }
 export const logout = logoutSession
 export function validateNewPassword(password: string): string | undefined {

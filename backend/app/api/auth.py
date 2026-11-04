@@ -10,11 +10,12 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.auth_http import clear_refresh
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.errors import AppError
-from app.models import AuthSession, EmailChange, RefreshUse, User, UserModelSetting
+from app.models import AuthSession, RefreshUse, User, UserModelSetting
 from app.models.base import new_id
 from app.schemas.auth import (EmptyBody, EmailCodeBody, EmailLoginBody, PasswordBody,
     PasswordLoginBody, RegisterBody, ResetPasswordBody, Role)
@@ -52,12 +53,6 @@ def set_refresh(response: Response, refresh: str) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
-def clear_refresh(response: Response) -> None:
-    response.delete_cookie(REFRESH_COOKIE, path="/api/auth", httponly=True,
-                          secure=settings.app_env == "production", samesite="lax")
-    response.headers["Cache-Control"] = "no-store"
-
-
 def login_result(db: Session, response: Response, user: User, version: int) -> dict:
     access, expires, refresh = service.create_session(db, user, version)
     db.commit()
@@ -76,20 +71,6 @@ def check_user(user: User | None, role: str) -> User:
 
 def code_binding(email: str, purpose: str, version: int | None = None) -> str:
     return f"{purpose}:{email}:{version if version is not None else '-'}"
-
-
-def get_change(db: Session, user: User, change_id: str) -> EmailChange:
-    change = db.get(EmailChange, change_id)
-    if (change is None or change.user_id != user.id or change.status != "pending"
-            or change.expires_at <= service.now() or change.auth_version != user.auth_version
-            or change.old_email != user.email_normalized):
-        raise AppError("AUTH_FAILED", "邮箱变更已失效，请重新开始", 400)
-    return change
-
-
-def change_binding(change: EmailChange, purpose: str) -> str:
-    return (f"{purpose}:{change.id}:{change.user_id}:{change.old_email}:"
-            f"{change.new_email}:{change.auth_version}")
 
 
 @router.get("/config")
@@ -119,11 +100,11 @@ def email_code(body: EmailCodeBody, request: Request, sender: Mail, verifier: Ve
         if not authorization.startswith("Bearer ") or not body.change_id:
             raise AppError("TOKEN_EXPIRED", "换绑发码需要有效登录态", 401)
         user = service.authenticate(db, authorization[7:].strip())
-        change = get_change(db, user, body.change_id)
+        change = service.get_change(db, user, body.change_id)
         email = change.old_email if body.purpose == "email_change_old" else change.new_email
         if body.email != email:
             raise AppError("AUTH_FAILED", "收件人与邮箱变更事务不匹配", 400)
-        binding = change_binding(change, body.purpose)
+        binding = service.change_binding(change, body.purpose)
     elif body.purpose in {"login", "reset_password"}:
         user = db.query(User).filter_by(email_normalized=email).one_or_none()
         deliver = bool(user and (user.email_verified or user.email_verified_at) and user.status == "active")
@@ -251,6 +232,7 @@ def loopback(value: str) -> bool:
 # 生产根本不挂载开发凭据端点。
 if settings.app_env == "development" and settings.dev_accounts_enabled:
     @router.get("/development-account")
+    @router.post("/development-account")
     def development_account(role: Role, request: Request, response: Response):
         origin = request.headers.get("origin", "")
         if (not loopback(remote_ip(request)) or not loopback(request.url.hostname or "")

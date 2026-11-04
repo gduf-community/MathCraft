@@ -53,3 +53,6 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作
 该验证不代替后端真实数据库、Cookie 安全属性、Redis 并发或 SMTP/Siteverify 测试。真实后端联调使用专用假服务和临时数据，不连接真实账号、生产数据库或未知 Redis。
 
 Windows 若 esbuild 报系统临时目录 Access denied，可将当前进程 TEMP/TMP 指向本任务专用可写临时目录后重试构建；该目录与 dist、node_modules junction 均不得提交。
+
+
+认证审查回归：在 frontend 目录运行 `node auth-session-regression.mjs`。该脚本通过真实会话模块的公开接口验证认证响应原子提交、跨标签身份切换不重放和旧刷新不清理新登录；仅替换浏览器协调与 HTTP，不访问真实服务。开发账号按钮使用 POST `/api/auth/development-account?role=...`（JSON `{}`），保持精确 Origin 来源校验。原 GET 仅为兼容入口。
