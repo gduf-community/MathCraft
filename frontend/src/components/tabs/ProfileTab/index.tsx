@@ -7,14 +7,13 @@ import {
   Loader2,
   Pencil,
   Save,
-  Settings2,
   ShieldCheck,
   User,
   UserRound,
   X,
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
-import { useAuth } from '../../../store/AuthContext'
+
 import {
   getModelSettings,
   saveModelSettings,
@@ -22,11 +21,12 @@ import {
   testMinerU,
   type ModelSettings,
 } from '../../../api/backend'
-import { changePasswordCurrent } from '../../../api/auth'
+import { SecuritySettings } from './SecuritySettings'
+import { changePasswordCurrent, validateNewPassword } from '../../../api/auth'
 
 export default function ProfileTab() {
   const { profile, updateProfile, showToast } = useApp()
-  const { logout } = useAuth()
+
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
   const [model, setModel] = useState<ModelSettings | null>(null)
@@ -51,27 +51,14 @@ export default function ProfileTab() {
     setEditing(true)
   }
 
-  const saveEdit = () => {
-    if (!draft.name.trim()) {
-      showToast('昵称不能为空')
-      return
-    }
-    if (!/^1\d{10}$/.test(draft.phone.trim())) {
-      showToast('请输入正确的 11 位手机号码')
-      return
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim())) {
-      showToast('请输入正确的邮箱地址')
-      return
-    }
-    updateProfile({
-      name: draft.name.trim(),
-      gender: draft.gender,
-      phone: draft.phone.trim(),
-      email: draft.email.trim(),
-    })
-    setEditing(false)
-    showToast('个人信息已保存')
+  const saveEdit = async () => {
+    if (!draft.name.trim()) { showToast('昵称不能为空'); return }
+    if (draft.phone.trim() && !/^1[0-9]{10}$/.test(draft.phone.trim())) { showToast('请输入正确的 11 位手机号码'); return }
+    try {
+      await updateProfile({ name: draft.name.trim(), gender: draft.gender, phone: draft.phone.trim() })
+      setEditing(false)
+      showToast('个人信息已保存')
+    } catch (error) { showToast(error instanceof Error ? error.message : '保存失败') }
   }
 
   const patchDraft = (patch: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...patch }))
@@ -109,20 +96,18 @@ export default function ProfileTab() {
   }
 
   const submitPassword = async () => {
-    if (pwdNew.length < 6) {
-      showToast('新密码至少 6 位')
-      return
-    }
+    const passwordError = validateNewPassword(pwdNew)
+    if (passwordError) { showToast(passwordError); return }
     if (pwdNew !== pwdConfirm) {
       showToast('两次输入的新密码不一致')
       return
     }
     setSavingPwd(true)
     try {
-      await changePasswordCurrent(pwdOld, pwdNew)
+      await changePasswordCurrent(pwdOld, pwdNew, pwdConfirm)
       showToast('密码已修改，请重新登录')
       setPwdOpen(false)
-      logout()
+      setPwdOld(''); setPwdNew(''); setPwdConfirm('')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '修改密码失败')
     } finally {
@@ -190,7 +175,7 @@ export default function ProfileTab() {
           {editing ? (
             <button
               type="button"
-              onClick={saveEdit}
+              onClick={() => void saveEdit()}
               className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1a5fe6]"
             >
               <Save size={13} />
@@ -241,14 +226,12 @@ export default function ProfileTab() {
           </div>
           <div className="flex items-center gap-6">
             <span className="w-16 shrink-0 text-sm text-ink-3">邮箱</span>
-            {editing ? (
-              <input type="email" value={draft.email} onChange={(e) => patchDraft({ email: e.target.value })} className={fieldCls} />
-            ) : (
-              <span className="text-sm text-ink">{profile.email}</span>
-            )}
+            <span className="text-sm text-ink">{profile.email}（通过账号安全换绑）</span>
           </div>
         </div>
       </div>
+
+      <SecuritySettings />
 
       {/* 模型配置 */}
       <div className="mb-4 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
@@ -375,21 +358,21 @@ export default function ProfileTab() {
             <div className="space-y-3 px-5 py-4">
               <input
                 type="password"
-                value={pwdOld}
+                aria-label="当前密码" autoComplete="current-password" value={pwdOld}
                 onChange={(e) => setPwdOld(e.target.value)}
                 placeholder="当前密码"
                 className={fieldCls}
               />
               <input
                 type="password"
-                value={pwdNew}
+                aria-label="新密码" autoComplete="new-password" value={pwdNew}
                 onChange={(e) => setPwdNew(e.target.value)}
-                placeholder="新密码（至少 6 位）"
+                placeholder="新密码（8–64 字符）"
                 className={fieldCls}
               />
               <input
                 type="password"
-                value={pwdConfirm}
+                aria-label="确认新密码" autoComplete="new-password" value={pwdConfirm}
                 onChange={(e) => setPwdConfirm(e.target.value)}
                 placeholder="确认新密码"
                 className={fieldCls}
