@@ -31,10 +31,19 @@ class ParserSignature:
 
     def hash(self) -> str:
         """Short hex digest used as the cache signature dir name."""
+        from .quality import POLICY
+        return self._hash({"quality_policy": POLICY, "ir_schema": "v1"})
+
+    def legacy_hash(self) -> str:
+        """Locate a pre-quality cache for explicit revalidation without deleting it."""
+        return self._hash({})
+
+    def _hash(self, extra: dict) -> str:
         payload = {
             "engine": self.engine,
             "engine_version": self.engine_version,
             "params": [list(item) for item in self.params],
+            **extra,
         }
         canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]

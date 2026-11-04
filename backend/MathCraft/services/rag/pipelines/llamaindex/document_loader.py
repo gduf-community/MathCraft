@@ -69,6 +69,7 @@ class LlamaIndexDocumentLoader:
         self.image_concurrency = max(1, int(image_concurrency))
         self._pdf_documents: dict[str, list[Any]] = {}
         self._parser_signatures: dict[str, str] = {}
+        self._parse_quality: dict[str, dict] = {}
 
     async def load(
         self,
@@ -120,7 +121,16 @@ class LlamaIndexDocumentLoader:
         for file_path_str in classification.text_files:
             file_path = Path(file_path_str)
             self.logger.info(f"Parsing text: {file_path.name}")
+            from MathCraft.services.parsing.cache import source_digest_from_path
+            from MathCraft.services.parsing.types import ParserError
+            expected_digest = source_digest_from_path(file_path)
             text = await FileTypeRouter.read_text_file(str(file_path))
+            from MathCraft.services.parsing.quality import check_output
+            quality = check_output(file_path, text, None, kb_dir / "raw" if kb_dir else file_path.parent,
+                                   content_dir=file_path.parent)
+            if quality.source_digest != expected_digest:
+                raise ParserError("读取期间原文件发生变化。", code="source_changed")
+            self._parse_quality[str(file_path)] = quality.to_dict()
             self._append_if_nonempty(documents, file_path, text)
 
         for file_path_str in classification.image_files:
@@ -192,7 +202,13 @@ class LlamaIndexDocumentLoader:
             if path in self._parser_signatures:
                 document.metadata.setdefault("parser_signature", self._parser_signatures[path])
             elif path in text_paths:
-                document.metadata.setdefault("parser_signature", "direct-text-v1")
+                from MathCraft.services.parsing.quality import POLICY
+                document.metadata.setdefault("parser_signature", "direct-text-v2:" + POLICY)
+            quality = self._parse_quality.get(path, {})
+            document.metadata.update(parse_quality_status=quality.get("status", "unknown"),
+                parse_quality_policy=quality.get("policy", ""),
+                parsed_source_digest=quality.get("source_digest", ""),
+                parse_quality_warnings=[issue["message"] for issue in quality.get("issues", [])])
         return documents
 
     def _parse_document(
@@ -215,8 +231,12 @@ class LlamaIndexDocumentLoader:
         try:
             parsed = (parse_service or get_parse_service()).parse(file_path, engine=engine)
             self._parser_signatures[str(file_path)] = parsed.parser_signature
+            self._parse_quality[str(file_path)] = getattr(parsed, "quality", None) or {}
         except ParserError as exc:
-            if str(getattr(exc, "code", "")).startswith("scanned_pdf_mineru_cloud_"):
+            code = str(getattr(exc, "code", ""))
+            if code.startswith(("scanned_pdf_mineru_cloud_", "cloud_")) or code in {
+                "parse_quality_failed", "parse_busy", "source_changed",
+            }:
                 # Scanned PDFs have a strict OCR contract. Preserve the cloud
                 # configuration/API failure so the indexing task reports the
                 # actionable reason instead of silently skipping the file.
@@ -322,8 +342,10 @@ class LlamaIndexDocumentLoader:
             return []
         images = [
             _ImageSource(path=child, origin=origin)
-            for child in sorted(Path(asset_dir).iterdir())
-            if child.is_file() and child.suffix.lower() in FileTypeRouter.IMAGE_EXTENSIONS
+            for child in sorted(Path(asset_dir).rglob("*"))
+            if child.is_file() and not child.is_symlink()
+            and child.resolve().is_relative_to(Path(asset_dir).resolve())
+            and child.suffix.lower() in FileTypeRouter.IMAGE_EXTENSIONS
         ]
         if images:
             self.logger.info(

@@ -112,7 +112,7 @@ def _block_details(
     for index, block in enumerate(blocks):
         if not isinstance(block, dict):
             continue
-        raw = str(block.get("img_path") or block.get("path") or "")
+        raw = str(block.get("img_path") or block.get("image_path") or block.get("path") or "")
         if not raw or Path(raw).resolve() != asset.resolve():
             continue
         caption = _text(
@@ -130,8 +130,9 @@ def _block_details(
                 for item in neighbors
                 if isinstance(item, dict)
             ).strip()
-        has_page_index = block.get("page_idx") is not None
-        page_raw = block.get("page_idx") if has_page_index else block.get("page")
+        index_value = block.get("page_idx", block.get("page_index"))
+        has_page_index = index_value is not None
+        page_raw = index_value if has_page_index else block.get("page")
         try:
             page_value = int(page_raw) if page_raw is not None else None
         except (ValueError, TypeError):
@@ -153,9 +154,11 @@ def _block_details(
     return "", "", None, None, None, ""
 
 
-def _markdown_details(markdown: str, asset: Path) -> tuple[str, str, str]:
+def _markdown_details(markdown: str, asset: Path, content_dir: Path) -> tuple[str, str, str]:
     for match in _MARKDOWN_IMAGE_RE.finditer(markdown):
-        if Path(match.group(2).split("?", 1)[0]).name != asset.name:
+        reference = Path(match.group(2).split("?", 1)[0])
+        resolved = reference.resolve() if reference.is_absolute() else (content_dir / reference).resolve()
+        if resolved != asset.resolve():
             continue
         excerpt = markdown[max(0, match.start() - 250) : min(len(markdown), match.end() + 250)]
         excerpt = _MARKDOWN_IMAGE_RE.sub(" ", excerpt)
@@ -183,7 +186,9 @@ def collect_visual_assets(
     source_key = source_key_for(kb_dir, source)
     source_hash = _sha256_file(source)
     candidates: list[VisualAssetCandidate] = []
-    for path in sorted(asset_dir.iterdir()):
+    for path in sorted(asset_dir.rglob("*")):
+        if not path.resolve().is_relative_to(asset_dir.resolve()):
+            continue
         try:
             loaded = _image_bytes(path)
         except OSError:
@@ -198,10 +203,10 @@ def collect_visual_assets(
         caption, context, page_index, page_number, bbox, locator = _block_details(
             parsed.blocks, path
         )
-        md_caption, md_context, md_locator = _markdown_details(parsed.markdown, path)
+        md_caption, md_context, md_locator = _markdown_details(parsed.markdown, path, asset_dir.parent)
         caption = caption or md_caption
         context = context or md_context
-        locator = locator or md_locator or f"asset:{path.name}"
+        locator = locator or md_locator or f"asset:{path.relative_to(asset_dir).as_posix()}"
         asset_id = sha256(
             f"{source_key}\0{source_hash}\0{parsed.parser_signature}\0{locator}\0{image_hash}".encode()
         ).hexdigest()
@@ -230,8 +235,8 @@ def collect_visual_assets(
             block
             for block in (parsed.blocks or [])
             if isinstance(block, dict)
-            and str(block.get("img_path") or block.get("path") or "")
-            and Path(str(block.get("img_path") or block.get("path"))).resolve() == path.resolve()
+            and str(block.get("img_path") or block.get("image_path") or block.get("path") or "")
+            and Path(str(block.get("img_path") or block.get("image_path") or block.get("path"))).resolve() == path.resolve()
         ]
         if matching:
             block = matching[0]

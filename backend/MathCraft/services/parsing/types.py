@@ -53,6 +53,8 @@ class ParsedDocument:
     # still operate on a directory (e.g. the question extractor's glob loader)
     # use this; pure-IR consumers ignore it.
     workdir: Optional[Path] = None
+    # Versioned artifact checks, not mathematical/OCR ground-truth verification.
+    quality: Optional[dict[str, Any]] = None
 
     @property
     def has_structure(self) -> bool:

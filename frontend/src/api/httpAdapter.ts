@@ -151,7 +151,8 @@ export const httpAdapter: ApiClient = {
     const result = await http<{ files: Array<{ name: string; type: string }> }>(
       `/api/knowledge-bases/${encodeURIComponent(kbId)}/files`,
     )
-    let readiness: Array<{ document_key: string; status: string; warnings: string[] }>
+    let readiness: Array<{ document_key: string; status: string; warnings: string[];
+      quality_status?: KbDocument['quality_status']; quality_policy?: string }>
     try {
       readiness = await http(`/api/knowledge-bases/${encodeURIComponent(kbId)}/document-readiness`)
     } catch (error) {
@@ -164,7 +165,9 @@ export const httpAdapter: ApiClient = {
       .filter((file) => file.type === 'file')
       .map<KbDocument>((file) => {
         const state = readiness.find((d) => d.document_key === file.name)
-        return { id: file.name, kbId, name: file.name, status: state?.status ?? 'unknown', warnings: state?.warnings }
+        return { id: file.name, kbId, name: file.name, status: state?.status ?? 'unknown',
+          warnings: state?.warnings, quality_status: state?.quality_status ?? 'unknown',
+          quality_policy: state?.quality_policy ?? '' }
       })
   },
 

@@ -27,7 +27,7 @@ def record_coverage(
         return
     issues = []
     if parsed.asset_dir and parsed.asset_dir.is_dir() and not parsed.asset_dir.is_symlink():
-        for path in sorted(parsed.asset_dir.iterdir()):
+        for path in sorted(parsed.asset_dir.rglob("*")):
             if path.suffix.casefold() not in {
                 ".png",
                 ".jpg",
@@ -42,7 +42,7 @@ def record_coverage(
             reason = ""
             status = "skipped"
             try:
-                if path.is_symlink():
+                if path.is_symlink() or not path.resolve().is_relative_to(parsed.asset_dir.resolve()):
                     reason = "symbolic_link"
                 elif path.stat().st_size > MAX_IMAGE_BYTES:
                     reason = "exceeds_5_mib"
@@ -51,11 +51,11 @@ def record_coverage(
             except OSError:
                 reason, status = "asset_read_failed", "failed"
             if reason:
-                issues.append({"asset": path.name, "status": status, "reason": reason})
+                issues.append({"asset": path.relative_to(parsed.asset_dir).as_posix(), "status": status, "reason": reason})
     for index, block in enumerate(parsed.blocks or []):
         if not isinstance(block, dict):
             continue
-        raw_page = block.get("page_idx")
+        raw_page = block.get("page_idx", block.get("page_index"))
         page = raw_page + 1 if isinstance(raw_page, int) else block.get("page")
         if str(block.get("type") or "").casefold() == "table":
             issues.append(
@@ -69,7 +69,7 @@ def record_coverage(
                     ),
                 }
             )
-        raw_image = block.get("img_path") or block.get("path")
+        raw_image = block.get("img_path") or block.get("image_path") or block.get("path")
         if raw_image and not any(
             c.record.get("source_locator") == f"blocks.json#/{index}" for c in candidates
         ):

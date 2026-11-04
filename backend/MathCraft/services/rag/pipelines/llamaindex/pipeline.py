@@ -211,9 +211,21 @@ class LlamaIndexPipeline:
                 results.append({"document_key": key, "status": "ready",
                                 "index_version": directory.name, "source_digest": unit["source_digest"],
                                 "parser_signature": unit["parser_signature"], "warnings": unit["warnings"],
-                                "completeness": unit["completeness"]})
+                                "completeness": unit["completeness"],
+                                "quality_status": unit.get("quality_status", "unknown"),
+                                "quality_policy": unit.get("quality_policy", "")})
             except KnowledgeError as exc:
-                results.append({"document_key": key, "status": exc.code, "warnings": [str(exc)]})
+                from MathCraft.services.parsing.quality import latest_report
+                from MathCraft.services.path_service import get_path_service
+                from MathCraft.services.rag.evidence import source_path
+                try:
+                    quality = latest_report(source_path(kb_dir, key), get_path_service().get_parse_cache_root())
+                except KnowledgeError:
+                    quality = None
+                results.append({"document_key": key, "status": exc.code,
+                    "warnings": [str(exc)] + [issue["message"] for issue in (quality or {}).get("issues", [])],
+                    "quality_status": (quality or {}).get("status", "unknown"),
+                    "quality_policy": (quality or {}).get("policy", "")})
         return results
 
     @staticmethod

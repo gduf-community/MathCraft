@@ -19,10 +19,13 @@ both it and the engines share one loader.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import hashlib
 import json
 import logging
 from pathlib import Path
+import sys
+import time
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -35,14 +38,59 @@ _HASH_PREFIX = "sha256"
 _READ_CHUNK = 1 << 20  # 1 MiB
 
 
+@contextmanager
+def entry_lock(cache_root: Path, source_hash: str, signature: str, timeout: float = 15):
+    """Cross-process lease for one parse identity; different documents remain independent."""
+    from .types import ParserError
+
+    directory = cache_root / ".locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{source_hash}-{signature}.lock").open("a+b") as handle:
+        if not handle.tell():
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                handle.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                from MathCraft.knowledge.indexing_run import current_run
+                if run := current_run():
+                    run.check()
+                if time.monotonic() >= deadline:
+                    raise ParserError("相同资料正在解析，请稍后重试。", code="parse_busy")
+                time.sleep(.1)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def source_hash_from_path(path: Path) -> str:
     """Hash the *bytes* of ``path`` (not its name) so re-uploads of the same
     document under a random temp name still hit cache."""
+    return source_digest_from_path(path)[:16]
+
+
+def source_digest_from_path(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(_READ_CHUNK), b""):
             digest.update(chunk)
-    return digest.hexdigest()[:16]
+    return digest.hexdigest()
 
 
 def signature_dir(cache_root: Path, source_hash: str, sig_hash: str) -> Path:
@@ -54,6 +102,11 @@ def is_ready(workdir: Optional[Path]) -> bool:
         return False
     try:
         manifest = json.loads((workdir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        quality_file = workdir / "quality.json"
+        if quality_file.exists():
+            quality = json.loads(quality_file.read_text(encoding="utf-8"))
+            if not isinstance(quality, dict) or quality.get("status") == "failed":
+                return False
         return isinstance(manifest, dict) and bool(manifest.get("created_at"))
     except (OSError, ValueError):
         return False
@@ -143,19 +196,19 @@ def _absolutize_img_paths(blocks: list[dict], content_dir: Path) -> list[dict]:
     found (issue #624). The cached JSON stays relative — paths are rewritten
     only on load, keeping the cache dir relocatable.
     """
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        img_path = block.get("img_path")
-        if not isinstance(img_path, str) or not img_path:
-            continue
-        p = Path(img_path)
-        if p.is_absolute():
-            continue
-        if ".." in p.parts:
-            logger.warning("Skipping traversal img_path in content_list: %s", img_path)
-            continue
-        block["img_path"] = str(content_dir / img_path)
+    def normalize(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"img_path", "image_path"} and isinstance(value, str) and value:
+                    path = Path(value)
+                    if not path.is_absolute() and ".." not in path.parts:
+                        node[key] = str(content_dir / path)
+                else:
+                    normalize(value)
+        elif isinstance(node, list):
+            for value in node:
+                normalize(value)
+    normalize(blocks)
     return blocks
 
 

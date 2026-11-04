@@ -7536,6 +7536,22 @@
             ],
             "title": "Completeness",
             "default": "unknown"
+          },
+          "quality_status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "warning",
+              "failed",
+              "unknown"
+            ],
+            "title": "Quality Status",
+            "default": "unknown"
+          },
+          "quality_policy": {
+            "type": "string",
+            "title": "Quality Policy",
+            "default": ""
           }
         },
         "type": "object",
@@ -9623,6 +9639,22 @@
             ],
             "title": "Source Status",
             "default": "unknown"
+          },
+          "quality_status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "warning",
+              "failed",
+              "unknown"
+            ],
+            "title": "Quality Status",
+            "default": "unknown"
+          },
+          "quality_policy": {
+            "type": "string",
+            "title": "Quality Policy",
+            "default": ""
           },
           "relation": {
             "type": "string",

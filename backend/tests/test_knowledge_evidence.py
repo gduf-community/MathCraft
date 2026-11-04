@@ -729,3 +729,41 @@ def test_runtime_home_rename_reads_same_legacy_settings_and_index(tmp_path, monk
     assert resolve_storage_dir_for_read(root / "knowledge_bases/old", None) == index
     assert QuestionStore().root == root / "questions"
     assert before == {str(p): p.read_bytes() for p in legacy.rglob("*.json")}
+
+
+def test_parse_quality_failure_never_replaces_an_existing_published_index(client, tmp_path, monkeypatch):
+    import pymupdf
+    from MathCraft.services.parsing.service import ParseService
+    from MathCraft.services.parsing.types import ParserError
+    from MathCraft.services.rag.embedding_binding import default_selection
+
+    kb = create(client, "quality-publication", [("good.txt", b"GOOD_SOURCE condition reference")])
+    before = query(client, "quality-publication", ["good.txt"], "condition")["index_version"]
+    document = pymupdf.open()
+    document.new_page().insert_text((60, 160), "A source whose external parser returns invalid pages.")
+    document.save(kb / "raw/rejected.pdf")
+    document.close()
+
+    def failed_parse(*_args, **_kwargs):
+        raise ParserError("受控产物的页码不正确", code="parse_quality_failed")
+
+    monkeypatch.setattr(ParseService, "parse", failed_parse)
+    response = client.post("/api/knowledge-bases/quality-publication/reindex",
+                           data={"embedding_model": json.dumps(default_selection())})
+    assert response.status_code == 200, response.text
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        run = client.get("/api/knowledge-bases/quality-publication/indexing-run").json().get("run") or {}
+        if run.get("state") == "failed":
+            break
+        time.sleep(.05)
+    else:
+        raise AssertionError("质量失败没有结束索引任务")
+    assert run["error_code"] == "parse_quality_failed"
+    after = query(client, "quality-publication", ["good.txt"], "condition")
+    assert after["index_version"] == before and after["sources"]
+    assert after["sources"][0]["quality_status"] == "passed"
+    assert query(client, "quality-publication", ["rejected.pdf"])["error_type"] == "document_not_indexed"
+    assert all(not json.loads(path.read_text(encoding="utf-8")).get("state") == "published"
+               for path in kb.glob("version-*/meta.json") if path.parent.name != before)
+    client.delete("/api/knowledge-bases/quality-publication")

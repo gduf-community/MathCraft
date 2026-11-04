@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "purpose": "offline_regression_only",
+  "source_name": "高等数学 第7版 上册 同济大学(1).pdf",
+  "source_sha256": "c73a47780b4b588ec1e2a2589646f08c3c7dc4ca7763932c235ff22fa123e388",
+  "source_page_count": 442,
+  "samples": [
+    {"source_page": 12, "checks": ["目录、标题、表格"]},
+    {"source_page": 20, "checks": ["x = sgn x · |x|", "分段条件", "图像"]},
+    {"source_page": 40, "checks": ["定理、证明、密集行内公式", "exists 逻辑词人工核对"]},
+    {"source_page": 80, "checks": ["极限、上下标、习题"]},
+    {"source_page": 120, "checks": ["dy/dx = ψ'(t)/φ'(t)", "参数方程与方程组"]},
+    {"source_page": 160, "checks": ["单调性、导数、曲线图"]},
+    {"source_page": 240, "checks": ["黎曼和、积分、连续推导"]},
+    {"source_page": 320, "checks": ["F = mg - kv", "m·dv/dt = mg - kv", "初值", "受力图"]},
+    {"source_page": 360, "checks": ["n 阶方程、特征方程", "公式表格"]},
+    {"source_page": 400, "checks": ["高密度习题答案"]}
+  ],
+  "review_status": "pending_manual_review"
+}

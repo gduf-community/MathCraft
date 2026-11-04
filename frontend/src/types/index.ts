@@ -3,6 +3,7 @@ export type QuestionType = 'single' | 'multiple' | 'judge' | 'blank' | 'compute'
 
 /** 题目难度 */
 export type Difficulty = '低' | '中' | '高' | '地狱'
+export type ParseQualityStatus = 'passed' | 'warning' | 'failed' | 'unknown'
 
 export interface OptionItem {
   label: string
@@ -54,6 +55,8 @@ export interface QuestionSource {
   completeness: 'complete' | 'incomplete' | 'unknown'
   warnings: string[]
   source_status: 'valid' | 'missing' | 'changed' | 'unknown'
+  quality_status?: ParseQualityStatus
+  quality_policy?: string
   relation: 'original' | 'variant_reference' | 'concept_reference'
 }
 
@@ -68,6 +71,8 @@ export interface KbDocument {
   name: string
   status?: string
   warnings?: string[]
+  quality_status?: ParseQualityStatus
+  quality_policy?: string
 }
 
 export interface StudySpace {

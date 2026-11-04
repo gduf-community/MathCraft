@@ -30,8 +30,8 @@ from MathCraft.services.file_io import atomic_write_json, read_text
 _CURRENT: ContextVar[IndexingRun | None] = ContextVar("indexing_run", default=None)
 _TERMINAL = {"completed", "partial", "failed", "cancelled", "interrupted"}
 _RECOVERY_DESCRIPTION = (
-    "Retry reuses validated parser outputs and completed cloud-parsing slices. "
-    "Uncheckpointed chunking and embedding stages restart."
+    "Explicit retry reuses validated parser outputs and resumes known cloud tasks. "
+    "Unknown submissions require remote reconciliation; chunking and embedding restart."
 )
 
 
@@ -64,6 +64,8 @@ def _redact(detail: str) -> str:
 
 
 def failure_code(exc: BaseException) -> str:
+    if isinstance(getattr(exc, "code", None), str) and exc.code:
+        return exc.code
     text = str(exc).casefold()
     if isinstance(exc, (TimeoutError,)) or "timeout" in text or "timed out" in text:
         return "timeout"

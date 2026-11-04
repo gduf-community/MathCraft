@@ -109,6 +109,8 @@ class Evidence(BaseModel):
     completeness: Literal["complete", "incomplete", "unknown"] = "unknown"
     warnings: list[str] = Field(default_factory=list)
     source_status: Literal["valid", "missing", "changed", "unknown"] = "unknown"
+    quality_status: Literal["passed", "warning", "failed", "unknown"] = "unknown"
+    quality_policy: str = ""
 
 
 class DocumentReadiness(BaseModel):
@@ -119,6 +121,8 @@ class DocumentReadiness(BaseModel):
     parser_signature: str = ""
     warnings: list[str] = Field(default_factory=list)
     completeness: Literal["complete", "incomplete", "unknown"] = "unknown"
+    quality_status: Literal["passed", "warning", "failed", "unknown"] = "unknown"
+    quality_policy: str = ""
 
 
 def document_keys(value: Any) -> list[str] | None:
@@ -210,6 +214,8 @@ def persist_units(
     for key, docs in groups.items():
         path = source_path(kb_dir, key)
         digest = source_digest(path)
+        if any(d.metadata.get("parsed_source_digest") not in (None, "", digest) for d in docs):
+            raise KnowledgeError("source_changed", "解析后原文件发生变化，未发布候选索引。")
         signatures = sorted({d.metadata.get("parser_signature") or "unknown" for d in docs})
         # Figure descriptions are generated text, not textbook evidence.
         originals = [
@@ -227,6 +233,14 @@ def persist_units(
             {d.metadata["visual_asset_id"] for d in docs if d.metadata.get("visual_asset_id")}
         )
         warnings = []
+        quality_states = {d.metadata.get("parse_quality_status", "unknown") for d in originals}
+        quality_status = "failed" if "failed" in quality_states else "warning" if "warning" in quality_states else "passed" if quality_states == {"passed"} else "unknown"
+        if quality_status == "failed":
+            raise KnowledgeError("parse_quality_failed", "解析质量失败，候选索引不予发布。")
+        quality_policy = "|".join(sorted({d.metadata.get("parse_quality_policy") for d in originals
+                                          if d.metadata.get("parse_quality_policy")}))
+        warnings.extend(dict.fromkeys(w for d in originals
+                                      for w in d.metadata.get("parse_quality_warnings", [])))
         if "unknown" in signatures:
             warnings.append("解析身份未知，需要重新解析或核对。")
         image_status = "none"
@@ -268,6 +282,8 @@ def persist_units(
             "image_status": image_status,
             "completeness": "incomplete" if warnings else "complete",
             "warnings": warnings,
+            "quality_status": quality_status,
+            "quality_policy": quality_policy,
         }
         for doc in docs:
             doc.metadata.update(

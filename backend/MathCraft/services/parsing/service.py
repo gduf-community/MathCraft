@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import replace
 import logging
 from pathlib import Path
+import shutil
 from typing import Any, Callable, Optional
 
 from MathCraft.services.config.runtime_settings import (
@@ -21,6 +22,7 @@ from MathCraft.services.config.runtime_settings import (
 
 from . import cache
 from .engines.factory import get_parser
+from .quality import check_output, inspect_pdf
 from .types import ParsedDocument, ParserError
 
 logger = logging.getLogger(__name__)
@@ -50,25 +52,9 @@ def _display_extension(source_path: str | Path, supported: frozenset[str]) -> st
 
 
 def _is_scanned_pdf(source_path: Path) -> bool:
-    """Return whether a PDF has page images but no extractable text layer."""
-    if source_path.suffix.lower() != ".pdf":
-        return False
-
-    import pymupdf
-
-    try:
-        with pymupdf.open(source_path) as document:
-            has_page_image = False
-            for page in document:
-                if page.get_text("text").strip():
-                    return False
-                if page.get_images(full=True):
-                    has_page_image = True
-            return has_page_image
-    except (OSError, RuntimeError, ValueError):
-        # Let the selected parser report the actual unreadable/corrupt-PDF
-        # error. Detection must never hide the parser's own diagnostics.
-        return False
+    """Compatibility helper; the decision now includes each page's usable body."""
+    inspection = inspect_pdf(source_path)
+    return inspection is not None and inspection.needs_ocr
 
 
 # Engines tried, in order, when the *implicitly* selected engine (the global
@@ -178,7 +164,8 @@ class ParseService:
         if not source_path.is_file():
             raise ParserError(f"File to parse not found: {source_path}")
 
-        scanned_pdf = _is_scanned_pdf(source_path)
+        inspection = inspect_pdf(source_path)
+        scanned_pdf = inspection is not None and inspection.needs_ocr
         if scanned_pdf:
             engine_name, parser, config = self._resolve_scanned_pdf_ocr()
             logger.info(
@@ -215,16 +202,51 @@ class ParseService:
                 engine_name,
             )
 
-        sig = parser.signature(config).hash()
-        source_hash = cache.source_hash_from_path(source_path)
+        identity = parser.signature(config)
+        legacy_sig = identity.legacy_hash()
+        sig = identity.hash()
+        expected_digest = cache.source_digest_from_path(source_path)
+        source_hash = expected_digest[:16]
+        cache_root = self._cache_root()
+        with cache.entry_lock(cache_root, source_hash, sig):
+            return self._parse_cached(source_path, engine_name, parser, config, sig,
+                                      legacy_sig, source_hash, inspection, scanned_pdf, on_output, expected_digest)
+
+    def _parse_cached(self, source_path, engine_name, parser, config, sig, legacy_sig,
+                      source_hash, inspection, scanned_pdf, on_output, expected_digest):
         cache_root = self._cache_root()
 
+        def validate(workdir, *, persist=True):
+            markdown, blocks, asset_dir = cache.load_ir(workdir)
+            quality = check_output(source_path, markdown, blocks, workdir, inspection,
+                                   cloud=engine_name == "mineru" and getattr(config, "is_cloud", False))
+            if quality.source_digest != expected_digest:
+                raise ParserError("检查期间原文件发生变化，未使用产物。", code="source_changed")
+            from MathCraft.services.file_io import atomic_write_json
+            if persist or quality.status == "failed":
+                atomic_write_json(workdir / "quality.json", quality.to_dict())
+            if quality.status == "failed":
+                raise ParserError("解析质量检查失败：" + "；".join(
+                    issue["message"] for issue in quality.issues if issue["severity"] == "error"
+                ), code="parse_quality_failed")
+            return markdown, blocks, asset_dir, quality.to_dict()
+
         hit = cache.lookup(cache_root, source_hash, sig)
+        # Legacy caches are checked, copied into the new identity, then checked again.
+        # The original entry is retained, never silently relabelled as verified.
+        if hit is None and (legacy := cache.lookup(cache_root, source_hash, legacy_sig)):
+            validate(legacy, persist=False)
+            destination = cache.reserve(cache_root, source_hash, sig)
+            shutil.copytree(legacy, destination, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns(cache.MANIFEST_FILENAME, "quality.json"))
+            markdown, blocks, asset_dir, quality = validate(destination)
+            cache.write_manifest(destination, {"engine": engine_name, "signature": sig,
+                "source_hash": source_hash, "source_digest": expected_digest,
+                "source_name": source_path.name, "quality": quality,
+                "upgraded_from": legacy_sig})
+            hit = destination
         if hit is not None:
-            try:
-                markdown, blocks, asset_dir = cache.load_ir(hit)
-            except (OSError, UnicodeError, ValueError):
-                markdown, blocks, asset_dir = "", None, None
+            markdown, blocks, asset_dir, quality = validate(hit)
             if markdown.strip() or blocks:
                 logger.info("Parse cache hit for %s (%s/%s)", source_path.name, engine_name, sig)
                 from MathCraft.knowledge.indexing_run import current_run
@@ -239,20 +261,27 @@ class ParseService:
                     parser_signature=sig,
                     engine=engine_name,
                     workdir=hit,
+                    quality=quality,
                 )
             # A ready stamp alone cannot make missing/empty output usable (#1612).
             logger.warning("Invalid parse cache for %s; restarting this document", source_path.name)
-            (hit / cache.MANIFEST_FILENAME).unlink(missing_ok=True)
+            raise ParserError("解析缓存产物为空，原缓存已保留。", code="parse_quality_failed")
 
-        report = parser.is_ready(config)
-        if not report.ready:
-            raise ParserError(report.message or f"The '{engine_name}' engine is not ready.")
+        # Credentials gate actual external work, not reading a compatible completed cache.
+        # The cloud adapter can also rebuild a complete IR from validated slice
+        # archives without any request. It gates credentials at the first network step.
+        if not (engine_name == "mineru" and getattr(config, "is_cloud", False)):
+            report = parser.is_ready(config)
+            if not report.ready:
+                raise ParserError(report.message or f"The '{engine_name}' engine is not ready.")
 
         workdir = cache.reserve(cache_root, source_hash, sig)
         logger.info("Parsing %s with %s (signature %s)", source_path.name, engine_name, sig)
         try:
             parser.parse(source_path, workdir, config=config, on_output=on_output)
-            markdown, blocks, asset_dir = cache.load_ir(workdir)
+            if cache.source_digest_from_path(source_path) != expected_digest:
+                raise ParserError("解析期间原文件发生变化，请重试。", code="source_changed")
+            markdown, blocks, asset_dir, quality = validate(workdir)
             if not markdown.strip() and not blocks:
                 raise ParserError(
                     f"The '{engine_name}' engine produced no content for {source_path.name}."
@@ -263,7 +292,9 @@ class ParseService:
                     "engine": engine_name,
                     "signature": sig,
                     "source_hash": source_hash,
+                    "source_digest": expected_digest,
                     "source_name": source_path.name,
+                    "quality": quality,
                 },
             )
             return ParsedDocument(
@@ -274,10 +305,13 @@ class ParseService:
                 parser_signature=sig,
                 engine=engine_name,
                 workdir=workdir,
+                quality=quality,
             )
         except Exception as exc:
             cache.cleanup_failed(workdir)
-            if scanned_pdf and isinstance(exc, ParserError):
+            if scanned_pdf and getattr(exc, "code", None) == "cloud_credentials_missing":
+                raise ParserError(_SCANNED_PDF_OCR_ERROR, code=SCANNED_PDF_OCR_ERROR_CODE) from None
+            if scanned_pdf and isinstance(exc, ParserError) and not exc.code:
                 raise ParserError(
                     f"扫描型 PDF 的 MinerU 云端 OCR 失败：{exc}",
                     code=SCANNED_PDF_OCR_FAILED_CODE,
@@ -293,7 +327,6 @@ class ParseService:
         if (
             not getattr(config, "is_cloud", False)
             or not str(getattr(config, "api_base_url", "")).strip()
-            or not getattr(config, "api_keys", [])
         ):
             raise ParserError(_SCANNED_PDF_OCR_ERROR, code=SCANNED_PDF_OCR_ERROR_CODE)
 

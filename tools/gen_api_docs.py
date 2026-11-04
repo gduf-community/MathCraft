@@ -205,6 +205,20 @@ Saved source links include a digest; raw file requests with `source_hash` reject
 replacement with HTTP 409. Source pages and visual assets retain their existing
 source checks.
 
+Parse artifact checks additionally expose `quality_status` (`passed`, `warning`,
+`failed`, or legacy `unknown`) and `quality_policy` on document readiness and
+evidence. These describe artifact integrity, never mathematical review. Quality
+failures prevent cache completion and candidate publication. Cache hits are
+rechecked before use, and compatible completed IR/slice archives can be reused
+without cloud credentials. A new external request still requires credentials.
+
+Indexing-run diagnostics retain stable parser/cloud error codes. Explicit retry
+resumes known remote tasks; it does not automatically repeat an unknown
+submission or ambiguous upload. Waiting-budget exhaustion retains resumable
+task identity. Signed transport URLs remain backend-private and never enter
+normal progress or evidence responses. Cloud recovery and sample boundaries:
+[知识库第二批实施记录](design/知识库第二批实施记录.md).
+
 ### `GET /api/knowledge-bases/{kb_name}/query-options`
 
 ```json

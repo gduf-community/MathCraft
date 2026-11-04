@@ -26,6 +26,7 @@ backend/
 │   │   ├── worker_process.py # 固定 python -m 入口、pickle 请求及结果封套
 │   │   └── worker_tasks.py # 惰性文本提取与 UTF-8 Markdown 写入
 │   ├── services/       # LLM、嵌入、RAG、解析、设置等业务服务
+│   │   ├── parsing/quality.py # 通用页级、原页和资产检查，带规则版本
 │   │   ├── config/direct_model_config.py # 独立配置迁移、名称与有效参数快照
 │   │   ├── rag/evidence.py # 集中文档范围、版本证据与来源检查
 │   │   ├── settings/direct_model_edit.py # 当前项锁内合并、默认与任务模式
@@ -49,6 +50,8 @@ backend/
 │   ├── test_isolated_document_extraction.py # 真实子进程提取、预览、错误与回收
 │   ├── test_chat_requirements.py # 缺项阻止生成及多轮补齐回归
 │   ├── test_knowledge_evidence.py # 完整应用链路、文档范围与保存来源回查
+│   ├── test_parse_quality.py # 缓存优先、通用文档及质量检查回归
+│   ├── test_mineru_recovery.py # 假云服务与重启、取消、并发恢复回归
 │   ├── test_direct_model_settings.py # 单项保存、并发与错误边界
 │   ├── test_direct_model_migration.py # 迁移、名称、掩码与环境优先级
 │   ├── test_direct_model_discovery.py # 本地假服务发现及 HTTP 反馈
@@ -108,6 +111,10 @@ backend/
 ## 对话出题必填检查
 
 `/api/chat` 累积教师要求，在题型、每种题型数量、范围、来源和难度齐备后才调用生成；数量缺失时按题型追问，每种题型数量为 1–20 道，不使用默认数量。设计与边界见 [对话出题必填信息检查](../docs/design/对话出题必填信息检查.md)。
+
+## 解析第二批基础改进
+
+解析第二批基础能力继续沿用 `ParseService`：页级扫描/页眉检查、带版本质量记录、缓存优先、MinerU 已知任务恢复、分片体积与页码/图像校验。签名升级后的缓存独立保存，旧缓存仅在重新检查后复用；未知云端提交不盲目重试。产物检查字段 `quality_status` / `quality_policy` 贯穿文档状态及逐题证据，不代表数学已复核。固定样本工具位于仓库 `tools/`，生产入口不导入样本清单。真实和人工验收待用户后续进行，详见[第二批实施记录](../docs/design/知识库第二批实施记录.md)。
 
 ## 收藏功能边界
 
