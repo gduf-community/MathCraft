@@ -1,4 +1,5 @@
 """pytest 公共夹具：临时 SQLite + 进程内隔离 Redis，外部模型全部打桩。"""
+# ruff: noqa: E402 -- 必须先设置隔离环境与假凭据，再导入应用。
 import os
 import re
 import sys
@@ -48,10 +49,10 @@ from app.services.rag import embeddings, llm, question_gen, rerank, slots
 def fake_embed_texts(texts: list[str]) -> list[list[float]]:
     """确定性 1024 维向量，保证 Chroma 可正常检索且不访问网络。"""
     out = []
-    for text in texts:
+    for content in texts:
         vec = [0.0] * 1024
         vec[0] = 0.5
-        for i, ch in enumerate(text[:128]):
+        for i, ch in enumerate(content[:128]):
             vec[(ord(ch) + i * 17) % 1024] += 1.0
         out.append(vec)
     return out
