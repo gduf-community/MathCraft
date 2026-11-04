@@ -5003,6 +5003,94 @@
           }
         }
       }
+    },
+    "/api/auth/development-account": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Development Account",
+        "operationId": "development_account_api_auth_development_account_post",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "teacher",
+                "student"
+              ],
+              "type": "string",
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "description": "仅 development 且显式启用时挂载；要求精确 Origin 白名单及本机直连。前端同源使用 POST 以携带 Origin，GET 仅兼容。"
+      },
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Development Account",
+        "operationId": "development_account_api_auth_development_account_get",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "teacher",
+                "student"
+              ],
+              "type": "string",
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "description": "仅 development 且显式启用时挂载；要求精确 Origin 白名单及本机直连。前端同源使用 POST 以携带 Origin，GET 仅兼容。"
+      }
     }
   },
   "components": {

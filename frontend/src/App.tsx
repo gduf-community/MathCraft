@@ -67,7 +67,7 @@ function AuthGate() {
   if (restoring) return <div className="flex min-h-screen items-center justify-center bg-page text-ink" role="status">正在恢复安全会话…</div>
   if (!user) return <LoginPage />
   return (
-    <AppProvider>
+    <AppProvider key={`${user.userId}:${user.role}`}>
       <Shell />
     </AppProvider>
   )

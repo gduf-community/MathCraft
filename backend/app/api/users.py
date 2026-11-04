@@ -11,7 +11,7 @@ from app.deps import get_current_user
 from app.errors import AppError
 from app.models import User
 from app.schemas.auth import EmailChangeBody, EmailCommitBody, ModelSettingsBody, UserNoBody
-from app.api.auth import change_binding, clear_refresh, get_change
+from app.api.auth_http import clear_refresh
 from app.models import EmailChange
 from app.models.base import new_id
 from app.services import auth as auth_service
@@ -173,13 +173,13 @@ def start_email_change(body: EmailChangeBody, user: User = Depends(get_current_u
 def commit_email_change(body: EmailCommitBody, response: Response,
                         user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """双 proof、版本、邮箱写入和全部会话撤销位于同一事务。"""
-    change = get_change(db, user, body.change_id)
+    change = auth_service.get_change(db, user, body.change_id)
     version = user.auth_version
     auth_service.assert_version(db, user.id, version)
     auth_codes.verify(db, change.old_email, "email_change_old",
-        change_binding(change, "email_change_old"), body.old_challenge_id, body.old_code)
+        auth_service.change_binding(change, "email_change_old"), body.old_challenge_id, body.old_code)
     auth_codes.verify(db, change.new_email, "email_change_new",
-        change_binding(change, "email_change_new"), body.new_challenge_id, body.new_code)
+        auth_service.change_binding(change, "email_change_new"), body.new_challenge_id, body.new_code)
     auth_service.revoke_all(db, user, version)
     user.email = change.new_email
     user.email_normalized = change.new_email

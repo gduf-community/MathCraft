@@ -242,3 +242,44 @@ def test_concurrent_refresh_replay_revokes_family(client, delivery):
         outcomes = list(pool.map(lambda _: refresh_once(), range(2)))
     assert sorted(outcomes) == [200, 401], outcomes
     assert client.get("/api/auth/me", headers=bearer(result)).status_code == 401
+
+
+def test_development_account_post_requires_exact_origin_and_direct_loopback(monkeypatch):
+    """同源浏览器可用 POST 发送 Origin，但不能绕过本机与白名单限制。"""
+    import importlib
+
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    from app.api import auth as auth_routes
+    from app.errors import AppError
+    from app.main import app_error_handler
+
+    with monkeypatch.context() as patch:
+        patch.setattr(settings, "app_env", "development")
+        patch.setattr(settings, "dev_accounts_enabled", True)
+        patch.setattr(settings, "dev_teacher_user_no", "dev-test-teacher")
+        patch.setattr(settings, "dev_teacher_password", "fake-dev-password-only")
+        importlib.reload(auth_routes)
+        test_app = FastAPI()
+        test_app.include_router(auth_routes.router)
+        test_app.add_exception_handler(AppError, app_error_handler)
+        try:
+            with TestClient(test_app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as browser:
+                path = "/api/auth/development-account?role=teacher"
+                headers = {"Origin": "http://127.0.0.1:5173"}
+                response = browser.post(path, json={}, headers=headers)
+                assert response.status_code == 200
+                assert response.json() == {"role": "teacher", "user_no": "dev-test-teacher",
+                                           "password": "fake-dev-password-only"}
+                assert response.headers["cache-control"] == "no-store"
+                assert browser.post(path, json={}).status_code == 403
+                assert browser.post(path, json={}, headers={"Origin": "http://localhost:5173"}).status_code == 403
+                assert browser.post(path, json={}, headers={**headers, "X-Forwarded-For": "127.0.0.1"}).status_code == 403
+                assert browser.post(path, json={}, headers={**headers, "Host": "evil.example"}).status_code == 403
+            with TestClient(test_app, base_url="http://127.0.0.1", client=("192.0.2.1", 50000)) as remote:
+                assert remote.post(path, json={}, headers=headers).status_code == 403
+        finally:
+            patch.setattr(settings, "app_env", "test")
+            patch.setattr(settings, "dev_accounts_enabled", False)
+            importlib.reload(auth_routes)
