@@ -24,18 +24,154 @@
         }
       }
     },
-    "/api/auth/login": {
+    "/api/auth/config": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Config",
+        "operationId": "auth_config_api_auth_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/email-code": {
       "post": {
         "tags": [
           "auth"
         ],
-        "summary": "Login",
-        "operationId": "login_api_auth_login_post",
+        "summary": "Email Code",
+        "operationId": "email_code_api_auth_email_code_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/LoginBody"
+                "$ref": "#/components/schemas/EmailCodeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Register",
+        "operationId": "register_api_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login/email": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login Email",
+        "operationId": "login_email_api_auth_login_email_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailLoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login Password",
+        "operationId": "login_password_api_auth_login_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordLoginBody"
               }
             }
           },
@@ -110,6 +246,45 @@
         }
       }
     },
+    "/api/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Refresh",
+        "operationId": "refresh_api_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/logout": {
       "post": {
         "tags": [
@@ -117,24 +292,16 @@
         ],
         "summary": "Logout",
         "operationId": "logout_api_auth_logout_post",
-        "parameters": [
-          {
-            "name": "Authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyBody"
+              }
             }
-          }
-        ],
+          },
+          "required": true
+        },
         "responses": {
           "204": {
             "description": "Successful Response"
@@ -152,19 +319,18 @@
         }
       }
     },
-    "/api/auth/change-password": {
+    "/api/auth/password/reset": {
       "post": {
         "tags": [
           "auth"
         ],
-        "summary": "Change Password Public",
-        "description": "登录页修改密码：账号 + 原密码验证，无需登录态。",
-        "operationId": "change_password_public_api_auth_change_password_post",
+        "summary": "Reset Password",
+        "operationId": "reset_password_api_auth_password_reset_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChangePasswordBody"
+                "$ref": "#/components/schemas/ResetPasswordBody"
               }
             }
           },
@@ -192,8 +358,8 @@
         "tags": [
           "auth"
         ],
-        "summary": "Change Password Logged In",
-        "operationId": "change_password_logged_in_api_auth_password_put",
+        "summary": "Change Password",
+        "operationId": "change_password_api_auth_password_put",
         "parameters": [
           {
             "name": "Authorization",
@@ -245,7 +411,7 @@
           "users"
         ],
         "summary": "Update Profile",
-        "description": "修改昵称、性别、手机号、邮箱、学校。",
+        "description": "普通资料不得修改认证标识；写入前再次校验版本。",
         "operationId": "update_profile_api_users_me_put",
         "parameters": [
           {
@@ -529,6 +695,175 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/email-change": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Start Email Change",
+        "description": "建立十分钟双邮箱快照；后续发码由事务确定真实收件人。",
+        "operationId": "start_email_change_api_users_me_email_change_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailChangeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/email": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Commit Email Change",
+        "description": "双 proof、版本、邮箱写入和全部会话撤销位于同一事务。",
+        "operationId": "commit_email_change_api_users_me_email_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailCommitBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/user-no": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Change User No",
+        "description": "学工号增改删验证当前密码和原认证版本，保留用户身份归属。",
+        "operationId": "change_user_no_api_users_me_user_no_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserNoBody"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -4837,42 +5172,6 @@
         ],
         "title": "Body_upload_document_api_banks__bank_id__documents_post"
       },
-      "ChangePasswordBody": {
-        "properties": {
-          "account": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Account"
-          },
-          "old_password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Old Password"
-          },
-          "new_password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 6,
-            "title": "New Password"
-          },
-          "role": {
-            "type": "string",
-            "pattern": "^(student|teacher)$",
-            "title": "Role"
-          }
-        },
-        "type": "object",
-        "required": [
-          "account",
-          "old_password",
-          "new_password",
-          "role"
-        ],
-        "title": "ChangePasswordBody",
-        "description": "未登录改密（登录页）。"
-      },
       "ChatMessageBody": {
         "properties": {
           "message": {
@@ -4916,6 +5215,154 @@
           "document_id"
         ],
         "title": "ChatSessionCreateBody"
+      },
+      "EmailChangeBody": {
+        "properties": {
+          "new_email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "New Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "new_email"
+        ],
+        "title": "EmailChangeBody"
+      },
+      "EmailCodeBody": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "register",
+              "login",
+              "reset_password",
+              "email_change_old",
+              "email_change_new"
+            ],
+            "title": "Purpose"
+          },
+          "turnstile_token": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Turnstile Token"
+          },
+          "change_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "purpose",
+          "turnstile_token"
+        ],
+        "title": "EmailCodeBody"
+      },
+      "EmailCommitBody": {
+        "properties": {
+          "change_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Change Id"
+          },
+          "old_challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Old Challenge Id"
+          },
+          "old_code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Old Code"
+          },
+          "new_challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "New Challenge Id"
+          },
+          "new_code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "New Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "change_id",
+          "old_challenge_id",
+          "old_code",
+          "new_challenge_id",
+          "new_code"
+        ],
+        "title": "EmailCommitBody"
+      },
+      "EmailLoginBody": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Challenge Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "teacher",
+              "student"
+            ],
+            "title": "Role"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "challenge_id",
+          "code",
+          "role"
+        ],
+        "title": "EmailLoginBody"
+      },
+      "EmptyBody": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EmptyBody",
+        "description": "Cookie 认证请求必须提供 JSON 对象，不接受表单或任意原始正文。"
       },
       "FavoriteAddBody": {
         "properties": {
@@ -5062,34 +5509,6 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
-      },
-      "LoginBody": {
-        "properties": {
-          "account": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Account"
-          },
-          "password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Password"
-          },
-          "role": {
-            "type": "string",
-            "pattern": "^(student|teacher)$",
-            "title": "Role"
-          }
-        },
-        "type": "object",
-        "required": [
-          "account",
-          "password",
-          "role"
-        ],
-        "title": "LoginBody"
       },
       "MemberRoleBody": {
         "properties": {
@@ -5446,26 +5865,68 @@
       },
       "PasswordBody": {
         "properties": {
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          },
+          "confirm_password": {
+            "type": "string",
+            "title": "Confirm Password"
+          },
           "old_password": {
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
             "title": "Old Password"
-          },
-          "new_password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 6,
-            "title": "New Password"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
-          "old_password",
-          "new_password"
+          "new_password",
+          "confirm_password",
+          "old_password"
         ],
-        "title": "PasswordBody",
-        "description": "已登录改密。"
+        "title": "PasswordBody"
+      },
+      "PasswordLoginBody": {
+        "properties": {
+          "user_no": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "User No"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "teacher",
+              "student"
+            ],
+            "title": "Role"
+          },
+          "turnstile_token": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Turnstile Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_no",
+          "password",
+          "role",
+          "turnstile_token"
+        ],
+        "title": "PasswordLoginBody"
       },
       "QuestionUpdateBody": {
         "properties": {
@@ -5570,6 +6031,109 @@
         },
         "type": "object",
         "title": "QuestionUpdateBody"
+      },
+      "RegisterBody": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Challenge Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          },
+          "confirm_password": {
+            "type": "string",
+            "title": "Confirm Password"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "teacher",
+              "student"
+            ],
+            "title": "Role"
+          },
+          "user_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User No"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "challenge_id",
+          "code",
+          "password",
+          "confirm_password",
+          "display_name",
+          "role"
+        ],
+        "title": "RegisterBody"
+      },
+      "ResetPasswordBody": {
+        "properties": {
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          },
+          "confirm_password": {
+            "type": "string",
+            "title": "Confirm Password"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Challenge Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "new_password",
+          "confirm_password",
+          "email",
+          "challenge_id",
+          "code"
+        ],
+        "title": "ResetPasswordBody"
       },
       "SearchBody": {
         "properties": {
@@ -5698,6 +6262,34 @@
         ],
         "title": "TypeCountBody"
       },
+      "UserNoBody": {
+        "properties": {
+          "user_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User No"
+          },
+          "current_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Current Password"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_no",
+          "current_password"
+        ],
+        "title": "UserNoBody"
+      },
       "UserUpdateBody": {
         "properties": {
           "display_name": {
@@ -5737,18 +6329,6 @@
             ],
             "title": "Phone"
           },
-          "email": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 128
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Email"
-          },
           "school": {
             "anyOf": [
               {
@@ -5762,6 +6342,7 @@
             "title": "School"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "UserUpdateBody"
       },
