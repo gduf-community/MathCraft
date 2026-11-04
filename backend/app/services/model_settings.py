@@ -56,7 +56,7 @@ def user_payload(user: User) -> dict:
         "id": user.id,
         "account": user.account,
         "role": user.role,
-        "identity": user.identity,
+        "identity": "教师" if user.role == "teacher" else "学生",
         "display_name": user.display_name,
         "gender": user.gender,
         "phone": user.phone,
