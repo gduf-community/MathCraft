@@ -5,6 +5,8 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -67,5 +69,28 @@ app.mount("/media", StaticFiles(directory=str(settings.avatar_path())), name="me
 
 @app.exception_handler(AppError)
 async def app_error_handler(_request: Request, exc: AppError):
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.to_detail()})
+    headers = {"Cache-Control": "no-store"}
+    if exc.status_code == 429:
+        headers["Retry-After"] = str(exc.extra.get("retry_after", 60))
+    result = JSONResponse(status_code=exc.status_code, content={"detail": exc.to_detail()},
+                          headers=headers)
+    if _request.url.path in {"/api/auth/refresh", "/api/auth/logout"} and exc.status_code == 401:
+        result.delete_cookie("mc_refresh", path="/api/auth", httponly=True,
+                             secure=settings.app_env == "production", samesite="lax")
+    return result
 
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, _exc: RequestValidationError):
+    # 不回显 Pydantic input：请求体可能携带密码、验证码或人机 token。
+    return JSONResponse(status_code=422, content={"detail": {
+        "code": "VALIDATION_ERROR", "message": "请求字段格式错误或包含不允许的字段"}})
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error_handler(_request: Request, exc: SQLAlchemyError):
+    if isinstance(exc, IntegrityError):
+        return JSONResponse(status_code=409, content={"detail": {
+            "code": "AUTH_FAILED", "message": "请求已处理或存在并发冲突，请重新操作"}})
+    return JSONResponse(status_code=503, content={"detail": {
+        "code": "AUTH_SERVICE_UNAVAILABLE", "message": "数据服务暂不可用，请稍后重试"}})
