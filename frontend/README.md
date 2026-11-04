@@ -6,7 +6,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作
 
 运行 `npm install` 后执行 `npm run dev`，访问 http://127.0.0.1:5173。Vite 显式只绑定 127.0.0.1；/api 代理至 http://127.0.0.1:8000，后端也必须仅绑定 127.0.0.1。不要加 --host 0.0.0.0，不通过外部共享代理或隧道暴露开发账号接口。
 
-开发填充仅在 Vite DEV、浏览器 hostname 为 127.0.0.1 且 config.development_accounts_enabled=true 时显示。按钮通过本机 GET /api/auth/development-account?role 获取配置，只填充，不提交；仍须手动通过 Turnstile 登录。生产构建不显示按钮，不内置任何账号或密码；后端负责生产不挂载接口并校验来源、Host、代理头与环境。
+开发填充仅在 Vite DEV、浏览器 hostname 为 127.0.0.1 且 config.development_accounts_enabled=true 时显示。按钮通过本机 POST /api/auth/development-account?role（JSON `{}`）获取配置，只填充，不提交登录；仍须手动通过 Turnstile 登录。生产构建不显示按钮，不内置任何账号或密码；后端负责生产不挂载接口并校验来源、Host、代理头与环境。
 
 ## 认证流程与契约
 
