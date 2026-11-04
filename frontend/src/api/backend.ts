@@ -14,43 +14,9 @@ import type {
   TeacherProfile,
 } from '../types'
 
-let apiToken = ''
-
-export function setApiToken(token: string | null) {
-  apiToken = token ?? ''
-}
-
-export class ApiError extends Error {
-  code: string
-  constructor(message: string, code = 'REQUEST_FAILED') {
-    super(message)
-    this.code = code
-  }
-}
-
-async function parseError(resp: Response): Promise<ApiError> {
-  try {
-    const body = await resp.json()
-    const detail = body?.detail
-    if (typeof detail === 'string') return new ApiError(detail)
-    if (detail && typeof detail === 'object') {
-      return new ApiError(String(detail.message ?? `HTTP ${resp.status}`), String(detail.code ?? 'REQUEST_FAILED'))
-    }
-    return new ApiError(`HTTP ${resp.status}`)
-  } catch {
-    return new ApiError(`HTTP ${resp.status}`)
-  }
-}
-
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  headers.set('Content-Type', 'application/json')
-  if (apiToken) headers.set('Authorization', `Bearer ${apiToken}`)
-  const resp = await fetch(path, { ...init, headers })
-  if (!resp.ok) throw await parseError(resp)
-  if (resp.status === 204) return undefined as T
-  return (await resp.json()) as T
-}
+import { apiUrl } from './urls'
+import { ApiError, getApiToken, request, sessionFetch, ensureSession } from './session'
+export { ApiError, request, setApiToken } from './session'
 
 export function fileUrl(path: string): string {
   return path
@@ -75,7 +41,8 @@ export interface ApiUser {
 }
 
 export interface LoginResult {
-  token: string
+  access_token: string
+  token_type: string
   expires_in: number
   user: ApiUser
 }
@@ -110,49 +77,6 @@ export function mapAuthUser(user: ApiUser, token: string): AuthUser {
     phone: user.phone ?? undefined,
     email: user.email ?? undefined,
   }
-}
-
-export async function login(account: string, password: string, role: AuthRole): Promise<AuthUser> {
-  const body = await request<LoginResult>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ account, password, role }),
-  })
-  return mapAuthUser(body.user, body.token)
-}
-
-export async function fetchAuthUser(token: string): Promise<AuthUser | null> {
-  setApiToken(token)
-  try {
-    const body = await request<{ user: ApiUser }>('/api/auth/me')
-    return mapAuthUser(body.user, token)
-  } catch {
-    setApiToken(null)
-    return null
-  }
-}
-
-export async function logout(): Promise<void> {
-  await request<void>('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
-  setApiToken(null)
-}
-
-export async function changePasswordPublic(
-  account: string,
-  oldPassword: string,
-  newPassword: string,
-  role: AuthRole,
-): Promise<void> {
-  await request<void>('/api/auth/change-password', {
-    method: 'POST',
-    body: JSON.stringify({ account, old_password: oldPassword, new_password: newPassword, role }),
-  })
-}
-
-export async function changePasswordLoggedIn(oldPassword: string, newPassword: string): Promise<void> {
-  await request<void>('/api/auth/password', {
-    method: 'PUT',
-    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
-  })
 }
 
 /* ---------------- 题库 ---------------- */
@@ -289,15 +213,17 @@ export async function getDocument(bankId: string, docId: string): Promise<ApiDoc
   return request<ApiDocument>(`/api/banks/${bankId}/documents/${docId}`)
 }
 
-export function uploadDocument(
+export async function uploadDocument(
   bankId: string,
   file: File,
   onUploadProgress?: (percent: number) => void,
 ): Promise<{ document_id: string; status: string; stage: string; progress: number }> {
+  await ensureSession()
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `/api/banks/${bankId}/documents`)
-    if (apiToken) xhr.setRequestHeader('Authorization', `Bearer ${apiToken}`)
+    xhr.open('POST', apiUrl(`/api/banks/${bankId}/documents`))
+    xhr.withCredentials = true
+    if (getApiToken()) xhr.setRequestHeader('Authorization', `Bearer ${getApiToken()}`)
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onUploadProgress) onUploadProgress(Math.round((e.loaded / e.total) * 100))
     }
@@ -327,9 +253,9 @@ export async function deleteDocument(bankId: string, docId: string): Promise<voi
 
 export async function downloadDocument(bankId: string, docId: string, name: string): Promise<void> {
   const headers: HeadersInit = {}
-  if (apiToken) (headers as Record<string, string>).Authorization = `Bearer ${apiToken}`
-  const resp = await fetch(`/api/banks/${bankId}/documents/${docId}/download`, { headers })
-  if (!resp.ok) throw await parseError(resp)
+  if (getApiToken()) (headers as Record<string, string>).Authorization = `Bearer ${getApiToken()}`
+  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download`, { headers })
+  if (!resp.ok) throw new ApiError('下载失败（HTTP ' + resp.status + '）')
   const blob = await resp.blob()
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -893,7 +819,6 @@ export async function updateProfile(patch: Partial<TeacherProfile> & { school?: 
       display_name: patch.name,
       gender: patch.gender,
       phone: patch.phone,
-      email: patch.email,
       school: patch.school,
     }),
   })

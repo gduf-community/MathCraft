@@ -1,5 +1,5 @@
 /** 设置与个人资料始终访问真实后端，不受出题演示适配器影响。 */
-import { apiUrl } from './urls'
+import { sessionFetch } from './session'
 
 export { apiUrl } from './urls'
 
@@ -24,7 +24,7 @@ function describeDetail(detail: unknown): string | undefined {
 export async function settingsRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-  const response = await fetch(apiUrl(path), { ...init, headers })
+  const response = await sessionFetch(path, { ...init, headers })
   if (!response.ok) {
     let message = `请求失败（HTTP ${response.status}）`
     try {

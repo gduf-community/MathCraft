@@ -63,7 +63,8 @@ function Shell() {
 
 /** 登录门禁：未登录渲染登录页（登录成功整页淡出），已登录挂载主应用并淡入 */
 function AuthGate() {
-  const { user } = useAuth()
+  const { user, restoring } = useAuth()
+  if (restoring) return <div className="flex min-h-screen items-center justify-center bg-page text-ink" role="status">正在恢复安全会话…</div>
   if (!user) return <LoginPage />
   return (
     <AppProvider>

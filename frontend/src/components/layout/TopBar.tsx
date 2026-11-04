@@ -148,7 +148,7 @@ export default function TopBar() {
           message={`确定退出当前${user?.role === 'student' ? '学生' : '教师'}账号「${profile.name}」吗？`}
           confirmText="确认退出"
           onConfirm={() => {
-            logout()
+            void logout().catch(() => { window.alert('本地已退出，但服务端退出未确认。请关闭浏览器会话，勿在共享设备继续使用。') })
             showToast(`已退出${user?.role === 'student' ? '学生' : '教师'}账号`)
           }}
           onClose={() => setLogoutConfirm(false)}
