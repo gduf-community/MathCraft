@@ -59,13 +59,16 @@ MathCraft/
 │   ├── src/styles/
 │   ├── vite.config.ts            # /api 与 /media 代理到后端
 │   └── package.json
-├── docs/                         # 社区历史设计、API 与流程资料
+├── docs/                         # 当前方案及社区历史设计、API 与流程资料
+│   └── design/用户系统功能规格.md # 用户系统已确认范围与待决策项（方案讨论中）
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
 ```
 
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
+
+用户系统当前范围与待决策项见 [用户系统功能规格](docs/design/用户系统功能规格.md)；该文档为讨论中的方案，尚未开始新增功能实现。
 
 ## 技术栈
 
