@@ -60,7 +60,8 @@ MathCraft/
 │   ├── vite.config.ts            # /api 与 /media 代理到后端
 │   └── package.json
 ├── docs/                         # 当前方案及社区历史设计、API 与流程资料
-│   └── design/用户系统功能规格.md # 邮箱认证、JWT 与开发账号设计（待评审实现）
+│   ├── design/用户系统功能规格.md # 已接受的邮箱认证、JWT 与开发账号设计
+│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格（待实现）
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
@@ -68,7 +69,7 @@ MathCraft/
 
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
 
-用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；该文档待整体评审和实现，配置项与接口尚未生效。
+用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；设计已获接受，实施范围及验收见 [用户系统实施规格](docs/design/用户系统实施规格.md)；功能待实现，配置项与接口尚未生效。
 
 ## 技术栈
 
