@@ -27,7 +27,7 @@ os.environ["CORS_ORIGINS"] = "http://127.0.0.1:5173"
 # 测试从不读取个人 local_secrets.py；外部凭据固定为空。
 _test_secrets = ModuleType("app.local_secrets")
 _test_secrets.SILICONFLOW_API_KEY = ""
-_test_secrets.MINERU_DEFAULT_TOKEN = ""
+_test_secrets.MINERU_DEFAULT_TOKEN = "fake-mineru-token-for-isolated-tests-only"
 sys.modules["app.local_secrets"] = _test_secrets
 
 import fakeredis
