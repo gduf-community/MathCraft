@@ -7,7 +7,19 @@ import { createRequire } from 'node:module'
 const require = createRequire(process.env.AUTH_TYPESCRIPT_PACKAGE ?? new URL('./package.json', import.meta.url))
 const ts = require('typescript')
 let tail = Promise.resolve()
+let controlledLocks = false
+const scheduledLocks = []
+// 对抗性调度器：只在代次回归中手动启动回调，刻意允许重叠，
+// 不把真实 Web Lock 的串行保证当作 catch/finally 归属正确的证据。
+function runScheduledLock() {
+  const run = scheduledLocks.shift()
+  assert.ok(run, '应存在待启动的锁回调')
+  run()
+}
 Object.defineProperty(globalThis, 'navigator', { value: { locks: { request: (_name, action) => {
+  if (controlledLocks) return new Promise((resolve, reject) => {
+    scheduledLocks.push(() => { Promise.resolve().then(action).then(resolve, reject) })
+  })
   const next = tail.then(action); tail = next.catch(() => {}); return next
 } } }, configurable: true })
 class TestChannel {
@@ -46,18 +58,43 @@ assert.equal(session.getApiToken(), '')
 assert.equal(cleared, 1)
 for (const success of [true, false]) {
   await login(result('A'))
-  const entered = deferred(), pending = deferred()
+  const oldEntered = deferred(), oldResponse = deferred()
+  const freshEntered = deferred(), freshResponse = deferred()
+  let refreshRequests = 0
   globalThis.fetch = async path => {
     if (path.endsWith('/config')) return response(config)
-    entered.resolve(); return pending.promise
+    refreshRequests += 1
+    if (refreshRequests === 1) { oldEntered.resolve(); return oldResponse.promise }
+    assert.equal(refreshRequests, 2, '新代次应始终保持一个刷新请求')
+    freshEntered.resolve(); return freshResponse.promise
   }
-  const old = session.refreshSession(); const rejected = assert.rejects(old)
-  await entered.promise
-  TestChannel.listener({ data: { type: 'invalidate' } })
-  const newLogin = login(result('C'))
-  pending.resolve(success ? response(result('A')) : Response.json({}, { status: 401 }))
-  await Promise.all([rejected, newLogin])
-  assert.equal(session.getApiToken(), 'token-C')
+  controlledLocks = true
+  try {
+    const old = session.refreshSession()
+    const rejected = assert.rejects(old, error => error.code === (success ? 'SESSION_ENDED' : 'REQUEST_FAILED'))
+    runScheduledLock()
+    await oldEntered.promise
+    TestChannel.listener({ data: { type: 'invalidate' } })
+    const newLogin = login(result('C'))
+    runScheduledLock()
+    await newLogin
+    assert.equal(session.getApiToken(), 'token-C', '旧响应释放前，新账号必须已安装')
+    const fresh = session.refreshSession()
+    runScheduledLock()
+    await freshEntered.promise
+    const clearedBeforeOldCompletion = cleared
+    oldResponse.resolve(success ? response(result('A')) : Response.json({}, { status: 401 }))
+    await rejected // 已等待旧 catch 和 finally 全部执行。
+    assert.equal(session.getApiToken(), 'token-C', '旧 catch 不得清除新代次 token')
+    assert.equal(cleared, clearedBeforeOldCompletion, '旧 catch 不得通知清理新用户上下文')
+    const follower = session.refreshSession()
+    assert.equal(scheduledLocks.length, 0, '旧 finally 不得释放新代次单飞槽位')
+    assert.equal(refreshRequests, 2, '后续调用应复用尚未完成的新刷新')
+    freshResponse.resolve(response({ ...result('C'), access_token: 'token-C-refreshed' }))
+    await Promise.all([fresh, follower])
+    assert.equal(session.getApiToken(), 'token-C-refreshed')
+    assert.equal(scheduledLocks.length, 0)
+  } finally { controlledLocks = false }
 }
 // 刷新响应也必须完整校验，不能残留已失效的旧凭据。
 for (const bad of [{ ...result('A'), expires_in: 'invalid' }, { ...result('A'), user: undefined }]) {
