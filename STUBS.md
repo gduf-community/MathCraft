@@ -1,5 +1,7 @@
 # STUBS — what was replaced, and what the original did
 
+> 历史说明（2026-11-04 核对）：下文仅记录旧 DeepTutor 裁剪版，不是当前实现约束。当前受版本控制的后端位于 `backend/app/`，入口为 `app.main:app`；已包含教师/学生账号、Redis 会话、角色与资源权限依赖。原表中的 `backend/MathCraft/`、无条件放行和 `single_user` 描述不适用于当前应用。当前用户系统的完整性仍需按实际接口与验收结果判断，不能据此视为已完成。
+
 The modules below retain the **single-tenant stand-in behaviour** introduced
 when this project was cut down from upstream. Paths in this table are relative
 to `backend/MathCraft/`, the unified implementation package. The former
