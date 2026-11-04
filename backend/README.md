@@ -47,6 +47,8 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 完整接口见根 [openapi.json](../openapi.json) 与 [API 索引](../docs/api.md)，业务及错误边界见 [认证设计](../docs/design/用户系统功能规格.md) 和 [实施规格](../docs/design/用户系统实施规格.md)。
 
+旧版 `scripts/create_user.py` 已停用：包括帮助参数在内固定退出 2，不解析凭据、不加载配置、不访问数据库。真实用户通过公开注册验证邮箱，开发账号仅使用上述受控初始化命令。
+
 ## 迁移与验证
 
 迁移前保留只读备份；对受控副本运行：
