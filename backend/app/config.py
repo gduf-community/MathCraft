@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 100
 
+    # 初始账号（仅由显式初始化命令读取）
+    initial_admin_account: str = ""
+    initial_admin_password: str = ""
+    initial_teacher_account: str = ""
+    initial_teacher_password: str = ""
+    initial_student_account: str = ""
+    initial_student_password: str = ""
+    admin_contact: str = ""
+
     # CORS
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
 

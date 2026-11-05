@@ -2,7 +2,6 @@
 import {
   type ApiBank,
   type ApiBankMember,
-  type AdminLevel as BackendAdminLevel,
   type ApiDocument,
   createBank as createBankApi,
   deleteBank as deleteBankApi,
@@ -12,6 +11,7 @@ import {
   getDocument,
   joinBank,
   listBankMembers,
+  addBankMember,
   listBanks,
   listDocuments,
   quitBank,
@@ -23,8 +23,6 @@ import {
   uploadDocument,
   formatFileSize,
 } from './backend'
-
-export type AdminLevel = 'normal' | 'super'
 
 export interface BankDoc {
   id: string
@@ -38,9 +36,8 @@ export interface BankDoc {
 export interface BankMember {
   id: string
   name: string
-  isAdmin: boolean
-  /** 成员自己的管理员级别（owner 视为 super），用于成员行标签 */
-  adminLevel: AdminLevel | null
+  /** 成员权限：创建者、可编辑或只读。 */
+  role: 'creator' | 'editor' | 'readonly'
   userId: string
   isMe: boolean
   isCreator: boolean
@@ -55,10 +52,9 @@ export interface ManagedBank {
   creator: string
   docs: BankDoc[]
   members: BankMember[]
-  adminLevel: AdminLevel
   quitted?: boolean
   source: 'owned' | 'joined'
-  myRole: 'owner' | 'admin' | 'member'
+  myRole: 'creator' | 'editor' | 'readonly'
   canUpload: boolean
   canDownload: boolean
   canDeleteDoc: boolean
@@ -89,8 +85,7 @@ function mapMember(m: ApiBankMember): BankMember {
   return {
     id: m.id,
     name: m.user.display_name,
-    isAdmin: m.is_admin,
-    adminLevel: m.admin_level,
+    role: m.role,
     userId: m.user.id,
     isMe: m.is_me,
     isCreator: m.is_creator,
@@ -108,7 +103,6 @@ async function enrich(bank: ApiBank): Promise<ManagedBank> {
     creator: bank.creator?.display_name ?? '',
     docs: docs.map(mapDoc),
     members: members.map(mapMember),
-    adminLevel: bank.my_admin_level,
     quitted: bank.quitted,
     source: bank.source,
     myRole: bank.my_role,
@@ -138,11 +132,10 @@ export async function getBankDetail(id: string): Promise<ManagedBank> {
 
 export async function updateBank(
   id: string,
-  patch: { name?: string; adminLevel?: AdminLevel },
+  patch: { name?: string },
 ): Promise<ManagedBank> {
   const updated = await updateBankApi(id, {
     name: patch.name,
-    admin_level: patch.adminLevel as BackendAdminLevel | undefined,
   })
   return enrich(updated)
 }
@@ -163,12 +156,13 @@ export async function quitBankById(id: string): Promise<void> {
   await quitBank(id)
 }
 
-export async function setAdmin(bankId: string, memberId: string): Promise<void> {
-  await setBankMemberRole(bankId, memberId, 'admin')
+export async function addMember(bankId: string, account: string, role: 'editor' | 'readonly'): Promise<BankMember> {
+  const member = await addBankMember(bankId, account, role)
+  return mapMember(member)
 }
 
-export async function unsetAdmin(bankId: string, memberId: string): Promise<void> {
-  await setBankMemberRole(bankId, memberId, 'member')
+export async function setMemberRole(bankId: string, memberId: string, role: 'editor' | 'readonly'): Promise<void> {
+  await setBankMemberRole(bankId, memberId, role)
 }
 
 export async function removeMember(bankId: string, memberId: string): Promise<void> {
@@ -223,9 +217,9 @@ export async function uploadAndWait(
 }
 
 export function isMyAdmin(bank: ManagedBank): boolean {
-  return bank.myRole === 'owner' || bank.myRole === 'admin'
+  return bank.myRole === 'creator' || bank.myRole === 'editor'
 }
 
 export function isMySuperAdmin(bank: ManagedBank): boolean {
-  return bank.myRole === 'owner' || (bank.myRole === 'admin' && bank.adminLevel === 'super')
+  return bank.myRole === 'creator'
 }

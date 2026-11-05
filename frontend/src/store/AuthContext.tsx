@@ -2,14 +2,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { fetchAuthUser, login as authLogin, logout as authLogout } from '../api/auth'
-import type { AuthRole, AuthUser } from '../api/auth'
+import type { AuthUser } from '../api/auth'
 import { setApiToken } from '../api/backend'
 
 const STORAGE_KEY = 'mathcraft-auth'
 
 interface AuthContextValue {
   user: AuthUser | null
-  login: (account: string, password: string, role: AuthRole) => Promise<AuthUser>
+  login: (account: string, password: string) => Promise<AuthUser>
   signIn: (user: AuthUser) => void
   logout: () => void
 }
@@ -43,8 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const login = useCallback(async (account: string, password: string, role: AuthRole) => {
-    const authUser = await authLogin(account, password, role)
+  const login = useCallback(async (account: string, password: string) => {
+    const authUser = await authLogin(account, password)
     setApiToken(authUser.token)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(authUser))
     return authUser

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, resolve_bank_access
 from app.errors import AppError
 from app.models import ChatMessage, ChatSession, Document, User
 from app.models.base import new_id, utcnow
@@ -41,7 +41,7 @@ def create_session(
     db: Session = Depends(get_db),
 ):
     # 校验题库成员与文档状态
-    access = _bank_access_for(db, user, body.bank_id)
+    resolve_bank_access(db, user, body.bank_id)
     doc = db.get(Document, body.document_id)
     if doc is None or doc.bank_id != body.bank_id:
         raise AppError("DOCUMENT_NOT_FOUND", "文档不存在或已被删除", status_code=404)
@@ -57,24 +57,6 @@ def create_session(
     return {"session_id": s.id, "bank_id": s.bank_id, "document_id": s.document_id, "welcome": WELCOME}
 
 
-def _bank_access_for(db: Session, user: User, bank_id: str):
-    """非路由上下文里手动构造题库权限（复用 deps 的逻辑）。"""
-    from app.deps import BankAccess
-    from app.models import Bank, BankMember
-
-    bank = db.get(Bank, bank_id)
-    if bank is None or bank.status != "active":
-        raise AppError("BANK_NOT_FOUND", "题库不存在或已被删除", status_code=404)
-    member = (
-        db.query(BankMember)
-        .filter(BankMember.bank_id == bank_id, BankMember.user_id == user.id, BankMember.status == "active")
-        .one_or_none()
-    )
-    if member is None:
-        raise AppError("BANK_NOT_FOUND", "题库不存在或你不是该题库成员", status_code=404)
-    return BankAccess(bank=bank, member=member, user=user, my_role=member.role, my_admin_level=bank.admin_level)
-
-
 @router.get("/sessions/{session_id}")
 def get_session(
     session_id: str,
@@ -82,6 +64,7 @@ def get_session(
     db: Session = Depends(get_db),
 ):
     s = _get_session(session_id, user, db)
+    resolve_bank_access(db, user, s.bank_id)
     messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == s.id)
@@ -108,6 +91,7 @@ def send_message(
 ):
     """发送消息：槽位状态机驱动，齐备后生成题目（含 HyDE + 混合检索）。"""
     s = _get_session(session_id, user, db)
+    resolve_bank_access(db, user, s.bank_id)
     doc = db.get(Document, s.document_id)
     if doc is None or doc.status != "ready":
         raise AppError("DOCUMENT_NOT_READY", "文档不可用，请重新上传", status_code=400)

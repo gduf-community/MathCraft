@@ -14,6 +14,7 @@ import ProfileTab from './components/tabs/ProfileTab'
 import { SettingsPage } from './components/settings/SettingsPage'
 import Toast from './components/ui/Toast'
 import LoginPage from './components/auth/LoginPage'
+import AdminPanel from './components/admin/AdminPanel'
 
 function Shell() {
   const { activeTab, settingsTarget } = useApp()
@@ -65,6 +66,7 @@ function Shell() {
 function AuthGate() {
   const { user } = useAuth()
   if (!user) return <LoginPage />
+  if (user.role === 'admin') return <AdminPanel />
   return (
     <AppProvider>
       <Shell />

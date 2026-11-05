@@ -58,7 +58,7 @@ export function fileUrl(path: string): string {
 
 /* ---------------- 认证 ---------------- */
 
-export type AuthRole = 'student' | 'teacher'
+export type AuthRole = 'admin' | 'student' | 'teacher'
 
 export interface ApiUser {
   id: string
@@ -112,10 +112,17 @@ export function mapAuthUser(user: ApiUser, token: string): AuthUser {
   }
 }
 
-export async function login(account: string, password: string, role: AuthRole): Promise<AuthUser> {
+export interface AuthConfig {
+  admin_contact: string
+}
+
+export function fetchAuthConfig() {
+  return request<AuthConfig>('/api/auth/config')
+}
+export async function login(account: string, password: string): Promise<AuthUser> {
   const body = await request<LoginResult>('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ account, password, role }),
+    body: JSON.stringify({ account, password }),
   })
   return mapAuthUser(body.user, body.token)
 }
@@ -140,11 +147,10 @@ export async function changePasswordPublic(
   account: string,
   oldPassword: string,
   newPassword: string,
-  role: AuthRole,
 ): Promise<void> {
   await request<void>('/api/auth/change-password', {
     method: 'POST',
-    body: JSON.stringify({ account, old_password: oldPassword, new_password: newPassword, role }),
+    body: JSON.stringify({ account, old_password: oldPassword, new_password: newPassword }),
   })
 }
 
@@ -153,6 +159,55 @@ export async function changePasswordLoggedIn(oldPassword: string, newPassword: s
     method: 'PUT',
     body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
   })
+}
+
+
+/* ---------------- 平台管理员 ---------------- */
+
+export interface AdminAccount {
+  id: string
+  account: string
+  display_name: string
+  role: AuthRole
+  identity: string
+  status: 'active' | 'disabled'
+  created_at: string
+}
+
+export interface PlatformOverview {
+  admin_contact: string
+  accounts: Record<string, number>
+  resources: Record<string, number>
+  task_status_counts: Record<string, number>
+  tasks: Array<{ id: string; type: string; status: string; created_at: string; completed_at: string | null }>
+}
+
+export function listAdminAccounts(query = '', role?: AuthRole, status?: 'active' | 'disabled') {
+  const params = new URLSearchParams()
+  if (query) params.set('query', query)
+  if (role) params.set('role', role)
+  if (status) params.set('status', status)
+  return request<AdminAccount[]>('/api/admin/accounts?' + params.toString())
+}
+
+export function createAdminAccount(body: { account: string; display_name: string; role: AuthRole; password: string }) {
+  return request<AdminAccount>('/api/admin/accounts', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function updateAdminAccount(userId: string, displayName: string) {
+  return request<AdminAccount>('/api/admin/accounts/' + userId, { method: 'PATCH', body: JSON.stringify({ display_name: displayName }) })
+}
+
+export function resetAdminPassword(userId: string, password: string) {
+  return request<void>('/api/admin/accounts/' + userId + '/reset-password', { method: 'POST', body: JSON.stringify({ password }) })
+}
+
+export function setAdminAccountStatus(userId: string, action: 'disable' | 'restore') {
+  return request<void>('/api/admin/accounts/' + userId + '/' + action, { method: 'POST' })
+}
+
+export function fetchPlatformOverview() {
+  return request<PlatformOverview>('/api/admin/overview')
 }
 
 /* ---------------- 题库 ---------------- */
@@ -171,8 +226,7 @@ export interface ApiBank {
   capacity: number
   source: 'owned' | 'joined'
   quitted: boolean
-  my_role: 'owner' | 'admin' | 'member'
-  my_admin_level: 'super' | 'normal'
+  my_role: 'creator' | 'editor' | 'readonly'
   can_upload_document: boolean
   can_download_document: boolean
   can_delete_document: boolean
@@ -185,15 +239,11 @@ export interface ApiBank {
 export interface ApiBankMember {
   id: string
   user: { id: string; display_name: string; account: string }
-  role: 'owner' | 'admin' | 'member'
-  is_admin: boolean
-  admin_level: 'super' | 'normal' | null
+  role: 'creator' | 'editor' | 'readonly'
   is_creator: boolean
   is_me: boolean
   joined_at: string
 }
-
-export type AdminLevel = 'normal' | 'super'
 
 export async function listBanks(scope: 'owned' | 'joined' | 'all' = 'all'): Promise<ApiBank[]> {
   return request<ApiBank[]>(`/api/banks?scope=${scope}`)
@@ -209,7 +259,7 @@ export async function getBank(id: string): Promise<ApiBank> {
 
 export async function updateBank(
   id: string,
-  patch: { name?: string; admin_level?: AdminLevel },
+  patch: { name?: string },
 ): Promise<ApiBank> {
   return request<ApiBank>(`/api/banks/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
 }
@@ -226,6 +276,10 @@ export async function quitBank(id: string): Promise<void> {
   await request<void>(`/api/banks/${id}/quit`, { method: 'POST' })
 }
 
+export async function addBankMember(bankId: string, account: string, role: 'editor' | 'readonly'): Promise<ApiBankMember> {
+  return request<ApiBankMember>(`/api/banks/${bankId}/members`, { method: 'POST', body: JSON.stringify({ account, role }) })
+}
+
 export async function listBankMembers(id: string): Promise<ApiBankMember[]> {
   return request<ApiBankMember[]>(`/api/banks/${id}/members`)
 }
@@ -233,7 +287,7 @@ export async function listBankMembers(id: string): Promise<ApiBankMember[]> {
 export async function setBankMemberRole(
   bankId: string,
   userId: string,
-  role: 'admin' | 'member',
+  role: 'editor' | 'readonly',
 ): Promise<void> {
   await request<void>(`/api/banks/${bankId}/members/${userId}/role`, {
     method: 'PUT',

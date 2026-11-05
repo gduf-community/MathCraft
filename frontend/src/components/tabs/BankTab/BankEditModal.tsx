@@ -1,32 +1,21 @@
-/** 题库信息编辑弹窗：基本信息、管理员权限级别、成员管理（设/取消管理员、转让、移出）、文档与上传 */
+/** 题库信息编辑弹窗：基本信息、成员权限、文档与上传。 */
 import { useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import {
-  ArrowLeftRight,
-  Crown,
   Download,
   FileUp,
   FolderCog,
   Settings2,
-  ShieldCheck,
   Trash2,
-  UserMinus,
-  UserPlus,
   UserX,
   Users,
   X,
 } from 'lucide-react'
 import * as bankApi from '../../../api/banks'
-import type { AdminLevel, ManagedBank } from '../../../api/banks'
+import type { ManagedBank } from '../../../api/banks'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
-import ConfirmDialog from '../../ui/ConfirmDialog'
 import { useDocUpload } from './useDocUpload'
-
-const LEVELS: { key: AdminLevel; title: string; desc: string }[] = [
-  { key: 'normal', title: '普通管理员', desc: '可上传和下载文档' },
-  { key: 'super', title: '超级管理员', desc: '可编辑文档，包括删除、上传、下载和查看' },
-]
 
 export default function BankEditModal({
   bank,
@@ -39,15 +28,14 @@ export default function BankEditModal({
 }) {
   const { showToast } = useApp()
   const [name, setName] = useState(bank.name)
-  const [adminLevel, setAdminLevel] = useState<AdminLevel>(bank.adminLevel)
+  const [memberAccount, setMemberAccount] = useState('')
+  const [memberRole, setMemberRole] = useState<'editor' | 'readonly'>('readonly')
   const [docs, setDocs] = useState(bank.docs)
   const [members, setMembers] = useState(bank.members)
-  const [transferTarget, setTransferTarget] = useState<{ id: string; name: string } | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const { upload, start } = useDocUpload(bank.id, (doc) => setDocs((prev) => [...prev, doc]), showToast)
 
-  const levelLabel = adminLevel === 'super' ? '超级管理员' : '普通管理员'
   const iconBtn = 'flex h-7 w-7 items-center justify-center rounded-md transition-colors'
 
   const onDrop = (e: DragEvent) => {
@@ -62,7 +50,7 @@ export default function BankEditModal({
       showToast('题库名称不能为空')
       return
     }
-    await bankApi.updateBank(bank.id, { name: name.trim(), adminLevel })
+    await bankApi.updateBank(bank.id, { name: name.trim() })
     showToast('题库信息已保存')
     onChanged()
     onClose()
@@ -109,123 +97,105 @@ export default function BankEditModal({
             </label>
           </section>
 
-          {/* 管理员权限级别 */}
+          {/* 成员权限 */}
           <section className="space-y-2.5">
-            <SectionTitle icon={ShieldCheck}>管理员权限级别</SectionTitle>
-            <div className="grid grid-cols-2 gap-2.5">
-              {LEVELS.map((lv) => (
-                <button
-                  key={lv.key}
-                  type="button"
-                  onClick={() => setAdminLevel(lv.key)}
-                  className={`rounded-xl border p-3 text-left transition-colors ${
-                    adminLevel === lv.key
-                      ? 'border-primary bg-primary-light/40 shadow-[0_2px_8px_rgba(30,111,255,0.12)]'
-                      : 'border-line hover:border-primary/40 hover:bg-page'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <ShieldCheck size={14} className={adminLevel === lv.key ? 'text-primary' : 'text-ink-3'} />
-                    <span className={`text-sm font-semibold ${adminLevel === lv.key ? 'text-primary' : 'text-ink'}`}>
-                      {lv.title}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs leading-5 text-ink-3">{lv.desc}</p>
-                </button>
-              ))}
+            <SectionTitle icon={Users}>成员权限</SectionTitle>
+            <p className="text-xs text-ink-3">创建者可按登录账号添加成员。可编辑成员能维护共享资料，只读成员只能查看、下载、检索和出题。</p>
+            <div className="flex gap-2">
+              <label className="sr-only" htmlFor="member-account">成员登录账号</label>
+              <input
+                id="member-account"
+                value={memberAccount}
+                onChange={(event) => setMemberAccount(event.target.value)}
+                placeholder="登录账号"
+                className="min-w-0 flex-1 rounded-lg border border-line px-3 py-2 text-sm"
+              />
+              <label className="sr-only" htmlFor="member-role">成员权限</label>
+              <select
+                id="member-role"
+                value={memberRole}
+                onChange={(event) => setMemberRole(event.target.value as 'editor' | 'readonly')}
+                className="rounded-lg border border-line px-3 py-2 text-sm"
+              >
+                <option value="readonly">只读</option>
+                <option value="editor">可编辑</option>
+              </select>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const member = await bankApi.addMember(bank.id, memberAccount.trim(), memberRole)
+                    setMembers((prev) => [...prev, member])
+                    setMemberAccount('')
+                    showToast('成员已添加')
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : '添加成员失败')
+                  }
+                }}
+                disabled={!memberAccount.trim()}
+                className="rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                添加
+              </button>
             </div>
-            <p className="text-xs text-ink-3">当前级别对本题库全部管理员生效；创建者恒为超级管理员</p>
           </section>
 
-          {/* 成员管理（含设/取消管理员、转让、移出） */}
+          {/* 成员列表 */}
           <section className="space-y-2.5">
             <SectionTitle icon={Users}>题库成员（{members.length} 人）</SectionTitle>
             <ul className="divide-y divide-line/60 rounded-xl border border-line">
-              {members.map((m) => {
-                const isCreator = m.isCreator
-                const isMe = m.isMe
-                return (
-                  <li key={m.id} className="flex items-center justify-between gap-2 px-3 py-2.5">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={m.name} size="sm" />
-                      <span className="text-sm text-ink">{m.name}</span>
-                      {isCreator && (
-                        <span className="inline-flex items-center gap-0.5 rounded bg-primary-light px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                          <Crown size={10} /> 创建者
-                        </span>
-                      )}
-                      {!isCreator && m.isAdmin && (
-                        <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
-                          {levelLabel}
-                        </span>
-                      )}
-                      {isMe && <span className="rounded bg-page px-1.5 py-0.5 text-[10px] text-ink-3">我</span>}
+              {members.map((member) => (
+                <li key={member.id} className="flex items-center justify-between gap-2 px-3 py-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={member.name} size="sm" />
+                    <span className="text-sm text-ink">{member.name}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${member.isCreator ? 'bg-primary-light text-primary' : member.role === 'editor' ? 'bg-amber-50 text-amber-600' : 'bg-page text-ink-3'}`}>
+                      {member.isCreator ? '创建者' : member.role === 'editor' ? '可编辑' : '只读'}
+                    </span>
+                    {member.isMe && <span className="rounded bg-page px-1.5 py-0.5 text-[10px] text-ink-3">我</span>}
+                  </div>
+                  {!member.isMe && !member.isCreator && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        aria-label={`${member.name}的权限`}
+                        value={member.role}
+                        onChange={async (event) => {
+                          const role = event.target.value as 'editor' | 'readonly'
+                          try {
+                            await bankApi.setMemberRole(bank.id, member.id, role)
+                            setMembers((prev) => prev.map((item) => item.id === member.id ? { ...item, role } : item))
+                            showToast('成员权限已更新')
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : '更新成员权限失败')
+                          }
+                        }}
+                        className="rounded border border-line px-2 py-1 text-xs"
+                      >
+                        <option value="readonly">只读</option>
+                        <option value="editor">可编辑</option>
+                      </select>
+                      <button
+                        type="button"
+                        title="移出题库"
+                        onClick={async () => {
+                          try {
+                            await bankApi.removeMember(bank.id, member.id)
+                            setMembers((prev) => prev.filter((item) => item.id !== member.id))
+                            showToast(`已将 ${member.name} 移出题库`)
+                            onChanged()
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : '移出成员失败')
+                          }
+                        }}
+                        className={`${iconBtn} text-red-500 hover:bg-red-50`}
+                      >
+                        <UserX size={14} />
+                      </button>
                     </div>
-                    {!isMe && !isCreator && (
-                      <div className="flex items-center gap-1">
-                        {m.isAdmin ? (
-                          <button
-                            type="button"
-                            title="取消管理员"
-                            onClick={async () => {
-                              try {
-                                await bankApi.unsetAdmin(bank.id, m.id)
-                                setMembers((prev) => prev.map((x) => (x.id === m.id ? { ...x, isAdmin: false } : x)))
-                                showToast(`已取消 ${m.name} 的管理员权限`)
-                              } catch (err) {
-                                showToast(err instanceof Error ? err.message : '操作失败')
-                              }
-                            }}
-                            className={`${iconBtn} text-amber-600 hover:bg-amber-50`}
-                          >
-                            <UserMinus size={14} />
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            title={`设为${levelLabel}`}
-                            onClick={async () => {
-                              await bankApi.setAdmin(bank.id, m.id)
-                              setMembers((prev) => prev.map((x) => (x.id === m.id ? { ...x, isAdmin: true } : x)))
-                              showToast(`已将 ${m.name} 设为${levelLabel}`)
-                            }}
-                            className={`${iconBtn} text-primary hover:bg-primary-light`}
-                          >
-                            <UserPlus size={14} />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          title={`把题库转让给 ${m.name}`}
-                          onClick={() => setTransferTarget({ id: m.id, name: m.name })}
-                          className={`${iconBtn} text-violet-500 hover:bg-violet-50`}
-                        >
-                          <ArrowLeftRight size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          title="移出题库"
-                          onClick={async () => {
-                            try {
-                              await bankApi.removeMember(bank.id, m.id)
-                              setMembers((prev) => prev.filter((x) => x.id !== m.id))
-                              showToast(`已将 ${m.name} 移出题库`)
-                              onChanged()
-                            } catch (err) {
-                              showToast(err instanceof Error ? err.message : '操作失败')
-                            }
-                          }}
-                          className={`${iconBtn} text-red-500 hover:bg-red-50`}
-                        >
-                          <UserX size={14} />
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                )
-              })}
+                  )}
+                </li>
+              ))}
             </ul>
-            <p className="text-xs text-ink-3">成员操作：设为管理员、取消管理员、转让题库、移出题库（悬停图标查看）</p>
           </section>
 
           {/* 文档列表 */}
@@ -335,21 +305,6 @@ export default function BankEditModal({
         </div>
       </div>
 
-      {transferTarget && (
-        <ConfirmDialog
-          title="确认转让题库"
-          message={`转让后你将失去管理员权限，该题库移入「我加入的题库」。确定转让给「${transferTarget.name}」吗？`}
-          confirmText="确认转让"
-          danger={false}
-          onConfirm={async () => {
-            await bankApi.transferBank(bank.id, transferTarget.id)
-            showToast(`题库已转让给 ${transferTarget.name}`)
-            onChanged()
-            onClose()
-          }}
-          onClose={() => setTransferTarget(null)}
-        />
-      )}
     </div>
   )
 }

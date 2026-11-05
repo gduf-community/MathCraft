@@ -39,38 +39,46 @@ def require_student(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise AppError("FORBIDDEN", "需要管理员权限", status_code=403)
+    return user
+
+
 @dataclass
 class BankAccess:
     bank: Bank
     member: BankMember
     user: User
-    my_role: str            # owner / admin / member
-    my_admin_level: str     # super / normal（创建者恒为 super）
+    my_role: str            # creator / editor / readonly
 
     @property
     def is_owner(self) -> bool:
-        return self.my_role == "owner"
+        return self.my_role == "creator"
 
     @property
     def is_admin(self) -> bool:
-        return self.my_role in ("owner", "admin")
+        return self.my_role in ("creator", "editor")
 
     @property
     def is_super_admin(self) -> bool:
-        return self.my_role == "owner" or (self.my_role == "admin" and self.my_admin_level == "super")
+        return self.my_role == "creator"
 
     def capabilities(self) -> dict:
         return {
             "my_role": self.my_role,
-            "my_admin_level": self.my_admin_level,
             "can_upload_document": self.is_admin,
-            "can_download_document": self.is_admin,
-            "can_delete_document": self.is_super_admin,
+            "can_download_document": True,
+            "can_delete_document": self.is_admin,
             "can_manage_members": self.is_owner,
             "can_edit_bank": self.is_owner,
             "can_transfer_bank": self.is_owner,
             "can_delete_bank": self.is_owner,
         }
+
+
+def normalize_bank_role(role: str) -> str:
+    return {"owner": "creator", "admin": "readonly", "member": "readonly"}.get(role, role)
 
 
 def resolve_bank_access(db: Session, user: User, bank_id: str) -> BankAccess:
@@ -85,7 +93,7 @@ def resolve_bank_access(db: Session, user: User, bank_id: str) -> BankAccess:
     )
     if member is None:
         raise AppError("BANK_NOT_FOUND", "题库不存在或你不是该题库成员", status_code=404)
-    return BankAccess(bank=bank, member=member, user=user, my_role=member.role, my_admin_level=bank.admin_level)
+    return BankAccess(bank=bank, member=member, user=user, my_role=normalize_bank_role(member.role))
 
 
 def get_bank_access(

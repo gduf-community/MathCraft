@@ -24,6 +24,26 @@
         }
       }
     },
+    "/api/auth/config": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Public Config",
+        "description": "登录页所需的公开平台配置。",
+        "operationId": "public_config_api_auth_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/login": {
       "post": {
         "tags": [
@@ -225,6 +245,428 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Accounts",
+        "operationId": "list_accounts_api_admin_accounts_get",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Query"
+            }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(admin|teacher|student)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(active|disabled)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create Account",
+        "operationId": "create_account_api_admin_accounts_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountCreateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts/{user_id}": {
+      "patch": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Update Account",
+        "operationId": "update_account_api_admin_accounts__user_id__patch",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDisplayNameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts/{user_id}/reset-password": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Reset Password",
+        "operationId": "reset_password_api_admin_accounts__user_id__reset_password_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountPasswordBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts/{user_id}/disable": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Disable Account",
+        "operationId": "disable_account_api_admin_accounts__user_id__disable_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/accounts/{user_id}/restore": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Restore Account",
+        "operationId": "restore_account_api_admin_accounts__user_id__restore_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/overview": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Overview",
+        "operationId": "overview_api_admin_overview_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -680,52 +1122,14 @@
           "banks"
         ],
         "summary": "Join Bank By Code",
-        "description": "按编号加入题库。",
+        "description": "知识库／题库不再通过编号加入。",
         "operationId": "join_bank_by_code_api_banks_join_post",
-        "parameters": [
-          {
-            "name": "Authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BankJoinBody"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
               }
             }
           }
@@ -953,6 +1357,70 @@
       }
     },
     "/api/banks/{bank_id}/members": {
+      "post": {
+        "tags": [
+          "banks"
+        ],
+        "summary": "Add Member",
+        "operationId": "add_member_api_banks__bank_id__members_post",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberAddBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "get": {
         "tags": [
           "banks"
@@ -4672,6 +5140,72 @@
   },
   "components": {
     "schemas": {
+      "AccountCreateBody": {
+        "properties": {
+          "account": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[\\u4e00-\\u9fffA-Za-z0-9_.-]+$",
+            "title": "Account"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "role": {
+            "type": "string",
+            "pattern": "^(admin|teacher|student)$",
+            "title": "Role"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 6,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "account",
+          "display_name",
+          "role",
+          "password"
+        ],
+        "title": "AccountCreateBody"
+      },
+      "AccountDisplayNameBody": {
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Display Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "display_name"
+        ],
+        "title": "AccountDisplayNameBody"
+      },
+      "AccountPasswordBody": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 6,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "AccountPasswordBody"
+      },
       "AttemptAnswerBody": {
         "properties": {
           "paper_question_id": {
@@ -4745,21 +5279,6 @@
         ],
         "title": "BankCreateBody"
       },
-      "BankJoinBody": {
-        "properties": {
-          "code": {
-            "type": "string",
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Code"
-          }
-        },
-        "type": "object",
-        "required": [
-          "code"
-        ],
-        "title": "BankJoinBody"
-      },
       "BankUpdateBody": {
         "properties": {
           "name": {
@@ -4774,18 +5293,6 @@
               }
             ],
             "title": "Name"
-          },
-          "admin_level": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^(normal|super)$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Admin Level"
           }
         },
         "type": "object",
@@ -4841,8 +5348,9 @@
         "properties": {
           "account": {
             "type": "string",
-            "maxLength": 128,
+            "maxLength": 64,
             "minLength": 1,
+            "pattern": "^[\\u4e00-\\u9fffA-Za-z0-9_.-]+$",
             "title": "Account"
           },
           "old_password": {
@@ -4856,19 +5364,13 @@
             "maxLength": 128,
             "minLength": 6,
             "title": "New Password"
-          },
-          "role": {
-            "type": "string",
-            "pattern": "^(student|teacher)$",
-            "title": "Role"
           }
         },
         "type": "object",
         "required": [
           "account",
           "old_password",
-          "new_password",
-          "role"
+          "new_password"
         ],
         "title": "ChangePasswordBody",
         "description": "未登录改密（登录页）。"
@@ -5067,8 +5569,9 @@
         "properties": {
           "account": {
             "type": "string",
-            "maxLength": 128,
+            "maxLength": 64,
             "minLength": 1,
+            "pattern": "^[\\u4e00-\\u9fffA-Za-z0-9_.-]+$",
             "title": "Account"
           },
           "password": {
@@ -5076,26 +5579,41 @@
             "maxLength": 128,
             "minLength": 1,
             "title": "Password"
-          },
-          "role": {
-            "type": "string",
-            "pattern": "^(student|teacher)$",
-            "title": "Role"
           }
         },
         "type": "object",
         "required": [
           "account",
-          "password",
-          "role"
+          "password"
         ],
         "title": "LoginBody"
+      },
+      "MemberAddBody": {
+        "properties": {
+          "account": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Account"
+          },
+          "role": {
+            "type": "string",
+            "pattern": "^(editor|readonly)$",
+            "title": "Role",
+            "default": "readonly"
+          }
+        },
+        "type": "object",
+        "required": [
+          "account"
+        ],
+        "title": "MemberAddBody"
       },
       "MemberRoleBody": {
         "properties": {
           "role": {
             "type": "string",
-            "pattern": "^(admin|member)$",
+            "pattern": "^(editor|readonly)$",
             "title": "Role"
           }
         },

@@ -10,6 +10,7 @@ from app.errors import AppError
 from app.models import Bank, BankMember, Document, Favorite, Question, User
 from app.models.base import new_id
 from app.services.rag import fts, vectorstore
+from app.deps import normalize_bank_role
 
 
 def generate_bank_code(db: Session) -> str:
@@ -40,17 +41,11 @@ def bank_payload(db: Session, bank: Bank, user: User) -> dict:
         .filter(BankMember.bank_id == bank.id, BankMember.user_id == user.id, BankMember.status == "active")
         .one_or_none()
     )
-    # 创建者以当前 owner 成员为准：题库转让后列表与详情保持一致
-    owner_member = (
-        db.query(BankMember)
-        .filter(BankMember.bank_id == bank.id, BankMember.role == "owner", BankMember.status == "active")
-        .one_or_none()
-    )
-    creator = db.get(User, owner_member.user_id) if owner_member else db.get(User, bank.creator_id)
+    creator = db.get(User, bank.creator_id)
     from app.deps import BankAccess
 
-    access = BankAccess(bank=bank, member=member, user=user, my_role=member.role if member else "member",
-                        my_admin_level=bank.admin_level)
+    role = normalize_bank_role(member.role) if member else "readonly"
+    access = BankAccess(bank=bank, member=member, user=user, my_role=role) if member else None
     return {
         "id": bank.id,
         "name": bank.name,
@@ -58,21 +53,23 @@ def bank_payload(db: Session, bank: Bank, user: User) -> dict:
         "creator": {"id": creator.id, "display_name": creator.display_name} if creator else None,
         "member_count": member_count(db, bank.id),
         "capacity": bank.capacity,
-        "source": "owned" if member and member.role == "owner" else "joined",
+        "source": "owned" if role == "creator" else "joined",
         "quitted": member is None,
-        **access.capabilities(),
+        **(access.capabilities() if access else {
+            "my_role": None, "can_upload_document": False, "can_download_document": False,
+            "can_delete_document": False, "can_manage_members": False, "can_edit_bank": False,
+            "can_transfer_bank": False, "can_delete_bank": False,
+        }),
     }
 
 
 def member_payload(m: BankMember, u: User, me_id: str, bank: Bank) -> dict:
-    level = "super" if m.role == "owner" else bank.admin_level
+    role = normalize_bank_role(m.role)
     return {
         "id": m.id,
         "user": {"id": u.id, "display_name": u.display_name, "account": u.account},
-        "role": m.role,
-        "is_admin": m.role in ("owner", "admin"),
-        "admin_level": level if m.role in ("owner", "admin") else None,
-        "is_creator": m.role == "owner",
+        "role": role,
+        "is_creator": role == "creator",
         "is_me": u.id == me_id,
         "joined_at": m.joined_at,
     }
@@ -82,7 +79,7 @@ def create_bank(db: Session, user: User, name: str) -> Bank:
     bank = Bank(id=new_id("bank"), name=name, code=generate_bank_code(db), creator_id=user.id, admin_level="super")
     db.add(bank)
     db.flush()
-    db.add(BankMember(id=new_id("bm"), bank_id=bank.id, user_id=user.id, role="owner", status="active"))
+    db.add(BankMember(id=new_id("bm"), bank_id=bank.id, user_id=user.id, role="creator", status="active"))
     db.commit()
     db.refresh(bank)
     return bank

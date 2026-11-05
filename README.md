@@ -45,7 +45,7 @@ MathCraft/
 │   │       ├── attempts.py       # 作答、交卷、复盘
 │   │       └── grading.py        # 客观题判分与主观题 AI 批卷
 │   ├── alembic/                  # 数据库迁移
-│   ├── scripts/                  # seed、create_user、检索与真实链路冒烟
+│   ├── scripts/                  # 显式账号初始化、seed、create_user 与链路冒烟
 │   ├── tests/                    # 103 项后端接口测试
 │   ├── data/                     # 运行时数据，已被 .gitignore 忽略
 │   ├── alembic.ini
@@ -60,8 +60,9 @@ MathCraft/
 │   ├── vite.config.ts            # /api 与 /media 代理到后端
 │   └── package.json
 ├── docs/                         # 当前方案及社区历史设计、API 与流程资料
-│   ├── design/用户系统功能规格.md # 已接受的邮箱认证、JWT 与开发账号设计
-│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格（待实现）
+│   ├── design/用户系统功能规格.md # 历史邮箱认证方案（冲突部分已被修订）
+│   ├── design/用户系统实施规格.md # 历史实施规格（冲突部分已被修订）
+│   └── design/管理员与账号开通设计.md # 管理员开通、登录与管理面板（已实现）
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
@@ -69,7 +70,7 @@ MathCraft/
 
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
 
-用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；设计已获接受，实施范围及验收见 [用户系统实施规格](docs/design/用户系统实施规格.md)；功能待实现，配置项与接口尚未生效。
+用户系统于 2026-11-05 改为由管理员开通账号、只提供登录，并新增账号管理与平台信息面板，见 [管理员与账号开通设计](docs/design/管理员与账号开通设计.md)（已实现，测试受本机 Redis 状态影响）。[旧功能规格](docs/design/用户系统功能规格.md)与[旧实施规格](docs/design/用户系统实施规格.md)保留历史上下文，其中自助注册与不设管理员等冲突要求已被本轮需求取代；旧方案的其他技术设计是否沿用待确认。
 
 ## 技术栈
 
@@ -116,19 +117,13 @@ cd backend
 Copy-Item .env.example .env
 uv sync
 uv run alembic upgrade head
-uv run python scripts/seed.py
+uv run python scripts/init_accounts.py
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-`seed.py` 会创建三个测试账号，密码均为 `123123`：
+启动服务前需要显式执行一次 `uv run python scripts/init_accounts.py`。先在 `backend/.env` 配置 `INITIAL_ADMIN_ACCOUNT`、`INITIAL_ADMIN_PASSWORD`、`INITIAL_TEACHER_ACCOUNT`、`INITIAL_TEACHER_PASSWORD`、`INITIAL_STUDENT_ACCOUNT`、`INITIAL_STUDENT_PASSWORD`；可选配置 `ADMIN_CONTACT` 作为登录页联系管理员文字。初始化命令只补建缺失的管理员、教师和学生账号；重复执行不会覆盖已有账号的资料、密码或状态，日常启动服务也不会自动建号。
 
-| 账号 | 角色 |
-| --- | --- |
-| `teacher` | 教师 |
-| `student` | 学生 |
-| `student2` | 学生 |
-
-需要额外账号时可执行 `uv run python scripts/create_user.py`。
+账号创建后由管理员面板维护其他账号。登录页只填写登录账号和密码，并提示获取账号或忘记密码联系管理员。
 
 后端启动后：
 
@@ -173,6 +168,10 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 | `UPLOAD_DIR` | 原始文档目录，默认 `data/uploads` |
 | `OCR_DIR` | OCR 临时目录，默认 `data/ocr` |
 | `CORS_ORIGINS` | 允许的前端来源，默认包含 `127.0.0.1:5173` 与 `localhost:5173` |
+| `INITIAL_ADMIN_ACCOUNT` / `INITIAL_ADMIN_PASSWORD` | 显式初始化命令创建首个管理员 |
+| `INITIAL_TEACHER_ACCOUNT` / `INITIAL_TEACHER_PASSWORD` | 显式初始化命令创建首个教师 |
+| `INITIAL_STUDENT_ACCOUNT` / `INITIAL_STUDENT_PASSWORD` | 显式初始化命令创建首个学生 |
+| `ADMIN_CONTACT` | 登录页显示的联系管理员文字，可留空 |
 
 硅基流动与 MinerU 的密钥写在 `backend/app/local_secrets.py`，可参考 `local_secrets.example.py` 创建。该文件已被 `.gitignore` 忽略，禁止提交到仓库。DeepSeek 密钥也可以在个人中心按用户配置，环境变量只作为缺省兜底。
 
@@ -184,11 +183,11 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 登录使用 bcrypt 校验密码，会话 token 存在 Redis，默认有效期 7 天；修改密码或退出登录会销毁对应会话。
 
-平台角色只有教师和学生。题库内部还有创建者、超级管理员、管理员和普通成员；学习空间区分创建者与成员。前端按角色和权限下发按钮，后端在每个接口上再次校验。
+平台角色包括管理员、教师和学生。管理员只进入管理员面板；教师和学生进入各自工作台。知识库与题库统一使用创建者、可编辑成员和只读成员三档权限，学习空间继续区分创建者与成员。前端按角色和权限下发按钮，后端在每个接口上再次校验。
 
 ### 题库与文档
 
-教师和学生都可以创建题库、上传文档、管理成员与转让题库。支持 PDF、DOCX、XLSX、MD、TXT。
+教师可以创建题库并按登录账号管理成员；学生不能创建新题库。创建者、可编辑成员和只读成员分别拥有对应的资料与检索权限。支持 PDF、DOCX、XLSX、MD、TXT。
 
 文档入库流程为解析、扫描件 OCR、切片、写入 FTS5、生成向量并写入 Chroma，状态通过 Redis 进度供前端轮询。扫描件会调用 MinerU 云端 OCR。
 

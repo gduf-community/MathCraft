@@ -4,16 +4,10 @@
  * 登录成功后整页淡出并与主应用淡入衔接。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { login as apiLogin, changePassword } from '../../api/auth'
-import type { AuthRole, AuthUser } from '../../api/auth'
+import { login as apiLogin, changePassword, fetchAuthConfig } from '../../api/auth'
+import type { AuthUser } from '../../api/auth'
 import { useAuth } from '../../store/AuthContext'
 import '../../styles/login.css'
-
-/** 身份切换的文案映射（保持原登录页设计） */
-const ROLE_COPY: Record<AuthRole, { lede: string; cta: string; account: string }> = {
-  student: { lede: '登录后继续练习与错题回顾', cta: '进入学习空间', account: '手机号或邮箱' },
-  teacher: { lede: '登录后继续出题、组卷与发布', cta: '进入教师工作台', account: '工号、手机号或邮箱' },
-}
 
 interface FieldHint {
   text: string
@@ -24,8 +18,6 @@ const EMPTY_HINT: FieldHint = { text: '', on: false }
 
 export default function LoginPage() {
   const { signIn } = useAuth()
-
-  const [role, setRole] = useState<AuthRole>('student')
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -41,10 +33,14 @@ export default function LoginPage() {
   const [pwdConfirm, setPwdConfirm] = useState('')
   const [pwdBusy, setPwdBusy] = useState(false)
   const [pwdStatus, setPwdStatus] = useState<{ text: string; tone?: 'warn' | 'ok' } | null>(null)
+  const [adminContact, setAdminContact] = useState('')
   const cardRef = useRef<HTMLDivElement>(null)
   const dustRef = useRef<HTMLCanvasElement>(null)
 
-  // 登录页标题
+  useEffect(() => {
+    void fetchAuthConfig().then((config) => setAdminContact(config.admin_contact.trim())).catch(() => undefined)
+  }, [])
+
   useEffect(() => {
     const prev = document.title
     document.title = '登录 · MathCraft 智能出题平台'
@@ -236,7 +232,7 @@ export default function LoginPage() {
 
     let ok = true
     if (!account.trim()) {
-      setAccountHint({ text: '请填写账号，手机号或邮箱都可以', on: true })
+      setAccountHint({ text: '请填写账号，请输入登录账号', on: true })
       ok = false
     }
     if (password.length < 6) {
@@ -251,7 +247,7 @@ export default function LoginPage() {
     setLoading(true)
     setStatus({ text: '正在验证账号' })
     try {
-      const authUser: AuthUser = await apiLogin(account, password, role)
+      const authUser: AuthUser = await apiLogin(account, password)
       setStatus({ text: '登录成功，正在进入工作台', tone: 'ok' })
       // 先播整页淡出，再把用户写入全局状态切换到主应用，衔接更丝滑
       setLeaving(true)
@@ -278,7 +274,7 @@ export default function LoginPage() {
     }
     setPwdBusy(true)
     try {
-      await changePassword(pwdAccount.trim(), pwdOld, pwdNew, role)
+      await changePassword(pwdAccount.trim(), pwdOld, pwdNew)
       setPwdStatus({ text: '密码已修改，请使用新密码登录', tone: 'ok' })
       setPwdOld('')
       setPwdNew('')
@@ -325,47 +321,10 @@ export default function LoginPage() {
           <div className="login-card" ref={cardRef} onPointerMove={onCardPointerMove}>
             <div className="login-card__head">
               <h1 id="login-title">欢迎回来</h1>
-              <p className="login-lede">{ROLE_COPY[role].lede}</p>
+              <p className="login-lede">登录后继续使用 MathCraft 智能出题平台</p>
             </div>
 
             <form className="login-form" noValidate onSubmit={(e) => void submit(e)}>
-              <fieldset className="login-seg">
-                <legend>选择身份</legend>
-                <input
-                  type="radio"
-                  id="role-student"
-                  name="role"
-                  value="student"
-                  checked={role === 'student'}
-                  onChange={() => {
-                    setRole('student')
-                    resetField(setAccountHint)
-                    resetField(setPasswordHint)
-                    setStatus(null)
-                  }}
-                />
-                <label htmlFor="role-student" className={role === 'student' ? 'is-active' : ''}>
-                  学生
-                </label>
-                <input
-                  type="radio"
-                  id="role-teacher"
-                  name="role"
-                  value="teacher"
-                  checked={role === 'teacher'}
-                  onChange={() => {
-                    setRole('teacher')
-                    resetField(setAccountHint)
-                    resetField(setPasswordHint)
-                    setStatus(null)
-                  }}
-                />
-                <label htmlFor="role-teacher" className={role === 'teacher' ? 'is-active' : ''}>
-                  老师
-                </label>
-                <span className={`login-seg__thumb ${role === 'teacher' ? 'is-right' : ''}`} aria-hidden="true" />
-              </fieldset>
-
               <div className="login-field">
                 <label className="login-field__label" htmlFor="account">
                   账号
@@ -398,7 +357,7 @@ export default function LoginPage() {
                       resetField(setAccountHint)
                       setStatus(null)
                     }}
-                    placeholder={ROLE_COPY[role].account}
+                    placeholder="登录账号"
                     enterKeyHint="next"
                   />
                 </div>
@@ -491,7 +450,7 @@ export default function LoginPage() {
 
               <button className="login-cta" type="submit" disabled={loading || leaving} data-loading={loading ? 'true' : undefined}>
                 <span className="login-cta__spin" aria-hidden="true" />
-                <span>{ROLE_COPY[role].cta}</span>
+                <span>进入平台</span>
               </button>
 
               <p className="login-status" role="status" aria-live="polite" data-tone={status?.tone}>
@@ -520,7 +479,7 @@ export default function LoginPage() {
               </button>
             </div>
             <div className="space-y-3 px-5 py-4">
-              <p className="text-xs text-ink-3">身份：{role === 'teacher' ? '老师' : '学生'}</p>
+              <p className="text-xs text-ink-3">获取账号或忘记密码，请联系管理员{adminContact ? `（${adminContact}）` : ""}</p>
               <input
                 type="text"
                 value={pwdAccount}

@@ -8,15 +8,19 @@ class BankCreateBody(BaseModel):
 
 class BankUpdateBody(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
-    admin_level: str | None = Field(default=None, pattern="^(normal|super)$")
 
 
 class BankJoinBody(BaseModel):
     code: str = Field(min_length=1, max_length=32)
 
 
+class MemberAddBody(BaseModel):
+    account: str = Field(min_length=1, max_length=64)
+    role: str = Field(default="readonly", pattern="^(editor|readonly)$")
+
+
 class MemberRoleBody(BaseModel):
-    role: str = Field(pattern="^(admin|member)$")
+    role: str = Field(pattern="^(editor|readonly)$")
 
 
 class TransferBody(BaseModel):

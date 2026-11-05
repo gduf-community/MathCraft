@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user, get_token
 from app.errors import AppError
@@ -12,6 +13,11 @@ from app.services import cache
 from app.services.model_settings import user_payload
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+@router.get("/config")
+def public_config():
+    """登录页所需的公开平台配置。"""
+    return {"admin_contact": settings.admin_contact}
 
 
 def _find_user_by_account(db: Session, account: str) -> User | None:

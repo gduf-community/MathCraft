@@ -14,6 +14,7 @@ from app.errors import AppError
 from app.services.rag import tokenizer  # 预热 jieba 词典
 
 from app.api import (
+    admin,
     attempts,
     auth,
     banks,
@@ -49,6 +50,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(admin.router)
 app.include_router(users.router)
 app.include_router(banks.router)
 app.include_router(documents.router)

@@ -56,6 +56,7 @@ def user_payload(user: User) -> dict:
         "id": user.id,
         "account": user.account,
         "role": user.role,
+        "status": user.status,
         "identity": user.identity,
         "display_name": user.display_name,
         "gender": user.gender,

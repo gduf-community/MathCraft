@@ -1,9 +1,8 @@
-/** 题库查看弹窗：浏览信息与成员；上传需管理员，删除文档需超级管理员，文档可下载 */
+/** 题库查看弹窗：浏览信息、成员权限和文档操作。 */
 import { useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import {
   Ban,
-  Crown,
   Download,
   FileUp,
   FolderOpen,
@@ -31,8 +30,7 @@ export default function BankViewModal({
   const [docs, setDocs] = useState(bank.docs)
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
-  const isAdmin = bankApi.isMyAdmin(bank)
-  const isSuper = bankApi.isMySuperAdmin(bank)
+  const roleLabel = bank.myRole === 'creator' ? '创建者' : bank.myRole === 'editor' ? '可编辑' : '只读'
   const canUpload = bank.canUpload
   const { upload, start } = useDocUpload(bank.id, (doc) => setDocs((prev) => [...prev, doc]), showToast)
 
@@ -55,13 +53,7 @@ export default function BankViewModal({
           <div className="flex items-center gap-2">
             <FolderOpen size={18} className="text-primary" />
             <h3 className="text-base font-bold text-ink">查看题库 · {bank.name}</h3>
-            {isAdmin ? (
-              <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
-                <Crown size={10} /> {isSuper ? '超级管理员' : '普通管理员'}
-              </span>
-            ) : (
-              <span className="rounded bg-page px-1.5 py-0.5 text-[10px] text-ink-3">普通成员</span>
-            )}
+            <span className="rounded bg-page px-1.5 py-0.5 text-[10px] font-semibold text-ink-2">{roleLabel}</span>
           </div>
           <button type="button" onClick={onClose} className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink">
             <X size={18} />
@@ -91,17 +83,21 @@ export default function BankViewModal({
             </div>
           </section>
 
-          {/* 管理员权限说明（只读） */}
+          {/* 成员权限说明（只读） */}
           <section className="space-y-2.5">
-            <SectionTitle icon={ShieldCheck}>管理员权限说明</SectionTitle>
+            <SectionTitle icon={ShieldCheck}>成员权限说明</SectionTitle>
             <div className="space-y-2 rounded-xl border border-line p-3">
-              <div className={`flex items-center justify-between gap-3 rounded-lg px-2.5 py-2 ${bank.adminLevel === 'normal' ? 'bg-primary-light/40' : ''}`}>
-                <span className={`text-sm ${bank.adminLevel === 'normal' ? 'font-semibold text-primary' : 'text-ink'}`}>普通管理员</span>
-                <span className="text-xs text-ink-3">可上传和下载文档</span>
+              <div className="flex items-center justify-between gap-3 rounded-lg px-2.5 py-2">
+                <span className="text-sm text-ink">创建者</span>
+                <span className="text-xs text-ink-3">管理成员、维护资料和删除题库</span>
               </div>
-              <div className={`flex items-center justify-between gap-3 rounded-lg px-2.5 py-2 ${bank.adminLevel === 'super' ? 'bg-primary-light/40' : ''}`}>
-                <span className={`text-sm ${bank.adminLevel === 'super' ? 'font-semibold text-primary' : 'text-ink'}`}>超级管理员</span>
-                <span className="text-xs text-ink-3">可编辑文档，包括删除、上传、下载和查看</span>
+              <div className="flex items-center justify-between gap-3 rounded-lg px-2.5 py-2">
+                <span className="text-sm text-ink">可编辑成员</span>
+                <span className="text-xs text-ink-3">查看、下载、检索、出题、上传和删除资料</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg px-2.5 py-2">
+                <span className="text-sm text-ink">只读成员</span>
+                <span className="text-xs text-ink-3">查看、下载、检索和出题</span>
               </div>
             </div>
           </section>
@@ -115,17 +111,9 @@ export default function BankViewModal({
                   <li key={m.id} className="flex items-center gap-2.5 px-3 py-2.5">
                     <Avatar name={m.name} size="sm" />
                     <span className="text-sm text-ink">{m.name}</span>
-                    {/* 创建者以成员角色为准（转让后自动跟随新 owner） */}
-                    {m.isCreator && (
-                      <span className="inline-flex items-center gap-0.5 rounded bg-primary-light px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                        <Crown size={10} /> 创建者
-                      </span>
-                    )}
-                    {!m.isCreator && m.isAdmin && (
-                      <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
-                        {m.adminLevel === 'super' ? '超级管理员' : '普通管理员'}
-                      </span>
-                    )}
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${m.isCreator ? 'bg-primary-light text-primary' : m.role === 'editor' ? 'bg-amber-50 text-amber-600' : 'bg-page text-ink-3'}`}>
+                      {m.isCreator ? '创建者' : m.role === 'editor' ? '可编辑' : '只读'}
+                    </span>
                     {m.isMe && (
                       <span className="rounded bg-page px-1.5 py-0.5 text-[10px] text-ink-3">我</span>
                     )}
@@ -153,10 +141,10 @@ export default function BankViewModal({
                   >
                     <Download size={14} />
                   </button>
-                  {isSuper && (
+                  {bank.canDeleteDoc && (
                     <button
                       type="button"
-                      title="删除文档（超级管理员）"
+                      title="删除文档"
                       onClick={async () => {
                         await bankApi.removeDoc(bank.id, d.id)
                         setDocs((prev) => prev.filter((x) => x.id !== d.id))
@@ -171,7 +159,7 @@ export default function BankViewModal({
               ))}
             </ul>
 
-            {/* 上传区域：管理员可上传 */}
+            {/* 上传区域：可编辑成员可上传 */}
             {canUpload ? (
               <>
                 <div
@@ -222,7 +210,7 @@ export default function BankViewModal({
             ) : (
               <div className="flex items-center gap-2.5 rounded-xl border border-dashed border-line bg-page px-4 py-3.5 text-ink-3">
                 <Lock size={15} className="shrink-0" />
-                <p className="text-xs leading-5">上传文档需要管理员权限，当前你在该题库为普通成员</p>
+                <p className="text-xs leading-5">当前权限为只读，只能查看、下载、检索和出题</p>
               </div>
             )}
           </section>

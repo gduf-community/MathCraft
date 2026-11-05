@@ -152,7 +152,7 @@ def reprocess_document(
 @router.get("/documents/{document_id}/download")
 def download_document(
     document_id: str,
-    access: BankAccess = Depends(require_bank_admin),
+    access: BankAccess = Depends(get_bank_access),
     db: Session = Depends(get_db),
 ):
     doc = _get_document(access.bank.id, document_id, db)
@@ -167,7 +167,7 @@ def download_document(
 @router.delete("/documents/{document_id}", status_code=204)
 def delete_document(
     document_id: str,
-    access: BankAccess = Depends(require_bank_super_admin),
+    access: BankAccess = Depends(require_bank_admin),
     db: Session = Depends(get_db),
 ):
     doc = _get_document(access.bank.id, document_id, db)

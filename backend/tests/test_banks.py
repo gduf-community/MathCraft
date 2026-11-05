@@ -1,4 +1,3 @@
-"""题库与成员权限测试。"""
 from conftest import create_bank, upload_markdown
 
 
@@ -6,181 +5,154 @@ def _me(client, headers):
     return client.get("/api/auth/me", headers=headers).json()["user"]
 
 
-def test_create_and_list_bank(client, teacher):
+def add_member(client, owner_headers, bank_id, account="student", role="readonly"):
+    return client.post(
+        f"/api/banks/{bank_id}/members",
+        json={"account": account, "role": role},
+        headers=owner_headers,
+    )
+
+
+def test_only_teacher_can_create_bank(client, teacher, student):
     bank = create_bank(client, teacher, "高等数学")
-    assert bank["my_role"] == "owner"
+    assert bank["my_role"] == "creator"
     assert bank["can_manage_members"] is True
     assert bank["code"].startswith("TK")
-
-    owned = client.get("/api/banks?scope=owned", headers=teacher).json()
-    assert len(owned) == 1
-    assert owned[0]["id"] == bank["id"]
+    assert client.post("/api/banks", json={"name": "学生题库"}, headers=student).status_code == 403
 
 
-def test_join_bank_and_duplicate(client, teacher, student):
+def test_creator_adds_member_by_login_account(client, teacher, student):
     bank = create_bank(client, teacher)
-    resp = client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
-    assert resp.status_code == 200
-    assert resp.json()["my_role"] == "member"
-    assert resp.json()["can_upload_document"] is False
+    added = add_member(client, teacher, bank["id"])
+    assert added.status_code == 201, added.text
+    assert added.json()["role"] == "readonly"
+    assert added.json()["user"]["account"] == "student"
 
-    dup = client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
-    assert dup.status_code == 409
-    assert dup.json()["detail"]["code"] == "ALREADY_IN_BANK"
+    duplicate = add_member(client, teacher, bank["id"])
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "ALREADY_IN_BANK"
 
-    joined = client.get("/api/banks?scope=joined", headers=student).json()
-    assert len(joined) == 1
-
-
-def test_join_by_unknown_code(client, student):
-    resp = client.post("/api/banks/join", json={"code": "TK00000000"}, headers=student)
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "BANK_CODE_NOT_FOUND"
+    assert client.post("/api/banks/join", json={"code": bank["code"]}, headers=student).status_code == 404
 
 
-def test_non_member_cannot_view_bank(client, teacher, student):
+def test_unknown_account_cannot_be_added(client, teacher):
     bank = create_bank(client, teacher)
-    resp = client.get(f"/api/banks/{bank['id']}", headers=student)
-    assert resp.status_code == 404
+    response = add_member(client, teacher, bank["id"], account="missing")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "USER_NOT_FOUND"
 
 
-def test_owner_can_list_members(client, teacher, student):
+def test_three_member_roles_have_expected_capabilities(client, teacher, student):
     bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
+    assert add_member(client, teacher, bank["id"], role="editor").status_code == 201
 
-    resp = client.get(f"/api/banks/{bank['id']}/members", headers=teacher)
-    assert resp.status_code == 200
-    members = resp.json()
-    assert len(members) == 2
-    assert any(m["is_creator"] for m in members)
-    assert sum(1 for m in members if m["is_me"]) == 1
+    editor = client.get(f"/api/banks/{bank['id']}", headers=student)
+    assert editor.status_code == 200
+    assert editor.json()["my_role"] == "editor"
+    assert editor.json()["can_upload_document"] is True
+    assert editor.json()["can_delete_document"] is True
+    assert editor.json()["can_download_document"] is True
+    assert editor.json()["can_manage_members"] is False
+    assert editor.json()["can_delete_bank"] is False
 
-
-def test_admin_permissions_super_vs_normal(client, teacher, student):
-    bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
     student_id = _me(client, student)["id"]
-
-    # 设为管理员（题库默认 admin_level=super）
     assert client.put(
         f"/api/banks/{bank['id']}/members/{student_id}/role",
-        json={"role": "admin"},
+        json={"role": "readonly"},
         headers=teacher,
     ).status_code == 204
-
-    detail = client.get(f"/api/banks/{bank['id']}", headers=student).json()
-    assert detail["my_role"] == "admin"
-    assert detail["can_upload_document"] is True
-    assert detail["can_delete_document"] is True
-    assert detail["can_manage_members"] is False
-
-    # 题库级别降为 normal 后，管理员不能删文档
-    client.put(f"/api/banks/{bank['id']}", json={"admin_level": "normal"}, headers=teacher)
-    detail = client.get(f"/api/banks/{bank['id']}", headers=student).json()
-    assert detail["can_delete_document"] is False
+    readonly = client.get(f"/api/banks/{bank['id']}", headers=student).json()
+    assert readonly["my_role"] == "readonly"
+    assert readonly["can_upload_document"] is False
+    assert readonly["can_delete_document"] is False
+    assert readonly["can_download_document"] is True
 
 
-def test_document_permissions_for_admin(client, teacher, student):
+def test_editor_can_modify_documents_but_cannot_manage_members(client, teacher, student):
     bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
     student_id = _me(client, student)["id"]
-    client.put(
-        f"/api/banks/{bank['id']}/members/{student_id}/role",
-        json={"role": "admin"},
-        headers=teacher,
-    )
+    assert add_member(client, teacher, bank["id"], role="editor").status_code == 201
 
-    doc = upload_markdown(client, student, bank["id"])
-    assert client.get(f"/api/banks/{bank['id']}/documents/{doc['document_id']}", headers=student).json()["status"] == "ready"
-
-    # admin_level=super 时管理员可删文档
+    document = upload_markdown(client, student, bank["id"])
+    assert client.get(
+        f"/api/banks/{bank['id']}/documents/{document['document_id']}", headers=student
+    ).json()["status"] == "ready"
     assert client.delete(
-        f"/api/banks/{bank['id']}/documents/{doc['document_id']}", headers=student
+        f"/api/banks/{bank['id']}/documents/{document['document_id']}", headers=student
     ).status_code == 204
-
-
-def test_member_cannot_upload_or_delete(client, teacher, student):
-    bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
-
-    resp = client.post(
-        f"/api/banks/{bank['id']}/documents",
-        files={"file": ("x.md", b"# hi", "text/markdown")},
+    assert client.post(
+        f"/api/banks/{bank['id']}/members",
+        json={"account": "teacher", "role": "readonly"},
         headers=student,
-    )
-    assert resp.status_code == 403
-
-    doc = upload_markdown(client, teacher, bank["id"])
-    assert client.delete(
-        f"/api/banks/{bank['id']}/documents/{doc['document_id']}", headers=student
     ).status_code == 403
 
 
-def test_transfer_bank(client, teacher, student):
+def test_readonly_can_read_but_cannot_modify_documents(client, teacher, student):
     bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
-    student_id = _me(client, student)["id"]
+    assert add_member(client, teacher, bank["id"], role="readonly").status_code == 201
+    document = upload_markdown(client, teacher, bank["id"])
 
+    assert client.get(f"/api/banks/{bank['id']}/documents", headers=student).status_code == 200
+    assert client.get(
+        f"/api/banks/{bank['id']}/documents/{document['document_id']}/download", headers=student
+    ).status_code == 200
     assert client.post(
-        f"/api/banks/{bank['id']}/transfer",
-        json={"target_user_id": student_id},
-        headers=teacher,
-    ).status_code == 204
-
-    teacher_detail = client.get(f"/api/banks/{bank['id']}", headers=teacher).json()
-    assert teacher_detail["my_role"] == "admin"
-    assert teacher_detail["can_manage_members"] is False
-
-    student_detail = client.get(f"/api/banks/{bank['id']}", headers=student).json()
-    assert student_detail["my_role"] == "owner"
-    assert student_detail["can_manage_members"] is True
-
-    # 转让后 creator_id 同步转移：双方看到的创建者都是学生
-    assert student_detail["creator"]["id"] == student_id
-    teacher_members = client.get(f"/api/banks/{bank['id']}/members", headers=teacher).json()
-    student_members = client.get(f"/api/banks/{bank['id']}/members", headers=student).json()
-    by_role = {m["user"]["id"]: m for m in teacher_members}
-    assert by_role[student_id]["is_creator"] is True
-    assert by_role[student_id]["admin_level"] == "super"
-    teacher_mid = next(m["user"]["id"] for m in teacher_members if m["is_me"])
-    assert by_role[teacher_mid]["is_creator"] is False
-    assert by_role[teacher_mid]["is_admin"] is True
-    assert by_role[teacher_mid]["admin_level"] == "super"
-    # 学生视角的教师行：不是创建者，只是超级管理员
-    s_by_id = {m["user"]["id"]: m for m in student_members}
-    assert s_by_id[teacher_mid]["is_creator"] is False
-    assert s_by_id[teacher_mid]["admin_level"] == "super"
-
-    # 新 owner 不能退出，原 owner（现 admin）可以退出
-    assert client.post(f"/api/banks/{bank['id']}/quit", headers=student).status_code == 403
-    assert client.post(f"/api/banks/{bank['id']}/quit", headers=teacher).status_code == 204
+        f"/api/banks/{bank['id']}/documents",
+        files={"file": ("x.md", b"# hi", "text/markdown")},
+        headers=student,
+    ).status_code == 403
+    assert client.delete(
+        f"/api/banks/{bank['id']}/documents/{document['document_id']}", headers=student
+    ).status_code == 403
 
 
-def test_remove_member(client, teacher, student):
+def test_non_member_cannot_view_or_use_bank(client, teacher, student):
     bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
-    student_id = _me(client, student)["id"]
-
-    resp = client.delete(f"/api/banks/{bank['id']}/members/{student_id}", headers=teacher)
-    assert resp.status_code == 204
     assert client.get(f"/api/banks/{bank['id']}", headers=student).status_code == 404
+    assert client.get(f"/api/banks/{bank['id']}/documents", headers=student).status_code == 404
+    assert client.post(
+        f"/api/banks/{bank['id']}/search",
+        json={"query": "导数"},
+        headers=student,
+    ).status_code == 404
 
-    members = client.get(f"/api/banks/{bank['id']}/members", headers=teacher).json()
-    assert len(members) == 1
 
-
-def test_owner_and_admin_cannot_be_removed(client, teacher, student):
+def test_removed_member_cannot_restore_membership(client, teacher, student):
     bank = create_bank(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
+    assert add_member(client, teacher, bank["id"]).status_code == 201
+    student_id = _me(client, student)["id"]
+    assert client.delete(f"/api/banks/{bank['id']}/members/{student_id}", headers=teacher).status_code == 204
+    assert client.get(f"/api/banks/{bank['id']}", headers=student).status_code == 404
+    assert client.post("/api/banks/join", json={"code": bank["code"]}, headers=student).status_code == 404
+    assert add_member(client, teacher, bank["id"]).status_code == 201
+
+
+def test_historical_student_resource_remains_accessible(client, db, student):
+    from app.models import Bank, BankMember
+    from app.models.base import new_id
+
+    bank = Bank(
+        id=new_id("bank"),
+        name="历史学生题库",
+        code="TKHISTORY001",
+        creator_id=_me(client, student)["id"],
+        admin_level="super",
+        capacity=200,
+        status="active",
+    )
+    db.add(bank)
+    db.add(BankMember(id=new_id("bm"), bank_id=bank.id, user_id=bank.creator_id, role="creator", status="active"))
+    db.commit()
+
+    response = client.get(f"/api/banks/{bank.id}", headers=student)
+    assert response.status_code == 200
+    assert response.json()["my_role"] == "creator"
+
+
+def test_creator_can_remove_member_but_cannot_remove_self(client, teacher, student):
+    bank = create_bank(client, teacher)
+    assert add_member(client, teacher, bank["id"]).status_code == 201
+    student_id = _me(client, student)["id"]
+    assert client.delete(f"/api/banks/{bank['id']}/members/{student_id}", headers=teacher).status_code == 204
     teacher_id = _me(client, teacher)["id"]
-
-    # 不能移出创建者
     assert client.delete(f"/api/banks/{bank['id']}/members/{teacher_id}", headers=teacher).status_code == 403
-
-
-def test_delete_bank(client, teacher):
-    bank = create_bank(client, teacher)
-    doc = upload_markdown(client, teacher, bank["id"])
-    assert client.delete(f"/api/banks/{bank['id']}", headers=teacher).status_code == 204
-    assert client.get(f"/api/banks/{bank['id']}", headers=teacher).status_code == 404
-    assert client.get("/api/banks?scope=owned", headers=teacher).json() == []
