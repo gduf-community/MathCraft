@@ -1,35 +1,67 @@
 # MathCraft 前端
 
-智能出题平台的教学端 Web 应用：React 19 + TypeScript + Vite + Tailwind CSS。
+React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作台。认证接入真实 HTTP API，不提供演示密码、邮箱密码登录或历史 login 旁路。
 
-## 功能模块
+## 启动与开发安全
 
-| 模块 | 说明 |
-|---|---|
-| 登录 | 演示账号 student / teacher（密码 123123），预留认证接口（`src/api/auth.ts`） |
-| 智能出题 | 对话式出题（左侧 Agent 会话）+ 快速出题参数面板（右侧），后端按题型多 agent 并行生成，进度按完成度加权实时展示 |
-| 题目预览 | 题目卡片、编辑、收藏分组弹窗、组卷发布；学生身份下组卷仅保存记录 |
-| 题库管理 | 我创建的 / 我加入的题库，成员管理，文档上传入库 |
-| 组卷记录 | 试卷多标签查看；学生可作答（选项点选、填空输入、交卷 AI 批卷、复盘解析），教师可编辑并重新发布 |
-| 学习空间 | 教师创建 / 解散空间、发布试卷、停止作答门禁删除、讲解视图（题目导航分区 + 作答分布）；学生凭编号加入、退出、在线作答 |
-| 题目收藏 | 多标签收藏夹，点亮星标弹窗选择分组，实时联动 |
-| 个人中心 | 资料编辑、头像上传（滚轮缩放 + 拖动裁剪） |
-| 设置 | 模型与服务、知识库连接、知识库引擎、文档解析（对接后端设置接口） |
+运行 `npm install` 后执行 `npm run dev`，访问 http://127.0.0.1:5173。Vite 显式只绑定 127.0.0.1；/api 代理至 http://127.0.0.1:8000，后端也必须仅绑定 127.0.0.1。不要加 --host 0.0.0.0，不通过外部共享代理或隧道暴露开发账号接口。
 
-## 快速开始
+开发填充仅在 Vite DEV、浏览器 hostname 为 127.0.0.1 且 config.development_accounts_enabled=true 时显示。按钮通过本机 POST /api/auth/development-account?role（JSON `{}`）获取配置，只填充，不提交登录；仍须手动通过 Turnstile 登录。生产构建不显示按钮，不内置任何账号或密码；后端负责生产不挂载接口并校验来源、Host、代理头与环境。
 
-```bash
-npm install
-npm run dev     # http://localhost:5173，/api 代理到本地后端
-```
+## 认证流程与契约
 
-## 架构约定
+- 注册：邮箱、6 位码、显示名称、密码与确认密码、教师/学生；学工号可空。成功自动进入工作台。
+- 登录：邮箱验证码或学工号密码；发码 action=email_code，密码登录 action=password_login，均执行 Turnstile。学工号保留前导零、区分大小写。
+- 找回密码：purpose=reset_password；错误验证码和网络错误保留两个密码输入，仅成功、离开或重新选择流程时清空。新密码 8–64 字符且 UTF-8 不超过 72 字节。
+- 个人中心：当前密码改密；旧、新邮箱双验证码换绑；当前密码验证学工号添加、修改、移除。普通资料接口不发送邮箱、学工号或身份。
+- config 返回 site_key、csrf_token；认证响应 access_token/token_type/expires_in/user；me 返回 {user}；user-no 与普通资料返回直接 user。
+- register 发送 password、confirm_password；reset 发送 new_password、confirm_password（无 role）；PUT password 发送 old_password、new_password、confirm_password；PUT user-no 发送 user_no（移除为 null）与 current_password。
+- 邮箱换绑创建返回 change_id；两路发码发送 email、purpose、change_id、turnstile_token；提交 change_id、old_challenge_id、old_code、new_challenge_id、new_code。
+- Access token 仅存内存。刷新使用 HttpOnly Cookie，refresh/logout 发送 JSON {}、credentials:include 和 X-CSRF-Token。CSRF 来自 config，不读取或持久化刷新凭据。
+- 单标签刷新单飞，Web Locks 跨标签串行轮换与 config Cookie 更新；BroadcastChannel 只广播退出信号，不广播 token。浏览器不支持安全协调时明确失败，不使用非原子存储锁降级。
+- 401 写请求仅在 ACCESS_TOKEN_EXPIRED 明确表示认证阶段未执行时最多重试一次；SESSION_REVOKED、TOKEN_EXPIRED 清理状态，不盲目重放写操作。启动清理旧 mathcraft-auth/mc_token/mathcraft-token。
 
-- 数据访问收敛到 `src/api/`：`client.ts` 定义接口，`httpAdapter.ts` 走真实后端，`mock/mockAdapter.ts` 提供纯前端演示数据，可一键切换
-- 全局状态在 `src/store/AppContext.tsx`（业务）与 `src/store/AuthContext.tsx`（登录态），页面组件不直接硬编码数据
-- 演示性内容（空间成员、作答分布等）均在 mock 层并标注「演示数据」，接真实后端时只替换适配器实现
-- 题目排序、讲解/作答视图分区共用 `src/lib/order.ts`，保证题号与组卷模块顺序一致
+## 目录与模块
 
-## 设置模块
+| 路径 | 职责 |
+| --- | --- |
+| src/api/session.ts | 内存会话、CSRF、Cookie、刷新协调、统一认证 HTTP |
+| src/api/auth.ts | 严格认证与安全资料契约、密码规则 |
+| src/api/backend.ts | 业务请求和 DTO 映射；共用会话传输 |
+| src/api/settingsHttp.ts、urls.ts | 设置接口及公开服务地址 |
+| src/store/AuthContext.tsx | 会话恢复、登录门禁、退出 |
+| src/store/AppContext.tsx | 业务状态与资料保存 |
+| src/components/auth/ | LoginPage、EmailCodeFields、Turnstile |
+| src/components/tabs/ProfileTab/ | 基本资料、模型配置、SecuritySettings |
+| src/components/settings/ | 模型、知识库、解析配置 |
+| src/components/tabs/ | 出题、预览、题库、组卷记录、空间、收藏 |
+| src/styles/login.css | 既有品牌/背景/玻璃面板及自助认证响应式扩展 |
+| e2e-auth.mjs | 浏览器/HTTP 接缝合成认证回归 |
+| vite.auth-test.config.mjs | 仅回环绑定、envDir:false、不代理真实后端的测试服务器 |
 
-`src/components/settings/` 与 `src/api/{settingsHttp,urls,engineSettings,modelSettings,parsingSettings}.ts` 来自社区版，直连后端设置端点；共享层（AppContext / App / SideNav）已按其依赖接入。
+## 检查与浏览器验证
+
+`npm run typecheck`、`npm run lint`、`npm run build`。构建使用不读取 .env 的 Vite 配置；部署公开地址通过受控构建环境注入，禁止凭据进入 VITE_*。
+
+本地无需真实邮箱、Cloudflare 或模型。浏览器回归在 HTTP 边界拦截所有 /api/，使用合成数据和假 Turnstile；不以组件内部函数替身断言。
+
+1. 将 playwright-core 安装在临时工具目录（不加入项目依赖）：`npm install --prefix "$env:TEMP/mathcraft-auth-browser" playwright-core`。
+2. 执行 `npx vite --config vite.auth-test.config.mjs`，默认 127.0.0.1:5178；可用 AUTH_TEST_URL 指向专用假服务入口。
+3. 设置 AUTH_BROWSER 为已安装 Chromium 的绝对路径；未设置时使用本机 Playwright chromium-1217 路径。执行 `node e2e-auth.mjs`。
+4. 覆盖注册直达、旧存储清理、恢复/双标签轮换、改密退出、错码保留密码、双邮箱换绑、学工号和开发只填充；375px/桌面截图保存在系统临时目录。
+
+该验证不代替后端真实数据库、Cookie 安全属性、Redis 并发或 SMTP/Siteverify 测试。真实后端联调使用专用假服务和临时数据，不连接真实账号、生产数据库或未知 Redis。
+
+Windows 若 esbuild 报系统临时目录 Access denied，可将当前进程 TEMP/TMP 指向本任务专用可写临时目录后重试构建；该目录与 dist、node_modules junction 均不得提交。
+
+
+认证审查回归：在 frontend 目录运行 `node auth-session-regression.mjs`。该脚本通过真实会话模块的公开接口验证认证响应原子提交、跨标签身份切换不重放和旧刷新不清理新登录；仅替换浏览器协调与 HTTP，不访问真实服务。开发账号按钮使用 POST `/api/auth/development-account?role=...`（JSON `{}`），保持精确 Origin 来源校验。原 GET 仅为兼容入口。
+
+
+### 工作台窄屏布局
+
+小于 768px 时，工作台导航改为四列、主内容与快速出题面板纵向排列，顶部账号操作允许换行。页面自然纵向滚动，参数栏展开、折叠和全部操作仍可到达；不使用横向裁切隐藏控件。桌面参数栏宽度及拖拽行为不变。375px 验收应同时检查文档宽度、对话发送、标签切换与参数栏折叠/展开。
+
+PR #8 修复回归：运行 `node auth-session-regression.mjs` 与 `node logout-session-regression.mjs`。前者覆盖真实 XHR 上传的预刷新、显式过期单次重试、撤销不重放、角色／账号变化和旧响应隔离；后者覆盖注销使用原 Bearer（不刷新）、无本地凭据不匿名注销、不广播清除其他账号及旧注销不清除新登录。退出依赖 Origin/CSRF 与当前标签 Authorization，允许 access 过期后安全撤销原 sid。
+
+注销网络失败后，登录页显示失败说明和“重试退出”按钮，并保留仅用于撤销重试的内存凭据；点击按钮会真实重试原 sid，旧退出失败不会覆盖新登录状态；确认后清除，新显式登录成功后才丢弃它；登录网络、解析或映射失败仍保留原退出重试凭证。未确认期间拒绝刷新恢复；页面关闭仍会丢失内存，不保证网络不可达期间已完成服务端撤销。

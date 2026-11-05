@@ -93,12 +93,12 @@ function UrgePanel({ onClose }: { onClose: () => void }) {
 }
 
 export default function TopBar() {
-  const { profile, showToast, urgeUnread, setActiveTab } = useApp()
+  const { profile, urgeUnread, setActiveTab } = useApp()
   const { user, logout } = useAuth()
   const [bellOpen, setBellOpen] = useState(false)
   const [logoutConfirm, setLogoutConfirm] = useState(false)
   return (
-    <header className="z-20 flex h-14 shrink-0 items-center justify-between border-b border-line/80 bg-white px-5">
+    <header className="workspace-topbar z-20 flex h-14 shrink-0 items-center justify-between border-b border-line/80 bg-white px-5">
       <div className="flex items-center gap-2">
         <GraduationCap size={26} strokeWidth={2.2} className="text-primary" />
         <h1 className="text-[20px] font-bold tracking-wide text-ink">MathCraft</h1>
@@ -148,8 +148,7 @@ export default function TopBar() {
           message={`确定退出当前${user?.role === 'student' ? '学生' : '教师'}账号「${profile.name}」吗？`}
           confirmText="确认退出"
           onConfirm={() => {
-            logout()
-            showToast(`已退出${user?.role === 'student' ? '学生' : '教师'}账号`)
+            void logout().catch(() => { window.alert('本地已退出，但服务端退出未确认。请在登录页点击“重试退出”，勿在共享设备继续使用。') })
           }}
           onClose={() => setLogoutConfirm(false)}
         />
