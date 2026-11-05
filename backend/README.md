@@ -21,8 +21,7 @@ backend/
 │       ├── auth_delivery.py # SMTP 与 Turnstile 边界
 │       └── rag/             # 向量、检索、出题及对话编排
 ├── alembic/                 # 数据库版本迁移
-├── scripts/                 # 认证密钥生成、开发初始化与只读迁移审计
-│   └── generate_auth_secrets.py # 标准库脚本，不读写 .env
+├── scripts/                 # 开发初始化与只读迁移审计
 ├── tests/                   # HTTP、事务、迁移与命令测试
 ├── .env.example             # 空凭据配置模板
 ├── pyproject.toml
@@ -44,13 +43,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ### 手工生成认证密钥
 
-从本 `backend/` 目录执行：
-
-```powershell
-python scripts/generate_auth_secrets.py
-```
-
-若在仓库根目录，则执行 `python backend/scripts/generate_auth_secrets.py`。无需 uv 或项目依赖，脚本只用 Python 标准库；不加载应用、连接数据库或读写 `.env`。每次手工运行独立生成两个 `secrets.token_urlsafe(48)` 值，输出 `AUTH_JWT_SECRET`、`AUTH_CODE_SECRET` 两行及保存提示；加 `--help` 仅显示帮助，不生成。将这两行人工粘贴进 `backend/.env` 的同名配置项，已有配置不得整份覆盖；不要把输出重定向到 `.env`，不要提交或记录到共享日志。SMTP 的主机、账号、授权密码、发件人和 TLS 参数须向邮件服务商获取；Turnstile 的 site key、secret key 和站点配置须从 Cloudflare 获取，脚本不能伪造第三方凭据。
+通过部署平台的秘密管理服务或经批准的密码管理器，独立生成 `AUTH_JWT_SECRET` 与 `AUTH_CODE_SECRET`（各至少 32 字节，建议 48 随机字节），使用受控秘密注入配置。仓库不再提供将密钥打印到终端的生成脚本，避免秘密值进入 stdout、CI/共享日志、截图或聊天。已有 `backend/.env` 仅编辑同名项，不整份覆盖、不提交，并限制为部署账号可访问。SMTP 与 Cloudflare Turnstile 凭据须从各自服务商获取，不能用随机值代替。
 
 同一部署所有后端进程与实例保持相同密钥和 issuer/audience，不要每次启动重新生成。轮换 JWT 密钥使旧访问 JWT 验签失败，轮换验证码密钥使旧邮件码校验失败；数据库中刷新会话的摘要、状态与用户认证版本独立管理，不能把换 JWT 密钥视为必然撤销 refresh。需要撤销时使用现有会话撤销流程。详见根 [密钥生成与轮换说明](../README.md#生产认证密钥生成与保存)。
 

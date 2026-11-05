@@ -48,8 +48,7 @@ MathCraft/
 │   │       ├── attempts.py       # 作答、交卷、复盘
 │   │       └── grading.py        # 客观题判分与主观题 AI 批卷
 │   ├── alembic/                  # 数据库迁移
-│   ├── scripts/                  # 认证密钥生成、seed、auth_migration 与冒烟
-│   │   └── generate_auth_secrets.py # 标准库生成认证密钥，手工保存，不读写 .env
+│   ├── scripts/                  # seed、auth_migration 与冒烟
 │   ├── app/api/auth_http.py       # 认证路由共享的 Cookie HTTP 辅助函数
 │   ├── tests/                    # 隔离的认证与业务接口测试
 │   ├── data/                     # 运行时数据，已被 .gitignore 忽略
@@ -165,19 +164,9 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 ### 生产认证密钥生成与保存
 
-在受控终端手工执行一次，两个命令任选其一：
+通过部署平台的秘密管理服务或经批准的密码管理器，分别生成两个独立的高熵随机秘密值，用于 `AUTH_JWT_SECRET` 与 `AUTH_CODE_SECRET`（各至少 32 字节，建议 48 随机字节），通过受控秘密注入配置。仓库不提供将认证密钥打印到 stdout 的生成命令，不要使用终端输出、CI 日志、截图或聊天传递秘密值。
 
-~~~powershell
-# 从仓库根目录执行
-python backend/scripts/generate_auth_secrets.py
-
-# 或先进入 backend，再执行
-python scripts/generate_auth_secrets.py
-~~~
-
-脚本仅依赖 Python 标准库，不需要 uv、安装项目依赖、加载应用或连接数据库；不读取、创建或写入任何 `.env`。每次显式执行分别调用 `secrets.token_urlsafe(48)`，生成两个独立的秘密值（每个来自 48 随机字节），输出 `AUTH_JWT_SECRET=...`、`AUTH_CODE_SECRET=...` 两行及人工保存提示。`python backend/scripts/generate_auth_secrets.py --help` 只显示帮助，不生成密钥。
-
-仅首次初始化且文件不存在时才从模板创建 `backend/.env`；已有文件直接编辑同名配置项。把两行手工粘贴进去，不将整段输出重定向到 `.env`，不整份覆盖已有配置。不要把秘密值放进 Git、CI/共享日志、截图或聊天；脚本输出也应按凭据保护。同一部署的所有后端进程、实例使用同一组密钥并保持 issuer/audience 一致，不在每次启动时重新生成。此脚本只生成应用自己的两项秘密值，SMTP 账号/授权密码及 Cloudflare Turnstile 凭据必须从各自供应商获取，不能用随机字符串伪造。
+仅首次初始化且文件不存在时才从模板创建 `backend/.env`；已有配置只编辑同名项，不整份覆盖、不将命令输出重定向到 `.env`。真实 `.env` 不提交到 Git，仅限部署账号访问。同一部署的所有后端进程、实例使用同一组密钥并保持 issuer/audience 一致，不在每次启动时重新生成。SMTP 账号/授权密码及 Cloudflare Turnstile 凭据必须从各自供应商获取，不能用随机字符串伪造。
 
 轮换 `AUTH_JWT_SECRET` 会使旧签名的访问 JWT 无法验证；轮换 `AUTH_CODE_SECRET` 会使旧邮件验证码无法通过摘要校验。刷新令牌是不透明随机凭据，其摘要及会话状态在数据库中；更换 JWT 密钥本身不必然撤销 refresh 会话，符合条件的会话仍可能刷新得到新 JWT。如需撤销既有会话，应使用现有数据库会话/认证版本撤销流程；改密、重置密码、换绑邮箱撤销全部设备，普通退出撤销当前设备。轮换时协调所有实例更新配置并重启，不混用新旧密钥。
 
@@ -188,7 +177,7 @@ python scripts/generate_auth_secrets.py
 | 配置项 | 当前默认值 | 用途与生产值来源 |
 | --- | --- | --- |
 | `APP_ENV` | `production`（模板为 `development`） | 部署者显式设为 `production`，启用生产约束及安全 Cookie 行为 |
-| `AUTH_JWT_SECRET` | 空 | HS256 访问 JWT 签名密钥；使用上述脚本生成，至少 32 字节 |
+| `AUTH_JWT_SECRET` | 空 | HS256 访问 JWT 签名密钥；通过受控秘密管理工具独立生成，至少 32 字节 |
 | `AUTH_CODE_SECRET` | 空 | 邮箱验证码及限流标识的 HMAC 密钥；独立生成，至少 32 字节，禁止与 JWT 密钥相同 |
 | `AUTH_JWT_ISSUER` | `mathcraft` | JWT 的 iss；由部署约定指定非空发行方，签发与验证须一致 |
 | `AUTH_JWT_AUDIENCE` | `mathcraft-web` | JWT 的 aud；由部署约定指定非空受众，签发与验证须一致 |
