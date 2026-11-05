@@ -1,578 +1,104 @@
-/**
- * 登录页：设计迁移自 html/index.html（视觉保持原样）。
- * 变更点：忘记密码改为占位提示、固定布局禁滚动、品牌区去 logo 并左移、
- * 登录成功后整页淡出并与主应用淡入衔接。
- */
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { login as apiLogin, changePassword } from '../../api/auth'
-import type { AuthRole, AuthUser } from '../../api/auth'
+/** 沿用 MathCraft 背景、品牌、玻璃面板和蓝色控件的自助认证入口。 */
+import { useEffect, useState } from 'react'
+import { ApiError, developmentAccount, getAuthConfig, loginEmail, loginPassword, register, resetPassword, validateNewPassword } from '../../api/auth'
+import type { AuthRole } from '../../api/auth'
 import { useAuth } from '../../store/AuthContext'
+import { EmailCodeFields } from './EmailCodeFields'
+import { Turnstile } from './Turnstile'
 import '../../styles/login.css'
-
-/** 身份切换的文案映射（保持原登录页设计） */
-const ROLE_COPY: Record<AuthRole, { lede: string; cta: string; account: string }> = {
-  student: { lede: '登录后继续练习与错题回顾', cta: '进入学习空间', account: '手机号或邮箱' },
-  teacher: { lede: '登录后继续出题、组卷与发布', cta: '进入教师工作台', account: '工号、手机号或邮箱' },
-}
-
-interface FieldHint {
-  text: string
-  on: boolean
-}
-
-const EMPTY_HINT: FieldHint = { text: '', on: false }
-
+type Mode = 'email' | 'password' | 'register' | 'reset'
+const titles: Record<Mode, string> = { email: '欢迎回来', password: '欢迎回来', register: '创建你的账号', reset: '找回密码' }
 export default function LoginPage() {
-  const { signIn } = useAuth()
-
+  const { signIn, restoreError, logoutError, restore, logout } = useAuth()
+  const [mode, setMode] = useState<Mode>('email')
   const [role, setRole] = useState<AuthRole>('student')
-  const [account, setAccount] = useState('')
+  const [email, setEmail] = useState('')
+  const [userNo, setUserNo] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [leaving, setLeaving] = useState(false)
-  const [accountHint, setAccountHint] = useState<FieldHint>(EMPTY_HINT)
-  const [passwordHint, setPasswordHint] = useState<FieldHint>(EMPTY_HINT)
-  const [status, setStatus] = useState<{ text: string; tone?: 'warn' | 'ok' } | null>(null)
-  const [pwdOpen, setPwdOpen] = useState(false)
-  const [pwdAccount, setPwdAccount] = useState('')
-  const [pwdOld, setPwdOld] = useState('')
-  const [pwdNew, setPwdNew] = useState('')
-  const [pwdConfirm, setPwdConfirm] = useState('')
-  const [pwdBusy, setPwdBusy] = useState(false)
-  const [pwdStatus, setPwdStatus] = useState<{ text: string; tone?: 'warn' | 'ok' } | null>(null)
-  const cardRef = useRef<HTMLDivElement>(null)
-  const dustRef = useRef<HTMLCanvasElement>(null)
-
-  // 登录页标题
+  const [confirm, setConfirm] = useState('')
+  const [challengeId, setChallengeId] = useState('')
+  const [code, setCode] = useState('')
+  const [token, setToken] = useState('')
+  const [epoch, setEpoch] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+  const [retryAt, setRetryAt] = useState(0)
+  const [now, setNow] = useState(Date.now)
+  const [devEnabled, setDevEnabled] = useState(false)
   useEffect(() => {
-    const prev = document.title
-    document.title = '登录 · MathCraft 智能出题平台'
-    return () => {
-      document.title = prev
+    if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
+      void getAuthConfig().then(config => setDevEnabled(config.development_accounts_enabled === true)).catch(() => setDevEnabled(false))
     }
   }, [])
-
-  const resetField = useCallback((setter: React.Dispatch<React.SetStateAction<FieldHint>>) => {
-    setter(EMPTY_HINT)
-  }, [])
-
-  /* ---------- 粒子层：移植自原登录页 initDust ---------- */
-  useEffect(() => {
-    const canvas = dustRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d', { alpha: true })
-    if (!ctx) return
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-    const makeSprite = (rgb: string) => {
-      const size = 48
-      const c = document.createElement('canvas')
-      c.width = size
-      c.height = size
-      const g = c.getContext('2d')!
-      const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-      grad.addColorStop(0, `rgba(${rgb},1)`)
-      grad.addColorStop(0.32, `rgba(${rgb},0.62)`)
-      grad.addColorStop(0.62, `rgba(${rgb},0.16)`)
-      grad.addColorStop(1, `rgba(${rgb},0)`)
-      g.fillStyle = grad
-      g.fillRect(0, 0, size, size)
-      return c
-    }
-    const spriteWhite = makeSprite('255,255,255')
-    const spriteCyan = makeSprite('150,222,255')
-
-    const rand = (min: number, max: number) => min + Math.random() * (max - min)
-    let W = 0
-    let H = 0
-    type Particle = {
-      x: number; y: number; r: number; vx: number; vy: number
-      base: number; phase: number; speed: number; depth: number; cyan: boolean
-    }
-    let parts: Particle[] = []
-    let rafId: number | null = null
-    let running = false
-    const pointer = { x: 0.5, y: 0.5, cx: 0.5, cy: 0.5 }
-
-    const build = () => {
-      let count = Math.round((W * H) / 15000)
-      count = Math.max(34, Math.min(112, count))
-      parts = []
-      for (let i = 0; i < count; i++) {
-        const isCyan = Math.random() < 0.3
-        const bokeh = Math.random() < 0.1
-        parts.push({
-          x: rand(0, W), y: rand(0, H),
-          r: bokeh ? rand(3, 5.4) : rand(0.8, isCyan ? 1.9 : 2.4),
-          vx: rand(-0.1, 0.1) * (bokeh ? 0.5 : 1),
-          vy: rand(-0.2, -0.04) * (bokeh ? 0.4 : 1),
-          base: bokeh ? rand(0.08, 0.16) : rand(0.26, 0.68),
-          phase: rand(0, Math.PI * 2),
-          speed: rand(0.35, 1.05),
-          depth: bokeh ? rand(0.6, 1) : rand(0.25, 1),
-          cyan: isCyan,
-        })
-      }
-    }
-
-    const resize = () => {
-      const DPR = Math.min(window.devicePixelRatio || 1, 2)
-      W = window.innerWidth
-      H = window.innerHeight
-      canvas.width = Math.round(W * DPR)
-      canvas.height = Math.round(H * DPR)
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0)
-      build()
-      if (!running) render(0)
-    }
-
-    function render(t: number) {
-      ctx!.clearRect(0, 0, W, H)
-      pointer.cx += (pointer.x - pointer.cx) * 0.045
-      pointer.cy += (pointer.y - pointer.cy) * 0.045
-      const offX = (pointer.cx - 0.5) * 34
-      const offY = (pointer.cy - 0.5) * 26
-      const time = t * 0.001
-
-      const linkCount = Math.min(parts.length, 38)
-      ctx!.lineWidth = 1
-      for (let i = 0; i < linkCount; i++) {
-        for (let j = i + 1; j < linkCount; j++) {
-          const a = parts[i]
-          const b = parts[j]
-          const dx = a.x - b.x
-          const dy = a.y - b.y
-          const d2 = dx * dx + dy * dy
-          if (d2 > 14400) continue
-          const d = Math.sqrt(d2)
-          ctx!.strokeStyle = `rgba(46,120,200,${((1 - d / 120) * 0.1).toFixed(3)})`
-          ctx!.beginPath()
-          ctx!.moveTo(a.x, a.y)
-          ctx!.lineTo(b.x, b.y)
-          ctx!.stroke()
-        }
-      }
-
-      for (const p of parts) {
-        p.x += p.vx + Math.sin(time * p.speed + p.phase) * 0.14
-        p.y += p.vy
-        if (p.y < -12) {
-          p.y = H + 12
-          p.x = rand(0, W)
-        }
-        if (p.x < -12) p.x = W + 12
-        if (p.x > W + 12) p.x = -12
-        const twinkle = 0.62 + Math.sin(time * p.speed * 1.6 + p.phase) * 0.38
-        ctx!.globalAlpha = p.base * twinkle
-        const px = p.x + offX * p.depth
-        const py = p.y + offY * p.depth
-        const rr = p.r * 4.2
-        ctx!.drawImage(p.cyan ? spriteCyan : spriteWhite, px - rr, py - rr, rr * 2, rr * 2)
-      }
-      ctx!.globalAlpha = 1
-    }
-
-    function loop(t: number) {
-      if (!running) return
-      render(t)
-      rafId = window.requestAnimationFrame(loop)
-    }
-    const start = () => {
-      if (running || reduceMotion) return
-      running = true
-      rafId = window.requestAnimationFrame(loop)
-    }
-    const stop = () => {
-      running = false
-      if (rafId) {
-        window.cancelAnimationFrame(rafId)
-        rafId = null
-      }
-    }
-
-    let rt: number | undefined
-    const onResize = () => {
-      window.clearTimeout(rt)
-      rt = window.setTimeout(resize, 140)
-    }
-    const onPointerMove = (e: PointerEvent) => {
-      pointer.x = e.clientX / Math.max(W, 1)
-      pointer.y = e.clientY / Math.max(H, 1)
-    }
-    const onVisibility = () => {
-      if (document.hidden) stop()
-      else start()
-    }
-
-    window.addEventListener('resize', onResize, { passive: true })
-    window.addEventListener('pointermove', onPointerMove, { passive: true })
-    document.addEventListener('visibilitychange', onVisibility)
-    resize()
-    if (!reduceMotion) start()
-
-    return () => {
-      stop()
-      window.clearTimeout(rt)
-      window.removeEventListener('resize', onResize)
-      window.removeEventListener('pointermove', onPointerMove)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [])
-
-  /* ---------- 面板跟随光斑 ---------- */
-  const onCardPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const card = cardRef.current
-    if (!card) return
-    const r = card.getBoundingClientRect()
-    card.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`)
-    card.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`)
+  useEffect(() => { const id = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(id) }, [])
+  function switchMode(next: Mode) {
+    setMode(next); setPassword(''); setConfirm(''); setCode(''); setChallengeId(''); setStatus(''); setToken(''); setEpoch(n => n + 1)
   }
-
-  /* ---------- 登录提交 ---------- */
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (loading || leaving) return
-
-    let ok = true
-    if (!account.trim()) {
-      setAccountHint({ text: '请填写账号，手机号或邮箱都可以', on: true })
-      ok = false
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy || now < retryAt) return
+    if (mode === 'register' || mode === 'reset') {
+      const error = validateNewPassword(password)
+      if (error || password !== confirm) { setStatus(error ?? '两次密码输入不一致'); return }
     }
-    if (password.length < 6) {
-      setPasswordHint({ text: password ? '密码至少 6 位' : '请填写密码', on: true })
-      ok = false
-    }
-    if (!ok) {
-      setStatus({ text: '还差一步，检查一下标红的输入框', tone: 'warn' })
-      return
-    }
-
-    setLoading(true)
-    setStatus({ text: '正在验证账号' })
+    if (mode !== 'password' && (!challengeId || !/^\d{6}$/.test(code))) { setStatus('请发送并填写 6 位邮箱验证码'); return }
+    if (mode === 'password' && !token) { setStatus('请先完成人机验证'); return }
+    setBusy(true); setStatus('')
     try {
-      const authUser: AuthUser = await apiLogin(account, password, role)
-      setStatus({ text: '登录成功，正在进入工作台', tone: 'ok' })
-      // 先播整页淡出，再把用户写入全局状态切换到主应用，衔接更丝滑
-      setLeaving(true)
-      window.setTimeout(() => signIn(authUser), 340)
-    } catch (err) {
-      setLoading(false)
-      setStatus({ text: err instanceof Error ? err.message : '登录失败，请稍后再试', tone: 'warn' })
-    }
+      const proof = { email: email.trim(), challenge_id: challengeId, code }
+      if (mode === 'reset') {
+        await resetPassword({ ...proof, new_password: password, confirm_password: confirm }); switchMode('email'); setStatus('密码已重置，所有设备已下线，请重新登录'); return
+      }
+      const user = mode === 'register'
+        ? await register({ ...proof, password, confirm_password: confirm, display_name: displayName.trim(), role, user_no: userNo.trim() || null })
+        : mode === 'email' ? await loginEmail({ ...proof, role }) : await loginPassword(userNo.trim(), password, role, token)
+      setPassword(''); setConfirm(''); signIn(user)
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.retryAfter) setRetryAt(Date.now() + reason.retryAfter * 1000)
+      setStatus(reason instanceof Error ? reason.message : '认证失败，请稍后重试')
+      // 错码、网络错误均不清空两个密码；只在成功或离开流程时清理。
+    } finally { setBusy(false); setToken(''); setEpoch(n => n + 1) }
   }
-
-  /* ---------- 未登录修改密码 ---------- */
-  const submitPassword = async () => {
-    if (!pwdAccount.trim() || !pwdOld || !pwdNew) {
-      setPwdStatus({ text: '请填写账号、原密码和新密码', tone: 'warn' })
-      return
-    }
-    if (pwdNew.length < 6) {
-      setPwdStatus({ text: '新密码至少 6 位', tone: 'warn' })
-      return
-    }
-    if (pwdNew !== pwdConfirm) {
-      setPwdStatus({ text: '两次输入的新密码不一致', tone: 'warn' })
-      return
-    }
-    setPwdBusy(true)
+  async function retryLogout() {
+    setBusy(true)
+    try { await logout() }
+    catch (reason: unknown) { setStatus(reason instanceof Error ? reason.message : '服务端退出尚未确认') }
+    finally { setBusy(false) }
+  }
+  async function fillDevelopment(nextRole: AuthRole) {
+    setBusy(true); setStatus('')
     try {
-      await changePassword(pwdAccount.trim(), pwdOld, pwdNew, role)
-      setPwdStatus({ text: '密码已修改，请使用新密码登录', tone: 'ok' })
-      setPwdOld('')
-      setPwdNew('')
-      setPwdConfirm('')
-      setPassword('')
-    } catch (err) {
-      setPwdStatus({ text: err instanceof Error ? err.message : '修改密码失败', tone: 'warn' })
-    } finally {
-      setPwdBusy(false)
-    }
+      const account = await developmentAccount(nextRole)
+      switchMode('password'); setRole(nextRole); setUserNo(account.user_no); setPassword(account.password); setStatus('已填充开发账号，请完成人机验证后手动登录')
+    } catch (reason) { setStatus(reason instanceof Error ? reason.message : '开发账号不可用') } finally { setBusy(false) }
   }
-
-  return (
-    <div className="stage" data-leaving={leaving ? 'true' : undefined}>
-      {/* 背景与质感层 */}
-      <div className="login-bg" aria-hidden="true" />
-      <canvas ref={dustRef} className="login-dust" aria-hidden="true" />
-      <div className="login-grain" aria-hidden="true" />
-      <div className="login-vignette" aria-hidden="true" />
-
-      {/* 品牌：去掉左侧 logo，整体左移 */}
-      <header className="login-brand">
-        <span>
-          <span className="login-brand__name">MathCraft</span>
-          <span className="login-brand__sub">智能出题平台</span>
-        </span>
-      </header>
-
-      {/* 主体 */}
-      <div className="login-layout">
-        <section className="login-intro">
-          <div className="login-intro__rule" aria-hidden="true" />
-          <h2>
-            从知识库
-            <br />
-            到成套题目
-          </h2>
-          <p>上传课件与教材，按章节、难度和题型生成题干与解析，再一键成卷发布。</p>
-        </section>
-
-        <section className="login-panel" aria-labelledby="login-title">
-          <div className="login-halo" aria-hidden="true" />
-
-          <div className="login-card" ref={cardRef} onPointerMove={onCardPointerMove}>
-            <div className="login-card__head">
-              <h1 id="login-title">欢迎回来</h1>
-              <p className="login-lede">{ROLE_COPY[role].lede}</p>
-            </div>
-
-            <form className="login-form" noValidate onSubmit={(e) => void submit(e)}>
-              <fieldset className="login-seg">
-                <legend>选择身份</legend>
-                <input
-                  type="radio"
-                  id="role-student"
-                  name="role"
-                  value="student"
-                  checked={role === 'student'}
-                  onChange={() => {
-                    setRole('student')
-                    resetField(setAccountHint)
-                    resetField(setPasswordHint)
-                    setStatus(null)
-                  }}
-                />
-                <label htmlFor="role-student" className={role === 'student' ? 'is-active' : ''}>
-                  学生
-                </label>
-                <input
-                  type="radio"
-                  id="role-teacher"
-                  name="role"
-                  value="teacher"
-                  checked={role === 'teacher'}
-                  onChange={() => {
-                    setRole('teacher')
-                    resetField(setAccountHint)
-                    resetField(setPasswordHint)
-                    setStatus(null)
-                  }}
-                />
-                <label htmlFor="role-teacher" className={role === 'teacher' ? 'is-active' : ''}>
-                  老师
-                </label>
-                <span className={`login-seg__thumb ${role === 'teacher' ? 'is-right' : ''}`} aria-hidden="true" />
-              </fieldset>
-
-              <div className="login-field">
-                <label className="login-field__label" htmlFor="account">
-                  账号
-                </label>
-                <div className="login-field__box" data-invalid={accountHint.on ? 'true' : undefined}>
-                  <svg
-                    className="login-field__icon"
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <circle cx="12" cy="8" r="3.6" />
-                    <path d="M4.8 19.6a7.2 7.2 0 0 1 14.4 0" />
-                  </svg>
-                  <input
-                    id="account"
-                    name="account"
-                    type="text"
-                    inputMode="email"
-                    autoComplete="username"
-                    value={account}
-                    onChange={(e) => {
-                      setAccount(e.target.value)
-                      resetField(setAccountHint)
-                      setStatus(null)
-                    }}
-                    placeholder={ROLE_COPY[role].account}
-                    enterKeyHint="next"
-                  />
-                </div>
-                <p className="login-hint" aria-live="polite" data-on={accountHint.on ? 'true' : undefined}>
-                  {accountHint.text}
-                </p>
-              </div>
-
-              <div className="login-field">
-                <label className="login-field__label" htmlFor="password">
-                  密码
-                </label>
-                <div className="login-field__box" data-invalid={passwordHint.on ? 'true' : undefined}>
-                  <svg
-                    className="login-field__icon"
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <rect x="4.5" y="10.4" width="15" height="9.6" rx="2.6" />
-                    <path d="M8.2 10.4V7.8a3.8 3.8 0 0 1 7.6 0v2.6" />
-                  </svg>
-                  <input
-                    id="password"
-                    name="password"
-                    type={showPassword ? 'text' : 'password'}
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value)
-                      resetField(setPasswordHint)
-                      setStatus(null)
-                    }}
-                    placeholder="请输入密码"
-                    enterKeyHint="go"
-                  />
-                  <button
-                    className="login-reveal"
-                    type="button"
-                    aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                    aria-pressed={showPassword}
-                    onClick={() => setShowPassword((v) => !v)}
-                  >
-                    {showPassword ? (
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M4 4.6 20 20" />
-                        <path d="M9.7 6a10.8 10.8 0 0 1 2.3-.4c6 0 9.6 6.4 9.6 6.4a17.6 17.6 0 0 1-3.2 3.9" />
-                        <path d="M6.5 7.7A16.4 16.4 0 0 0 2.4 12S6 18.4 12 18.4a10.4 10.4 0 0 0 3.4-.5" />
-                        <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
-                      </svg>
-                    ) : (
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M2.4 12S6 5.6 12 5.6 21.6 12 21.6 12 18 18.4 12 18.4 2.4 12 2.4 12Z" />
-                        <circle cx="12" cy="12" r="2.9" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
-                <p className="login-hint" aria-live="polite" data-on={passwordHint.on ? 'true' : undefined}>
-                  {passwordHint.text}
-                </p>
-              </div>
-
-              <div className="login-assist">
-                <button
-                  type="button"
-                  className="login-link"
-                  onClick={() => {
-                    setPwdAccount(account)
-                    setPwdStatus(null)
-                    setPwdOpen(true)
-                  }}
-                >
-                  修改密码
-                </button>
-                <button
-                  type="button"
-                  className="login-link"
-                  onClick={() => setStatus({ text: '功能暂未开发', tone: 'warn' })}
-                >
-                  忘记密码？
-                </button>
-              </div>
-
-              <button className="login-cta" type="submit" disabled={loading || leaving} data-loading={loading ? 'true' : undefined}>
-                <span className="login-cta__spin" aria-hidden="true" />
-                <span>{ROLE_COPY[role].cta}</span>
-              </button>
-
-              <p className="login-status" role="status" aria-live="polite" data-tone={status?.tone}>
-                {status?.text}
-              </p>
-            </form>
-          </div>
-        </section>
-      </div>
-
-      <footer className="login-legal">
-        <span>© 2026 MathCraft</span>
-        <span className="login-legal__tag">
-          <span className="login-legal__dot" aria-hidden="true" />
-          v0.1.0
-        </span>
-      </footer>
-
-      {pwdOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={() => setPwdOpen(false)}>
-          <div className="w-[420px] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between border-b border-line px-5 py-4">
-              <h3 className="text-base font-bold text-ink">修改密码</h3>
-              <button type="button" onClick={() => setPwdOpen(false)} className="rounded p-1 text-ink-3 hover:bg-page">
-                ×
-              </button>
-            </div>
-            <div className="space-y-3 px-5 py-4">
-              <p className="text-xs text-ink-3">身份：{role === 'teacher' ? '老师' : '学生'}</p>
-              <input
-                type="text"
-                value={pwdAccount}
-                onChange={(e) => setPwdAccount(e.target.value)}
-                placeholder="账号"
-                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
-              />
-              <input
-                type="password"
-                value={pwdOld}
-                onChange={(e) => setPwdOld(e.target.value)}
-                placeholder="原密码"
-                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
-              />
-              <input
-                type="password"
-                value={pwdNew}
-                onChange={(e) => setPwdNew(e.target.value)}
-                placeholder="新密码（至少 6 位）"
-                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
-              />
-              <input
-                type="password"
-                value={pwdConfirm}
-                onChange={(e) => setPwdConfirm(e.target.value)}
-                placeholder="确认新密码"
-                className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none focus:border-primary"
-              />
-              {pwdStatus && (
-                <p className={`text-xs ${pwdStatus.tone === 'ok' ? 'text-emerald-600' : 'text-amber-600'}`}>{pwdStatus.text}</p>
-              )}
-            </div>
-            <div className="flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
-              <button
-                type="button"
-                onClick={() => setPwdOpen(false)}
-                className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={() => void submitPassword()}
-                disabled={pwdBusy}
-                className="rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
-              >
-                {pwdBusy ? '提交中…' : '确认修改'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+  return <div className="stage auth-stage">
+    <div className="login-bg" aria-hidden="true" /><div className="login-grain" aria-hidden="true" /><div className="login-vignette" aria-hidden="true" />
+    <header className="login-brand"><span><span className="login-brand__name">MathCraft</span><span className="login-brand__sub">智能出题平台</span></span></header>
+    <div className="login-layout"><section className="login-intro"><div className="login-intro__rule" aria-hidden="true" /><h2>从知识库<br />到成套题目</h2><p>上传课件与教材，按章节、难度和题型生成题干与解析，再一键成卷发布。</p></section>
+      <section className="login-panel" aria-labelledby="login-title"><div className="login-halo" aria-hidden="true" /><div className="login-card">
+        <div className="login-card__head"><h1 id="login-title">{titles[mode]}</h1><p className="login-lede">{mode === 'reset' ? '使用绑定邮箱验证身份，重置后需重新登录' : '教师与学生的独立工作空间'}</p></div>
+        {logoutError && <div role="alert" className="auth-notice">{logoutError}<button type="button" disabled={busy} onClick={() => void retryLogout()}>重试退出</button></div>}
+        {restoreError && <div role="alert" className="auth-notice">{restoreError}<button type="button" disabled={busy} onClick={restore}>重试恢复</button></div>}
+        <nav className="auth-modes" aria-label="认证方式">{(['email', 'password', 'register'] as const).map(item => <button key={item} type="button" aria-pressed={mode === item} disabled={busy} onClick={() => switchMode(item)}>{item === 'email' ? '邮箱码登录' : item === 'password' ? '学工号登录' : '注册账号'}</button>)}</nav>
+        <form className="login-form auth-form" onSubmit={event => void submit(event)}>
+          <fieldset className="auth-role" disabled={busy}><legend>选择身份</legend>{(['student', 'teacher'] as const).map(item => <label key={item}><input type="radio" name="role" checked={role === item} onChange={() => { setRole(item); setStatus('') }} />{item === 'student' ? '学生' : '教师'}</label>)}</fieldset>
+          <fieldset className="auth-fields" disabled={busy}>
+          {mode !== 'password' && <label className="auth-field"><span>邮箱</span><input type="email" autoComplete="email" required maxLength={128} value={email} onChange={e => { setEmail(e.target.value); setChallengeId(''); setCode('') }} /></label>}
+          {mode === 'register' && <label className="auth-field"><span>显示名称</span><input required maxLength={64} value={displayName} onChange={e => setDisplayName(e.target.value)} /></label>}
+          {(mode === 'register' || mode === 'password') && <label className="auth-field"><span>{mode === 'register' ? '学工号（可选）' : '学工号'}</span><input required={mode === 'password'} autoComplete="username" value={userNo} maxLength={32} onChange={e => setUserNo(e.target.value)} /></label>}
+          {mode !== 'email' && <label className="auth-field"><span>{mode === 'reset' ? '新密码' : '密码'}</span><input type="password" autoComplete={mode === 'password' ? 'current-password' : 'new-password'} required value={password} onChange={e => setPassword(e.target.value)} /></label>}
+          {(mode === 'register' || mode === 'reset') && <><label className="auth-field"><span>{mode === 'reset' ? '确认新密码' : '确认密码'}</span><input type="password" autoComplete="new-password" required value={confirm} onChange={e => setConfirm(e.target.value)} /></label><p className="auth-help">8–64 字符，UTF-8 不超过 72 字节</p></>}
+          {mode !== 'password' && <EmailCodeFields key={mode + ':' + email} email={email} purpose={mode === 'reset' ? 'reset_password' : mode === 'register' ? 'register' : 'login'} onProof={(id, value) => { setChallengeId(id); setCode(value) }} />}
+          {mode === 'password' && <Turnstile key={epoch} action="password_login" onToken={setToken} />}
+          </fieldset>
+          {status && <p className="auth-notice" role="status">{status}</p>}
+          <button className="auth-primary" type="submit" disabled={busy || now < retryAt || (mode === 'password' && !token)}>{busy ? '处理中…' : now < retryAt ? Math.ceil((retryAt - now) / 1000) + ' 秒后重试' : mode === 'register' ? '注册并进入工作台' : mode === 'reset' ? '重置密码' : '登录并进入工作台'}</button>
+          <button className="auth-link" type="button" disabled={busy} onClick={() => switchMode(mode === 'reset' ? 'email' : 'reset')}>{mode === 'reset' ? '返回登录' : '忘记密码？'}</button>
+        </form>
+        {import.meta.env.DEV && devEnabled && window.location.hostname === '127.0.0.1' && <div className="auth-dev">{(['student', 'teacher'] as const).map(item => <button key={item} type="button" disabled={busy} onClick={() => void fillDevelopment(item)}>填充{item === 'student' ? '学生' : '教师'}开发账号</button>)}</div>}
+      </div></section>
     </div>
-  )
+  </div>
 }

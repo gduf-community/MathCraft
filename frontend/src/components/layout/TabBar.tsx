@@ -14,7 +14,7 @@ export default function TabBar() {
   const { activeTab, setActiveTab, clearAll } = useApp()
   const [confirmClear, setConfirmClear] = useState(false)
   return (
-    <div className="flex shrink-0 items-center gap-6 border-b border-line px-6">
+    <div className="workspace-tabs flex shrink-0 items-center gap-6 border-b border-line px-6">
       {TABS.map(({ key, label, icon: Icon }) => {
         const active = activeTab === key
         return (

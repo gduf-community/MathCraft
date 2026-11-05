@@ -1,396 +1,163 @@
-# API reference — MathCraft
+# MathCraft API
 
-Examples use `http://127.0.0.1:8000`, matching the README command
-`python -m MathCraft`. Without a CLI override, `BACKEND_PORT`, or
-saved system settings, the backend defaults to `8000`. Replace the HTTP and
-WebSocket example ports with the actual deployment port. Interactive docs:
-`/docs`. Machine contract: `/openapi.json` (a copy is committed at the repository root).
+本文件由根目录 `openapi.json` 自动生成；运行时契约以 `/openapi.json` 和 `/docs` 为准。
 
-There is **no authentication**: every request is served as the single local
-admin. CORS is permissive by default. Bind to loopback or front it with a
-gateway you control.
+后端入口为 `app.main:app`，示例地址 `http://127.0.0.1:8000`。除健康检查及公开认证流程外，受保护 HTTP 接口使用 `Authorization: Bearer <access_token>`；刷新要求 HttpOnly Cookie、可信 Origin 和 `X-CSRF-Token`；退出另外要求本标签的 `Authorization`，仅撤销该访问令牌绑定的会话，不清除其他会话的共享 Cookie。
 
-Errors use FastAPI's `detail` envelope with a 4xx/5xx status. Most details are safe text; the documented direct-model committed/readback-failed outcome uses a structured code and message.
+认证、资料字段、错误响应以 OpenAPI schema 为准，不再使用历史单用户设置接口。完整认证与迁移约定见 [用户系统实施规格](design/用户系统实施规格.md) 和[认证设计](design/用户系统功能规格.md)。
 
-## Health
+## attempts
 
-| Method | Path | Summary |
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/attempts/{attempt_id}/review` | Review Attempt |
+| `POST` | `/api/attempts/{attempt_id}/submit` | Submit Attempt |
+| `GET` | `/api/papers/{paper_id}/attempt` | Get Attempt |
+| `POST` | `/api/papers/{paper_id}/attempts` | Start Attempt |
+
+## auth
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/auth/config` | Auth Config |
+| `POST` | `/api/auth/email-code` | Email Code |
+| `POST` | `/api/auth/login/email` | Login Email |
+| `POST` | `/api/auth/login/password` | Login Password |
+| `POST` | `/api/auth/logout` | Logout |
+| `GET` | `/api/auth/me` | Me |
+| `PUT` | `/api/auth/password` | Change Password |
+| `POST` | `/api/auth/password/reset` | Reset Password |
+| `POST` | `/api/auth/refresh` | Refresh |
+| `POST` | `/api/auth/register` | Register |
+
+## banks
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/banks` | List Banks |
+| `POST` | `/api/banks` | Create Bank |
+| `POST` | `/api/banks/join` | Join Bank By Code |
+| `DELETE` | `/api/banks/{bank_id}` | Delete Bank |
+| `GET` | `/api/banks/{bank_id}` | Get Bank |
+| `PUT` | `/api/banks/{bank_id}` | Update Bank |
+| `GET` | `/api/banks/{bank_id}/members` | List Members |
+| `DELETE` | `/api/banks/{bank_id}/members/{member_id}` | Remove Member |
+| `PUT` | `/api/banks/{bank_id}/members/{member_id}/role` | Set Member Role |
+| `POST` | `/api/banks/{bank_id}/quit` | Quit Bank |
+| `POST` | `/api/banks/{bank_id}/transfer` | Transfer Bank |
+
+## documents
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/banks/{bank_id}/documents` | List Documents |
+| `POST` | `/api/banks/{bank_id}/documents` | Upload Document |
+| `DELETE` | `/api/banks/{bank_id}/documents/{document_id}` | Delete Document |
+| `GET` | `/api/banks/{bank_id}/documents/{document_id}` | Get Document Status |
+| `GET` | `/api/banks/{bank_id}/documents/{document_id}/download` | Download Document |
+| `POST` | `/api/banks/{bank_id}/documents/{document_id}/reprocess` | Reprocess Document |
+| `POST` | `/api/banks/{bank_id}/search` | Search Bank |
+
+## chat
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/chat/sessions` | Create Session |
+| `DELETE` | `/api/chat/sessions/{session_id}` | Delete Session |
+| `GET` | `/api/chat/sessions/{session_id}` | Get Session |
+| `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
+
+## favorites
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/favorite-groups` | List Groups |
+| `POST` | `/api/favorite-groups` | Create Group |
+| `DELETE` | `/api/favorite-groups/{group_id}` | Delete Group |
+| `PUT` | `/api/favorite-groups/{group_id}` | Rename Group |
+| `GET` | `/api/favorites` | List Favorites |
+| `POST` | `/api/favorites` | Add Favorite |
+| `DELETE` | `/api/favorites/{question_id}` | Remove Favorite |
+| `PUT` | `/api/favorites/{question_id}` | Move Favorite |
+
+## generate
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/generate` | Generate Sync |
+| `GET` | `/api/generate/batches/latest` | Latest Batch |
+| `GET` | `/api/generate/progress/{task_id}` | Get Progress |
+| `POST` | `/api/generate/start` | Start Generation |
+
+## health
+
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health |
-| `GET` | `/healthz` | Healthz |
 
-## Knowledge bases
+## papers
 
-| Method | Path | Summary |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/knowledge-bases` | List Knowledge Bases |
-| `POST` | `/api/knowledge-bases` | Create Knowledge Base |
-| `GET` | `/api/knowledge-bases/configs` | Get All Kb Configs |
-| `POST` | `/api/knowledge-bases/configs/sync` | Sync Configs From Metadata |
-| `POST` | `/api/knowledge-bases/connect-folder` | Connect Linked Folder Route |
-| `POST` | `/api/knowledge-bases/connect-ima` | Connect Ima Route |
-| `POST` | `/api/knowledge-bases/connect-kiwix` | Connect Kiwix Route |
-| `POST` | `/api/knowledge-bases/connect-lightrag-server` | Connect Lightrag Server Route |
-| `POST` | `/api/knowledge-bases/connect-marginnote4` | Connect Marginnote4 |
-| `POST` | `/api/knowledge-bases/connect-obsidian` | Connect Obsidian Vault |
-| `POST` | `/api/knowledge-bases/connect-weknora` | Connect Weknora Route |
-| `GET` | `/api/knowledge-bases/default` | Get Default Kb |
-| `PUT` | `/api/knowledge-bases/default/{kb_name}` | Set Default Kb |
-| `POST` | `/api/knowledge-bases/delete` | Delete Knowledge Base By Name |
-| `GET` | `/api/knowledge-bases/embedding-usage` | Get Embedding Usage |
-| `GET` | `/api/knowledge-bases/health` | Health Check |
-| `GET` | `/api/knowledge-bases/kiwix-articles` | Search Kiwix Articles |
-| `GET` | `/api/knowledge-bases/kiwix-catalog` | List Kiwix Catalog |
-| `POST` | `/api/knowledge-bases/list-ima` | List Ima Route |
-| `POST` | `/api/knowledge-bases/probe-folder` | Probe Linked Folder Route |
-| `POST` | `/api/knowledge-bases/probe-ima` | Probe Ima Route |
-| `POST` | `/api/knowledge-bases/probe-kiwix` | Probe Kiwix Route |
-| `POST` | `/api/knowledge-bases/probe-lightrag-server` | Probe Lightrag Server Route |
-| `POST` | `/api/knowledge-bases/probe-weknora` | Probe Weknora Route |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/active-model` | Set Rag Active Model |
-| `GET` | `/api/knowledge-bases/rag-pipelines/graphrag/config` | Get Graphrag Pipeline Config |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/graphrag/config` | Update Graphrag Pipeline Config |
-| `POST` | `/api/knowledge-bases/rag-pipelines/graphrag/model-compatibility` | Test Graphrag Model Compatibility |
-| `GET` | `/api/knowledge-bases/rag-pipelines/ima/config` | Get Ima Pipeline Config |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/ima/config` | Update Ima Pipeline Config |
-| `GET` | `/api/knowledge-bases/rag-pipelines/lightrag-server/config` | Get Lightrag Server Pipeline Config |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/lightrag-server/config` | Update Lightrag Server Pipeline Config |
-| `GET` | `/api/knowledge-bases/rag-pipelines/lightrag/config` | Get Lightrag Pipeline Config |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/lightrag/config` | Update Lightrag Pipeline Config |
-| `GET` | `/api/knowledge-bases/rag-pipelines/lightrag/model-options` | Get Lightrag Model Options |
-| `GET` | `/api/knowledge-bases/rag-pipelines/llamaindex/config` | Get Llamaindex Pipeline Config |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/llamaindex/config` | Update Llamaindex Pipeline Config |
-| `GET` | `/api/knowledge-bases/rag-pipelines/model-options` | Get Rag Model Options |
-| `GET` | `/api/knowledge-bases/rag-pipelines/pageindex/config` | Get Pageindex Pipeline Config |
-| `PUT` | `/api/knowledge-bases/rag-pipelines/pageindex/config` | Update Pageindex Pipeline Config |
-| `GET` | `/api/knowledge-bases/rag-pipelines/{provider}/preflight` | Get Rag Pipeline Preflight |
-| `GET` | `/api/knowledge-bases/rag-providers` | Get Rag Providers |
-| `PUT` | `/api/knowledge-bases/rag-providers/{provider}/mode` | Set Rag Provider Mode |
-| `GET` | `/api/knowledge-bases/supported-file-types` | Get Supported File Types |
-| `GET` | `/api/knowledge-bases/tasks/{task_id}/stream` | Stream Task Logs |
-| `DELETE` | `/api/knowledge-bases/{kb_name}` | Delete Knowledge Base |
-| `GET` | `/api/knowledge-bases/{kb_name}` | Get Knowledge Base Details |
-| `GET` | `/api/knowledge-bases/{kb_name}/config` | Get Kb Config |
-| `PUT` | `/api/knowledge-bases/{kb_name}/config` | Update Kb Config |
-| `GET` | `/api/knowledge-bases/{kb_name}/file-preview-text/{filename}` | Serve Kb Raw File Text Preview |
-| `GET` | `/api/knowledge-bases/{kb_name}/files` | List Kb Raw Files |
-| `POST` | `/api/knowledge-bases/{kb_name}/files/move` | Move Kb File |
-| `DELETE` | `/api/knowledge-bases/{kb_name}/files/{filename}` | Delete Kb File |
-| `GET` | `/api/knowledge-bases/{kb_name}/files/{filename}` | Serve Kb Raw File |
-| `POST` | `/api/knowledge-bases/{kb_name}/folders` | Create Kb Folder |
-| `POST` | `/api/knowledge-bases/{kb_name}/github-source` | Add Github Source |
-| `DELETE` | `/api/knowledge-bases/{kb_name}/github-source/{source_id}` | Remove Github Source |
-| `GET` | `/api/knowledge-bases/{kb_name}/github-sources` | Get Github Sources |
-| `PUT` | `/api/knowledge-bases/{kb_name}/indexing-policy` | Update Pending Indexing Policy |
-| `GET` | `/api/knowledge-bases/{kb_name}/indexing-readiness` | Get Indexing Readiness |
-| `GET` | `/api/knowledge-bases/{kb_name}/indexing-run` | Get Indexing Run |
-| `POST` | `/api/knowledge-bases/{kb_name}/indexing-run/{task_id}/cancel` | Cancel Indexing Run |
-| `POST` | `/api/knowledge-bases/{kb_name}/link-folder` | Link Folder |
-| `GET` | `/api/knowledge-bases/{kb_name}/linked-folders` | Get Linked Folders |
-| `DELETE` | `/api/knowledge-bases/{kb_name}/linked-folders/{folder_id}` | Unlink Folder |
-| `GET` | `/api/knowledge-bases/{kb_name}/progress` | Get Progress |
-| `POST` | `/api/knowledge-bases/{kb_name}/progress/clear` | Clear Progress |
-| `POST` | `/api/knowledge-bases/{kb_name}/query` | Query Knowledge Base |
-| `GET` | `/api/knowledge-bases/{kb_name}/query-options` | Get Query Options |
-| `POST` | `/api/knowledge-bases/{kb_name}/reindex` | Reindex Knowledge Base |
-| `GET` | `/api/knowledge-bases/{kb_name}/reindex-config` | Get Reindex Config |
-| `POST` | `/api/knowledge-bases/{kb_name}/retry` | Retry Knowledge Base |
-| `GET` | `/api/knowledge-bases/{kb_name}/source-page` | Kb Source Page |
-| `POST` | `/api/knowledge-bases/{kb_name}/sync-folder/{folder_id}` | Sync Folder |
-| `POST` | `/api/knowledge-bases/{kb_name}/sync-github` | Sync Github Sources |
-| `POST` | `/api/knowledge-bases/{kb_name}/sync-web` | Sync Web Sources |
-| `POST` | `/api/knowledge-bases/{kb_name}/upload` | Upload Files |
-| `GET` | `/api/knowledge-bases/{kb_name}/visual-assets/{asset_id}` | Serve Kb Visual Asset |
-| `GET` | `/api/knowledge-bases/{kb_name}/visual-coverage` | Kb Visual Coverage |
-| `POST` | `/api/knowledge-bases/{kb_name}/web-source` | Add Web Source |
-| `GET` | `/api/knowledge-bases/{kb_name}/web-source-sync` | Get Web Source Sync Jobs |
-| `DELETE` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}` | Remove Web Source |
-| `POST` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/cancel` | Cancel Web Source Sync |
-| `GET` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/pairings` | Get Web Source Pairings |
-| `POST` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/retry` | Retry Web Source Sync |
-| `PUT` | `/api/knowledge-bases/{kb_name}/web-source/{source_id}/schedule` | Update Web Source Schedule |
-| `GET` | `/api/knowledge-bases/{kb_name}/web-sources` | Get Web Sources |
+| `GET` | `/api/papers` | List Papers |
+| `POST` | `/api/papers` | Create Paper |
+| `POST` | `/api/papers/batch-delete` | Batch Delete |
+| `DELETE` | `/api/papers/{paper_id}` | Delete Paper |
+| `GET` | `/api/papers/{paper_id}` | Get Paper |
+| `PUT` | `/api/papers/{paper_id}` | Update Paper |
+| `DELETE` | `/api/papers/{paper_id}/publications/{space_id}` | Remove Publication |
+| `POST` | `/api/papers/{paper_id}/publications/{space_id}/resume` | Resume Publication |
+| `POST` | `/api/papers/{paper_id}/publications/{space_id}/stop` | Stop Publication |
+| `POST` | `/api/papers/{paper_id}/publications/{space_id}/urge` | Urge Paper |
+| `POST` | `/api/papers/{paper_id}/publish` | Publish Paper |
+| `POST` | `/api/papers/{paper_id}/questions/remove` | Remove Questions |
+| `GET` | `/api/papers/{paper_id}/statistics` | Get Statistics |
 
-## Question generation
+## questions
 
-| Method | Path | Summary |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/generate` | Generate |
+| `GET` | `/api/questions` | List Questions |
+| `POST` | `/api/questions/batch-delete` | Batch Delete |
+| `DELETE` | `/api/questions/{question_id}` | Delete Question |
+| `PUT` | `/api/questions/{question_id}` | Update Question |
 
-## Question chat
+## spaces
 
-| Method | Path | Summary |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/chat` | Chat |
+| `GET` | `/api/spaces` | List Spaces |
+| `POST` | `/api/spaces` | Create Space |
+| `POST` | `/api/spaces/join` | Join Space |
+| `DELETE` | `/api/spaces/{space_id}` | Dissolve Space |
+| `GET` | `/api/spaces/{space_id}` | Get Space |
+| `PUT` | `/api/spaces/{space_id}` | Update Space |
+| `POST` | `/api/spaces/{space_id}/leave` | Leave Space |
+| `GET` | `/api/spaces/{space_id}/members` | List Members |
+| `DELETE` | `/api/spaces/{space_id}/members/{user_id}` | Remove Member |
+| `GET` | `/api/spaces/{space_id}/papers` | List Space Papers |
 
-## Settings (model catalogue, providers, parsing)
+## urges
 
-| Method | Path | Summary |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/settings` | Get Settings |
-| `POST` | `/api/settings/apply` | Apply Catalog |
-| `POST` | `/api/settings/apply/provider` | Apply Provider Edit |
-| `POST` | `/api/settings/apply/registry` | Apply Registry Edit |
-| `POST` | `/api/settings/apply/service` | Apply Catalog Service |
-| `GET` | `/api/settings/catalog` | Get Catalog |
-| `PUT` | `/api/settings/catalog` | Update Catalog |
-| `GET` | `/api/settings/chat-attachments` | Get Chat Attachment Settings |
-| `PUT` | `/api/settings/chat-attachments` | Update Chat Attachment Settings |
-| `PUT` | `/api/settings/chat-response-timeout` | Update Chat Response Timeout |
-| `GET` | `/api/settings/chat-starters` | Get Chat Starter Settings |
-| `PUT` | `/api/settings/chat-starters` | Update Chat Starter Settings |
-| `POST` | `/api/settings/direct-model` | Save Direct Model |
-| `POST` | `/api/settings/direct-model/default` | Default Direct Model |
-| `POST` | `/api/settings/direct-model/delete` | Remove Direct Model |
-| `GET` | `/api/settings/direct-model/draft` | Get Direct Model Draft |
-| `POST` | `/api/settings/direct-model/task-mode` | Change Direct Task Mode |
-| `GET` | `/api/settings/document-parsing` | Get Document Parsing Settings |
-| `PUT` | `/api/settings/document-parsing` | Update Document Parsing Settings |
-| `POST` | `/api/settings/document-parsing/docling/test` | Test Docling Remote Connection |
-| `POST` | `/api/settings/document-parsing/install` | Start Document Parsing Install |
-| `POST` | `/api/settings/document-parsing/job/cancel` | Cancel Document Parsing Job |
-| `GET` | `/api/settings/document-parsing/job/status` | Document Parsing Job Status |
-| `POST` | `/api/settings/document-parsing/models/download` | Start Document Parsing Model Download |
-| `POST` | `/api/settings/document-parsing/test` | Test Document Parsing |
-| `POST` | `/api/settings/document-parsing/tika/test` | Test Tika Remote Connection |
-| `DELETE` | `/api/settings/draft` | Discard Settings Draft |
-| `GET` | `/api/settings/draft` | Get Settings Draft |
-| `PUT` | `/api/settings/draft` | Update Settings Draft |
-| `POST` | `/api/settings/fetch-models` | Fetch Models From Provider |
-| `PUT` | `/api/settings/language` | Update Language |
-| `GET` | `/api/settings/llm-options` | Get Llm Options |
-| `GET` | `/api/settings/mineru` | Get Mineru Settings |
-| `PUT` | `/api/settings/mineru` | Update Mineru Settings |
-| `POST` | `/api/settings/mineru/models/download` | Start Mineru Models Download |
-| `POST` | `/api/settings/mineru/models/download/cancel` | Cancel Mineru Models Download |
-| `GET` | `/api/settings/mineru/models/download/status` | Mineru Models Download Status |
-| `POST` | `/api/settings/mineru/test` | Test Mineru Connection |
-| `POST` | `/api/settings/model-capabilities` | Resolve Model Capabilities |
-| `GET` | `/api/settings/network` | Get Network Settings |
-| `PUT` | `/api/settings/network` | Update Network Settings |
-| `GET` | `/api/settings/presets` | Get Settings Presets |
-| `POST` | `/api/settings/presets/{preset_id}/draft` | Stage Settings Preset |
-| `GET` | `/api/settings/profile` | Get Settings Profile |
-| `POST` | `/api/settings/profile/diff` | Diff Settings Profile |
-| `POST` | `/api/settings/providers/codebuddy/auth/cancel` | Cancel Codebuddy Auth |
-| `POST` | `/api/settings/providers/codebuddy/auth/logout` | Logout Codebuddy Auth |
-| `POST` | `/api/settings/providers/codebuddy/auth/start` | Start Codebuddy Auth |
-| `GET` | `/api/settings/providers/codebuddy/auth/status` | Get Codebuddy Auth Status |
-| `POST` | `/api/settings/providers/openai-codex/models/reasoning-effort` | Update Openai Codex Reasoning Effort |
-| `POST` | `/api/settings/providers/openai-codex/models/refresh` | Refresh Openai Codex Models |
-| `POST` | `/api/settings/providers/openai-codex/oauth/cancel` | Cancel Openai Codex Oauth |
-| `POST` | `/api/settings/providers/openai-codex/oauth/complete` | Complete Openai Codex Oauth |
-| `POST` | `/api/settings/providers/openai-codex/oauth/logout` | Logout Openai Codex Oauth |
-| `POST` | `/api/settings/providers/openai-codex/oauth/start` | Start Openai Codex Oauth |
-| `GET` | `/api/settings/providers/openai-codex/oauth/status` | Get Openai Codex Oauth Status |
-| `GET` | `/api/settings/readiness` | Get Settings Readiness |
-| `POST` | `/api/settings/reset` | Reset Settings |
-| `GET` | `/api/settings/sidebar` | Get Sidebar Settings |
-| `PUT` | `/api/settings/sidebar/description` | Update Sidebar Description |
-| `PUT` | `/api/settings/sidebar/nav-order` | Update Sidebar Nav Order |
-| `POST` | `/api/settings/test-provider` | Test Provider Connection |
-| `POST` | `/api/settings/tests/{service}/start` | Start Service Test |
-| `POST` | `/api/settings/tests/{service}/{run_id}/cancel` | Cancel Service Test |
-| `GET` | `/api/settings/tests/{service}/{run_id}/events` | Stream Service Test Events |
-| `PUT` | `/api/settings/theme` | Update Theme |
-| `GET` | `/api/settings/themes` | Get Themes |
-| `POST` | `/api/settings/tour/complete` | Complete Tour |
-| `POST` | `/api/settings/tour/reopen` | Reopen Tour |
-| `GET` | `/api/settings/tour/status` | Tour Status |
-| `GET` | `/api/settings/ui` | Get Ui Settings |
-| `PUT` | `/api/settings/ui` | Update Ui Settings |
+| `GET` | `/api/urges` | My Urges |
+| `POST` | `/api/urges/clear` | Clear Urges |
+| `DELETE` | `/api/urges/{urge_id}` | Delete Urge |
+| `POST` | `/api/urges/{urge_id}/read` | Read Urge |
 
-## System
+## users
 
-| Method | Path | Summary |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/system/status` | Get System Status |
-| `POST` | `/api/system/test/embeddings` | Test Embeddings Connection |
-| `POST` | `/api/system/test/llm` | Test Llm Connection |
-| `POST` | `/api/system/test/search` | Test Search Connection |
+| `PUT` | `/api/users/me` | Update Profile |
+| `POST` | `/api/users/me/avatar` | Upload Avatar |
+| `PUT` | `/api/users/me/email` | Commit Email Change |
+| `POST` | `/api/users/me/email-change` | Start Email Change |
+| `GET` | `/api/users/me/model-settings` | Read Model Settings |
+| `PUT` | `/api/users/me/model-settings` | Save Model Settings |
+| `POST` | `/api/users/me/model-settings/test-deepseek` | Test Deepseek |
+| `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
+| `PUT` | `/api/users/me/user-no` | Change User No |
 
-## Identity
-
-| Method | Path | Summary |
-| --- | --- | --- |
-| `GET` | `/api/auth/me` | Auth Me |
-| `GET` | `/api/auth/status` | Auth Status |
-
-## Teacher profile and avatar
-
-| Method | Path | Summary |
-| --- | --- | --- |
-| `GET` | `/api/user-profile` | Get Profile |
-| `PUT` | `/api/user-profile` | Put Profile |
-| `GET` | `/api/user-profile/avatar` | Get Avatar |
-| `POST` | `/api/user-profile/avatar` | Upload Avatar |
-
-## Question generation contract
-
-### `POST /api/generate`
-
-The parameterized endpoint accepts `kb_id`, `doc_id`, `types` (each item has a
-question `type` and a `count` from 1 to 20), `difficulty`, `source_mode`,
-optional `scope`, and optional `existing_stems`. It returns a JSON array of
-`Question` objects. `existing_stems` is the caller's current question bank;
-the service uses it for prompt-level and normalized-stem deduplication.
-
-### `POST /api/chat`
-
-The chat endpoint accepts `kb_id`, `doc_id`, `message`, `history`,
-`slot_state`, and `existing_stems`, and returns:
-
-```json
-{
-  "reply": "请补充每种题型的数量。",
-  "slot_state": {},
-  "questions": [],
-  "done": false
-}
-```
-
-The client must send the returned `slot_state` back on the next turn. The
-state accumulates explicit requirements across turns; missing question type,
-per-type count, scope, source mode, or difficulty keeps `done` false and does
-not start generation. Once all required slots are present, the response
-contains the newly generated `questions` and sets `done` to true. The
-`existing_stems` list is also sent on each turn so generated questions can be
-deduplicated against questions already shown by the parameterized flow.
-
-This supports the "set parameters first, then continue in chat" flow: the
-parameterized call supplies the initial question set, and a later chat call
-uses the same `kb_id`/`doc_id` plus the current `slot_state` and
-`existing_stems` to request additional questions. The server does not infer
-or persist client-side state between requests.
-
-## Teacher profile contract
-
-- `GET /api/user-profile` reads the single local teacher's profile.
-- `PUT /api/user-profile` accepts only `nickname`, `teaching_stage` and `grade`; identity remains read-only. Stage values are empty, `primary`, `junior`, or `senior`; grade is an empty string or a matching number string (1–6, 7–9, 10–12 respectively).
-- `POST /api/user-profile/avatar` accepts a multipart `file` and persists the avatar independently. Valid PNG, JPEG or WebP images up to 5 MiB are accepted; each dimension is at most 4096 pixels; animated, SVG and invalid image bodies are rejected. Images are re-encoded as PNG, and the returned avatar URL includes a content hash to refresh the view.
-- `GET /api/user-profile/avatar` serves the stored image; it returns 404 before the first upload. Profile reads return `avatar_url` or null.
-- The UI previews selected images locally and uploads only after the user confirms Save Profile and the profile PUT succeeds. Profile and avatar writes are separate requests; a partial failure is reported separately and is not rolled back as one transaction.
-- Personal data never enters the model catalog or draft. `/api/settings/profile` remains a configuration export and is not the teacher profile API.
-
-## Direct model configuration contract
-
-- Language (`llm`), embedding (`embedding`) and independent task (`task`) configurations keep stable `profile_id` / model `id` references. Each model has a `direct_config` object containing its own provider `binding`, `base_url`, credentials and applicable connection parameters. The legacy profile container is an internal compatibility detail.
-- `POST /api/settings/direct-model` accepts `{service, profile_id, model, make_default?, restore_draft?, draft_updated_at?}`. It merges only this model into the latest live catalog within one locked atomic write; it never promotes a saved settings draft. The first model in a category becomes its default; adding another keeps the existing default. Saving an independent task configuration preserves the task mode.
-- `POST /api/settings/direct-model/default` and `/api/settings/direct-model/delete` accept `{service, profile_id, model_id}`. Default selection is separate from selecting a model for editing. `POST /api/settings/direct-model/task-mode` accepts `{mode: "inherit" | "profiles"}` and preserves independent configurations.
-- `GET /api/settings/direct-model/draft` returns a masked migrated preview of the saved draft, preserving its original `updated_at` revision and file. Explicit restoration uses `restore_draft: true` with `draft_updated_at` and the exact service/profile/model IDs; only this item is restored, and a changed draft revision is rejected. Ordinary saves never consult draft credentials.
-- These operations return `{catalog}` with masked credentials. If the write completed but server-side readback failed, HTTP 503 includes `detail: {code: "model_write_committed_readback_failed", message}`; runtime caches are invalidated and clients must display a pending-verification state, retain local edits, and re-read rather than report a rejected write. Other storage failures use a safe string detail. Configuration names are trimmed, nonempty and globally unique across the three categories, using case-sensitive comparison. Model identifiers may repeat. Masks retain only the same model's saved credentials; an explicit empty value clears them.
-- `POST /api/settings/test-provider` discovers models from the current form without saving it. Include `service`, `profile_id` and `model_id` when retaining an existing masked direct configuration; versioned explicit draft restoration uses the same two restoration fields. Unsaved model IDs are permitted when credentials are supplied directly. `/api/settings/fetch-models` uses the same discovery semantics. Results include `status`, `models` and the actual upstream `http_status` when available. A stable `reason` code classifies the result without exposing the upstream body; the UI presents a localized explanation. Transport failures have no invented HTTP status; rejected requests are never successful empty lists. No inference or embedding is performed.
-- Discovery is optional and manual. Failure permits manual model identifiers and saving. A successful list request does not establish inference or embedding access.
-- Legacy live configurations migrate atomically to independent fields while retaining IDs, defaults and knowledge-base bindings. Historical name adjustments are reported in catalog migration metadata. Saved drafts remain separate and are never applied by migration or a direct-model save. Saved catalogs retain precedence over environment initialization; these endpoints never rewrite `.env`.
-
-Specification and acceptance: [模型直接配置功能规格](design/模型直接配置功能规格.md), [实施记录](design/模型直接配置实施记录.md).
-
-## Retrieval contract
-
-### `POST /api/knowledge-bases/{kb_name}/query`
-
-```json
-{
-  "query": "what is the helix angle of the gear",
-  "top_k": 8,
-  "search_mode": "local",
-  "synthesize": false
-}
-```
-
-- `top_k` — 1..50, defaults to the engine's configured default.
-- `search_mode` — engine-specific; omit to use the knowledge base's own mode.
-  `GET /query-options` lists what the engine accepts.
-- `synthesize` — controls whether the response includes `answer`. When `true`,
-  the endpoint exposes the engine's returned `answer` or `content`; it does not
-  initiate an additional LLM synthesis step. With the default LlamaIndex engine,
-  this value contains retrieved context. Engine-specific retrieval may itself use an LLM.
-
-Response:
-
-```json
-{
-  "query": "what is the helix angle of the gear",
-  "kb_name": "gears",
-  "provider": "llamaindex",
-  "mode": "default",
-  "sources": [
-    {
-      "content": "The helix angle of a gear is 20 degrees.",
-      "file": "notes.txt",
-      "title": "notes.txt",
-      "source": "/data/knowledge_bases/gears/raw/notes.txt",
-      "page": "",
-      "chunk_id": "abc123",
-      "score": 0.7417
-    }
-  ],
-  "answer": "..."
-}
-```
-
-`answer` is present only when `synthesize` is true. When the engine cannot
-answer (no embedding model, index not built), the response still returns 200
-with `sources: []`, an `error_type` and a human-readable `detail`, so a client
-can show the fix instead of a stack trace. A missing knowledge base is 404; an
-engine crash is 502.
-
-### `GET /api/knowledge-bases/{kb_name}/query-options`
-
-```json
-{
-  "kb_name": "gears",
-  "provider": "llamaindex",
-  "modes": ["default"],
-  "default_mode": "default",
-  "default_top_k": 8,
-  "max_top_k": 50,
-  "synthesize_available": true,
-  "index_ready": true
-}
-```
-
-## Indexing progress WebSocket
-
-```
-ws://127.0.0.1:8000/ws/knowledge-bases/{kb_name}/progress?task_id=<optional>
-```
-
-- No authentication; the socket is accepted immediately.
-- Without `task_id` you receive live progress for the knowledge base.
-- With `task_id` the current durable snapshot is replayed first, then live
-  updates, so a reconnect never loses state.
-- Progress is also persisted at `<kb>/.progress.json` and readable through
-  `GET /api/knowledge-bases/{kb}/progress`.
-
-Message shapes:
-
-```json
-{"type": "progress", "data": {"stage": "processing_file", "progress_percent": 42, "current": 3, "total": 7, "message": "..."}}
-{"type": "progress", "data": {"stage": "completed", "progress_percent": 100, "current": 1, "total": 1, "message": "..."}}
-{"type": "progress", "data": {"stage": "error", "progress_percent": 0, "error": "Initialization failed: ...", "message": "Initialization failed: ..."}}
-```
-
-Every WebSocket message uses the outer `type: "progress"`. Terminal states
-are identified by `data.stage` equal to `completed` or `error`; there are no
-separate `complete` or `error` message types. The progress value exposed by
-the durable progress snapshot is `data.progress_percent`.
-
-## curl examples
-
-```bash
-# create a knowledge base with one file
-curl -X POST http://127.0.0.1:8000/api/knowledge-bases \
-  -F name=gears -F files=@notes.pdf
-
-# rebuild its index
-curl -X POST http://127.0.0.1:8000/api/knowledge-bases/gears/reindex
-
-# retrieve
-curl -X POST http://127.0.0.1:8000/api/knowledge-bases/gears/query \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"helix angle","top_k":5}'
-
-# inspect the model catalogue
-curl http://127.0.0.1:8000/api/settings/catalog
-```
+共 89 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。

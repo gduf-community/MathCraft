@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -21,6 +21,10 @@ class User(Base, TimestampMixin):
     gender: Mapped[Optional[str]] = mapped_column(String(8))
     phone: Mapped[Optional[str]] = mapped_column(String(32), unique=True)
     email: Mapped[Optional[str]] = mapped_column(String(128), unique=True)
+    email_normalized: Mapped[Optional[str]] = mapped_column(String(128), unique=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    auth_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     user_no: Mapped[Optional[str]] = mapped_column(String(32), unique=True)  # 学号 / 工号
     school: Mapped[Optional[str]] = mapped_column(String(128))
     avatar_url: Mapped[Optional[str]] = mapped_column(String(256))

@@ -8,7 +8,6 @@ from app.db import get_db
 from app.errors import AppError
 from app.models import Bank, BankMember, Paper, SpaceMember, StudySpace, User
 from app.services import auth as auth_service
-from app.services import cache
 
 
 def get_token(authorization: str | None = Header(default=None, alias="Authorization")) -> str:
@@ -18,13 +17,7 @@ def get_token(authorization: str | None = Header(default=None, alias="Authorizat
 
 
 def get_current_user(token: str = Depends(get_token), db: Session = Depends(get_db)) -> User:
-    user_id = auth_service.resolve_token(cache.get_redis(), token)
-    if not user_id:
-        raise AppError("TOKEN_EXPIRED", "登录已失效，请重新登录", status_code=401)
-    user = db.get(User, user_id)
-    if user is None or user.status != "active":
-        raise AppError("ACCOUNT_DISABLED", "账号不可用", status_code=403)
-    return user
+    return auth_service.authenticate(db, token)
 
 
 def require_teacher(user: User = Depends(get_current_user)) -> User:

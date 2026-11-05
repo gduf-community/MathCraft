@@ -28,16 +28,19 @@ MathCraft/
 │   │   ├── db.py                 # SQLite engine、WAL、FTS5 建表语句
 │   │   ├── deps.py               # 登录用户与权限依赖
 │   │   ├── errors.py             # 统一错误响应
+│   │   ├── auth_validators.py    # HTTP 与离线审计共用的纯标识校验
 │   │   ├── local_secrets.py      # 硅基流动与 MinerU 密钥，已被 .gitignore 忽略
 │   │   ├── local_secrets.example.py
 │   │   ├── api/                  # auth、banks、documents、generate、questions、
 │   │   │                         # favourites、chat、spaces、papers、attempts、
 │   │   │                         # urges、users 等路由
-│   │   ├── models/               # 21 张 SQLAlchemy 表
+│   │   ├── models/               # 业务用户与资源、认证会话及验证码消费凭证
 │   │   ├── schemas/              # Pydantic 请求与响应模型
 │   │   └── services/
 │   │       ├── rag/              # 向量、重排、HyDE、混合检索、出题与对话编排
-│   │       ├── auth.py           # bcrypt 与 Redis 会话
+│   │       ├── auth.py           # bcrypt、JWT、数据库会话与撤销
+│   │       ├── auth_codes.py     # Redis 验证码、限流与 SQL 消费凭证
+│   │       ├── auth_delivery.py  # SMTP 与 Turnstile 适配
 │   │       ├── documents.py      # 解析、OCR、切片、入库状态机
 │   │       ├── banks.py          # 题库与成员权限
 │   │       ├── spaces.py         # 学习空间
@@ -45,13 +48,16 @@ MathCraft/
 │   │       ├── attempts.py       # 作答、交卷、复盘
 │   │       └── grading.py        # 客观题判分与主观题 AI 批卷
 │   ├── alembic/                  # 数据库迁移
-│   ├── scripts/                  # seed、create_user、检索与真实链路冒烟
-│   ├── tests/                    # 103 项后端接口测试
+│   ├── scripts/                  # seed、auth_migration 与冒烟
+│   ├── app/api/auth_http.py       # 认证路由共享的 Cookie HTTP 辅助函数
+│   ├── tests/                    # 隔离的认证与业务接口测试
 │   ├── data/                     # 运行时数据，已被 .gitignore 忽略
 │   ├── alembic.ini
 │   ├── pyproject.toml            # 后端独立依赖与运行配置
 │   └── uv.lock
 ├── frontend/                     # React 19 + Vite + TypeScript + Tailwind v4
+│   ├── auth-session-regression.mjs # 会话身份、认证响应及 XHR 上传重试回归
+│   ├── logout-session-regression.mjs # 注销 Bearer 绑定及跨标签隔离回归
 │   ├── src/api/                  # 真实接口层与字段映射
 │   ├── src/components/           # 登录、导航、题库、出题、收藏、空间、组卷、个人中心
 │   │   └── settings/             # 社区保留的「设置」界面
@@ -59,13 +65,17 @@ MathCraft/
 │   ├── src/styles/
 │   ├── vite.config.ts            # /api 与 /media 代理到后端
 │   └── package.json
-├── docs/                         # 社区历史设计、API 与流程资料
+├── docs/                         # 当前方案及社区历史设计、API 与流程资料
+│   ├── design/用户系统功能规格.md # 已接受的邮箱认证、JWT 与开发账号设计
+│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
 ```
 
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
+
+用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；设计已获接受，实施范围及验收见 [用户系统实施规格](docs/design/用户系统实施规格.md)；当前实施进度与验证证据见实施规格，未配置 SMTP/Turnstile 时拒绝相关认证操作。
 
 ## 技术栈
 
@@ -74,7 +84,7 @@ MathCraft/
 | Web 框架 | FastAPI + Uvicorn |
 | ORM 与迁移 | SQLAlchemy 2.x + Alembic |
 | 数据库 | SQLite，开启 WAL 与 FTS5 全文索引 |
-| 会话与任务 | Redis，保存登录会话、出题任务、文档入库进度与对话槽位 |
+| 会话与任务 | Redis，保存邮箱验证码、限流、出题任务、文档入库进度与对话槽位；认证会话由数据库管理 |
 | 向量库 | Chroma，按题库持久化 |
 | 向量模型 | 硅基流动 `BAAI/bge-m3`，1024 维 |
 | 重排模型 | 硅基流动 `BAAI/bge-reranker-v2-m3` |
@@ -95,7 +105,7 @@ MathCraft/
 
 ### 1. 启动 Redis
 
-Redis 是后端的硬依赖，登录会话、出题任务与文档入库进度都存放在这里。默认地址为 `redis://127.0.0.1:6379/0`。
+Redis 是后端的硬依赖，邮箱验证码、限流、出题任务与文档入库进度存放在这里。默认地址为 `redis://127.0.0.1:6379/0`。
 
 ```powershell
 # Windows 示例，在 Redis 所在目录执行
@@ -109,23 +119,16 @@ redis-server
 
 ```powershell
 cd backend
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+# 启动前按下方配置说明编辑 .env；已有文件不得覆盖
 uv sync
 uv run alembic upgrade head
-uv run python scripts/seed.py
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-`seed.py` 会创建三个测试账号，密码均为 `123123`：
+账号系统按 [用户系统实施规格](docs/design/用户系统实施规格.md)实施。开发默认账号不再硬编码：在 `backend/.env` 填写教师/学生的邮箱、学工号、密码、显示名，并显式开启 `DEV_ACCOUNTS_ENABLED`，再执行 `uv run python scripts/seed.py`。初始化只供开发环境使用，已有账号不重置密码，冲突会报错，生产禁止执行。开发登录按钮仅填充，仍需手动登录及人机验证；开发凭据不得复用个人或生产密码。
 
-| 账号 | 角色 |
-| --- | --- |
-| `teacher` | 教师 |
-| `student` | 学生 |
-| `student2` | 学生 |
-
-需要额外账号时可执行 `uv run python scripts/create_user.py`。
-
+生产部署先按下方「生产认证密钥生成与保存」及「生产配置清单」准备 `backend/.env`，再安装依赖、完成迁移审计并启动服务。开发初始化还要求 `APP_ENV=development`；生产必须关闭开发能力并清空全部开发角色字段。
 后端启动后：
 
 - 健康检查：`http://127.0.0.1:8000/api/health`
@@ -157,28 +160,81 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 ## 配置说明
 
-后端配置从 `backend/.env` 读取，模板见 `backend/.env.example`。
+后端配置由 [app/config.py](backend/app/config.py) 定义，读取固定位置的 `backend/.env`；环境变量可覆盖文件值。模板见 [backend/.env.example](backend/.env.example)，根目录 `.env.example` 是历史样例。以下默认值以当前 `Settings` 为准，空字符串表示没有可用凭据。模板中的 `APP_ENV=development` 和本机域名不能直接用于生产。
 
-| 变量 | 说明 |
-| --- | --- |
-| `DATABASE_URL` | SQLite 地址，默认 `sqlite:///./data/mathcraft.db` |
-| `REDIS_URL` | Redis 地址，默认 `redis://127.0.0.1:6379/0` |
-| `DEEPSEEK_API_KEY` | DeepSeek 兜底密钥；用户在个人中心配置后优先使用个人密钥 |
-| `DEEPSEEK_BASE_URL` | DeepSeek 接口地址，默认 `https://api.deepseek.com` |
-| `CHROMA_DIR` | Chroma 持久化目录，默认 `data/chroma` |
-| `UPLOAD_DIR` | 原始文档目录，默认 `data/uploads` |
-| `OCR_DIR` | OCR 临时目录，默认 `data/ocr` |
-| `CORS_ORIGINS` | 允许的前端来源，默认包含 `127.0.0.1:5173` 与 `localhost:5173` |
+### 生产认证密钥生成与保存
 
-硅基流动与 MinerU 的密钥写在 `backend/app/local_secrets.py`，可参考 `local_secrets.example.py` 创建。该文件已被 `.gitignore` 忽略，禁止提交到仓库。DeepSeek 密钥也可以在个人中心按用户配置，环境变量只作为缺省兜底。
+通过部署平台的秘密管理服务或经批准的密码管理器，分别生成两个独立的高熵随机秘密值，用于 `AUTH_JWT_SECRET` 与 `AUTH_CODE_SECRET`（各至少 32 字节，建议 48 随机字节），通过受控秘密注入配置。仓库不提供将认证密钥打印到 stdout 的生成命令，不要使用终端输出、CI 日志、截图或聊天传递秘密值。
 
-检索与切片参数在 `app/config.py` 中，包括 `top_k`、`dense_top_k`、`sparse_top_k`、`fused_top_k`、`rerank_top_k`、`rrf_k`、`chunk_size` 与 `chunk_overlap`。
+仅首次初始化且文件不存在时才从模板创建 `backend/.env`；已有配置只编辑同名项，不整份覆盖、不将命令输出重定向到 `.env`。真实 `.env` 不提交到 Git，仅限部署账号访问。同一部署的所有后端进程、实例使用同一组密钥并保持 issuer/audience 一致，不在每次启动时重新生成。SMTP 账号/授权密码及 Cloudflare Turnstile 凭据必须从各自供应商获取，不能用随机字符串伪造。
+
+轮换 `AUTH_JWT_SECRET` 会使旧签名的访问 JWT 无法验证；轮换 `AUTH_CODE_SECRET` 会使旧邮件验证码无法通过摘要校验。刷新令牌是不透明随机凭据，其摘要及会话状态在数据库中；更换 JWT 密钥本身不必然撤销 refresh 会话，符合条件的会话仍可能刷新得到新 JWT。如需撤销既有会话，应使用现有数据库会话/认证版本撤销流程；改密、重置密码、换绑邮箱撤销全部设备，普通退出撤销当前设备。轮换时协调所有实例更新配置并重启，不混用新旧密钥。
+
+### 生产配置清单
+
+以下参数在 `backend/.env` 或部署环境中设置。所有有效期、次数、限额和超时必须为正数；表中的默认值不是已完成生产配置的证明。
+
+| 配置项 | 当前默认值 | 用途与生产值来源 |
+| --- | --- | --- |
+| `APP_ENV` | `production`（模板为 `development`） | 部署者显式设为 `production`，启用生产约束及安全 Cookie 行为 |
+| `AUTH_JWT_SECRET` | 空 | HS256 访问 JWT 签名密钥；通过受控秘密管理工具独立生成，至少 32 字节 |
+| `AUTH_CODE_SECRET` | 空 | 邮箱验证码及限流标识的 HMAC 密钥；独立生成，至少 32 字节，禁止与 JWT 密钥相同 |
+| `AUTH_JWT_ISSUER` | `mathcraft` | JWT 的 iss；由部署约定指定非空发行方，签发与验证须一致 |
+| `AUTH_JWT_AUDIENCE` | `mathcraft-web` | JWT 的 aud；由部署约定指定非空受众，签发与验证须一致 |
+| `AUTH_ACCESS_TTL_SECONDS` | `900` | 访问 JWT 有效期，秒，默认 15 分钟；由部署者设置 |
+| `AUTH_REFRESH_TTL_SECONDS` | `604800` | 数据库刷新会话绝对有效期，秒，默认 7 天；由部署者设置 |
+| `AUTH_CODE_TTL_SECONDS` | `300` | 邮件验证码有效期，秒，默认 5 分钟 |
+| `AUTH_CODE_MAX_ATTEMPTS` | `5` | 单个验证码允许的错误尝试次数 |
+| `AUTH_CODE_RETRY_SECONDS` | `60` | 同邮箱、同用途的重发间隔，秒 |
+| `AUTH_CODE_EMAIL_HOUR_LIMIT` | `5` | 同邮箱、同用途每小时发码上限 |
+| `AUTH_CODE_IP_HOUR_LIMIT` | `30` | 同来源 IP 每小时发码上限；由部署者按访问规模设置 |
+| `SMTP_HOST` | 空 | 邮件服务商提供的 SMTP 主机地址 |
+| `SMTP_PORT` | `587` | 服务商规定的端口；须与其 TLS 模式匹配，范围 1–65535 |
+| `SMTP_USERNAME` | 空 | 服务商提供的 SMTP 登录账号；当前发送器要求非空并执行登录 |
+| `SMTP_PASSWORD` | 空 | 从邮件服务商取得的 SMTP 密码/专用授权码，不能由本脚本生成 |
+| `SMTP_FROM` | 空 | 经服务商授权的发件人邮箱，应与该账号的发件权限匹配 |
+| `SMTP_TLS_MODE` | `starttls` | 按服务商要求选择 `starttls`（连接后升级 TLS）或 `tls`（直接 TLS），不支持明文模式 |
+| `SMTP_TIMEOUT_SECONDS` | `10` | SMTP 连接/操作超时，秒，由部署者设置 |
+| `TURNSTILE_SITE_KEY` | 空 | 在 Cloudflare 控制台为生产站点创建 Turnstile widget 后取得的站点公钥，供前端渲染 |
+| `TURNSTILE_SECRET_KEY` | 空 | 同一 widget 的服务端 Siteverify 密钥，仅后端保存；生产拒绝官方测试密钥 |
+| `TURNSTILE_ALLOWED_HOSTNAMES` | 空（模板为 `localhost,127.0.0.1`） | 部署者填写逗号分隔的精确前端 hostname，并与 Cloudflare widget 的站点配置一致 |
+| `TURNSTILE_TIMEOUT_SECONDS` | `10` | 后端向 Siteverify 验证人机令牌的超时，秒 |
+| `CORS_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173` | 部署者替换为生产前端精确 HTTPS Origin 白名单，逗号分隔 |
+| `DEV_ACCOUNTS_ENABLED` | `false` | 生产必须明确关闭，禁止开发初始化及凭据填充能力 |
+| `DEV_TEACHER_EMAIL` / `DEV_TEACHER_USER_NO` / `DEV_TEACHER_PASSWORD` / `DEV_TEACHER_DISPLAY_NAME` | 均为空 | 生产全部清空；保留其中任一字段也会触发生产配置拒绝 |
+| `DEV_STUDENT_EMAIL` / `DEV_STUDENT_USER_NO` / `DEV_STUDENT_PASSWORD` / `DEV_STUDENT_DISPLAY_NAME` | 均为空 | 生产全部清空；开发专用值不得复用生产或个人凭据 |
+
+例如前端站点为 `https://learn.example.com` 时，`CORS_ORIGINS=https://learn.example.com`，`TURNSTILE_ALLOWED_HOSTNAMES=learn.example.com`。Origin 包含协议及非默认端口（如有），不得包含路径、尾斜杠、查询参数或通配符；hostname 只填主机名，不含协议、端口或路径。这里的域名是占位示例，应替换为实际浏览器访问前端的域名。生产由部署者配置 HTTPS；当前配置校验接受精确 HTTP/HTTPS Origin，不会代为申请证书或部署反向代理。缺少认证、SMTP 或 Turnstile 必要配置以及依赖故障时，相关认证操作拒绝或返回服务不可用，不绕过验证。
+
+### 数据、缓存与模型配置
+
+| 配置项 | 当前默认值 | 用途与部署路径来源 |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite:///./data/mathcraft.db` | 保存用户、角色、资源归属、个人模型设置与认证会话。SQLite 相对文件路径按进程工作目录解析，从 `backend/` 启动才对应 `backend/data/mathcraft.db`；生产由部署者指定受控持久卷的绝对数据库 URL，并先创建可写父目录 |
+| `REDIS_URL` | `redis://127.0.0.1:6379/0` | 验证码、限流及业务任务缓存；使用部署者提供的受控 Redis 地址/逻辑库，各实例连接同一服务，与测试隔离 |
+| `CHROMA_DIR` | `data/chroma` | 向量索引持久化目录 |
+| `UPLOAD_DIR` | `data/uploads` | 原始上传文档目录 |
+| `OCR_DIR` | `data/ocr` | OCR 工作文件目录 |
+| `AVATAR_DIR` | `data/avatars` | 用户头像目录；示例配置未列出时使用此默认值 |
+| `MAX_UPLOAD_MB` / `MAX_AVATAR_MB` | `200` / `5` | 文档/头像上传大小限制，MB，由部署者设置 |
+| `GENERATE_TASK_TTL_SECONDS` | `1800` | Redis 出题任务缓存有效期，秒 |
+| `CHAT_SESSION_TTL_SECONDS` / `INGEST_TASK_TTL_SECONDS` | `7200` / `7200` | Redis 对话槽位/文档入库任务缓存有效期，秒 |
+| `SESSION_TTL_SECONDS` | `604800` | 保留的历史配置字段；当前认证会话有效期使用 `AUTH_REFRESH_TTL_SECONDS`，不用它调整登录时长 |
+| `DEEPSEEK_API_KEY` | 空 | 从模型服务商取得的环境兜底密钥；用户个人中心的模型设置优先，不用于 JWT 或发码 |
+| `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_DISPLAY_NAME` | `https://api.deepseek.com` / `deepseek-flash` / `DeepSeek Flash` | 模型接口及默认模型信息，由供应商信息与部署约定确定 |
+| `SILICONFLOW_BASE_URL` | `https://api.siliconflow.cn/v1` | 向量与重排服务接口；与认证密钥无关 |
+
+四项存储目录的相对路径以 `backend/` 为基准，绝对路径则直接使用；生产应由部署者指定源码之外、后端进程可写的持久卷绝对路径，例如 Linux 的 `DATABASE_URL=sqlite:////srv/mathcraft/data/mathcraft.db`、`UPLOAD_DIR=/srv/mathcraft/uploads`（仅为路径示例，其余存储目录同样指定）；并安排数据库、上传、头像和索引的备份/恢复。迁移路径时显式搬迁现有数据库及目录、核对归属与索引，不能只改变量而丢弃用户数据；填写路径并不表示支持任意多实例共享 SQLite/Chroma 的部署方式。
+
+用户个人模型设置经现有 `/api/users/me/model-settings` 保存到数据库 `UserModelSetting`，注册时与用户同事务初始化；认证配置完成不代表模型调用已配置。硅基流动与 MinerU 沿用 [local_secrets.example.py](backend/app/local_secrets.example.py) 所示的既有本地凭据配置边界，凭据由相应供应商取得；真实 `backend/app/local_secrets.py` 不提交、不打印，不作为本脚本的输入或输出。检索与切片参数仍见 `backend/app/config.py`。
+
+配置文档和脚本只辅助部署准备，不表示已经配置真实服务、执行生产迁移或完成上线。迁移前先备份并在受控副本运行只读账号审计；缺失/未验证邮箱、标识冲突等问题未解决时阻断发布，具体门禁见 [后端迁移说明](backend/README.md#迁移与验证)。
 
 ## 核心实现
 
 ### 账号与权限
 
-登录使用 bcrypt 校验密码，会话 token 存在 Redis，默认有效期 7 天；修改密码或退出登录会销毁对应会话。
+注册验证邮箱并自动登录；登录支持邮箱验证码或学工号密码，密码使用 bcrypt 校验。短期访问 JWT 仅保存在前端内存；刷新凭据通过 HttpOnly Cookie 管理，其摘要、会话状态及用户认证版本保存在数据库，默认刷新会话有效期 7 天。Redis 保存邮件验证码、限流和业务任务。修改/重置密码及换绑邮箱撤销全部设备会话，退出仅撤销当前设备。
 
 平台角色只有教师和学生。题库内部还有创建者、超级管理员、管理员和普通成员；学习空间区分创建者与成员。前端按角色和权限下发按钮，后端在每个接口上再次校验。
 
@@ -212,7 +268,7 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 ### 个人中心
 
-个人中心维护昵称、头像和密码。模型配置支持按用户填写 DeepSeek 密钥并测试连通性，MinerU Token 也在同一页面配置。
+个人中心维护昵称、头像和安全资料。修改密码验证旧密码；更换邮箱验证旧、新邮箱；添加、修改或移除学工号需当前密码。修改密码和换绑邮箱后所有设备下线，普通退出只影响当前设备。普通资料更新不能绕过安全接口修改邮箱或学工号。模型配置支持按用户填写 DeepSeek 密钥并测试连通性，MinerU Token 也在同一页面配置。
 
 ## 数据目录
 
@@ -231,10 +287,11 @@ data/
 
 ## 测试
 
-后端测试位于 `backend/tests`，覆盖认证、题库、文档、出题、收藏、空间、组卷、作答、批卷、催交通知与个人资料。测试会使用临时 SQLite 与 Redis 15 号库，外部模型调用全部打桩，不需要真实密钥。
+后端测试位于 `backend/tests`，覆盖认证、题库、文档、出题、收藏、空间、组卷、作答、批卷、催交通知与个人资料。测试使用临时 SQLite 与每测试独立的 fakeredis，绝不连接或清空本机 Redis；邮件、人机验证及外部模型全部打桩，不需要真实密钥。
 
 ```powershell
 cd backend
+uv sync --group dev
 uv run pytest -q
 ```
 
@@ -243,6 +300,7 @@ uv run pytest -q
 ```powershell
 cd frontend
 npm run typecheck
+npm run lint
 npm run build
 ```
 
@@ -252,7 +310,7 @@ npm run build
 2. Redis 不可用时，登录、出题和文档入库都无法工作。
 3. DeepSeek、硅基流动与 MinerU 依赖外网，离线环境只能运行不涉及模型的部分。
 4. `docs/` 中的设计与流程文档来自社区早期版本，可能与当前实现不一致，接口以根 `openapi.json` 为准。
-5. `docs/api.md` 及 `tools/` 下的文档生成脚本仍保留社区旧逻辑，重新生成前需要按当前路由更新脚本分组。
+5. `docs/api.md` 由 `tools/gen_api_docs.py` 按当前 OpenAPI 的全部 HTTP 操作生成；修改接口须同时更新契约及索引。
 
 ## 文档入口
 
@@ -270,3 +328,18 @@ npm run build
 本项目以 Apache-2.0 发布，全文见 [LICENSE](LICENSE)，`pyproject.toml` 中同步声明 `license = {text = "Apache-2.0"}`。
 
 仓库最初从 DeepTutor 裁剪而来，`LICENSE` 中的版权行原样保留。第三方来源与对应的许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+### 认证开发验证
+
+后端测试使用临时 SQLite 与每测试独立的进程内 Redis（fakeredis），不连接或清空本机 Redis；SMTP、人机验证及外部模型使用假服务。先安装开发依赖，再在仓库根运行：
+
+```powershell
+uv sync --project backend --group dev
+backend\.venv\Scripts\python.exe -m pytest -q
+```
+
+接口契约修改后重新生成根 OpenAPI 和完整 API 索引；生成器按当前全部接口标签输出，不再套用历史无鉴权目录。
+
+### PR #8 认证审查修复（2026-11-05）
+
+退出必须携带当前标签的 Bearer 和 Origin/CSRF；服务端只撤销该 sid，Cookie 仅在属于同一会话时删除，已过期但签名有效的 access 仍可用于注销；网络失败保留仅撤销用的内存凭据供重试，不假报服务端已退出。XHR 文档上传仅在明确 `ACCESS_TOKEN_EXPIRED` 时刷新重试一次，撤销或身份变化不重放。登录／找回密码发码在 SMTP 故障时仍统一 202，不激活失败验证码；注册／换邮箱保留明确 503。迁移审计必须使用与认证相同的邮箱及学工号校验。认证响应、Cookie/CSRF 输入和统一 422 错误结构以根 `openapi.json` 为准。
