@@ -169,8 +169,8 @@ def db():
 
 @pytest.fixture()
 def auth(client):
-    def _login(account: str, role: str, password: str = "123123") -> dict:
-        resp = client.post("/api/auth/login", json={"account": account, "password": password, "role": role})
+    def _login(account: str, password: str = "123123") -> dict:
+        resp = client.post("/api/auth/login", json={"account": account, "password": password})
         assert resp.status_code == 200, resp.text
         return {"Authorization": f"Bearer {resp.json()['token']}"}
 
@@ -179,12 +179,12 @@ def auth(client):
 
 @pytest.fixture()
 def teacher(auth):
-    return auth("teacher", "teacher")
+    return auth("teacher")
 
 
 @pytest.fixture()
 def student(auth):
-    return auth("student", "student")
+    return auth("student")
 
 
 # ---------------- 常用辅助 ----------------
@@ -194,6 +194,15 @@ def create_bank(client, headers, name="测试题库") -> dict:
     assert resp.status_code == 201, resp.text
     return resp.json()
 
+
+def add_bank_member(client, headers, bank_id: str, account="student", role="readonly") -> dict:
+    resp = client.post(
+        f"/api/banks/{bank_id}/members",
+        json={"account": account, "role": role},
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
 
 def upload_markdown(client, headers, bank_id: str, name="notes.md") -> dict:
     content = """# 导数与微分

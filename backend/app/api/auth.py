@@ -1,6 +1,5 @@
 """认证接口：登录、当前用户、登出、修改密码（登录页公开版 + 已登录版）。"""
 from fastapi import APIRouter, Depends
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -14,22 +13,9 @@ from app.services.model_settings import user_payload
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-ROLE_LABEL = {"student": "学生", "teacher": "教师"}
-
 
 def _find_user_by_account(db: Session, account: str) -> User | None:
-    return (
-        db.query(User)
-        .filter(
-            or_(
-                User.account == account,
-                User.user_no == account,
-                User.phone == account,
-                User.email == account,
-            )
-        )
-        .one_or_none()
-    )
+    return db.query(User).filter(User.account == account).one_or_none()
 
 
 @router.post("/login")
@@ -39,12 +25,6 @@ def login(body: LoginBody, db: Session = Depends(get_db)):
         raise AppError("INVALID_CREDENTIALS", "账号或密码不正确", status_code=401)
     if user.status != "active":
         raise AppError("ACCOUNT_DISABLED", "该账号已被禁用，请联系管理员", status_code=403)
-    if user.role != body.role:
-        raise AppError(
-            "ROLE_MISMATCH",
-            f"该账号是{ROLE_LABEL[user.role]}身份，请切换到{'老师' if user.role == 'teacher' else '学生'}标签登录",
-            status_code=403,
-        )
     token, expires_in = auth_service.create_session(cache.get_redis(), user.id)
     return {"token": token, "expires_in": expires_in, "user": user_payload(user)}
 
@@ -68,12 +48,6 @@ def change_password_public(body: ChangePasswordBody, db: Session = Depends(get_d
         raise AppError("INVALID_CREDENTIALS", "账号或原密码不正确", status_code=401)
     if user.status != "active":
         raise AppError("ACCOUNT_DISABLED", "该账号已被禁用，请联系管理员", status_code=403)
-    if user.role != body.role:
-        raise AppError(
-            "ROLE_MISMATCH",
-            f"该账号是{ROLE_LABEL[user.role]}身份，请切换到{'老师' if user.role == 'teacher' else '学生'}标签后修改",
-            status_code=403,
-        )
     user.password_hash = auth_service.hash_password(body.new_password)
     db.commit()
     auth_service.destroy_user_sessions(cache.get_redis(), user.id)
