@@ -1,6 +1,5 @@
 """密码、输入规范化与 SQL 可撤销 JWT 会话的公开服务。"""
 import hashlib
-import re
 import secrets
 import time
 from typing import TypedDict, cast
@@ -11,6 +10,8 @@ from sqlalchemy import update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from app.auth_validators import normalize_email as normalize_email
+from app.auth_validators import normalize_user_no as normalize_user_no
 from app.config import settings
 from app.errors import AppError
 from app.models import AuthSession, EmailChange, RefreshUse, User
@@ -32,26 +33,6 @@ class AccessClaims(TypedDict):
 def now() -> int:
     """返回 UTC Unix 秒；测试可在时间边界注入时钟。"""
     return int(time.time())
-
-
-def normalize_email(value: str) -> str:
-    """邮箱仅去边空白、大小写折叠，不合并点号或加号标签。"""
-    result = value.strip().lower()
-    if len(result) > 128 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", result):
-        raise ValueError("请输入有效邮箱")
-    if any(ord(c) < 33 or ord(c) == 127 for c in result):
-        raise ValueError("邮箱包含无效字符")
-    return result
-
-
-def normalize_user_no(value: str | None) -> str | None:
-    """保留前导零及大小写；空白等同移除，不接受控制字符。"""
-    result = value.strip() if value else None
-    if not result:
-        return None
-    if len(result) > 32 or any(ord(c) < 33 or ord(c) == 127 for c in result):
-        raise ValueError("学工号长度为 1–32 且不能包含空白或控制字符")
-    return result
 
 
 def validate_password(password: str) -> str:
@@ -108,19 +89,22 @@ def encode_access(session: AuthSession) -> str:
     return jwt.encode(dict(claims), settings.auth_jwt_secret, algorithm="HS256")
 
 
-def decode_access(token: str) -> AccessClaims:
+def decode_access(token: str, *, allow_expired: bool = False) -> AccessClaims:
+    """验证访问令牌；仅注销可忽略到期时间，签名及其余声明仍必须有效。"""
     require_auth_config()
     try:
         payload = jwt.decode(token, settings.auth_jwt_secret, algorithms=["HS256"],
             issuer=settings.auth_jwt_issuer, audience=settings.auth_jwt_audience,
             options={"require": ["sub", "sid", "auth_version", "jti", "iat", "exp",
-                                 "iss", "aud", "type"], "strict_aud": True})
+                                 "iss", "aud", "type"],
+                     "strict_aud": True, "verify_exp": not allow_expired})
         if (payload["type"] != "access"
                 or any(not isinstance(payload[k], str) or not payload[k]
                        for k in ("sub", "sid", "jti"))
                 or any(type(payload[k]) is not int for k in ("iat", "exp", "auth_version"))
                 or payload["auth_version"] < 0 or payload["iat"] > now()
-                or payload["exp"] <= now() or payload["exp"] <= payload["iat"]):
+                or (not allow_expired and payload["exp"] <= now())
+                or payload["exp"] <= payload["iat"]):
             raise ValueError("invalid claims")
         return cast(AccessClaims, payload)
     except jwt.ExpiredSignatureError as exc:

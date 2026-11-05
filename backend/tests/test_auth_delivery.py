@@ -1,12 +1,15 @@
 """验证外部认证适配器的失败边界，不连接 SMTP 或 Cloudflare。"""
+import logging
 import smtplib
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.errors import AppError
-from app.services import auth_delivery
+from app.main import app
+from app.services import auth_codes, auth_delivery
 
 
 @pytest.fixture()
@@ -138,3 +141,165 @@ def test_smtp_failure_does_not_expose_credentials(monkeypatch, delivery_config):
         auth_delivery.SMTPMailSender().send_code("person@example.test", "012345", "register")
     assert error.value.status_code == 503
     assert "fake-mail-password" not in str(error.value)
+
+
+@pytest.mark.parametrize("purpose", ["login", "reset_password"])
+@pytest.mark.parametrize("failure", ["transport", "adapter"])
+def test_private_code_smtp_failure_matches_unknown_email(
+    client, isolated_redis, monkeypatch, caplog, purpose, failure,
+):
+    """HTTP 成功外形与冷却相同，失败码不可登录/重置，日志不泄露标识。"""
+    email = "teacher@example.test"
+    secret = "fake-sensitive-smtp-detail"
+    attempts = []
+
+    class FailingMail:
+        def send_code(self, recipient, code, requested_purpose):
+            attempts.append((recipient, code, requested_purpose))
+            message = f"{recipient} {code} {secret}"
+            if failure == "adapter":
+                raise AppError("EMAIL_SERVICE_UNAVAILABLE", message, 503)
+            raise OSError(message)
+
+    monkeypatch.setattr(auth_codes, "generate_code", lambda: "012345")
+    app.dependency_overrides[auth_delivery.get_mail_sender] = lambda: FailingMail()
+    caplog.set_level(logging.WARNING, logger="app.services.auth_codes")
+    try:
+        responses = []
+        for recipient in (email, "missing@example.test"):
+            response = client.post("/api/auth/email-code", json={
+                "email": recipient, "purpose": purpose,
+                "turnstile_token": "test-turnstile-token",
+            })
+            assert response.status_code == 202, response.text
+            responses.append(response.json())
+            assert not isolated_redis.exists(
+                f"auth:otp:challenge:{response.json()['challenge_id']}"
+            )
+            retry = client.post("/api/auth/email-code", json={
+                "email": recipient, "purpose": purpose,
+                "turnstile_token": "test-turnstile-token",
+            })
+            assert retry.status_code == 429
+        assert len(attempts) == 1
+        assert responses[0].keys() == responses[1].keys()
+        assert responses[0]["expires_in"] == responses[1]["expires_in"]
+        assert responses[0]["retry_after"] == responses[1]["retry_after"]
+        assert responses[0]["challenge_id"] != responses[1]["challenge_id"]
+        challenge = responses[0]["challenge_id"]
+        if purpose == "login":
+            consumed = client.post("/api/auth/login/email", json={
+                "email": email, "challenge_id": challenge, "code": "012345",
+                "role": "teacher",
+            })
+        else:
+            consumed = client.post("/api/auth/password/reset", json={
+                "email": email, "challenge_id": challenge, "code": "012345",
+                "new_password": "fake-new-password-123",
+                "confirm_password": "fake-new-password-123",
+            })
+        assert consumed.status_code == 400, consumed.text
+        assert consumed.json()["detail"]["code"] in {"CODE_EXPIRED", "CODE_INVALID"}
+        records = [r for r in caplog.records if r.name == "app.services.auth_codes"]
+        assert len(records) == 1
+        assert records[0].levelno >= logging.WARNING
+        assert records[0].exc_info is None
+        for sensitive in (email, "missing@example.test", secret, "012345", challenge,
+                          settings.auth_code_secret):
+            assert sensitive not in caplog.text
+    finally:
+        app.dependency_overrides.pop(auth_delivery.get_mail_sender, None)
+
+
+@pytest.mark.parametrize("purpose", ["register", "email_change_old", "email_change_new"])
+def test_explicit_code_smtp_failure_stays_unavailable(
+    client, isolated_redis, monkeypatch, caplog, purpose,
+):
+    """注册/双邮箱换绑仍明确 503，失败挑战不可激活且继续保留重发限额。"""
+    email = "new@example.test"
+    extra = {}
+    headers = {}
+    if purpose != "register":
+        signed_in = client.post("/api/auth/login/password", json={
+            "user_no": "TK20240001", "password": "123123", "role": "teacher",
+            "turnstile_token": "test-turnstile-token",
+        })
+        assert signed_in.status_code == 200, signed_in.text
+        headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+        change = client.post("/api/users/me/email-change", headers=headers,
+                             json={"new_email": email})
+        assert change.status_code == 201, change.text
+        extra["change_id"] = change.json()["change_id"]
+        if purpose == "email_change_old":
+            email = "teacher@example.test"
+    attempts = []
+
+    class FailingMail:
+        def send_code(self, recipient, code, requested_purpose):
+            attempts.append((recipient, code, requested_purpose))
+            raise OSError(f"{recipient} {code} fake-sensitive-smtp-detail")
+
+    app.dependency_overrides[auth_delivery.get_mail_sender] = lambda: FailingMail()
+    caplog.set_level(logging.WARNING, logger="app.services.auth_codes")
+    try:
+        payload = {"email": email, "purpose": purpose,
+                   "turnstile_token": "test-turnstile-token", **extra}
+        response = client.post("/api/auth/email-code", headers=headers, json=payload)
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["code"] == "EMAIL_SERVICE_UNAVAILABLE"
+        assert not list(isolated_redis.scan_iter("auth:otp:challenge:*"))
+        assert len(attempts) == 1
+        assert client.post("/api/auth/email-code", headers=headers,
+                           json=payload).status_code == 429
+        records = [r for r in caplog.records if r.name == "app.services.auth_codes"]
+        assert len(records) == 1 and records[0].exc_info is None
+        for sensitive in (email, attempts[0][1], "fake-sensitive-smtp-detail",
+                          settings.auth_code_secret):
+            assert sensitive not in response.text
+            assert sensitive not in caplog.text
+    finally:
+        app.dependency_overrides.pop(auth_delivery.get_mail_sender, None)
+
+
+@pytest.mark.parametrize("purpose", ["login", "reset_password"])
+@pytest.mark.parametrize("smtp_fails", [False, True])
+def test_private_email_delivery_starts_after_http_response(
+    client, isolated_redis, purpose, smtp_fails,
+):
+    """SMTP 成功或超时都不能延迟 202；不存在的邮箱使用同一响应路径。"""
+    body_sent = False
+    attempts = []
+
+    async def observed_app(scope, receive, send):
+        async def observed_send(message):
+            nonlocal body_sent
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                body_sent = True
+            await send(message)
+        await app(scope, receive, observed_send)
+
+    class ObservedMail:
+        def send_code(self, email, code, requested_purpose):
+            assert body_sent, "SMTP 必须在 HTTP 响应完成后执行，不能按账号存在性延迟响应"
+            attempts.append((email, requested_purpose))
+            if smtp_fails:
+                raise TimeoutError("fake SMTP timeout")
+
+    app.dependency_overrides[auth_delivery.get_mail_sender] = lambda: ObservedMail()
+    try:
+        with TestClient(observed_app) as observed_client:
+            for recipient in ("teacher@example.test", "missing@example.test"):
+                body_sent = False
+                response = observed_client.post("/api/auth/email-code", json={
+                    "email": recipient, "purpose": purpose,
+                    "turnstile_token": "test-turnstile-token",
+                })
+                assert response.status_code == 202, response.text
+                challenge_key = f"auth:otp:challenge:{response.json()['challenge_id']}"
+                if smtp_fails or recipient.startswith("missing"):
+                    assert not isolated_redis.exists(challenge_key)
+                else:
+                    assert isolated_redis.hget(challenge_key, "state") in ("active", b"active")
+        assert attempts == [("teacher@example.test", purpose)]
+    finally:
+        app.dependency_overrides.pop(auth_delivery.get_mail_sender, None)

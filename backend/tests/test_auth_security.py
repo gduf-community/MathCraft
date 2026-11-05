@@ -18,9 +18,55 @@ def test_logout_only_revokes_current_device(client, delivery):
     first = register(client, delivery, user_no="device01")
     second = client.post("/api/auth/login/password", json={"user_no": "device01", "password": PASSWORD,
         "role": "teacher", "turnstile_token": "test-challenge"}).json()
-    assert client.post("/api/auth/logout", json={}, headers=csrf(client)).status_code == 204
-    assert client.get("/api/auth/me", headers=bearer(second)).status_code == 401
-    assert client.get("/api/auth/me", headers=bearer(first)).status_code == 200
+    headers = {**csrf(client), **bearer(first)}
+    response = client.post("/api/auth/logout", json={}, headers=headers)
+    assert response.status_code == 204, response.text
+    assert "mc_refresh=" not in response.headers.get("set-cookie", "")
+    assert client.get("/api/auth/me", headers=bearer(first)).status_code == 401
+    assert client.get("/api/auth/me", headers=bearer(second)).status_code == 200
+    assert client.post("/api/auth/refresh", json={}, headers=csrf(client)).status_code == 200
+
+
+def test_logout_preserves_other_account_cookie(client, delivery):
+    first = register(client, delivery, email="logout-a@example.test", user_no="logout-a")
+    second = register(client, delivery, email="logout-b@example.test", user_no="logout-b")
+    response = client.post("/api/auth/logout", json={}, headers={**csrf(client), **bearer(first)})
+    assert response.status_code == 204, response.text
+    assert client.get("/api/auth/me", headers=bearer(first)).status_code == 401
+    assert client.get("/api/auth/me", headers=bearer(second)).status_code == 200
+    refreshed = client.post("/api/auth/refresh", json={}, headers=csrf(client))
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["user"]["id"] == second["user"]["id"]
+
+
+def test_logout_accepts_expired_signed_access_without_refresh(client, delivery):
+    result = register(client, delivery, user_no="expired-logout")
+    claims = jwt.decode(result["access_token"], options={"verify_signature": False})
+    claims["exp"] = service.now() - 1
+    claims["iat"] = service.now() - 100
+    expired = jwt.encode(claims, settings.auth_jwt_secret, algorithm="HS256")
+    headers = {**csrf(client), "Authorization": "Bearer " + expired}
+    response = client.post("/api/auth/logout", json={}, headers=headers)
+    assert response.status_code == 204, response.text
+    assert "mc_refresh=" in response.headers.get("set-cookie", "")
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 401
+    assert client.post("/api/auth/logout", json={}, headers=headers).status_code == 204
+
+
+def test_logout_requires_signed_bearer_and_csrf(client, delivery):
+    result = register(client, delivery, user_no="secure-logout")
+    csrf_headers = csrf(client)
+    missing = client.post("/api/auth/logout", json={}, headers=csrf_headers)
+    assert missing.status_code == 401
+    assert "mc_refresh=" not in missing.headers.get("set-cookie", "")
+    forged = jwt.decode(result["access_token"], options={"verify_signature": False})
+    bad_token = jwt.encode(forged, "fake-untrusted-signing-key-0123456789", algorithm="HS256")
+    assert client.post("/api/auth/logout", json={}, headers={
+        **csrf_headers, "Authorization": "Bearer " + bad_token}).status_code == 401
+    assert client.post("/api/auth/logout", json={}, headers=bearer(result)).status_code == 403
+    assert client.post("/api/auth/logout", json={}, headers={
+        **csrf_headers, **bearer(result), "Origin": "https://untrusted.example.test"}).status_code == 403
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 200
 
 
 def test_sql_failure_releases_proof_for_retry(client, delivery):

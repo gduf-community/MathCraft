@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, Header, Request, Response
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -13,12 +13,25 @@ from sqlalchemy.orm import Session
 from app.api.auth_http import clear_refresh
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_token
 from app.errors import AppError
 from app.models import AuthSession, RefreshUse, User, UserModelSetting
 from app.models.base import new_id
-from app.schemas.auth import (EmptyBody, EmailCodeBody, EmailLoginBody, PasswordBody,
-    PasswordLoginBody, RegisterBody, ResetPasswordBody, Role)
+from app.schemas.auth import (
+    AuthConfig,
+    CurrentUserResult,
+    DevelopmentAccount,
+    EmailCodeBody,
+    EmailCodeResult,
+    EmailLoginBody,
+    EmptyBody,
+    LoginResult,
+    PasswordBody,
+    PasswordLoginBody,
+    RegisterBody,
+    ResetPasswordBody,
+    Role,
+)
 from app.services import auth as service
 from app.services import auth_codes
 from app.services.auth_delivery import (MailSender, TurnstileVerifier,
@@ -37,7 +50,16 @@ def remote_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def check_cookie_request(request: Request) -> None:
+def check_cookie_request(
+    request: Request,
+    origin: str | None = Header(default=None, alias="Origin",
+        description="可信前端来源；缺失或不可信时返回 403。"),
+    csrf: str | None = Header(default=None, alias="X-CSRF-Token",
+        description="必须与 mc_csrf Cookie 一致；缺失或不匹配时返回 403。"),
+    cookie: str | None = Cookie(default=None, alias=CSRF_COOKIE,
+        description="由认证配置接口设置的双提交 CSRF Cookie；缺失时返回 403。"),
+) -> None:
+    """声明 Cookie 请求契约，同时保留现有来源与 CSRF 拒绝语义。"""
     origin = request.headers.get("origin")
     csrf = request.headers.get("x-csrf-token", "")
     cookie = request.cookies.get(CSRF_COOKIE, "")
@@ -73,7 +95,7 @@ def code_binding(email: str, purpose: str, version: int | None = None) -> str:
     return f"{purpose}:{email}:{version if version is not None else '-'}"
 
 
-@router.get("/config")
+@router.get("/config", response_model=AuthConfig)
 def auth_config(response: Response):
     csrf = secrets.token_urlsafe(32)
     response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=settings.app_env == "production",
@@ -87,8 +109,9 @@ def auth_config(response: Response):
                               and settings.turnstile_site_key)}
 
 
-@router.post("/email-code", status_code=202)
+@router.post("/email-code", status_code=202, response_model=EmailCodeResult)
 def email_code(body: EmailCodeBody, request: Request, sender: Mail, verifier: Verifier,
+               background_tasks: BackgroundTasks,
                db: Session = Depends(get_db)):
     service.require_auth_config()
     verifier.verify(body.turnstile_token, "email_code", remote_ip(request))
@@ -111,10 +134,12 @@ def email_code(body: EmailCodeBody, request: Request, sender: Mail, verifier: Ve
         binding = code_binding(email, body.purpose, user.auth_version if user else -1)
     elif body.purpose == "register":
         deliver = db.query(User).filter_by(email_normalized=email).first() is None
-    return auth_codes.issue(email, body.purpose, binding, remote_ip(request), sender, deliver)
+    return auth_codes.issue(
+        email, body.purpose, binding, remote_ip(request), sender, deliver, background_tasks,
+    )
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, response_model=LoginResult)
 def register(body: RegisterBody, response: Response, db: Session = Depends(get_db)):
     service.require_auth_config()
     auth_codes.verify(db, body.email, "register", code_binding(body.email, "register"),
@@ -142,7 +167,7 @@ def register(body: RegisterBody, response: Response, db: Session = Depends(get_d
                        account_created=True) from exc
 
 
-@router.post("/login/email")
+@router.post("/login/email", response_model=LoginResult)
 def login_email(body: EmailLoginBody, response: Response, db: Session = Depends(get_db)):
     user = check_user(db.query(User).filter_by(email_normalized=body.email).one_or_none(), body.role)
     version = user.auth_version
@@ -151,7 +176,7 @@ def login_email(body: EmailLoginBody, response: Response, db: Session = Depends(
     return login_result(db, response, user, version)
 
 
-@router.post("/login/password")
+@router.post("/login/password", response_model=LoginResult)
 def login_password(body: PasswordLoginBody, request: Request, response: Response,
                    verifier: Verifier, db: Session = Depends(get_db)):
     service.require_auth_config()
@@ -164,13 +189,20 @@ def login_password(body: PasswordLoginBody, request: Request, response: Response
     return login_result(db, response, user, version)
 
 
-@router.get("/me")
+@router.get("/me", response_model=CurrentUserResult)
 def me(user: User = Depends(get_current_user)):
     return {"user": user_payload(user)}
 
 
-@router.post("/refresh")
-def refresh(body: EmptyBody, request: Request, response: Response, db: Session = Depends(get_db)):
+@router.post("/refresh", response_model=LoginResult,
+             dependencies=[Depends(check_cookie_request)])
+def refresh(
+    body: EmptyBody,
+    request: Request,
+    response: Response,
+    mc_refresh: str = Cookie(alias=REFRESH_COOKIE),
+    db: Session = Depends(get_db),
+):
     check_cookie_request(request)
     token = request.cookies.get(REFRESH_COOKIE)
     if not token:
@@ -181,22 +213,36 @@ def refresh(body: EmptyBody, request: Request, response: Response, db: Session =
             "user": user_payload(user)}
 
 
-@router.post("/logout", status_code=204)
-def logout(body: EmptyBody, request: Request, response: Response, db: Session = Depends(get_db)):
-    check_cookie_request(request)
-    refresh = request.cookies.get(REFRESH_COOKIE)
-    if refresh:
-        digest = service.digest_token(refresh)
-        session = db.query(AuthSession).filter_by(refresh_digest=digest).one_or_none()
+@router.post("/logout", status_code=204, response_model=None,
+             dependencies=[Depends(check_cookie_request)])
+def logout(
+    body: EmptyBody,
+    request: Request,
+    response: Response,
+    token: str = Depends(get_token),
+    mc_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE),
+    db: Session = Depends(get_db),
+):
+    # 注销以本标签签名 access 中的 sid 为准；共享 Cookie 不能选定撤销对象。
+    claims = service.decode_access(token, allow_expired=True)
+    session = db.get(AuthSession, claims["sid"])
+    if (session is None or session.user_id != claims["sub"]
+            or session.auth_version != claims["auth_version"]):
+        raise AppError("SESSION_REVOKED", "登录会话不存在", 401)
+    cookie_sid = None
+    if mc_refresh:
+        digest = service.digest_token(mc_refresh)
+        cookie_session = db.query(AuthSession).filter_by(refresh_digest=digest).one_or_none()
         used = db.get(RefreshUse, digest)
-        sid = session.id if session else used.session_id if used else None
-        if sid:
-            db.execute(update(AuthSession).where(AuthSession.id == sid).values(status="revoked"))
-            db.commit()
-    clear_refresh(response)
+        cookie_sid = cookie_session.id if cookie_session else used.session_id if used else None
+    db.execute(update(AuthSession).where(AuthSession.id == session.id).values(status="revoked"))
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    if cookie_sid == session.id:
+        clear_refresh(response)
 
 
-@router.post("/password/reset", status_code=204)
+@router.post("/password/reset", status_code=204, response_model=None)
 def reset_password(body: ResetPasswordBody, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter_by(email_normalized=body.email).one_or_none()
     if user is None or not (user.email_verified or user.email_verified_at) or user.status != "active":
@@ -210,7 +256,7 @@ def reset_password(body: ResetPasswordBody, response: Response, db: Session = De
     clear_refresh(response)
 
 
-@router.put("/password", status_code=204)
+@router.put("/password", status_code=204, response_model=None)
 def change_password(body: PasswordBody, response: Response,
                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     version = user.auth_version
@@ -231,8 +277,8 @@ def loopback(value: str) -> bool:
 
 # 生产根本不挂载开发凭据端点。
 if settings.app_env == "development" and settings.dev_accounts_enabled:
-    @router.get("/development-account")
-    @router.post("/development-account")
+    @router.get("/development-account", response_model=DevelopmentAccount)
+    @router.post("/development-account", response_model=DevelopmentAccount)
     def development_account(role: Role, request: Request, response: Response):
         origin = request.headers.get("origin", "")
         if (not loopback(remote_ip(request)) or not loopback(request.url.hostname or "")

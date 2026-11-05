@@ -93,7 +93,7 @@ function UrgePanel({ onClose }: { onClose: () => void }) {
 }
 
 export default function TopBar() {
-  const { profile, showToast, urgeUnread, setActiveTab } = useApp()
+  const { profile, urgeUnread, setActiveTab } = useApp()
   const { user, logout } = useAuth()
   const [bellOpen, setBellOpen] = useState(false)
   const [logoutConfirm, setLogoutConfirm] = useState(false)
@@ -148,8 +148,7 @@ export default function TopBar() {
           message={`确定退出当前${user?.role === 'student' ? '学生' : '教师'}账号「${profile.name}」吗？`}
           confirmText="确认退出"
           onConfirm={() => {
-            void logout().catch(() => { window.alert('本地已退出，但服务端退出未确认。请关闭浏览器会话，勿在共享设备继续使用。') })
-            showToast(`已退出${user?.role === 'student' ? '学生' : '教师'}账号`)
+            void logout().catch(() => { window.alert('本地已退出，但服务端退出未确认。请在登录页点击“重试退出”，勿在共享设备继续使用。') })
           }}
           onClose={() => setLogoutConfirm(false)}
         />

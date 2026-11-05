@@ -15,7 +15,7 @@ import type {
 } from '../types'
 
 import { apiUrl } from './urls'
-import { ApiError, getApiToken, request, sessionFetch, ensureSession } from './session'
+import { ApiError, authenticatedOperation, getApiToken, request, sessionFetch } from './session'
 export { ApiError, request, setApiToken } from './session'
 
 export function fileUrl(path: string): string {
@@ -218,29 +218,47 @@ export async function uploadDocument(
   file: File,
   onUploadProgress?: (percent: number) => void,
 ): Promise<{ document_id: string; status: string; stage: string; progress: number }> {
-  await ensureSession()
-  return new Promise((resolve, reject) => {
+  return authenticatedOperation((token) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', apiUrl(`/api/banks/${bankId}/documents`))
     xhr.withCredentials = true
-    if (getApiToken()) xhr.setRequestHeader('Authorization', `Bearer ${getApiToken()}`)
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onUploadProgress) onUploadProgress(Math.round((e.loaded / e.total) * 100))
     }
-    xhr.onerror = () => reject(new ApiError('上传失败，请检查后端服务'))
+    xhr.onerror = () => reject(new ApiError('上传失败，请检查后端服务', 'REQUEST_FAILED', xhr.status))
     xhr.onload = () => {
       try {
-        const body = JSON.parse(xhr.responseText || '{}')
-        if (xhr.status >= 200 && xhr.status < 300) resolve(body)
-        else reject(new ApiError(body?.detail?.message ?? `HTTP ${xhr.status}`, body?.detail?.code))
+        const body: unknown = JSON.parse(xhr.responseText || '{}')
+        if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            if ('document_id' in body && typeof body.document_id === 'string'
+              && 'status' in body && typeof body.status === 'string'
+              && 'stage' in body && typeof body.stage === 'string'
+              && 'progress' in body && typeof body.progress === 'number') {
+              resolve({ document_id: body.document_id, status: body.status,
+                stage: body.stage, progress: body.progress })
+              return
+            }
+          } else if ('detail' in body && body.detail !== null && typeof body.detail === 'object') {
+            const detail = body.detail
+            const message = 'message' in detail && typeof detail.message === 'string'
+              ? detail.message : `HTTP ${xhr.status}`
+            const code = 'code' in detail && typeof detail.code === 'string'
+              ? detail.code : 'REQUEST_FAILED'
+            reject(new ApiError(message, code, xhr.status))
+            return
+          }
+        }
+        reject(new ApiError(`HTTP ${xhr.status}`, 'REQUEST_FAILED', xhr.status))
       } catch {
-        reject(new ApiError(`HTTP ${xhr.status}`))
+        reject(new ApiError(`HTTP ${xhr.status}`, 'REQUEST_FAILED', xhr.status))
       }
     }
     const form = new FormData()
     form.append('file', file)
     xhr.send(form)
-  })
+  }))
 }
 
 export async function reprocessDocument(bankId: string, docId: string): Promise<void> {

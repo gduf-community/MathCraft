@@ -7,8 +7,63 @@ import unittest
 
 from test_auth_seed import AuthCommandCase
 
+from app.auth_validators import normalize_email, normalize_user_no
+
 
 class MigrationCommandTests(AuthCommandCase):
+    def test_invalid_login_keys_block_release_without_loading_configuration(self) -> None:
+        """CLI 必须采用登录键真实校验，并保持配置与凭据完全不被导入。"""
+        (self.backend / "app" / "config.py").write_text(
+            'raise RuntimeError("audit imported configuration")\n', encoding="utf-8",
+        )
+        (self.backend / "app" / "local_secrets.py").write_text(
+            'raise RuntimeError("audit imported credentials")\n', encoding="utf-8",
+        )
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("CREATE TABLE users (email TEXT, email_normalized TEXT, "
+                       "email_verified_at TEXT, user_no TEXT, role TEXT, identity TEXT, "
+                       "auth_version INTEGER)")
+            cases = [
+                ("not-an-address", "000T", "email_invalid"),
+                ("person@example", "000T", "email_invalid"),
+                ("a@.example.test", "000T", "email_invalid"),
+                ("a@example..test", "000T", "email_invalid"),
+                ("a@example.test.", "000T", "email_invalid"),
+                ("a" * 116 + "@example.test", "000T", "email_invalid"),
+                ("bad\x00@example.test", "000T", "email_invalid"),
+                ("bad\x1f@example.test", "000T", "email_invalid"),
+                ("bad\x7f@example.test", "000T", "email_invalid"),
+                (b"person@example.test", "000T", "email_invalid"),
+                ("person@example.test", "x" * 33, "user_no_invalid"),
+                ("person@example.test", "A B", "user_no_invalid"),
+                ("a\u0080@example.test", "000T", "email_invalid"),
+                ("a@example\u009f.test", "000T", "email_invalid"),
+                ("person@example.test", "A\u3000B", "user_no_invalid"),
+                ("person@example.test", "A\u00a0B", "user_no_invalid"),
+                ("person@example.test", "A\u0080B", "user_no_invalid"),
+                ("person@example.test", "A\x00B", "user_no_invalid"),
+                ("person@example.test", "A\x1fB", "user_no_invalid"),
+                ("person@example.test", "A\x7fB", "user_no_invalid"),
+                ("person@example.test", b"000T", "user_no_invalid"),
+            ]
+            for email, user_no, counter in cases:
+                with self.subTest(counter=counter, email_type=type(email).__name__,
+                                  number_type=type(user_no).__name__):
+                    db.execute("DELETE FROM users")
+                    db.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                        email, email, "2026-01-01T00:00:00+00:00", user_no,
+                        "teacher", "教师", 0,
+                    ))
+                    db.commit()
+                    before = self.database.read_bytes()
+                    result = self.command("auth_migration.py", "audit", "--operator-confirmed",
+                                          "--database", str(self.database))
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn(f'"{counter}": 1', result.stdout)
+                    self.assertEqual(self.database.read_bytes(), before)
+                    self.assert_private(result)
+                    self.assertNotIn("person@example.test", result.stdout + result.stderr)
+
     def test_missing_operator_acknowledgement_never_opens_database(self) -> None:
         result = self.command("auth_migration.py", "audit", "--database", str(self.database))
         self.assertEqual(result.returncode, 2)
@@ -111,6 +166,61 @@ class MigrationCommandTests(AuthCommandCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(self.database.exists())
         self.assert_private(result)
+
+
+class LoginIdentifierValidationTests(unittest.TestCase):
+    """共享纯校验的拒绝边界与既有规范化行为。"""
+
+    def test_user_numbers_reject_unicode_whitespace_and_controls(self) -> None:
+        """内部 Unicode 空白和 C0、DEL、C1 控制字符均不能作为学工号。"""
+        separators = (
+            " ", "\t", "\n", "\x00", "\x1f", "\x7f", "\u0080", "\u0085", "\u009f",
+            "\u00a0", "\u1680", "\u2003", "\u2028", "\u2029", "\u202f", "\u3000",
+        )
+        for separator in separators:
+            with self.subTest(codepoint=f"U+{ord(separator):04X}"):
+                with self.assertRaisesRegex(ValueError, "学工号"):
+                    normalize_user_no(f"A{separator}B")
+        for value in ("\u0080AB", "AB\u009f", "x" * 33):
+            with self.subTest(value=ascii(value)):
+                with self.assertRaisesRegex(ValueError, "学工号"):
+                    normalize_user_no(value)
+
+    def test_user_number_normalization_preserves_existing_identifiers(self) -> None:
+        """保留去边空白、空值移除、前导零、大小写及合法 Unicode 字符。"""
+        cases = (
+            (None, None), ("", None), (" \t\u3000\u00a0", None),
+            ("\u3000\u00a0000aB\u00a0\u3000", "000aB"),
+            ("000T", "000T"), ("000t", "000t"),
+            ("学号Ａ01", "学号Ａ01"), ("x" * 32, "x" * 32),
+        )
+        for value, expected in cases:
+            with self.subTest(value=ascii(value)):
+                self.assertEqual(normalize_user_no(value), expected)
+
+    def test_email_domains_reject_empty_labels(self) -> None:
+        """域名开头、内部或结尾的空标签都必须被拒绝。"""
+        for value in (
+            "a@.example.test", "a@example..test", "a@example.test.",
+            "a@sub..example.test", "a@..example.test", "a@.",
+            "a\u0080@example.test", "a@example\u009f.test",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "邮箱"):
+                    normalize_email(value)
+
+    def test_email_normalization_preserves_supported_addresses(self) -> None:
+        """仅折叠大小写并去边空白，保留本地点号、加号及已有域名兼容性。"""
+        cases = (
+            ("\u3000A.B+Tag@Sub.Example.TEST\u00a0", "a.b+tag@sub.example.test"),
+            ("a@sub.example.test", "a@sub.example.test"),
+            ("a@sub_domain.example.test", "a@sub_domain.example.test"),
+            ("用户@例子.测试", "用户@例子.测试"),
+            ("a" * 115 + "@example.test", "a" * 115 + "@example.test"),
+        )
+        for value, expected in cases:
+            with self.subTest(value=ascii(value)):
+                self.assertEqual(normalize_email(value), expected)
 
 
 if __name__ == "__main__":

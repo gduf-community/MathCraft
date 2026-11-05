@@ -3,6 +3,8 @@ import { apiUrl } from './urls'
 import type { ApiUser, LoginResult } from './backend'
 
 let accessToken = ''
+// 仅用于重试撤销，绝不参与业务认证或刷新；新显式登录成功后才丢弃它。
+let pendingLogoutToken = ''
 let expiresAt = 0
 let generation = 0
 let refreshFlight: { generation: number; promise: Promise<void> } | undefined
@@ -78,6 +80,7 @@ export async function establishSession<T>(action: () => Promise<unknown>, map: (
     const result = parseLoginResult(await action())
     const mapped = map(result)
     assertCurrent(started)
+    pendingLogoutToken = ''
     installSession(result)
     return mapped
   })
@@ -123,6 +126,7 @@ async function withSessionLock<T>(action: () => Promise<T>): Promise<T> {
   return navigator.locks.request('mathcraft-refresh', action)
 }
 export async function refreshSession(): Promise<void> {
+  if (pendingLogoutToken) throw new ApiError('注销尚未确认，请重试退出或重新登录', 'SESSION_ENDED', 401)
   if (refreshFlight?.generation === generation) return refreshFlight.promise
   const started = generation
   const expected = principal
@@ -149,6 +153,36 @@ export async function refreshSession(): Promise<void> {
 export async function ensureSession(): Promise<void> {
   if (accessToken && Date.now() >= expiresAt - 15000) await refreshSession()
   if (!accessToken) throw new ApiError('请重新登录', 'SESSION_ENDED', 401)
+}
+/** 为 XHR 等非 fetch 操作复用认证代次保护，只重试明确的过期拒绝。 */
+export async function authenticatedOperation<T>(action: (token: string) => Promise<T>): Promise<T> {
+  const started = generation
+  await ensureSession()
+  assertCurrent(started)
+  const sentToken = accessToken
+  try {
+    const result = await action(sentToken)
+    assertCurrent(started)
+    return result
+  } catch (error: unknown) {
+    assertCurrent(started)
+    if (!(error instanceof ApiError) || error.status !== 401) throw error
+    if (error.code !== 'ACCESS_TOKEN_EXPIRED') {
+      clearSession()
+      throw error
+    }
+    if (accessToken === sentToken) await refreshSession()
+    assertCurrent(started)
+    try {
+      const result = await action(accessToken)
+      assertCurrent(started)
+      return result
+    } catch (retryError: unknown) {
+      assertCurrent(started)
+      if (retryError instanceof ApiError && retryError.status === 401) clearSession()
+      throw retryError
+    }
+  }
 }
 export async function sessionFetch(path: string, init: RequestInit = {}, authenticated = true): Promise<Response> {
   if (authenticated && accessToken && Date.now() >= expiresAt - 15000) await refreshSession()
@@ -187,12 +221,17 @@ export async function request<T>(path: string, init: RequestInit = {}, authentic
   return result
 }
 export async function logoutSession(): Promise<void> {
-  clearSession()
+  // Cookie 跨标签共享，注销必须绑定本标签原始 access sid，不能刷新或匿名注销。
+  const token = accessToken || pendingLogoutToken
+  pendingLogoutToken = token
+  clearSession(false)
+  if (!token) return
   const started = generation
   await withSessionLock(async () => {
     assertCurrent(started)
     await fetchAuthConfig()
     assertCurrent(started)
-    await request<void>('/api/auth/logout', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken }, body: '{}' }, false)
+    await request<void>('/api/auth/logout', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken, Authorization: 'Bearer ' + token }, body: '{}' }, false)
+    if (pendingLogoutToken === token) pendingLogoutToken = ''
   })
 }

@@ -9,7 +9,7 @@ import '../../styles/login.css'
 type Mode = 'email' | 'password' | 'register' | 'reset'
 const titles: Record<Mode, string> = { email: '欢迎回来', password: '欢迎回来', register: '创建你的账号', reset: '找回密码' }
 export default function LoginPage() {
-  const { signIn, restoreError, restore } = useAuth()
+  const { signIn, restoreError, logoutError, restore, logout } = useAuth()
   const [mode, setMode] = useState<Mode>('email')
   const [role, setRole] = useState<AuthRole>('student')
   const [email, setEmail] = useState('')
@@ -60,6 +60,12 @@ export default function LoginPage() {
       // 错码、网络错误均不清空两个密码；只在成功或离开流程时清理。
     } finally { setBusy(false); setToken(''); setEpoch(n => n + 1) }
   }
+  async function retryLogout() {
+    setBusy(true)
+    try { await logout() }
+    catch (reason: unknown) { setStatus(reason instanceof Error ? reason.message : '服务端退出尚未确认') }
+    finally { setBusy(false) }
+  }
   async function fillDevelopment(nextRole: AuthRole) {
     setBusy(true); setStatus('')
     try {
@@ -73,6 +79,7 @@ export default function LoginPage() {
     <div className="login-layout"><section className="login-intro"><div className="login-intro__rule" aria-hidden="true" /><h2>从知识库<br />到成套题目</h2><p>上传课件与教材，按章节、难度和题型生成题干与解析，再一键成卷发布。</p></section>
       <section className="login-panel" aria-labelledby="login-title"><div className="login-halo" aria-hidden="true" /><div className="login-card">
         <div className="login-card__head"><h1 id="login-title">{titles[mode]}</h1><p className="login-lede">{mode === 'reset' ? '使用绑定邮箱验证身份，重置后需重新登录' : '教师与学生的独立工作空间'}</p></div>
+        {logoutError && <div role="alert" className="auth-notice">{logoutError}<button type="button" disabled={busy} onClick={() => void retryLogout()}>重试退出</button></div>}
         {restoreError && <div role="alert" className="auth-notice">{restoreError}<button type="button" disabled={busy} onClick={restore}>重试恢复</button></div>}
         <nav className="auth-modes" aria-label="认证方式">{(['email', 'password', 'register'] as const).map(item => <button key={item} type="button" aria-pressed={mode === item} disabled={busy} onClick={() => switchMode(item)}>{item === 'email' ? '邮箱码登录' : item === 'password' ? '学工号登录' : '注册账号'}</button>)}</nav>
         <form className="login-form auth-form" onSubmit={event => void submit(event)}>

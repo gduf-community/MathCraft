@@ -1,16 +1,18 @@
 /** 启动时仅凭 HttpOnly Cookie 恢复，不信任任何旧持久化凭据。 */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { fetchAuthUser, logout as authLogout } from '../api/auth'
 import type { AuthUser } from '../api/auth'
 import { ApiError, onSessionCleared, refreshSession } from '../api/session'
-interface AuthContextValue { user: AuthUser | null; restoring: boolean; restoreError: string; restore: () => void; signIn: (user: AuthUser) => void; logout: () => Promise<void> }
+interface AuthContextValue { user: AuthUser | null; restoring: boolean; restoreError: string; logoutError: string; restore: () => void; signIn: (user: AuthUser) => void; logout: () => Promise<void> }
 const AuthContext = createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [restoring, setRestoring] = useState(true)
   const [restoreError, setRestoreError] = useState('')
+  const [logoutError, setLogoutError] = useState('')
   const [attempt, setAttempt] = useState(0)
+  const authIntent = useRef(0)
   useEffect(() => onSessionCleared(() => setUser(null)), [])
   useEffect(() => {
     let active = true
@@ -21,9 +23,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { active = false }
   }, [attempt])
   const restore = useCallback(() => { setRestoring(true); setRestoreError(''); setAttempt(n => n + 1) }, [])
-  const signIn = useCallback((fresh: AuthUser) => { setUser(fresh); setRestoreError('') }, [])
-  const logout = useCallback(async () => { await authLogout() }, [])
-  const value = useMemo(() => ({ user, restoring, restoreError, restore, signIn, logout }), [user, restoring, restoreError, restore, signIn, logout])
+  const signIn = useCallback((fresh: AuthUser) => { authIntent.current += 1; setUser(fresh); setRestoreError(''); setLogoutError('') }, [])
+  const logout = useCallback(async () => {
+    const intent = ++authIntent.current
+    setLogoutError('')
+    try { await authLogout() }
+    catch (error: unknown) {
+      if (intent !== authIntent.current) return
+      setLogoutError('本地已退出，但服务端撤销尚未确认，请重试退出。')
+      throw error
+    }
+  }, [])
+  const value = useMemo(() => ({ user, restoring, restoreError, logoutError, restore, signIn, logout }), [user, restoring, restoreError, logoutError, restore, signIn, logout])
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 export function useAuth(): AuthContextValue {

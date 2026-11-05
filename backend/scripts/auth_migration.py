@@ -21,6 +21,10 @@ from pathlib import Path
 import sqlite3
 import sys
 
+# 直接执行脚本时只定位源码包，纯校验模块不导入应用配置。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.auth_validators import normalize_email, normalize_user_no  # noqa: E402
+
 
 REQUIRED_COLUMNS = {
     "email", "email_normalized", "email_verified_at", "user_no", "role", "identity",
@@ -60,29 +64,41 @@ def audit(database: Path) -> dict[str, int]:
         ).fetchall()
     counts.update({
         "total": len(rows), "missing_email": 0, "unverified_email": 0,
-        "email_not_normalized": 0, "email_conflicts": 0,
-        "user_no_not_normalized": 0, "user_no_conflicts": 0,
+        "email_invalid": 0, "email_not_normalized": 0, "email_conflicts": 0,
+        "user_no_invalid": 0, "user_no_not_normalized": 0, "user_no_conflicts": 0,
         "role_identity_invalid": 0, "auth_version_invalid": 0,
     })
     emails: Counter[str] = Counter()
     numbers: Counter[str] = Counter()
     for email, normalized, verified_at, user_no, role, identity, version in rows:
-        # 此处审计历史存储是否符合登录键策略，不替代注册入口的输入校验器。
-        canonical = email.strip().lower() if isinstance(email, str) else ""
-        if not canonical:
+        if email is None or (isinstance(email, str) and not email.strip()):
             counts["missing_email"] += 1
+        elif not isinstance(email, str):
+            counts["email_invalid"] += 1
         else:
-            emails[canonical] += 1
-            if email != canonical or normalized != canonical:
-                counts["email_not_normalized"] += 1
+            try:
+                canonical = normalize_email(email)
+            except ValueError:
+                counts["email_invalid"] += 1
+            else:
+                emails[canonical] += 1
+                if email != canonical or normalized != canonical:
+                    counts["email_not_normalized"] += 1
         if not _verified(verified_at):
             counts["unverified_email"] += 1
         if user_no is not None:
-            number = user_no.strip() if isinstance(user_no, str) else ""
-            if not number or number != user_no:
-                counts["user_no_not_normalized"] += 1
-            if number:
-                numbers[number] += 1
+            if not isinstance(user_no, str):
+                counts["user_no_invalid"] += 1
+            else:
+                try:
+                    number = normalize_user_no(user_no)
+                except ValueError:
+                    counts["user_no_invalid"] += 1
+                else:
+                    if not number or number != user_no:
+                        counts["user_no_not_normalized"] += 1
+                    if number:
+                        numbers[number] += 1
         if role not in ROLE_IDENTITIES or identity != ROLE_IDENTITIES.get(role):
             counts["role_identity_invalid"] += 1
         if type(version) is not int or version < 0:

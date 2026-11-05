@@ -1,8 +1,9 @@
-"""认证输入：严格拒绝多余字段与安全资料旁路。"""
+"""认证请求与响应契约：严格限制输入并描述真实输出。"""
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.user import UserPayload
 from app.services.auth import normalize_email, normalize_user_no, validate_password
 
 Role = Literal["teacher", "student"]
@@ -118,3 +119,58 @@ class ModelSettingsBody(BaseModel):
     # None = 不修改；空字符串 = 清除
     deepseek_api_key: str | None = Field(default=None, max_length=128)
     mineru_token: str | None = Field(default=None, max_length=128)
+
+
+class AuthConfig(BaseModel):
+    """公开认证能力与双提交 CSRF 令牌，不包含服务端密钥。"""
+
+    site_key: str
+    csrf_token: str
+    methods: list[Literal["email_code", "user_no_password"]]
+    development_accounts_enabled: bool
+    available: bool
+
+
+class EmailCodeResult(BaseModel):
+    """发码统一受理结果，不泄露邮箱是否已注册。"""
+
+    challenge_id: str
+    expires_in: int
+    retry_after: int
+
+
+class LoginResult(BaseModel):
+    """注册、登录与刷新共用的短期访问凭证和用户资料。"""
+
+    access_token: str
+    token_type: Literal["bearer"]
+    expires_in: int
+    user: UserPayload
+
+
+class CurrentUserResult(BaseModel):
+    """当前登录用户，保持既有 user 外层对象。"""
+
+    user: UserPayload
+
+
+class DevelopmentAccount(BaseModel):
+    """仅受控开发环境提供的示例账号。"""
+
+    role: Role
+    user_no: str
+    password: str
+
+
+class ErrorDetail(BaseModel):
+    """实际业务错误；额外上下文保持兼容，不返回请求输入。"""
+
+    model_config = ConfigDict(extra="allow")
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    """统一脱敏错误外层，422 不使用默认验证错误数组。"""
+
+    detail: ErrorDetail

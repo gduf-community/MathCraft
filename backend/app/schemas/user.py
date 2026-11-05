@@ -1,4 +1,5 @@
-"""个人资料请求模型。"""
+"""个人资料请求与响应模型。"""
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -15,3 +16,26 @@ class UserUpdateBody(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("显示名称不能为空")
         return value.strip() if value is not None else None
+
+
+class UserPayload(BaseModel):
+    """真实公开用户字段；历史与未填写的资料允许 null，角色严格限定。"""
+
+    id: str
+    account: str
+    role: Literal["teacher", "student"]
+    identity: Literal["教师", "学生"]
+    display_name: str
+    gender: str | None
+    phone: str | None
+    email: str | None
+    user_no: str | None
+    school: str | None
+    avatar_url: str | None
+
+
+class EmailChangeResult(BaseModel):
+    """双邮箱验证事务的标识与有效期。"""
+
+    change_id: str
+    expires_in: int

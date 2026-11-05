@@ -124,3 +124,29 @@ def test_email_change_requires_both_codes_and_revokes_sessions(client, delivery)
     challenge, code = issue(client, delivery, "changed@example.com", "login")
     assert client.post("/api/auth/login/email", json={"email": "changed@example.com",
         "challenge_id": challenge, "code": code, "role": "teacher"}).status_code == 200
+
+
+def test_profile_contract_preserves_null_security_fields(client, delivery):
+    """未填写资料和删除学工号在真实响应中保持 null，且身份始终明确。"""
+    from test_auth import PASSWORD, bearer, register
+
+    result = register(client, delivery, role="student")
+    expected_keys = {"id", "account", "role", "identity", "display_name", "gender", "phone",
+                     "email", "user_no", "school", "avatar_url"}
+    user = result["user"]
+    assert set(user) == expected_keys
+    assert user["role"] == "student"
+    assert user["identity"] == "学生"
+    for field in ("gender", "phone", "user_no", "school", "avatar_url"):
+        assert user[field] is None
+    headers = bearer(result)
+    updated = client.put("/api/users/me", headers=headers, json={"display_name": "学生姓名"})
+    assert updated.status_code == 200, updated.text
+    assert set(updated.json()) == expected_keys
+    assert updated.json()["user_no"] is None
+    removed = client.put("/api/users/me/user-no", headers=headers,
+                         json={"user_no": None, "current_password": PASSWORD})
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["user_no"] is None
+    assert removed.json()["role"] == "student"
+    assert client.get("/api/auth/me", headers=headers).json()["user"] == removed.json()

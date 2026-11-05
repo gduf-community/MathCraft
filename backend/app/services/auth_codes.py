@@ -1,9 +1,11 @@
 """Redis Lua 原子验证码与 SQL 唯一 proof；SQL 回滚后可安全重试。"""
 import hashlib
 import hmac
+import logging
 import secrets
 
 import redis
+from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -11,6 +13,8 @@ from app.errors import AppError
 from app.models import AuthProof
 from app.services import auth, cache
 from app.services.auth_delivery import MailSender
+
+logger = logging.getLogger(__name__)
 
 ISSUE = """
 local cool = redis.call('TTL', KEYS[1])
@@ -67,9 +71,40 @@ def _keys(email: str, purpose: str) -> tuple[str, str, str]:
     return f"auth:otp:cool:{scope}", f"auth:otp:hour:{scope}", f"auth:otp:latest:{scope}"
 
 
+def _deliver(challenge: str, latest: str, email: str, code: str, purpose: str,
+             sender: MailSender, deliver: bool) -> None:
+    """只激活发送成功且仍为最新的挑战；日志不包含收件人与供应商错误。"""
+    r = cache.get_redis()
+    challenge_key = f"auth:otp:challenge:{challenge}"
+    if not deliver:
+        r.delete(challenge_key)
+        return
+    try:
+        sender.send_code(email, code, purpose)
+    except Exception:
+        r.delete(challenge_key)
+        logger.warning("认证邮件发送失败，验证码未激活")
+        if purpose not in {"login", "reset_password"}:
+            raise AppError(
+                "EMAIL_SERVICE_UNAVAILABLE", "邮件发送失败，请稍后重试", 503,
+            ) from None
+    else:
+        r.eval(ACTIVATE, 2, latest, challenge_key, challenge)
+
+
+def _deliver_after_response(challenge: str, latest: str, email: str, code: str,
+                            purpose: str, sender: MailSender, deliver: bool) -> None:
+    """响应后发送失败不能改变 HTTP 状态，也不能输出凭据或供应商异常。"""
+    try:
+        _deliver(challenge, latest, email, code, purpose, sender, deliver)
+    except redis.RedisError:
+        logger.warning("认证邮件后台状态更新失败")
+
+
 def issue(email: str, purpose: str, binding: str, ip: str,
-          sender: MailSender, deliver: bool = True) -> dict[str, str | int]:
-    """先保留限额和 pending challenge，邮件成功后才允许消费。"""
+          sender: MailSender, deliver: bool = True,
+          background_tasks: BackgroundTasks | None = None) -> dict[str, str | int]:
+    """先保留限额；登录/重置在响应后发送，邮件成功才激活验证码。"""
     challenge = secrets.token_urlsafe(32)
     code = generate_code()
     cool, hour, latest = _keys(email, purpose)
@@ -83,15 +118,12 @@ def issue(email: str, purpose: str, binding: str, ip: str,
             digest, binding, auth.now() + settings.auth_code_ttl_seconds))
         if retry:
             raise AppError("RATE_LIMITED", "验证码发送过频，请稍后重试", 429, retry_after=retry)
-        if deliver:
-            try:
-                sender.send_code(email, code, purpose)
-            except Exception as exc:
-                r.delete(challenge_key)
-                raise AppError("EMAIL_SERVICE_UNAVAILABLE", "邮件发送失败，请稍后重试", 503) from exc
-            r.eval(ACTIVATE, 2, latest, challenge_key, challenge)
+        if background_tasks is not None and purpose in {"login", "reset_password"}:
+            background_tasks.add_task(
+                _deliver_after_response, challenge, latest, email, code, purpose, sender, deliver,
+            )
         else:
-            r.delete(challenge_key)
+            _deliver(challenge, latest, email, code, purpose, sender, deliver)
     except redis.RedisError as exc:
         raise AppError("AUTH_SERVICE_UNAVAILABLE", "验证码服务不可用", 503) from exc
     return {"challenge_id": challenge, "expires_in": settings.auth_code_ttl_seconds,

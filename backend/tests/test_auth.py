@@ -145,3 +145,76 @@ def test_reset_unregistered_never_creates_account(client, delivery):
 
 def test_legacy_token_rejected(client):
     assert client.get("/api/auth/me", headers={"Authorization": "Bearer mc_old"}).status_code == 401
+
+
+def test_openapi_validation_error_matches_redacted_http_detail(client):
+    """动态契约必须描述全局脱敏错误，而不是 FastAPI 默认错误数组。"""
+    spec = app.openapi()
+    response = client.post("/api/auth/register", json={"password": "DO-NOT-ECHO"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": {
+        "code": "VALIDATION_ERROR", "message": "请求字段格式错误或包含不允许的字段"}}
+    assert "DO-NOT-ECHO" not in response.text
+    errors = []
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            error = operation.get("responses", {}).get("422")
+            if error is not None:
+                schema = error["content"]["application/json"]["schema"]
+                errors.append((path, method))
+                assert schema == {"$ref": "#/components/schemas/ErrorResponse"}, (path, method)
+    assert errors
+    components = spec["components"]["schemas"]
+    detail = components["ErrorResponse"]["properties"]["detail"]
+    assert detail == {"$ref": "#/components/schemas/ErrorDetail"}
+    assert set(components["ErrorDetail"]["required"]) == {"code", "message"}
+
+
+def test_openapi_auth_responses_are_typed_and_preserve_nullable_user_fields():
+    """消费方可依赖完整响应结构、null 资料及受限身份。"""
+    spec = app.openapi()
+    expected = {
+        ("/api/auth/config", "get", "200"): "AuthConfig",
+        ("/api/auth/email-code", "post", "202"): "EmailCodeResult",
+        ("/api/auth/register", "post", "201"): "LoginResult",
+        ("/api/auth/login/email", "post", "200"): "LoginResult",
+        ("/api/auth/login/password", "post", "200"): "LoginResult",
+        ("/api/auth/refresh", "post", "200"): "LoginResult",
+        ("/api/auth/me", "get", "200"): "CurrentUserResult",
+        ("/api/users/me", "put", "200"): "UserPayload",
+        ("/api/users/me/email-change", "post", "201"): "EmailChangeResult",
+        ("/api/users/me/user-no", "put", "200"): "UserPayload",
+    }
+    for (path, method, status), model in expected.items():
+        schema = spec["paths"][path][method]["responses"][status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": f"#/components/schemas/{model}"}, (path, method)
+    user = spec["components"]["schemas"]["UserPayload"]
+    assert user["properties"]["role"]["enum"] == ["teacher", "student"]
+    assert user["properties"]["identity"]["enum"] == ["教师", "学生"]
+    for name in ("gender", "phone", "email", "user_no", "school", "avatar_url"):
+        assert {"type": "null"} in user["properties"][name]["anyOf"]
+        assert name in user["required"]
+    for path, method in (("/api/auth/logout", "post"), ("/api/auth/password/reset", "post"),
+                         ("/api/auth/password", "put"), ("/api/users/me/email", "put")):
+        assert "content" not in spec["paths"][path][method]["responses"]["204"]
+
+
+def test_openapi_cookie_auth_declares_security_inputs(client):
+    """刷新依赖必需刷新 Cookie，退出依赖必需访问凭证但允许无刷新 Cookie。"""
+    spec = app.openapi()
+    for path in ("/api/auth/refresh", "/api/auth/logout"):
+        operation = spec["paths"][path]["post"]
+        parameters = {(item["in"], item["name"]): item for item in operation["parameters"]}
+        for location, name in (("header", "Origin"), ("header", "X-CSRF-Token"),
+                               ("cookie", "mc_csrf")):
+            assert parameters[(location, name)]["required"], (path, name)
+        refresh = parameters[("cookie", "mc_refresh")]
+        assert refresh["required"] is (path == "/api/auth/refresh")
+        if path.endswith("logout"):
+            assert parameters[("header", "Authorization")]["required"]
+    headers = csrf(client)
+    missing_cookie = client.post("/api/auth/refresh", json={}, headers=headers)
+    assert missing_cookie.status_code == 422
+    assert missing_cookie.json()["detail"]["code"] == "VALIDATION_ERROR"
+    missing_csrf = client.post("/api/auth/logout", json={})
+    assert missing_csrf.status_code == 403

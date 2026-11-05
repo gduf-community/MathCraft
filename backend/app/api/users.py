@@ -16,7 +16,7 @@ from app.models import EmailChange
 from app.models.base import new_id
 from app.services import auth as auth_service
 from app.services import auth_codes
-from app.schemas.user import UserUpdateBody
+from app.schemas.user import EmailChangeResult, UserPayload, UserUpdateBody
 from app.services.model_settings import get_effective_mineru_token, get_setting, mask, user_payload
 
 router = APIRouter(prefix="/api/users/me", tags=["users"])
@@ -37,7 +37,7 @@ AVATAR_TYPES = {
 }
 
 
-@router.put("")
+@router.put("", response_model=UserPayload)
 def update_profile(
     body: UserUpdateBody,
     user: User = Depends(get_current_user),
@@ -150,7 +150,7 @@ def test_mineru(user: User = Depends(get_current_user), db: Session = Depends(ge
     return {"ok": True, "limits": MINERU_LIMITS}
 
 
-@router.post("/email-change", status_code=201)
+@router.post("/email-change", status_code=201, response_model=EmailChangeResult)
 def start_email_change(body: EmailChangeBody, user: User = Depends(get_current_user),
                        db: Session = Depends(get_db)):
     """建立十分钟双邮箱快照；后续发码由事务确定真实收件人。"""
@@ -169,7 +169,7 @@ def start_email_change(body: EmailChangeBody, user: User = Depends(get_current_u
     return {"change_id": change.id, "expires_in": 600}
 
 
-@router.put("/email", status_code=204)
+@router.put("/email", status_code=204, response_model=None)
 def commit_email_change(body: EmailCommitBody, response: Response,
                         user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """双 proof、版本、邮箱写入和全部会话撤销位于同一事务。"""
@@ -194,7 +194,7 @@ def commit_email_change(body: EmailCommitBody, response: Response,
     clear_refresh(response)
 
 
-@router.put("/user-no")
+@router.put("/user-no", response_model=UserPayload)
 def change_user_no(body: UserNoBody, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
     """学工号增改删验证当前密码和原认证版本，保留用户身份归属。"""

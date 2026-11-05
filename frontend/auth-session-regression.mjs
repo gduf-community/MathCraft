@@ -1,5 +1,5 @@
-/* global process, console, URL, Response */
-/** HTTP 会话边界回归：使用真实会话模块，仅替换浏览器和网络。 */
+/* global process, console, URL, Response, FormData, Blob, Headers */
+/** HTTP 与 XHR 上传会话边界回归：使用真实模块，仅替换浏览器和网络。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
@@ -30,7 +30,15 @@ class TestChannel {
 globalThis.BroadcastChannel = TestChannel
 const source = (await readFile(new URL('./src/api/session.ts', import.meta.url), 'utf8')).replace("import { apiUrl } from './urls'", 'const apiUrl = path => path')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText
-const session = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
+const sessionModuleUrl = 'data:text/javascript;base64,' + Buffer.from(compiled).toString('base64')
+const session = await import(sessionModuleUrl)
+const backendSource = (await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8'))
+  .replace("import { apiUrl } from './urls'", 'const apiUrl = path => path')
+  .replaceAll("from './session'", `from '${sessionModuleUrl}'`)
+const backendCompiled = ts.transpileModule(backendSource, { compilerOptions: {
+  module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020,
+} }).outputText
+const { uploadDocument } = await import('data:text/javascript;base64,' + Buffer.from(backendCompiled).toString('base64'))
 const user = (id, role = 'student') => ({ id, account: id, role, identity: role === 'teacher' ? '教师' : '学生', display_name: id })
 const result = (id, role) => ({ access_token: 'token-' + id, token_type: 'bearer', expires_in: 900, user: user(id, role) })
 const config = { site_key: 'test-key', csrf_token: 'test-csrf', available: true }
@@ -132,3 +140,125 @@ await login(result('A'))
 globalThis.fetch = async () => response({ ...config, csrf_token: 42 })
 await assert.rejects(session.getAuthConfig())
 console.log('PASS: malformed auth/config, atomic install, identity switch no replay, stale refresh success/failure')
+
+// 必须走真实 uploadDocument / authenticatedOperation，而非单独测试伪造的重试器。
+class TestXHR {
+  static requests = []
+  static sendAction
+  upload = {}
+  headers = new Headers()
+  status = 0
+  responseText = ''
+  open(method, path) { this.method = method; this.path = path }
+  setRequestHeader(name, value) { this.headers.set(name, value) }
+  send(body) {
+    this.body = body
+    TestXHR.requests.push(this)
+    TestXHR.sendAction(this)
+  }
+  respond(status, body) {
+    this.status = status
+    this.responseText = JSON.stringify(body)
+    this.onload()
+  }
+}
+globalThis.XMLHttpRequest = TestXHR
+const uploadFile = new Blob(['synthetic upload regression'], { type: 'text/plain' })
+const uploaded = { document_id: 'document-A', status: 'pending', stage: 'uploaded', progress: 0 }
+const authFailure = code => ({ detail: { code, message: code } })
+let uploadRefreshes = 0
+async function prepareUpload(auth = result('A'), refreshed = result('A')) {
+  await login(auth)
+  uploadRefreshes = 0
+  TestXHR.requests = []
+  globalThis.fetch = async path => {
+    if (path === '/api/auth/config') return response(config)
+    assert.equal(path, '/api/auth/refresh', '上传认证只能访问合成刷新端点')
+    uploadRefreshes += 1
+    return response(refreshed)
+  }
+}
+function uploadRequestAssertions(xhr, bearer) {
+  assert.equal(xhr.method, 'POST')
+  assert.equal(xhr.path, '/api/banks/bank-A/documents')
+  assert.equal(xhr.withCredentials, true)
+  assert.equal(xhr.headers.get('Authorization'), bearer)
+  assert.equal(xhr.headers.has('Content-Type'), false, 'multipart boundary 应由浏览器生成')
+  assert.ok(xhr.body instanceof FormData)
+  assert.equal(xhr.body.get('file').size, uploadFile.size)
+}
+
+// 令牌临近过期时先续期，再创建 XHR，不发送已知过期的 token。
+await prepareUpload({ ...result('A'), expires_in: 1 }, { ...result('A'), access_token: 'token-A-preflight' })
+TestXHR.sendAction = xhr => {
+  assert.equal(uploadRefreshes, 1, '发送上传前必须完成预刷新')
+  uploadRequestAssertions(xhr, 'Bearer token-A-preflight')
+  xhr.respond(200, uploaded)
+}
+assert.deepEqual(await uploadDocument('bank-A', uploadFile), uploaded)
+assert.equal(TestXHR.requests.length, 1)
+
+// 明确的 401 ACCESS_TOKEN_EXPIRED 才允许刷新并重试一次，保留两次的进度回调。
+await prepareUpload(result('A'), { ...result('A'), access_token: 'token-A-refreshed' })
+const uploadProgress = []
+TestXHR.sendAction = xhr => {
+  const first = TestXHR.requests.length === 1
+  uploadRequestAssertions(xhr, first ? 'Bearer token-A' : 'Bearer token-A-refreshed')
+  xhr.upload.onprogress({ lengthComputable: false, loaded: 1, total: 0 })
+  xhr.upload.onprogress({ lengthComputable: true, loaded: first ? 1 : 4, total: 4 })
+  xhr.respond(first ? 401 : 200, first ? authFailure('ACCESS_TOKEN_EXPIRED') : uploaded)
+}
+assert.deepEqual(await uploadDocument('bank-A', uploadFile, percent => uploadProgress.push(percent)), uploaded)
+assert.equal(uploadRefreshes, 1)
+assert.equal(TestXHR.requests.length, 2)
+assert.deepEqual(uploadProgress, [25, 100])
+assert.equal(await TestXHR.requests[1].body.get('file').text(), await uploadFile.text())
+
+// 第二次上传仍过期时停止；不能循环刷新，也不能重放第三次写入。
+await prepareUpload()
+TestXHR.sendAction = xhr => xhr.respond(401, authFailure('ACCESS_TOKEN_EXPIRED'))
+await assert.rejects(uploadDocument('bank-A', uploadFile), error => error instanceof session.ApiError && error.status === 401)
+assert.equal(uploadRefreshes, 1)
+assert.equal(TestXHR.requests.length, 2)
+
+// 撤销、非401的同名错误、未知401均不刷新或重放；错误保留HTTP状态及业务码。
+for (const [status, code] of [[401, 'SESSION_REVOKED'], [403, 'ACCESS_TOKEN_EXPIRED'], [401, 'UNAUTHORIZED']]) {
+  await prepareUpload()
+  TestXHR.sendAction = xhr => xhr.respond(status, authFailure(code))
+  await assert.rejects(uploadDocument('bank-A', uploadFile), error => error instanceof session.ApiError && error.code === code && error.status === status)
+  assert.equal(uploadRefreshes, 0)
+  assert.equal(TestXHR.requests.length, 1)
+}
+
+// 刷新Cookie若属于另一用户或角色，不以新身份重放旧上传。
+for (const changedIdentity of [result('B'), result('A', 'teacher')]) {
+  await prepareUpload(result('A'), changedIdentity)
+  TestXHR.sendAction = xhr => xhr.respond(401, authFailure('ACCESS_TOKEN_EXPIRED'))
+  await assert.rejects(uploadDocument('bank-A', uploadFile), error => error.code === 'SESSION_IDENTITY_CHANGED')
+  assert.equal(uploadRefreshes, 1)
+  assert.equal(TestXHR.requests.length, 1)
+  assert.equal(session.getApiToken(), '')
+}
+
+// 本地身份切换/退出/跨标签失效发生后，旧401不续期；旧成功体也不能交给新身份。
+for (const endSession of [async () => { await login(result('C')) }, async () => { session.clearSession() },
+  async () => { TestChannel.listener({ data: { type: 'invalidate' } }) }]) {
+  for (const status of [401, 200]) {
+    await prepareUpload()
+    const entered = deferred()
+    TestXHR.sendAction = xhr => entered.resolve(xhr)
+    const upload = uploadDocument('bank-A', uploadFile)
+    const rejection = assert.rejects(upload, error => error instanceof session.ApiError && error.code === 'SESSION_ENDED')
+    const xhr = await entered.promise
+    await endSession()
+    const newToken = session.getApiToken()
+    const clearedBeforeResponse = cleared
+    xhr.respond(status, status === 200 ? uploaded : authFailure('ACCESS_TOKEN_EXPIRED'))
+    await rejection
+    assert.equal(uploadRefreshes, 0)
+    assert.equal(TestXHR.requests.length, 1)
+    assert.equal(session.getApiToken(), newToken, '旧上传不得清除新身份凭据')
+    assert.equal(cleared, clearedBeforeResponse, '旧上传不得清理新代次上下文')
+  }
+}
+console.log('PASS: actual uploadDocument preflight, one expired retry + progress, revoked no replay, identity and stale success isolation')

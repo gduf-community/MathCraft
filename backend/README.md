@@ -8,6 +8,7 @@
 backend/
 ├── app/
 │   ├── main.py              # 应用装配与路由注册
+│   ├── auth_validators.py   # HTTP 与离线审计共用的纯标识校验
 │   ├── config.py            # backend/.env 配置
 │   ├── db.py                # SQLite WAL、SQLAlchemy 会话和 FTS
 │   ├── deps.py              # 登录用户及角色依赖
@@ -85,3 +86,12 @@ uv run ruff check app tests
 ```
 
 测试结果、认证竞争与生产构建检查记录在实施规格中。不要为运行测试读取个人 `.env` 或 `app/local_secrets.py`。
+
+### PR #8 安全与契约修复
+
+- `/api/auth/logout` 使用 Authorization 中签名有效（允许已到期）的 access 绑定 sid；仍校验 Origin 与 CSRF。不得通过共享 Cookie 选定撤销对象，Cookie 只在同 sid 时删除，重复注销幂等。
+- 登录／重置密码发码先统一返回 202，再通过响应后任务发送邮件，避免 SMTP 慢响应或超时泄露邮箱是否存在；只有发送成功的最新挑战才激活。后台投递不是持久队列，进程退出可能丢失待发邮件，用户须等待冷却后重发。注册／邮箱换绑仍同步发送，失败返回 503，日志不含地址或供应商错误内容。
+- 历史账号审计复用认证的格式、长度及控制字符规则（含学工号 Unicode 空白、C1 控制字符和邮箱空域名标签），并保持只读、仅数量输出及发布阻断。
+- 认证与个人资料接口有显式响应模型，空值资料字段保持 null；OpenAPI 中 422 为实际 `{detail:{code,message}}`，刷新及退出声明 Cookie、Origin、CSRF 和 Bearer 要求。
+
+`backend/app/auth_validators.py` 是不加载应用配置的邮箱／学工号校验模块，认证服务保留原导出接口并复用它，离线审计直接依赖此纯模块。

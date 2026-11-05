@@ -28,6 +28,7 @@ MathCraft/
 │   │   ├── db.py                 # SQLite engine、WAL、FTS5 建表语句
 │   │   ├── deps.py               # 登录用户与权限依赖
 │   │   ├── errors.py             # 统一错误响应
+│   │   ├── auth_validators.py    # HTTP 与离线审计共用的纯标识校验
 │   │   ├── local_secrets.py      # 硅基流动与 MinerU 密钥，已被 .gitignore 忽略
 │   │   ├── local_secrets.example.py
 │   │   ├── api/                  # auth、banks、documents、generate、questions、
@@ -56,7 +57,8 @@ MathCraft/
 │   ├── pyproject.toml            # 后端独立依赖与运行配置
 │   └── uv.lock
 ├── frontend/                     # React 19 + Vite + TypeScript + Tailwind v4
-│   ├── auth-session-regression.mjs # 会话身份、认证响应及异步竞争回归
+│   ├── auth-session-regression.mjs # 会话身份、认证响应及 XHR 上传重试回归
+│   ├── logout-session-regression.mjs # 注销 Bearer 绑定及跨标签隔离回归
 │   ├── src/api/                  # 真实接口层与字段映射
 │   ├── src/components/           # 登录、导航、题库、出题、收藏、空间、组卷、个人中心
 │   │   └── settings/             # 社区保留的「设置」界面
@@ -348,3 +350,7 @@ backend\.venv\Scripts\python.exe -m pytest -q
 ```
 
 接口契约修改后重新生成根 OpenAPI 和完整 API 索引；生成器按当前全部接口标签输出，不再套用历史无鉴权目录。
+
+### PR #8 认证审查修复（2026-11-05）
+
+退出必须携带当前标签的 Bearer 和 Origin/CSRF；服务端只撤销该 sid，Cookie 仅在属于同一会话时删除，已过期但签名有效的 access 仍可用于注销；网络失败保留仅撤销用的内存凭据供重试，不假报服务端已退出。XHR 文档上传仅在明确 `ACCESS_TOKEN_EXPIRED` 时刷新重试一次，撤销或身份变化不重放。登录／找回密码发码在 SMTP 故障时仍统一 202，不激活失败验证码；注册／换邮箱保留明确 503。迁移审计必须使用与认证相同的邮箱及学工号校验。认证响应、Cookie/CSRF 输入和统一 422 错误结构以根 `openapi.json` 为准。
