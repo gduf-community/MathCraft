@@ -115,6 +115,21 @@ redis-cli -h 127.0.0.1 -p 6379 ping
 # 期望输出：PONG
 ```
 
+Windows 使用已安装的 WSL Ubuntu 时，可在 PowerShell 中先安装 Redis（仅首次需要）：
+
+```powershell
+wsl -d Ubuntu -u root -- apt-get update
+wsl -d Ubuntu -u root -- apt-get install -y redis-server redis-tools
+```
+
+日常开发在独立终端以前台方式运行 Redis，并保持该终端开启：
+
+```powershell
+wsl -d Ubuntu -u root -- sh -c 'systemctl stop redis-server && exec redis-server /etc/redis/redis.conf --daemonize no --supervised no --logfile /dev/stdout'
+```
+
+该命令先停用同端口的后台实例，再用相同配置前台运行，监听本机回环地址。此方式保持 WSL 进程存活，避免只启动后台服务后 WSL 退出，导致 Windows 后端无法连接。若使用其他发行版，请将 `Ubuntu` 替换为实际发行版名称。
+
 ### 2. 首次启动后端
 
 当前后端只读取 `backend/.env`。首次启动时执行下面的准备步骤；已有 `.env` 或 `app/local_secrets.py` 时不要覆盖：
@@ -124,9 +139,16 @@ cd backend
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 if (-not (Test-Path app/local_secrets.py)) { Copy-Item app/local_secrets.example.py app/local_secrets.py }
 uv sync
+New-Item -ItemType Directory -Force data | Out-Null
 ```
 
 然后编辑 `backend/.env`，至少配置 `INITIAL_ADMIN_ACCOUNT`、`INITIAL_ADMIN_PASSWORD`、`INITIAL_TEACHER_ACCOUNT`、`INITIAL_TEACHER_PASSWORD`、`INITIAL_STUDENT_ACCOUNT`、`INITIAL_STUDENT_PASSWORD`；可选配置 `ADMIN_CONTACT`。`app/local_secrets.py` 中的硅基流动和 MinerU 密钥可以先保留占位值，登录与账号管理可以启动，相关模型和 OCR 功能需要真实密钥。
+
+先从 Windows 后端环境验证 Redis 连通性，必须得到 `Redis: PONG`；仅在 WSL 中执行 `redis-cli ping` 不能证明 Windows 后端已经连通：
+
+```powershell
+uv run python -c "from app.services.cache import get_redis; assert get_redis().ping(); print('Redis: PONG')"
+```
 
 首次创建数据库并初始化账号：
 
@@ -152,7 +174,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 - OpenAPI 契约：`http://127.0.0.1:8000/openapi.json`
 - 上传文件与头像静态目录：`http://127.0.0.1:8000/media/...`
 
-健康检查会逐项返回 database、redis、embedding、reranker、mineru、chroma 的状态。
+健康检查返回 `database`、`redis`、`siliconflow_embedding`、`siliconflow_rerank`、`mineru_default_token` 和 `chroma`。HTTP 200 只表示探测接口已响应，需检查具体字段；登录至少需要数据库和 Redis 正常。`mineru_default_token` 仅表示已填写默认 Token，不代表 OCR 服务已验证。模型和 OCR 未配置不影响登录。
 
 ### 3. 启动前端
 
@@ -166,7 +188,14 @@ npm run dev
 
 浏览器访问 `http://localhost:5173`。前端通过 Vite 代理把 `/api` 和 `/media` 转发到 `127.0.0.1:8000`，不需要在浏览器里单独配置后端地址。
 
-### 4. 重新导出 OpenAPI 快照
+### 4. 验证启动与登录
+
+1. 在前端页面使用 `backend/.env` 中已初始化的账号与密码登录。管理员应进入管理员面板，教师和学生进入各自工作台；刷新后应保留有效登录。
+2. 登录请求为 `POST /api/auth/login`，JSON 包含 `account` 和 `password`；成功应返回 HTTP 200，后续 `GET /api/auth/me` 应返回实际账号及角色。
+3. 退出后应回到登录页，退出会话再次访问 `/api/auth/me` 应返回 401。同一账号的其他登录不受影响；错误密码应返回 401。
+4. 若登录返回 500，先检查后端日志和上面的 Redis 验证命令。数据库有账号但 Redis 未运行时，密码校验仍可通过，写入登录会话会失败。恢复 Redis 后重新登录即可，无需重复建号或重置密码。
+
+### 5. 重新导出 OpenAPI 快照
 
 接口变更后，在 `backend` 目录执行：
 
