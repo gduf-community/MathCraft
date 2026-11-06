@@ -6,7 +6,7 @@ MathCraft 是一个面向教师与学生的数学教学平台，由 FastAPI 后�
 
 后端提供账号与角色、题库协作、文档上传与解析、RAG 检索、智能出题、题目收藏、学习空间、组卷发布、学生作答、AI 批卷、催交通知和个人中心等能力。前端提供对应页面，所有业务数据都来自真实接口，不再使用前端 mock。
 
-仓库最初从 DeepTutor 裁剪而来，当前后端已经替换为独立的 FastAPI 实现，目录结构以本 README 为准。`docs/` 下保留社区早期的设计与流程资料，其中部分内容描述的是旧实现，阅读时以当前代码和根 `openapi.json` 为准。
+仓库最初从 DeepTutor 裁剪而来，当前后端已经替换为独立的 FastAPI 实现，目录结构以本 README 为准。`docs/` 下记录当前采用的设计、实现与接口资料，功能行为以当前代码和根 `openapi.json` 为准。
 
 ## 目录结构
 
@@ -20,7 +20,7 @@ MathCraft/
 ├── THIRD_PARTY_NOTICES.md        # 第三方来源与许可证正文
 ├── pyproject.toml                # 仓库级依赖、包路径、pytest/Ruff/Pyright 配置
 ├── openapi.json                  # 当前 FastAPI 应用的 OpenAPI 契约快照
-├── .env.example                  # 社区历史环境变量样例
+├── .env.example                  # 根目录历史配置样例（后端使用 backend/.env.example）
 ├── backend/                      # FastAPI 后端
 │   ├── app/
 │   │   ├── main.py               # 应用装配、路由注册、/media 静态目录
@@ -59,9 +59,7 @@ MathCraft/
 │   ├── src/styles/
 │   ├── vite.config.ts            # /api 与 /media 代理到后端
 │   └── package.json
-├── docs/                         # 当前方案及社区历史设计、API 与流程资料
-│   ├── design/用户系统功能规格.md # 历史邮箱认证方案（冲突部分已被修订）
-│   ├── design/用户系统实施规格.md # 历史实施规格（冲突部分已被修订）
+├── docs/                         # 当前设计、实现记录、API 与流程资料
 │   └── design/管理员与账号开通设计.md # 管理员开通、登录与管理面板（已实现）
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
@@ -70,7 +68,7 @@ MathCraft/
 
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
 
-用户系统于 2026-11-05 改为由管理员开通账号、只提供登录，并新增账号管理与平台信息面板，见 [管理员与账号开通设计](docs/design/管理员与账号开通设计.md)（已实现，测试受本机 Redis 状态影响）。[旧功能规格](docs/design/用户系统功能规格.md)与[旧实施规格](docs/design/用户系统实施规格.md)保留历史上下文，其中自助注册与不设管理员等冲突要求已被本轮需求取代；旧方案的其他技术设计是否沿用待确认。
+用户系统当前由管理员开通账号，只提供统一登录，并提供账号管理与平台信息面板。管理员、教师和学生的权限边界、资源成员授权、个人记录归属及显式初始化流程见 [管理员与账号开通设计](docs/design/管理员与账号开通设计.md)。
 
 ## 技术栈
 
@@ -93,9 +91,9 @@ MathCraft/
 
 ### 环境要求
 
-- Python 3.11 及以上，推荐使用 uv 管理依赖。
+- Python 3.11 及以上，必须安装 uv 管理后端依赖；可先执行 `uv --version`、`node --version` 和 `npm --version` 检查工具链。
 - Node.js 18 及以上。
-- Redis 7 及以上。Windows 可使用 Redis 的 Windows 构建版本，Linux 与 macOS 直接启动 `redis-server`。
+- Redis 7 及以上。Windows 需要自行安装 Redis 兼容实现，或通过 WSL／Docker 提供 `redis-server` 和 `redis-cli`；Linux 与 macOS 直接启动 `redis-server`。仓库不附带 Redis。
 - 可访问 DeepSeek、硅基流动与 MinerU 的网络环境。
 
 ### 1. 启动 Redis
@@ -110,20 +108,42 @@ Redis 是后端的硬依赖，登录会话、出题任务与文档入库进度�
 redis-server
 ```
 
-### 2. 启动后端
+启动后可用下面的命令确认 Redis 已响应：
+
+```powershell
+redis-cli -h 127.0.0.1 -p 6379 ping
+# 期望输出：PONG
+```
+
+### 2. 首次启动后端
+
+当前后端只读取 `backend/.env`。首次启动时执行下面的准备步骤；已有 `.env` 或 `app/local_secrets.py` 时不要覆盖：
 
 ```powershell
 cd backend
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+if (-not (Test-Path app/local_secrets.py)) { Copy-Item app/local_secrets.example.py app/local_secrets.py }
 uv sync
+```
+
+然后编辑 `backend/.env`，至少配置 `INITIAL_ADMIN_ACCOUNT`、`INITIAL_ADMIN_PASSWORD`、`INITIAL_TEACHER_ACCOUNT`、`INITIAL_TEACHER_PASSWORD`、`INITIAL_STUDENT_ACCOUNT`、`INITIAL_STUDENT_PASSWORD`；可选配置 `ADMIN_CONTACT`。`app/local_secrets.py` 中的硅基流动和 MinerU 密钥可以先保留占位值，登录与账号管理可以启动，相关模型和 OCR 功能需要真实密钥。
+
+首次创建数据库并初始化账号：
+
+```powershell
 uv run alembic upgrade head
 uv run python scripts/init_accounts.py
+```
+
+初始化命令只补建缺失的管理员、教师和学生账号；重复执行不会覆盖已有账号的资料、密码或状态，日常启动服务不会自动建号。账号创建后由管理员面板维护其他账号。登录页只填写登录账号和密码，并提示获取账号或忘记密码联系管理员。
+
+启动后端：
+
+```powershell
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-启动服务前需要显式执行一次 `uv run python scripts/init_accounts.py`。先在 `backend/.env` 配置 `INITIAL_ADMIN_ACCOUNT`、`INITIAL_ADMIN_PASSWORD`、`INITIAL_TEACHER_ACCOUNT`、`INITIAL_TEACHER_PASSWORD`、`INITIAL_STUDENT_ACCOUNT`、`INITIAL_STUDENT_PASSWORD`；可选配置 `ADMIN_CONTACT` 作为登录页联系管理员文字。初始化命令只补建缺失的管理员、教师和学生账号；重复执行不会覆盖已有账号的资料、密码或状态，日常启动服务也不会自动建号。
-
-账号创建后由管理员面板维护其他账号。登录页只填写登录账号和密码，并提示获取账号或忘记密码联系管理员。
+日常启动只需先启动 Redis，再执行上面的 `uv run uvicorn ...`；新增数据库迁移时再执行 `uv run alembic upgrade head`，需要补建配置账号时再显式执行初始化命令。
 
 后端启动后：
 
@@ -136,9 +156,11 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 ### 3. 启动前端
 
+另开终端，在首次安装依赖时使用锁文件：
+
 ```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -254,8 +276,7 @@ npm run build
 1. 后端以 SQLite 单机部署为目标，没有做多节点写入与分布式锁。
 2. Redis 不可用时，登录、出题和文档入库都无法工作。
 3. DeepSeek、硅基流动与 MinerU 依赖外网，离线环境只能运行不涉及模型的部分。
-4. `docs/` 中的设计与流程文档来自社区早期版本，可能与当前实现不一致，接口以根 `openapi.json` 为准。
-5. `docs/api.md` 及 `tools/` 下的文档生成脚本仍保留社区旧逻辑，重新生成前需要按当前路由更新脚本分组。
+4. `docs/api.md` 及 `tools/` 下的文档生成脚本仍保留部分旧分组，重新生成前需要按当前路由更新脚本分组。
 
 ## 文档入口
 
@@ -265,7 +286,7 @@ npm run build
 | [GLOSSARY.md](GLOSSARY.md) | 学习空间、题库、个人中心等领域术语 |
 | [STUBS.md](STUBS.md) | 历史替身模块清单 |
 | [openapi.json](openapi.json) | 当前接口契约快照 |
-| [docs/](docs/) | 社区历史设计、流程与 API 资料 |
+| [docs/](docs/) | 当前设计、实现记录、流程与 API 资料 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 第三方来源与许可证正文 |
 
 ## 许可证
