@@ -20,6 +20,7 @@ MathCraft/
 ├── THIRD_PARTY_NOTICES.md        # 第三方来源与许可证正文
 ├── pyproject.toml                # 仓库级依赖、包路径、pytest/Ruff/Pyright 配置
 ├── openapi.json                  # 当前 FastAPI 应用的 OpenAPI 契约快照
+├── compose.yaml                  # 仅 Redis 的 Docker Compose 开发配置
 ├── .env.example                  # 根目录历史配置样例（后端使用 backend/.env.example）
 ├── backend/                      # FastAPI 后端
 │   ├── app/
@@ -60,7 +61,8 @@ MathCraft/
 │   ├── vite.config.ts            # /api 与 /media 代理到后端
 │   └── package.json
 ├── docs/                         # 当前设计、实现记录、API 与流程资料
-│   └── design/管理员与账号开通设计.md # 管理员开通、登录与管理面板（已实现）
+│   ├── design/管理员与账号开通设计.md # 管理员开通、登录与管理面板（已实现）
+│   └── design/Redis容器启动设计.md # Redis 容器配置、运行与验收边界
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
@@ -99,6 +101,33 @@ MathCraft/
 ### 1. 启动 Redis
 
 Redis 是后端的硬依赖，登录会话、出题任务与文档入库进度都存放在这里。默认地址为 `redis://127.0.0.1:6379/0`。
+
+#### Docker Compose 方式
+
+需要安装 Docker 和 Compose v2，并确保 Docker 引擎已运行；Windows 使用 Docker Desktop。先停止已占用 6379 端口的 WSL 或本机 Redis，再在**仓库根目录**执行：
+
+```powershell
+docker compose up -d --wait redis
+docker compose exec redis redis-cli ping
+# 期望输出：PONG
+docker compose ps
+```
+
+根目录 `compose.yaml` 只启动 `redis:7-alpine`，绑定 `127.0.0.1:6379`，使用 `redis_data` 命名卷保存 `/data`，开启 AOF 持久化并配置健康检查与 `unless-stopped` 重启策略。后端继续在本机启动，`backend/.env` 使用 `REDIS_URL=redis://127.0.0.1:6379/0`。
+
+查看日志或停止：
+
+```powershell
+docker compose logs --tail 50 redis
+docker compose stop redis
+# 若需移除容器和网络，使用下面的命令；命名卷仍保留
+docker compose down
+```
+
+从旧 Redis 首次切换到容器会使用独立数据卷，不自动迁移登录会话、缓存或任务；需要重新登录，未完成的旧任务需重新发起。账号与业务数据库仍位于原位置。配置和验收边界见 [Redis 容器启动设计](docs/design/Redis容器启动设计.md)。
+
+#### 本机或 WSL 方式
+
 
 ```powershell
 # Windows 示例，在 Redis 所在目录执行

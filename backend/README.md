@@ -19,7 +19,7 @@ MathCraft 后端以 `app.main:app` 为入口，提供管理员账号管理、教
 | 生成与评分 | 通过 OpenAI 兼容客户端调用 DeepSeek，默认模型为 `deepseek-flash` |
 | 扫描件 OCR | MinerU 云端 API，已接入文档入库流程 |
 
-Redis 是硬依赖。即使 SQLite 中已有账号，登录仍需要把会话写入 Redis；Redis 不可用时，登录与依赖缓存的任务无法正常工作。Windows 可以通过 WSL、Docker 或兼容实现提供 Redis，仓库不附带 Redis 服务。WSL 的安装与前台启动命令见[根 README 的 Redis 启动说明](../README.md#1-启动-redis)，开发时保持 Redis 终端开启。
+Redis 是硬依赖。即使 SQLite 中已有账号，登录仍需要把会话写入 Redis；Redis 不可用时，登录与依赖缓存的任务无法正常工作。Windows 可以通过下文的 [Docker Compose 选项](#redis-启动选项docker-compose)或 WSL 提供 Redis。WSL 的安装与前台启动命令见[根 README 的 Redis 启动说明](../README.md#1-启动-redis)，使用 WSL 前台运行时保持 Redis 终端开启。
 
 仅验收登录与账号管理不需要配置真实模型密钥；文档向量化、检索、生成、主观题评分及 OCR 需要相应服务的凭据和网络。
 
@@ -92,9 +92,43 @@ backend/
 
 系统硅基流动密钥及 MinerU 默认 Token 使用 `app/local_secrets.py`，首次使用可从 `app/local_secrets.example.py` 复制。该文件需要存在；只验收登录时可保留样例中的空值或占位值。个人 DeepSeek 密钥与 MinerU Token 通过 `/api/users/me/model-settings` 保存到 `UserModelSetting`，调用时优先采用个人配置。环境变量、dotenv 或系统凭据文件变更后重新启动后端进程；个人模型配置通过接口保存后按请求读取。
 
+## Redis 启动选项：Docker Compose
+
+仓库根目录的 [`compose.yaml`](../compose.yaml) 仅提供 `redis` 服务，后端与前端仍在本地运行。启动前确认 Docker Desktop 的引擎正在运行，并先关闭旧的 WSL Redis，避免占用主机 `6379` 端口：前台运行的实例在对应终端按 `Ctrl+C` 停止，以服务方式运行的实例则在对应 WSL 发行版内停止该服务。
+
+该服务使用 `redis:7-alpine` 镜像，端口映射为 `127.0.0.1:6379:6379`，仅绑定主机回环地址；命名卷 `redis_data:/data` 配合 `--appendonly yes` 持久化 Redis 数据，使用 `redis-cli ping` 进行健康检查，重启策略为 `unless-stopped`。
+
+以下命令均在**仓库根目录**执行，启动并等待 Redis 健康检查通过后，检查连通性、状态与日志：
+
+```powershell
+docker compose up -d --wait redis
+docker compose exec redis redis-cli ping
+# 期望：PONG
+docker compose ps
+docker compose logs --tail 50 redis
+```
+
+本地后端继续使用 `REDIS_URL=redis://127.0.0.1:6379/0`，无需改为 `redis` 主机名。若需在当前 PowerShell 终端显式设置，可在启动后端前执行：
+
+```powershell
+$env:REDIS_URL = "redis://127.0.0.1:6379/0"
+```
+
+临时停止 Redis，或移除 Compose 容器和网络时，在仓库根目录选择执行：
+
+```powershell
+# 停止 Redis，保留容器与命名卷
+docker compose stop redis
+
+# 移除容器和网络，保留命名卷 redis_data
+docker compose down
+```
+
+`docker compose down` 不加 `-v`，以保留命名卷中的数据。切换到 Docker Redis 不会自动迁移旧 WSL Redis 中的登录会话和任务状态，用户需要重新登录；账号及其他关系数据仍保存在原有数据库中，无需重新初始化账号。
+
 ## 首次准备与数据库迁移
 
-先在单独终端启动 Redis，并确认 `REDIS_URL` 指向的实例可访问。例如默认本地实例可检查：
+先通过上述 Docker Compose 选项或 WSL 启动 Redis，并确认 `REDIS_URL` 指向的实例可访问。若本机已安装 Redis CLI，默认本地实例可检查：
 
 ```powershell
 redis-cli -h 127.0.0.1 -p 6379 ping
