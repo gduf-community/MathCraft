@@ -26,6 +26,7 @@ from app.api import (
     favorites,
     generate,
     health,
+    notifications,
     papers,
     questions,
     spaces,
@@ -38,6 +39,27 @@ from app.api import (
 async def lifespan(_app: FastAPI):
     # 确保 jieba 词典在服务启动时构建完成，避免首个请求卡顿
     tokenizer.tokenize("预热")
+    # 收尾上次进程退出时中断的入库任务，避免文档永久停在「正在识别」
+    from app.db import SessionLocal
+    from app.models import Document
+
+    db = SessionLocal()
+    try:
+        stuck = (
+            db.query(Document)
+            .filter(Document.status.in_(("parsing", "ocr", "chunking", "embedding")))
+            .all()
+        )
+        for doc in stuck:
+            doc.status = "failed"
+            doc.stage = "服务重启，任务已中断"
+            doc.error_message = "服务重启导致任务中断，请重新解析"
+        if stuck:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
     yield
 
 
@@ -63,6 +85,7 @@ app.include_router(chat.router)
 app.include_router(spaces.router)
 app.include_router(papers.router)
 app.include_router(urges.router)
+app.include_router(notifications.router)
 app.include_router(attempts.router)
 
 # 头像等本地媒体文件

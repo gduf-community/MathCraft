@@ -523,6 +523,96 @@
         }
       }
     },
+    "/api/auth/development-account": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Development Account",
+        "operationId": "development_account_api_auth_development_account_post",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "teacher",
+                "student"
+              ],
+              "type": "string",
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentAccount"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Development Account",
+        "operationId": "development_account_api_auth_development_account_get",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "teacher",
+                "student"
+              ],
+              "type": "string",
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentAccount"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/me": {
       "put": {
         "tags": [
@@ -1107,6 +1197,64 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/BankCreateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/banks/with-document": {
+      "post": {
+        "tags": [
+          "banks"
+        ],
+        "summary": "Create Bank With Document",
+        "description": "新建题库并上传首个文档：题库与文档一次创建，入库异步进行，立即返回预计耗时。",
+        "operationId": "create_bank_with_document_api_banks_with_document_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_bank_with_document_api_banks_with_document_post"
               }
             }
           }
@@ -1973,6 +2121,7 @@
           "documents"
         ],
         "summary": "Download Document",
+        "description": "下载文档原件；inline=1 供前端「查看」按钮在浏览器直接打开。",
         "operationId": "download_document_api_banks__bank_id__documents__document_id__download_get",
         "parameters": [
           {
@@ -1991,6 +2140,16 @@
             "schema": {
               "type": "string",
               "title": "Bank Id"
+            }
+          },
+          {
+            "name": "inline",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Inline"
             }
           },
           {
@@ -4868,6 +5027,157 @@
         }
       }
     },
+    "/api/notifications": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "List Notifications",
+        "operationId": "list_notifications_api_notifications_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications/read": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Mark Notifications Read",
+        "operationId": "mark_notifications_read_api_notifications_read_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationReadBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications/{notification_id}": {
+      "delete": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Delete Notification",
+        "description": "删除单条通知：仅本人可删。",
+        "operationId": "delete_notification_api_notifications__notification_id__delete",
+        "parameters": [
+          {
+            "name": "notification_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Notification Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/papers/{paper_id}/attempt": {
       "get": {
         "tags": [
@@ -5309,6 +5619,25 @@
         ],
         "title": "BatchDeleteBody"
       },
+      "Body_create_bank_with_document_api_banks_with_document_post": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "file"
+        ],
+        "title": "Body_create_bank_with_document_api_banks_with_document_post"
+      },
       "Body_upload_avatar_api_users_me_avatar_post": {
         "properties": {
           "file": {
@@ -5393,6 +5722,34 @@
         ],
         "title": "CurrentUserResult",
         "description": "当前登录用户，保持既有 user 外层对象。"
+      },
+      "DevelopmentAccount": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "teacher",
+              "student"
+            ],
+            "title": "Role"
+          },
+          "user_no": {
+            "type": "string",
+            "title": "User No"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "user_no",
+          "password"
+        ],
+        "title": "DevelopmentAccount",
+        "description": "仅受控开发环境提供的示例账号。"
       },
       "EmailChangeBody": {
         "properties": {
@@ -5803,6 +6160,27 @@
         },
         "type": "object",
         "title": "ModelSettingsBody"
+      },
+      "NotificationReadBody": {
+        "properties": {
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ids",
+            "description": "不传或为空则标记全部已读"
+          }
+        },
+        "type": "object",
+        "title": "NotificationReadBody"
       },
       "PaperBatchDeleteBody": {
         "properties": {

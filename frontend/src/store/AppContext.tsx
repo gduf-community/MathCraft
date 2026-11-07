@@ -159,6 +159,13 @@ interface AppState {
   markUrgeRead: (urgeId: string) => void
   /** 删除单条催交通知 */
   deleteUrge: (urgeId: string) => void
+
+  /** 题库通知：文档入库完成/失败，全员可见，红点 + 列表 */
+  bankNotifUnread: number
+  bankNotifItems: api.ApiNotification[]
+  clearBankNotifs: () => void
+  /** 删除单条题库通知 */
+  deleteBankNotif: (id: string) => void
   /** 通知「立即查看」：跳转到学习空间中该试卷的作答标签页 */
   pendingSpacePaper: { spaceId: string; paperId: string } | null
   requestOpenSpacePaper: (spaceId: string, paperId: string) => void
@@ -210,6 +217,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [openPaperId, setOpenPaperId] = useState<string | null>(null)
   const [urgeUnread, setUrgeUnread] = useState(0)
   const [urgeItems, setUrgeItems] = useState<api.ApiUrge[]>([])
+  const [bankNotifUnread, setBankNotifUnread] = useState(0)
+  const [bankNotifItems, setBankNotifItems] = useState<api.ApiNotification[]>([])
   const [pendingSpacePaper, setPendingSpacePaper] = useState<{ spaceId: string; paperId: string } | null>(null)
   // 设置页：跳转定位（引擎）与未保存提醒
   const [settingsTarget, setSettingsTarget] = useState<{ engine: string; request: number } | null>(null)
@@ -308,6 +317,60 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const timer = window.setInterval(() => void loadUrges(), 30000)
     return () => window.clearInterval(timer)
   }, [user, loadUrges])
+
+  // 题库通知：每 10 秒轮询未读角标与列表；出现新通知时刷新题库与文档下拉
+  const knownNotifIds = useRef<Set<string>>(new Set())
+  const notifFirstLoad = useRef(true)
+  const selectedKbRef = useRef('')
+  selectedKbRef.current = selectedKbId
+
+  const loadBankNotifs = useCallback(async () => {
+    try {
+      const feed = await api.listNotifications()
+      setBankNotifUnread(feed.unread_count)
+      setBankNotifItems(feed.items)
+      const fresh = feed.items.filter((n) => !knownNotifIds.current.has(n.id))
+      if (!notifFirstLoad.current && fresh.length) {
+        void refreshKbs()
+        const bankId = fresh.find((n) => n.bank_id)?.bank_id
+        const target = bankId || selectedKbRef.current
+        if (target) {
+          void api
+            .listDocuments(target)
+            .then((rows) => setDocs(rows.map(api.mapDocument)))
+            .catch(() => undefined)
+        }
+      }
+      notifFirstLoad.current = false
+      knownNotifIds.current = new Set(feed.items.map((n) => n.id))
+    } catch {
+      /* 轮询失败静默忽略 */
+    }
+  }, [refreshKbs])
+
+  const clearBankNotifs = useCallback(() => {
+    void api.markNotificationsRead().then(loadBankNotifs).catch(() => undefined)
+  }, [loadBankNotifs])
+
+  const deleteBankNotif = useCallback(
+    (id: string) => {
+      void api
+        .deleteNotification(id)
+        .then(() => {
+          setBankNotifItems((prev) => prev.filter((n) => n.id !== id))
+          return loadBankNotifs()
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '删除通知失败'))
+    },
+    [loadBankNotifs, showToast],
+  )
+
+  useEffect(() => {
+    if (!user) return
+    void loadBankNotifs()
+    const timer = window.setInterval(() => void loadBankNotifs(), 10000)
+    return () => window.clearInterval(timer)
+  }, [user, loadBankNotifs])
 
   const requestOpenSpacePaper = useCallback((spaceId: string, paperId: string) => {
     setPendingSpacePaper({ spaceId, paperId })
@@ -984,6 +1047,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearUrgeBadge,
     markUrgeRead,
     deleteUrge,
+    bankNotifUnread,
+    bankNotifItems,
+    clearBankNotifs,
+    deleteBankNotif,
     pendingSpacePaper,
     requestOpenSpacePaper,
     clearPendingSpacePaper,

@@ -3,6 +3,7 @@ from app.models.auth import AuthProof, AuthSession, EmailChange, RefreshUse
 from app.models.bank import Bank, BankMember, Document, DocumentChunk
 from app.models.chat import ChatMessage, ChatSession
 from app.models.favorite import Favorite, FavoriteGroup
+from app.models.notification import Notification
 from app.models.paper import (
     AttemptAnswer,
     Paper,
@@ -21,6 +22,7 @@ __all__ = [
     "Bank", "BankMember", "Document", "DocumentChunk",
     "ChatMessage", "ChatSession",
     "Favorite", "FavoriteGroup",
+    "Notification",
     "Paper", "PaperAttempt", "PaperPublication", "PaperQuestion", "AttemptAnswer",
     "PaperUrge", "UrgeReadState",
     "GenerationBatch", "Question",
