@@ -1,12 +1,14 @@
-/** 题库信息编辑弹窗：基本信息、管理员权限级别、成员管理（设/取消管理员、转让、移出）、文档与上传 */
-import { useRef, useState } from 'react'
+/** 题库信息编辑弹窗：基本信息、管理员权限级别、成员管理（设/取消管理员、转让、移出）、文档与上传进度 */
+import { useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import {
   ArrowLeftRight,
   Crown,
   Download,
+  Eye,
   FileUp,
   FolderCog,
+  RotateCcw,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -21,6 +23,7 @@ import type { AdminLevel, ManagedBank } from '../../../api/banks'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
 import ConfirmDialog from '../../ui/ConfirmDialog'
+import DocPreviewModal from './DocPreviewModal'
 import { useDocUpload } from './useDocUpload'
 
 const LEVELS: { key: AdminLevel; title: string; desc: string }[] = [
@@ -43,12 +46,28 @@ export default function BankEditModal({
   const [docs, setDocs] = useState(bank.docs)
   const [members, setMembers] = useState(bank.members)
   const [transferTarget, setTransferTarget] = useState<{ id: string; name: string } | null>(null)
+  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
-  const { upload, start } = useDocUpload(bank.id, (doc) => setDocs((prev) => [...prev, doc]), showToast)
+  const { start } = useDocUpload(bank.id, () => {
+    void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs)).catch(() => undefined)
+  }, showToast)
 
   const levelLabel = adminLevel === 'super' ? '超级管理员' : '普通管理员'
   const iconBtn = 'flex h-7 w-7 items-center justify-center rounded-md transition-colors'
+
+  // 有文档正在上传/解析/向量化时，每 3 秒轮询一次处理阶段
+  const processing = docs.some((d) => d.status && !['ready', 'failed'].includes(d.status))
+  useEffect(() => {
+    if (!processing) return
+    const timer = window.setInterval(() => {
+      void bankApi
+        .getBankDetail(bank.id)
+        .then((fresh) => setDocs(fresh.docs))
+        .catch(() => undefined)
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [processing, bank.id])
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -233,33 +252,72 @@ export default function BankEditModal({
             <SectionTitle icon={FileUp}>已上传文档（{docs.length}）</SectionTitle>
             {docs.length === 0 && <p className="text-xs text-ink-3">暂无文档，可在下方上传</p>}
             <ul className="space-y-1.5">
-              {docs.map((d) => (
-                <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
-                  <FormatBadge format={d.format} />
-                  <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
-                  <span className="text-xs text-ink-3">{d.size}</span>
-                  <button
-                    type="button"
-                    title="下载文档"
-                    onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
-                    className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
-                  >
-                    <Download size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    title="删除文档"
-                    onClick={async () => {
-                      await bankApi.removeDoc(bank.id, d.id)
-                      setDocs((prev) => prev.filter((x) => x.id !== d.id))
-                      onChanged()
-                    }}
-                    className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </li>
-              ))}
+              {docs.map((d) => {
+                const busy = d.status && !['ready', 'failed'].includes(d.status)
+                const failed = d.status === 'failed'
+                return (
+                  <li key={d.id} className="rounded-lg border border-line px-3 py-2">
+                    <div className="flex items-center gap-2.5">
+                      <FormatBadge format={d.format} />
+                      <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
+                      <span
+                        title={failed ? d.stage ?? '' : undefined}
+                        className={`mr-3 text-xs ${
+                          failed ? 'text-red-500' : busy ? 'text-primary' : 'text-emerald-600'
+                        }`}
+                      >
+                        {failed ? '入库失败' : busy ? `${d.stage ?? '处理中'} ${d.progress ?? 0}%` : '可用'}
+                      </span>
+                      {failed && (
+                        <button
+                          type="button"
+                          title="重新解析"
+                          onClick={() => {
+                            void bankApi
+                              .reprocessDoc(bank.id, d.id)
+                              .then(() => {
+                                showToast(`「${d.name}」已重新排队解析`)
+                                return bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
+                              })
+                              .catch((err) => showToast(err instanceof Error ? err.message : '操作失败'))
+                          }}
+                          className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                        >
+                          <RotateCcw size={14} />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        title="查看文档"
+                        onClick={() => setPreview({ id: d.id, name: d.name })}
+                        className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                      >
+                        <Eye size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        title="下载文档"
+                        onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
+                        className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                      >
+                        <Download size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        title="删除文档"
+                        onClick={async () => {
+                          await bankApi.removeDoc(bank.id, d.id)
+                          setDocs((prev) => prev.filter((x) => x.id !== d.id))
+                          onChanged()
+                        }}
+                        className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </li>
+                )
+              })}
             </ul>
 
             {/* 上传区域 */}
@@ -290,29 +348,6 @@ export default function BankEditModal({
                 }}
               />
             </div>
-
-            {/* 上传与向量化进度 */}
-            {upload && (
-              <div className="rounded-xl border border-primary/30 bg-primary-light/30 p-3">
-                <div className="mb-1.5 flex items-center justify-between text-xs">
-                  <span className="truncate font-medium text-ink">{upload.name}</span>
-                  <span className={upload.phase === 'done' ? 'text-emerald-600' : 'text-primary'}>
-                    {upload.phase === 'upload' && `上传中 ${Math.floor(upload.pct)}%`}
-                    {upload.phase === 'vector' && `向量化中 ${Math.floor(upload.pct)}%`}
-                    {upload.phase === 'done' && '已完成'}
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-white">
-                  <div
-                    className={`h-full rounded-full transition-all duration-150 ${upload.phase === 'vector' ? 'bg-violet-500' : 'bg-primary'}`}
-                    style={{ width: `${upload.pct}%` }}
-                  />
-                </div>
-                <p className="mt-1 text-[11px] text-ink-3">
-                  {upload.phase === 'vector' ? '正在对文档内容做切片与向量索引' : '正在上传至题库'}
-                </p>
-              </div>
-            )}
           </section>
         </div>
 
@@ -334,6 +369,15 @@ export default function BankEditModal({
           </button>
         </div>
       </div>
+
+      {preview && (
+        <DocPreviewModal
+          bankId={bank.id}
+          docId={preview.id}
+          docName={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      )}
 
       {transferTarget && (
         <ConfirmDialog

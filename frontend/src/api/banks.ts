@@ -5,9 +5,11 @@ import {
   type AdminLevel as BackendAdminLevel,
   type ApiDocument,
   createBank as createBankApi,
+  createBankWithDocument,
   deleteBank as deleteBankApi,
   deleteDocument,
   downloadDocument,
+  fetchDocumentText,
   getBank,
   getDocument,
   joinBank,
@@ -21,6 +23,7 @@ import {
   transferBank as transferBankApi,
   updateBank as updateBankApi,
   uploadDocument,
+  viewDocument,
   formatFileSize,
 } from './backend'
 
@@ -32,6 +35,8 @@ export interface BankDoc {
   format: string
   size: string
   status?: string
+  /** 当前处理阶段描述（如「正在解析文档」「OCR 完成，正在切片」） */
+  stage?: string | null
   progress?: number
 }
 
@@ -81,6 +86,7 @@ function mapDoc(d: ApiDocument): BankDoc {
     format: d.format,
     size: formatFileSize(d.size_bytes),
     status: d.status,
+    stage: d.stage,
     progress: d.progress,
   }
 }
@@ -187,6 +193,15 @@ export async function downloadDoc(bankId: string, docId: string, name: string): 
   await downloadDocument(bankId, docId, name)
 }
 
+/** 读取简化版文档文本，供应用内预览渲染。 */
+export async function readDoc(bankId: string, docId: string): Promise<string> {
+  return fetchDocumentText(bankId, docId)
+}
+
+export async function viewDoc(bankId: string, docId: string): Promise<void> {
+  await viewDocument(bankId, docId)
+}
+
 export async function reprocessDoc(bankId: string, docId: string): Promise<void> {
   await reprocessDocument(bankId, docId)
 }
@@ -195,9 +210,23 @@ export async function uploadDoc(
   bankId: string,
   file: File,
   onProgress?: (percent: number) => void,
-): Promise<string> {
+): Promise<{ documentId: string; etaMinutes: number }> {
   const result = await uploadDocument(bankId, file, onProgress)
-  return result.document_id
+  return {
+    documentId: result.document_id,
+    etaMinutes: (result as { eta_minutes?: number }).eta_minutes ?? 1,
+  }
+}
+
+/** 新建题库并上传首个文档：一次请求完成，返回题库、文档与预计等待分钟数。 */
+export async function createBankWithDoc(
+  name: string,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<{ bank: ManagedBank; documentName: string; etaMinutes: number }> {
+  const result = await createBankWithDocument(name, file, onProgress)
+  const bank = await enrich(result.bank)
+  return { bank, documentName: result.document.name, etaMinutes: result.document.eta_minutes }
 }
 
 /** 上传并等待后端完成解析、OCR、切片、向量化。 */
@@ -206,7 +235,7 @@ export async function uploadAndWait(
   file: File,
   onStage?: (phase: 'upload' | 'vector' | 'done', percent: number, stage: string) => void,
 ): Promise<BankDoc> {
-  const docId = await uploadDoc(bankId, file, (pct) => onStage?.('upload', pct, '正在上传'))
+  const { documentId: docId } = await uploadDoc(bankId, file, (pct) => onStage?.('upload', pct, '正在上传'))
   for (let i = 0; i < 120; i += 1) {
     const doc = await getDocument(bankId, docId)
     if (doc.status === 'ready') {

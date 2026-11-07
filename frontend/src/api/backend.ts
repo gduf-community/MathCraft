@@ -285,6 +285,27 @@ export async function downloadDocument(bankId: string, docId: string, name: stri
   URL.revokeObjectURL(url)
 }
 
+/** 浏览器新标签页直接打开文档内容（inline 模式，Markdown 以纯文本显示） */
+/** 读取文档文本（简化版 Markdown），供应用内预览渲染。 */
+export async function fetchDocumentText(bankId: string, docId: string): Promise<string> {
+  const headers: HeadersInit = {}
+  if (getApiToken()) (headers as Record<string, string>).Authorization = `Bearer ${getApiToken()}`
+  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download?inline=1`, { headers })
+  if (!resp.ok) throw new ApiError('打开失败（HTTP ' + resp.status + '）')
+  return resp.text()
+}
+
+export async function viewDocument(bankId: string, docId: string): Promise<void> {
+  const headers: HeadersInit = {}
+  if (getApiToken()) (headers as Record<string, string>).Authorization = `Bearer ${getApiToken()}`
+  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download?inline=1`, { headers })
+  if (!resp.ok) throw new ApiError('打开失败（HTTP ' + resp.status + '）')
+  const blob = await resp.blob()
+  const url = URL.createObjectURL(blob)
+  window.open(url, '_blank')
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+}
+
 /* ---------------- 出题与题目 ---------------- */
 
 export interface GenerateBody {
@@ -912,6 +933,72 @@ export async function sendChatMessage(
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
   await request<void>(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
+/* ---------------- 站内通知 ---------------- */
+
+export interface ApiNotification {
+  id: string
+  kind: 'bank_ready' | 'bank_failed'
+  title: string
+  body: string
+  bank_id?: string | null
+  document_name?: string | null
+  read: boolean
+  created_at: string
+}
+
+export async function listNotifications(): Promise<{ unread_count: number; items: ApiNotification[] }> {
+  return request('/api/notifications')
+}
+
+export async function markNotificationsRead(ids?: string[]): Promise<void> {
+  await request('/api/notifications/read', {
+    method: 'POST',
+    body: JSON.stringify({ ids: ids && ids.length ? ids : null }),
+  })
+}
+
+export async function deleteNotification(id: string): Promise<void> {
+  await request<void>(`/api/notifications/${id}`, { method: 'DELETE' })
+}
+
+/** 新建题库并上传首个文档：一次请求完成创建+上传，返回预计等待分钟数 */
+export async function createBankWithDocument(
+  name: string,
+  file: File,
+  onUploadProgress?: (percent: number) => void,
+): Promise<{
+  bank: ApiBank
+  document: { document_id: string; name: string; eta_minutes: number; status: string }
+}> {
+  return authenticatedOperation((token) => new Promise((resolve, reject) => {
+    const form = new FormData()
+    form.append('name', name)
+    form.append('file', file)
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', apiUrl('/api/banks/with-document'))
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onUploadProgress) onUploadProgress(Math.round((e.loaded / e.total) * 100))
+    }
+    xhr.onerror = () => reject(new ApiError('创建失败，请检查后端服务', 'REQUEST_FAILED', xhr.status))
+    xhr.onload = () => {
+      try {
+        const body: unknown = JSON.parse(xhr.responseText || '{}')
+        if (xhr.status >= 200 && xhr.status < 300 && body !== null && typeof body === 'object') {
+          resolve(body as { bank: ApiBank; document: { document_id: string; name: string; eta_minutes: number; status: string } })
+          return
+        }
+        const err = body as { message?: string; error_code?: string }
+        reject(new ApiError(err.message || '创建题库失败', err.error_code || 'REQUEST_FAILED', xhr.status))
+      } catch {
+        reject(new ApiError('创建题库失败', 'REQUEST_FAILED', xhr.status))
+      }
+    }
+    xhr.send(form)
+  }))
 }
 
 /* ---------------- 通用映射 ---------------- */

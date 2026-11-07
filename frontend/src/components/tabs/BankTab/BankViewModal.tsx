@@ -5,6 +5,7 @@ import {
   Ban,
   Crown,
   Download,
+  Eye,
   FileUp,
   FolderOpen,
   Lock,
@@ -17,6 +18,7 @@ import type { ManagedBank } from '../../../api/banks'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
 import { useDocUpload } from './useDocUpload'
+import DocPreviewModal from './DocPreviewModal'
 
 export default function BankViewModal({
   bank,
@@ -30,11 +32,14 @@ export default function BankViewModal({
   const { showToast } = useApp()
   const [docs, setDocs] = useState(bank.docs)
   const [dragOver, setDragOver] = useState(false)
+  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const isAdmin = bankApi.isMyAdmin(bank)
   const isSuper = bankApi.isMySuperAdmin(bank)
   const canUpload = bank.canUpload
-  const { upload, start } = useDocUpload(bank.id, (doc) => setDocs((prev) => [...prev, doc]), showToast)
+  const { start } = useDocUpload(bank.id, () => {
+    void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs)).catch(() => undefined)
+  }, showToast)
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -140,19 +145,37 @@ export default function BankViewModal({
             <SectionTitle icon={FileUp}>已上传文档（{docs.length}）</SectionTitle>
             {docs.length === 0 && <p className="text-xs text-ink-3">暂无文档</p>}
             <ul className="space-y-1.5">
-              {docs.map((d) => (
-                <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
-                  <FormatBadge format={d.format} />
-                  <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
-                  <span className="text-xs text-ink-3">{d.size}</span>
-                  <button
-                    type="button"
-                    title="下载文档"
-                    onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
-                    className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
-                  >
-                    <Download size={14} />
-                  </button>
+              {docs.map((d) => {
+                const busy = d.status && !['ready', 'failed'].includes(d.status)
+                const failed = d.status === 'failed'
+                return (
+                  <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
+                    <FormatBadge format={d.format} />
+                    <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
+                    <span
+                      title={failed ? d.stage ?? '' : undefined}
+                      className={`mr-3 text-xs ${
+                        failed ? 'text-red-500' : busy ? 'text-primary' : 'text-emerald-600'
+                      }`}
+                    >
+                      {failed ? '入库失败' : busy ? `${d.stage ?? '处理中'} ${d.progress ?? 0}%` : '可用'}
+                    </span>
+                    <button
+                      type="button"
+                      title="查看文档"
+                      onClick={() => setPreview({ id: d.id, name: d.name })}
+                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                    >
+                      <Eye size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      title="下载文档"
+                      onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
+                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                    >
+                      <Download size={14} />
+                    </button>
                   {isSuper && (
                     <button
                       type="button"
@@ -168,7 +191,8 @@ export default function BankViewModal({
                     </button>
                   )}
                 </li>
-              ))}
+                )
+              })}
             </ul>
 
             {/* 上传区域：管理员可上传 */}
@@ -200,24 +224,6 @@ export default function BankViewModal({
                     }}
                   />
                 </div>
-                {upload && (
-                  <div className="rounded-xl border border-primary/30 bg-primary-light/30 p-3">
-                    <div className="mb-1.5 flex items-center justify-between text-xs">
-                      <span className="truncate font-medium text-ink">{upload.name}</span>
-                      <span className={upload.phase === 'done' ? 'text-emerald-600' : 'text-primary'}>
-                        {upload.phase === 'upload' && `上传中 ${Math.floor(upload.pct)}%`}
-                        {upload.phase === 'vector' && `向量化中 ${Math.floor(upload.pct)}%`}
-                        {upload.phase === 'done' && '已完成'}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-white">
-                      <div
-                        className={`h-full rounded-full transition-all duration-150 ${upload.phase === 'vector' ? 'bg-violet-500' : 'bg-primary'}`}
-                        style={{ width: `${upload.pct}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
               </>
             ) : (
               <div className="flex items-center gap-2.5 rounded-xl border border-dashed border-line bg-page px-4 py-3.5 text-ink-3">
@@ -239,6 +245,14 @@ export default function BankViewModal({
           </button>
         </div>
       </div>
+      {preview && (
+        <DocPreviewModal
+          bankId={bank.id}
+          docId={preview.id}
+          docName={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   )
 }
