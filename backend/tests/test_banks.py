@@ -180,7 +180,7 @@ def test_owner_and_admin_cannot_be_removed(client, teacher, student):
 
 def test_delete_bank(client, teacher):
     bank = create_bank(client, teacher)
-    doc = upload_markdown(client, teacher, bank["id"])
+    upload_markdown(client, teacher, bank["id"])
     assert client.delete(f"/api/banks/{bank['id']}", headers=teacher).status_code == 204
     assert client.get(f"/api/banks/{bank['id']}", headers=teacher).status_code == 404
     assert client.get("/api/banks?scope=owned", headers=teacher).json() == []

@@ -9,7 +9,6 @@ from app.deps import (
     BankAccess,
     get_bank_access,
     get_current_user,
-    require_bank_admin,
     require_bank_owner,
 )
 from app.errors import AppError

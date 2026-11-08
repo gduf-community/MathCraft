@@ -1,7 +1,6 @@
 """出题任务编排：HyDE → 混合检索 → 分题型生成 → 中间件校验 → 批次/题目落库 → Redis 进度。"""
 import json
 import logging
-import threading
 
 from sqlalchemy.orm import Session
 

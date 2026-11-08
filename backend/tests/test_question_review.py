@@ -226,7 +226,7 @@ def test_solver_failure_keeps_original_answer(db, monkeypatch):
 
 def test_math_delimiters_are_normalized():
     text = question_review._normalize_math(r"由 \(f(0)=0\) 可得 \[M=\max|f|\]")
-    assert "\(" not in text and "\\[" not in text
+    assert r"\(" not in text and r"\[" not in text
     assert "$f(0)=0$" in text
 
 

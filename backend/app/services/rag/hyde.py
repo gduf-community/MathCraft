@@ -9,7 +9,6 @@ import hashlib
 
 import redis
 
-from app.config import settings
 from app.services import cache
 from app.services.rag import llm
 from app.services.rag.prompts import HYDE_SYSTEM, HYDE_USER_TEMPLATE

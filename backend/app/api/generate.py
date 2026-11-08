@@ -1,5 +1,4 @@
 """出题接口：异步任务（start + progress 轮询）、同步出题、最近批次（v2 5.5）。"""
-import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
