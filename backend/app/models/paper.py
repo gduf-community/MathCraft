@@ -42,6 +42,7 @@ class PaperQuestion(Base):
     type: Mapped[str] = mapped_column(String(16), nullable=False)
     score: Mapped[int] = mapped_column(nullable=False)
     difficulty: Mapped[str] = mapped_column(String(8), nullable=False)
+    difficulty_score: Mapped[float] = mapped_column(default=0.0, nullable=False)
     stem: Mapped[str] = mapped_column(Text, nullable=False)
     options_json: Mapped[Optional[str]] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text, nullable=False)

@@ -523,96 +523,6 @@
         }
       }
     },
-    "/api/auth/development-account": {
-      "post": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "Development Account",
-        "operationId": "development_account_api_auth_development_account_post",
-        "parameters": [
-          {
-            "name": "role",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "enum": [
-                "teacher",
-                "student"
-              ],
-              "type": "string",
-              "title": "Role"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DevelopmentAccount"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "Development Account",
-        "operationId": "development_account_api_auth_development_account_get",
-        "parameters": [
-          {
-            "name": "role",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "enum": [
-                "teacher",
-                "student"
-              ],
-              "type": "string",
-              "title": "Role"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DevelopmentAccount"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/users/me": {
       "put": {
         "tags": [
@@ -3475,6 +3385,120 @@
         }
       }
     },
+    "/api/chat/sessions/{session_id}/progress": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Read Generation Progress",
+        "description": "对话生成的实时阶段，供前端在等待时轮询。",
+        "operationId": "read_generation_progress_api_chat_sessions__session_id__progress_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat/sessions/{session_id}/cancel": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Cancel Generation",
+        "description": "请求暂停：后台在下一个检查点停下，并且不写入题目预览。",
+        "operationId": "cancel_generation_api_chat_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/spaces": {
       "get": {
         "tags": [
@@ -5722,34 +5746,6 @@
         ],
         "title": "CurrentUserResult",
         "description": "当前登录用户，保持既有 user 外层对象。"
-      },
-      "DevelopmentAccount": {
-        "properties": {
-          "role": {
-            "type": "string",
-            "enum": [
-              "teacher",
-              "student"
-            ],
-            "title": "Role"
-          },
-          "user_no": {
-            "type": "string",
-            "title": "User No"
-          },
-          "password": {
-            "type": "string",
-            "title": "Password"
-          }
-        },
-        "type": "object",
-        "required": [
-          "role",
-          "user_no",
-          "password"
-        ],
-        "title": "DevelopmentAccount",
-        "description": "仅受控开发环境提供的示例账号。"
       },
       "EmailChangeBody": {
         "properties": {

@@ -110,6 +110,11 @@ def generate_sync(
             available=exc.available,
             requested=exc.requested,
         ) from exc
+    from app.services import question_review
+
+    questions, _stats = question_review.review_questions(
+        db, user.id, questions, params, doc.name, api_key, hyde_text
+    )
     generation.persist_batch(
         db, user.id, access.bank.id, doc.id, "parametric", params, hyde_text, questions
     )

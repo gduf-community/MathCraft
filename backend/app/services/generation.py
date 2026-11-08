@@ -1,5 +1,6 @@
-"""出题任务编排：HyDE → 混合检索 → 分题型生成 → 批次/题目落库 → Redis 进度。"""
+"""出题任务编排：HyDE → 混合检索 → 分题型生成 → 中间件校验 → 批次/题目落库 → Redis 进度。"""
 import json
+import logging
 import threading
 
 from sqlalchemy.orm import Session
@@ -9,9 +10,11 @@ from app.db import SessionLocal
 from app.models import GenerationBatch, Question
 from app.models.base import new_id
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
-from app.services import cache
+from app.services import cache, question_review
 from app.services.rag import hyde, question_gen
 from app.services.rag.question_gen import NeedConfirmError
+
+logger = logging.getLogger("app.generation")
 
 
 def _task_key(task_id: str) -> str:
@@ -60,6 +63,9 @@ def persist_batch(
                 type=q.type.value,
                 score=q.score,
                 difficulty=q.difficulty.value,
+                difficulty_score=float(q.difficultyScore or 0),
+                blueprint_json=json.dumps(q.blueprint, ensure_ascii=False) if q.blueprint else None,
+                review_json=json.dumps(q.difficultyReview, ensure_ascii=False) if q.difficultyReview else None,
                 stem=q.stem,
                 options_json=json.dumps([o.model_dump() for o in q.options], ensure_ascii=False) if q.options else None,
                 answer=q.answer,
@@ -85,6 +91,8 @@ def question_to_api(
         "type": row.type,
         "score": row.score,
         "difficulty": row.difficulty,
+        "difficulty_score": round(float(row.difficulty_score or 0), 2),
+        "difficulty_review": json.loads(row.review_json) if row.review_json else None,
         "stem": row.stem,
         "options": json.loads(row.options_json) if row.options_json else [],
         "answer": row.answer,
@@ -159,12 +167,25 @@ def run_generation_task(task_id: str, user_id: str, api_key: str, body, mode: st
 
         db = SessionLocal()
         try:
+            # 中间件：查重 → 难度评分与重出 → 生成解析，通过后才落库并交给预览
+            questions, stats = question_review.review_questions(
+                db, user_id, questions, params, doc_name, api_key, hyde_text,
+                progress=lambda p, s: _write_progress(task_id, p, s),
+            )
+            if stats.summary():
+                logger.info("[gen:%s] 中间件：%s", task_id, stats.summary())
             batch = persist_batch(db, user_id, params.kb_id, params.doc_id, mode, params, hyde_text, questions)
             payload = [q.model_dump() for q in questions]
             r.hset(_task_key(task_id), mapping={
                 "progress": 100, "stage": "生成完成", "status": "done",
                 "done": "1", "batch_id": batch.id,
                 "questions": json.dumps(payload, ensure_ascii=False),
+                "review": json.dumps({
+                    "duplicates": stats.duplicates,
+                    "repaired": stats.repaired,
+                    "regenerated": stats.regenerated,
+                    "solved": stats.solved,
+                }, ensure_ascii=False),
             })
             r.expire(_task_key(task_id), settings.generate_task_ttl_seconds)
         finally:
@@ -200,6 +221,7 @@ def read_task(task_id: str, user_id: str | None = None) -> dict | None:
     return {
         "progress": int(data.get("progress", 0)),
         "stage": data.get("stage", ""),
+        "review": json.loads(data["review"]) if data.get("review") else None,
         "done": data.get("done") == "1" or data.get("status") in ("done", "failed"),
         "batch_id": data.get("batch_id"),
         "questions": questions,
