@@ -5,7 +5,7 @@
 2. 盲评：不告知命题时标注的难度，只给题目、知识点范围与目标档。评估模型先独立解题，
    再按六个维度打分并加权；可解性一票否决，高与地狱题要求给出两种解法或数值验证；
    两次评分差超过 0.7 时分派第三位评审仲裁；
-3. 反哺：未通过只做最小修补，最多两轮；第二轮仍不过就换难度模板重出，不再微调同一题；
+3. 反哺：未通过只做一轮最小修补；仍不过就换难度模板重出，不再微调同一题；
 4. 解析：通过后另起对话独立解题，写 2~4 句简短解析，覆盖命题阶段自带的答案与解析。
 
 任何一步的服务异常都只降级（保留原题、跳过校验）并写日志，不让整批出题失败。
@@ -37,7 +37,7 @@ TIER_RANGES: dict[Difficulty, tuple[float, float]] = {
 }
 # 边界允许 ±0.5 档容差（0.5 分等于半档）
 TIER_TOLERANCE = 0.5
-# 目标档的参数模板，用于第二轮换模板重出时给出明确指令
+# 目标档的参数模板，用于换模板重出时给出明确指令
 TIER_PARAMS: dict[Difficulty, str] = {
     Difficulty.low: "步骤 1—2 步、只考 1 个知识点、计算量小、不设陷阱",
     Difficulty.mid: "步骤 2—3 步、综合 2 个知识点、计算量中等、至多 1 个常见易错点",
@@ -646,9 +646,10 @@ def review_questions(
                     still.append((question, review))
             rejected = still + rejected[len(batch):]
 
-        # 第二轮：仍不过或数量不足（查重丢弃）就换难度模板重出，只重出一轮，
-        # 再不够就按距离目标档最近的补齐，避免同一批题反复重出把等待时间拖长
-        for attempt in range(1):
+        # 换模板重出：轮数由配置控制，默认一轮；再不够就按距离目标档最近的补齐，
+        # 避免同一批题反复重出把等待时间拖长
+        rounds = max(1, min(2, settings.review_max_regen_rounds))
+        for attempt in range(rounds):
             need = target_count - len(accepted)
             if need <= 0:
                 break

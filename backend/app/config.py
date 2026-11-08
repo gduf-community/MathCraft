@@ -103,7 +103,6 @@ class Settings(BaseSettings):
     # 单次模型调用超时；SDK 内部重试已关闭，避免超时被放大成十几分钟
     llm_timeout_seconds: int = 300
 
-
     # 硅基流动（向量与重排，密钥在 app/local_secrets.py，不提供配置入口）
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
 
@@ -115,9 +114,9 @@ class Settings(BaseSettings):
     max_upload_mb: int = 200
     max_avatar_mb: int = 5
 
-    # 出题中间件：语义查重阈值、重出轮数、查重语料上限
+    # 出题中间件：语义查重阈值、换模板重出轮数、查重语料上限
     review_similarity_threshold: float = 0.92
-    review_max_regen_rounds: int = 2
+    review_max_regen_rounds: int = 1
     review_corpus_limit: int = 300
 
     # 检索与切片（混合检索参数，详见 v2 文档 6.5）
