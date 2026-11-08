@@ -1,7 +1,7 @@
 """题库与成员接口（v2 文档 5.3）。学生与教师共用，差异只来自题库内角色。"""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -17,6 +17,8 @@ from app.models import Bank, BankMember, User
 from app.models.base import new_id
 from app.schemas.bank import BankCreateBody, BankJoinBody, BankUpdateBody, MemberRoleBody, TransferBody
 from app.services import banks as bank_service
+from app.services import documents as doc_service
+from app.services.model_settings import get_effective_mineru_token
 
 router = APIRouter(prefix="/api/banks", tags=["banks"])
 
@@ -52,6 +54,25 @@ def create_bank(
 ):
     bank = bank_service.create_bank(db, user, body.name.strip())
     return bank_service.bank_payload(db, bank, user)
+
+
+@router.post("/with-document", status_code=201)
+async def create_bank_with_document(
+    background: BackgroundTasks,
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """新建题库并上传首个文档：题库与文档一次创建，入库异步进行，立即返回预计耗时。"""
+    bank = bank_service.create_bank(db, user, name.strip())
+    content = await file.read()
+    document = doc_service.queue_upload(
+        db, background, bank.id, user.id,
+        file.filename or "", content,
+        get_effective_mineru_token(db, user.id),
+    )
+    return {"bank": bank_service.bank_payload(db, bank, user), "document": document}
 
 
 @router.post("/join")

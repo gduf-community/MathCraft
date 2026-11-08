@@ -1,4 +1,5 @@
 """个人资料、头像与密码修改测试。"""
+from test_auth import delivery  # noqa: F401
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
@@ -13,7 +14,6 @@ def test_update_profile(client, teacher):
             "display_name": "张教授",
             "gender": "女",
             "phone": "13900000000",
-            "email": "zhang@example.com",
             "school": "中山大学",
         },
         headers=teacher,
@@ -69,12 +69,84 @@ def test_upload_avatar_rejects_non_image(client, teacher):
     assert resp.json()["detail"]["code"] == "UNSUPPORTED_FORMAT"
 
 
-def test_password_change_reflected(client, teacher):
-    assert client.put(
-        "/api/auth/password",
-        json={"old_password": "123123", "new_password": "abc123456"},
-        headers=teacher,
-    ).status_code == 204
-    assert client.post(
-        "/api/auth/login", json={"account": "teacher", "password": "abc123456", "role": "teacher"}
-    ).status_code == 200
+def test_profile_rejects_security_fields(client, delivery):
+    from test_auth import bearer, register
+
+    result = register(client, delivery)
+    for field, value in [("email", "bypass@example.com"), ("user_no", "123"),
+                         ("role", "student"), ("email_verified", True), ("auth_version", 9)]:
+        response = client.put("/api/users/me", json={field: value}, headers=bearer(result))
+        assert response.status_code == 422
+    assert client.get("/api/auth/me", headers=bearer(result)).json()["user"]["email"] == "new@example.com"
+
+
+def test_user_number_change_requires_password_and_is_unique(client, delivery):
+    from test_auth import PASSWORD, bearer, register
+
+    first = register(client, delivery)
+    second = register(client, delivery, email="other@example.com", user_no="001")
+    assert client.put("/api/users/me/user-no", headers=bearer(first),
+        json={"user_no": "002", "current_password": "wrong"}).status_code == 400
+    assert client.put("/api/users/me/user-no", headers=bearer(first),
+        json={"user_no": "001", "current_password": PASSWORD}).status_code == 409
+    response = client.put("/api/users/me/user-no", headers=bearer(first),
+        json={"user_no": "002", "current_password": PASSWORD})
+    assert response.status_code == 200
+    assert response.json()["user_no"] == "002"
+    assert client.put("/api/users/me/user-no", headers=bearer(first),
+        json={"user_no": None, "current_password": PASSWORD}).status_code == 200
+    assert client.get("/api/auth/me", headers=bearer(second)).status_code == 200
+
+
+def test_email_change_requires_both_codes_and_revokes_sessions(client, delivery):
+    from test_auth import bearer, issue, register
+
+    result = register(client, delivery)
+    headers = bearer(result)
+    response = client.post("/api/users/me/email-change", headers=headers,
+                           json={"new_email": "changed@example.com"})
+    assert response.status_code == 201
+    change = response.json()["change_id"]
+    codes = []
+    for email, purpose in [("new@example.com", "email_change_old"),
+                           ("changed@example.com", "email_change_new")]:
+        response = client.post("/api/auth/email-code", headers=headers, json={"email": email,
+            "purpose": purpose, "change_id": change, "turnstile_token": "test-challenge"})
+        assert response.status_code == 202, response.text
+        codes.append((response.json()["challenge_id"], delivery.messages[-1][1]))
+    payload = {"change_id": change, "old_challenge_id": codes[0][0], "old_code": codes[0][1],
+               "new_challenge_id": codes[1][0], "new_code": codes[1][1]}
+    wrong = dict(payload, new_code="111111" if codes[1][1] != "111111" else "222222")
+    assert client.put("/api/users/me/email", headers=headers, json=wrong).status_code == 400
+    assert client.get("/api/auth/me", headers=headers).json()["user"]["email"] == "new@example.com"
+    assert client.put("/api/users/me/email", headers=headers, json=payload).status_code == 204
+    assert client.get("/api/auth/me", headers=headers).status_code == 401
+    challenge, code = issue(client, delivery, "changed@example.com", "login")
+    assert client.post("/api/auth/login/email", json={"email": "changed@example.com",
+        "challenge_id": challenge, "code": code, "role": "teacher"}).status_code == 200
+
+
+def test_profile_contract_preserves_null_security_fields(client, delivery):
+    """未填写资料和删除学工号在真实响应中保持 null，且身份始终明确。"""
+    from test_auth import PASSWORD, bearer, register
+
+    result = register(client, delivery, role="student")
+    expected_keys = {"id", "account", "role", "identity", "display_name", "gender", "phone",
+                     "email", "user_no", "school", "avatar_url"}
+    user = result["user"]
+    assert set(user) == expected_keys
+    assert user["role"] == "student"
+    assert user["identity"] == "学生"
+    for field in ("gender", "phone", "user_no", "school", "avatar_url"):
+        assert user[field] is None
+    headers = bearer(result)
+    updated = client.put("/api/users/me", headers=headers, json={"display_name": "学生姓名"})
+    assert updated.status_code == 200, updated.text
+    assert set(updated.json()) == expected_keys
+    assert updated.json()["user_no"] is None
+    removed = client.put("/api/users/me/user-no", headers=headers,
+                         json={"user_no": None, "current_password": PASSWORD})
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["user_no"] is None
+    assert removed.json()["role"] == "student"
+    assert client.get("/api/auth/me", headers=headers).json()["user"] == removed.json()

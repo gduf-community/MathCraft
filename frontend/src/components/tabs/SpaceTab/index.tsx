@@ -94,7 +94,6 @@ export default function SpaceTab() {
   const {
     spaces,
     role,
-    createSpace,
     joinSpaceByCode,
     leaveSpace,
     dissolveSpace,
@@ -824,7 +823,7 @@ function MemberListModal({
 /** 创建学习空间弹窗：名称 + 人数上限，编号自动生成；创建后展示成功态与可复制的编号 */
 function CreateSpaceModal({
   onClose,
-  onCreate,
+  onCreate: _onCreate,
 }: {
   onClose: () => void
   onCreate: (space: StudySpace) => void

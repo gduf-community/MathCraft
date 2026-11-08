@@ -1,37 +1,25 @@
-/** 文档上传与入库进度：真实上传 + 轮询后端解析/向量化状态。 */
-import { useRef, useState } from 'react'
+/** 文档上传：提交后立即返回，入库异步进行；弹窗轮询展示文档行状态，完成有站内通知。 */
+import { useRef } from 'react'
 import * as bankApi from '../../../api/banks'
-import type { BankDoc } from '../../../api/banks'
 
-export interface UploadState {
-  name: string
-  phase: 'upload' | 'vector' | 'done'
-  pct: number
-  stage?: string
-}
-
-export function useDocUpload(bankId: string, onFinished: (doc: BankDoc) => void, notify: (msg: string) => void) {
-  const [upload, setUpload] = useState<UploadState | null>(null)
+export function useDocUpload(bankId: string, onQueued: () => void, notify: (msg: string) => void) {
   const busy = useRef(false)
 
   const start = (file: File) => {
     if (busy.current) return
     busy.current = true
-    setUpload({ name: file.name, phase: 'upload', pct: 0 })
+    notify(`正在上传「${file.name}」…`)
     void bankApi
-      .uploadAndWait(bankId, file, (phase, pct, stage) => setUpload({ name: file.name, phase, pct, stage }))
-      .then((doc) => {
-        onFinished(doc)
-        notify(`「${file.name}」已上传并完成入库`)
+      .uploadDoc(bankId, file)
+      .then((r) => {
+        onQueued()
+        notify(`「${file.name}」正在上传中，预计等待 ${r.etaMinutes} 分钟`)
       })
-      .catch((err) => {
-        notify(err instanceof Error ? err.message : '上传失败')
-      })
+      .catch((err) => notify(err instanceof Error ? err.message : '上传失败'))
       .finally(() => {
         busy.current = false
-        window.setTimeout(() => setUpload(null), 500)
       })
   }
 
-  return { upload, start }
+  return { start }
 }

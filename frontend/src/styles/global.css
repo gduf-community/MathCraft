@@ -109,3 +109,64 @@ input[type="number"] {
 .katex-display {
   margin: 0.2em 0;
 }
+
+/* 工作台窄屏：改排版而非裁切，让导航、对话和参数控件均可滚动到达。 */
+@media (max-width: 767px) {
+  .workspace-shell {
+    height: auto;
+    min-height: 100dvh;
+  }
+  .workspace-topbar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+  }
+  .workspace-topbar > div:last-of-type {
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .workspace-topbar button[title="进入个人中心"] {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+  .workspace-topbar button[title="进入个人中心"] > span {
+    overflow-wrap: anywhere;
+  }
+  .workspace-body {
+    flex-direction: column;
+  }
+  .workspace-body > nav {
+    width: auto;
+    border-right: 0;
+  }
+  .workspace-body > nav > ul {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .workspace-body > nav > ul button {
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 0;
+  }
+  .workspace-body > main {
+    flex: none;
+    min-height: 640px;
+    margin: 8px;
+  }
+  .workspace-tabs {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-inline: 12px;
+  }
+  .workspace-body > aside {
+    /* 覆盖桌面拖拽宽度；仍保留桌面 220–300px 调宽行为。 */
+    width: auto !important;
+    margin: 8px;
+  }
+  .workspace-body > aside > [title="拖动调整面板宽度"] {
+    display: none;
+  }
+}

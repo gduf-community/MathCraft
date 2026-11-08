@@ -1,3 +1,4 @@
+/* global console */
 /** 学习空间 4 列网格布局截图验证 */
 import { chromium } from 'playwright-core'
 import { homedir } from 'node:os'

@@ -12,6 +12,7 @@ dependencies = [
     "alembic>=1.13",
     "redis>=5.0",
     "bcrypt>=4.2",
+    "PyJWT>=2.10,<3",
     "jieba>=0.42",
     "chromadb>=0.5.20",
     "pymupdf>=1.24.0",
@@ -24,6 +25,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.15.22,<0.16",
+    "fakeredis[lua]>=2.28,<3",
 ]
 
 [tool.uv]
