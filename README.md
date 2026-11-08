@@ -67,7 +67,8 @@ MathCraft/
 │   └── package.json
 ├── docs/                         # 当前方案及社区历史设计、API 与流程资料
 │   ├── design/用户系统功能规格.md # 已接受的邮箱认证、JWT 与开发账号设计
-│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格
+│   ├── design/用户系统实施规格.md # 用户故事、实施决策与验收规格
+│   └── design/出题审核中间件设计与实施记录.md # 查重、盲评、修补、解析流水线的目标与契约
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
