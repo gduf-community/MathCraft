@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { ReactNode } from 'react'
 import * as api from '../api/backend'
 import * as banksApi from '../api/banks'
+import { getSessionGeneration } from '../api/session'
 import type {
   AssembleRecord,
   ChatMessage,
@@ -159,6 +160,13 @@ interface AppState {
   markUrgeRead: (urgeId: string) => void
   /** 删除单条催交通知 */
   deleteUrge: (urgeId: string) => void
+
+  /** 题库通知：文档入库完成/失败，全员可见，红点 + 列表 */
+  bankNotifUnread: number
+  bankNotifItems: api.ApiNotification[]
+  clearBankNotifs: () => void
+  /** 删除单条题库通知 */
+  deleteBankNotif: (id: string) => void
   /** 通知「立即查看」：跳转到学习空间中该试卷的作答标签页 */
   pendingSpacePaper: { spaceId: string; paperId: string } | null
   requestOpenSpacePaper: (spaceId: string, paperId: string) => void
@@ -169,6 +177,16 @@ interface AppState {
   inputDraft: string
   setInputDraft: (v: string) => void
   sendChat: (text: string) => Promise<void>
+  /** 中止当前对话请求（服务端仍会跑完，前端不再等结果） */
+  pauseChat: () => void
+  /** 回退到这条消息重新发送 */
+  retryChat: (messageId: string) => void
+  /** 把这条消息放回输入框继续编辑 */
+  editChat: (messageId: string) => void
+  /** 对话生成的实时阶段，等待时显示 */
+  chatProgress: { percent: number; stage: string } | null
+  /** 本次对话开始时间，用于显示已等待时长 */
+  chatStartedAt: number | null
 
   toast: { id: number; text: string } | null
   showToast: (text: string) => void
@@ -204,12 +222,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [records, setRecords] = useState<AssembleRecord[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatProgress, setChatProgress] = useState<{ percent: number; stage: string } | null>(null)
+  const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null)
   const [openPaperId, setOpenPaperId] = useState<string | null>(null)
   const [urgeUnread, setUrgeUnread] = useState(0)
   const [urgeItems, setUrgeItems] = useState<api.ApiUrge[]>([])
+  const [bankNotifUnread, setBankNotifUnread] = useState(0)
+  const [bankNotifItems, setBankNotifItems] = useState<api.ApiNotification[]>([])
   const [pendingSpacePaper, setPendingSpacePaper] = useState<{ spaceId: string; paperId: string } | null>(null)
   // 设置页：跳转定位（引擎）与未保存提醒
   const [settingsTarget, setSettingsTarget] = useState<{ engine: string; request: number } | null>(null)
@@ -217,22 +239,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toastTimer = useRef<number | undefined>(undefined)
   const activeBatchRef = useRef<string | null>(null)
   const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
+  const chatAbortRef = useRef<AbortController | null>(null)
+  const chatBusyRef = useRef(false)
+  const chatPollRef = useRef<number | null>(null)
+  const providerSession = useRef(getSessionGeneration())
+  const mounted = useRef(true)
+  const sessionIsCurrent = useCallback(
+    () => mounted.current && providerSession.current === getSessionGeneration(),
+    [],
+  )
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      window.clearTimeout(toastTimer.current)
+      if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
+      chatAbortRef.current?.abort()
+    }
+  }, [])
 
   const showToast = useCallback((text: string) => {
+    if (!sessionIsCurrent()) return
     // 相同文案连续触发时只重置计时，不重新挂载，避免 toast 重复闪现
     setToast((prev) => (prev?.text === text ? prev : { id: Date.now(), text }))
     window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
-  }, [])
+  }, [sessionIsCurrent])
 
   const loadFavorites = useCallback(async () => {
+    if (!sessionIsCurrent()) return
     const [apiFavs, apiGroups] = await Promise.all([api.listFavorites(), api.listFavoriteGroups()])
+    if (!sessionIsCurrent()) return
     setFavorites(apiFavs.map(api.mapQuestion))
     setFavGroups(apiGroups.map((g) => ({ id: g.id, name: g.name, isDefault: g.is_default })))
-  }, [])
+  }, [sessionIsCurrent])
 
   const loadRecords = useCallback(async () => {
+    if (!sessionIsCurrent()) return
     const rows = await api.listPapers()
+    if (!sessionIsCurrent()) return
     const details = await Promise.all(
       rows.map(async (p) => {
         try {
@@ -242,38 +288,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }),
     )
+    if (!sessionIsCurrent()) return
     setRecords(details.map(api.mapPaper))
-  }, [])
+  }, [sessionIsCurrent])
 
   const refreshSpaces = useCallback(async () => {
+    if (!sessionIsCurrent()) return
     const rows = await api.listSpaces()
+    if (!sessionIsCurrent()) return
     setSpaces(rows.map(api.mapSpace))
-  }, [])
+  }, [sessionIsCurrent])
 
   // 题库列表刷新：新建/加入/退出题库后侧边栏「选择题库文档」实时同步
   const refreshKbs = useCallback(async () => {
+    if (!sessionIsCurrent()) return
     try {
       const bankRows = await api.listBanks('all')
+      if (!sessionIsCurrent()) return
       setKbs(bankRows.map(api.mapBankToKnowledgeBase))
     } catch {
       /* 刷新失败静默忽略，下次进入页面会重新加载 */
     }
-  }, [])
+  }, [sessionIsCurrent])
 
   // 催交：学生每 30 秒轮询角标与通知列表
   const loadUrges = useCallback(async () => {
+    if (!sessionIsCurrent()) return
     try {
       const feed = await api.listMyUrges()
+      if (!sessionIsCurrent()) return
       setUrgeUnread(feed.unread_count)
       setUrgeItems(feed.items)
     } catch {
       /* 轮询失败静默忽略 */
     }
-  }, [])
+  }, [sessionIsCurrent])
 
   const clearUrgeBadge = useCallback(() => {
-    void api.clearUrgeBadge().then(loadUrges).catch(() => undefined)
-  }, [loadUrges])
+    if (user?.role !== 'student' || !sessionIsCurrent()) return
+    void api.clearUrgeBadge().then(loadUrges)
+      .catch((err) => showToast(err instanceof Error ? err.message : '清除催交红点失败'))
+  }, [user?.role, sessionIsCurrent, loadUrges, showToast])
 
   const markUrgeRead = useCallback(
     (urgeId: string) => {
@@ -309,6 +364,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer)
   }, [user, loadUrges])
 
+  // 题库通知：每 10 秒轮询未读角标与列表；出现新通知时刷新题库与文档下拉
+  const knownNotifIds = useRef<Set<string>>(new Set())
+  const notifFirstLoad = useRef(true)
+  const selectedKbRef = useRef('')
+  selectedKbRef.current = selectedKbId
+
+  const loadBankNotifs = useCallback(async () => {
+    if (!sessionIsCurrent()) return
+    try {
+      const feed = await api.listNotifications()
+      if (!sessionIsCurrent()) return
+      setBankNotifUnread(feed.unread_count)
+      setBankNotifItems(feed.items)
+      const fresh = feed.items.filter((n) => !knownNotifIds.current.has(n.id))
+      if (!notifFirstLoad.current && fresh.length) {
+        void refreshKbs()
+        const target = selectedKbRef.current
+        if (target && fresh.some((notification) => notification.bank_id === target)) {
+          void api
+            .listDocuments(target)
+            .then((rows) => {
+              if (sessionIsCurrent() && selectedKbRef.current === target) setDocs(rows.map(api.mapDocument))
+            })
+            .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+        }
+      }
+      notifFirstLoad.current = false
+      knownNotifIds.current = new Set(feed.items.map((n) => n.id))
+    } catch {
+      /* 轮询失败静默忽略 */
+    }
+  }, [refreshKbs, sessionIsCurrent, showToast])
+
+  const clearBankNotifs = useCallback(() => {
+    if (!sessionIsCurrent()) return
+    void api.markNotificationsRead().then(loadBankNotifs)
+      .catch((err) => showToast(err instanceof Error ? err.message : '清除题库通知红点失败'))
+  }, [sessionIsCurrent, loadBankNotifs, showToast])
+
+  const deleteBankNotif = useCallback(
+    (id: string) => {
+      void api
+        .deleteNotification(id)
+        .then(() => {
+          setBankNotifItems((prev) => prev.filter((n) => n.id !== id))
+          return loadBankNotifs()
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '删除通知失败'))
+    },
+    [loadBankNotifs, showToast],
+  )
+
+  useEffect(() => {
+    if (!user) return
+    void loadBankNotifs()
+    const timer = window.setInterval(() => void loadBankNotifs(), 10000)
+    return () => window.clearInterval(timer)
+  }, [user, loadBankNotifs])
+
   const requestOpenSpacePaper = useCallback((spaceId: string, paperId: string) => {
     setPendingSpacePaper({ spaceId, paperId })
     // 切到学习空间页：未打开时挂载 SpaceTab 后由其消费 pending 打开作答标签
@@ -343,8 +457,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void (async () => {
       try {
         const [bankRows, latest] = await Promise.all([api.listBanks('all'), api.latestBatch()])
+        if (!sessionIsCurrent()) return
         setKbs(bankRows.map(api.mapBankToKnowledgeBase))
         await Promise.all([loadFavorites(), loadRecords(), refreshSpaces()])
+        if (!sessionIsCurrent()) return
         if (latest.batch_id) {
           activeBatchRef.current = latest.batch_id
           setQuestions(latest.questions.map(api.mapQuestion))
@@ -353,20 +469,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(err instanceof Error ? err.message : '加载数据失败，请检查后端服务')
       }
     })()
-  }, [user, loadFavorites, loadRecords, refreshSpaces, showToast])
+  }, [user, loadFavorites, loadRecords, refreshSpaces, sessionIsCurrent, showToast])
 
   const selectKb = useCallback(
     (id: string) => {
+      selectedKbRef.current = id
       setSelectedKbId(id)
       setSelectedDocId('')
       setDocs([])
       if (!id) return
       void api
         .listDocuments(id)
-        .then((rows) => setDocs(rows.map(api.mapDocument)))
+        .then((rows) => {
+          if (sessionIsCurrent() && selectedKbRef.current === id) setDocs(rows.map(api.mapDocument))
+        })
         .catch((err) => showToast(err instanceof Error ? err.message : '加载文档失败'))
     },
-    [showToast],
+    [sessionIsCurrent, showToast],
   )
 
   const selectDoc = useCallback(
@@ -393,6 +512,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const runGenerate = useCallback(
     async (opts?: { silent?: boolean }) => {
+      if (!sessionIsCurrent()) return false
       const doc = docs.find((d) => d.id === selectedDocId)
       if (!doc) {
         showToast('请先选择知识库文档')
@@ -417,12 +537,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           source_mode: 'variant_data',
           existing_stems: questions.map((q) => q.stem),
         })
+        if (!sessionIsCurrent()) return false
         let state = await api.getGenerationProgress(started.task_id)
         while (!state.done) {
+          if (!sessionIsCurrent()) return false
           setGenProgress({ percent: state.progress, stage: state.stage })
           await new Promise((r) => setTimeout(r, 500))
+          if (!sessionIsCurrent()) return false
           state = await api.getGenerationProgress(started.task_id)
         }
+        if (!sessionIsCurrent()) return false
         if (state.error?.message) throw new Error(state.error.message)
         const incoming = state.questions.map(api.mapQuestion)
         setQuestions((prev) => dedupeQuestions(prev, incoming))
@@ -430,7 +554,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSelectedIds([])
         setTypeFilter('all')
         setDiffFilter('all')
-        if (!opts?.silent) showToast(`已生成 ${incoming.length} 道题目`)
+        if (!opts?.silent) {
+          const rv = state.review
+          const detail: string[] = []
+          if (rv?.duplicates) detail.push(`去重 ${rv.duplicates} 题`)
+          if (rv?.repaired) detail.push(`修补 ${rv.repaired} 题`)
+          if (rv?.regenerated) detail.push(`重出 ${rv.regenerated} 题`)
+          const extra = detail.length ? `（${detail.join('，')}）` : ''
+          showToast(`已生成 ${incoming.length} 道题目${extra}`)
+        }
         setActiveTab('preview')
         return true
       } catch (err) {
@@ -441,27 +573,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setGenProgress(null)
       }
     },
-    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, showToast],
+    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, sessionIsCurrent, showToast],
   )
 
   const sendChat = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed || chatBusyRef.current || !sessionIsCurrent()) return
       if (!selectedDocId || !selectedKbId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
+      chatBusyRef.current = true
+      const controller = new AbortController()
+      chatAbortRef.current = controller
+      const isActive = () => sessionIsCurrent() && chatAbortRef.current === controller && !controller.signal.aborted
+      let poll: number | undefined
       setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
+      setChatStartedAt(Date.now())
       setBotThinking(true)
       try {
         let session = chatSessionRef.current
         if (!session || session.bankId !== selectedKbId || session.docId !== selectedDocId) {
           const created = await api.createChatSession(selectedKbId, selectedDocId)
+          if (!isActive()) return
           session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
           chatSessionRef.current = session
         }
-        const res = await api.sendChatMessage(session.id, trimmed, questions.map((q) => q.stem))
+        const sessionId = session.id
+        if (!isActive()) return
+        poll = window.setInterval(() => {
+          if (!isActive()) return
+          void api.getChatProgress(sessionId).then((p) => {
+            if (isActive() && p.active) setChatProgress({ percent: p.percent, stage: p.stage })
+          }).catch((err) => {
+            if (isActive()) showToast(err instanceof Error ? err.message : '读取出题进度失败')
+          })
+        }, 1500)
+        chatPollRef.current = poll
+        const res = await api.sendChatMessage(
+          sessionId, trimmed, questions.map((q) => q.stem), controller.signal,
+        )
+        if (!isActive()) return
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
         if (res.questions.length) {
           const incoming = res.questions.map(api.mapQuestion)
@@ -472,15 +625,68 @@ export function AppProvider({ children }: { children: ReactNode }) {
           showToast(`已生成 ${incoming.length} 道题目，已合并到「题目预览」`)
         }
       } catch (err) {
+        if (!sessionIsCurrent() || chatAbortRef.current !== controller) return
+        const aborted = err instanceof DOMException && err.name === 'AbortError'
         setMessages((prev) => [
           ...prev,
-          { id: `m-${Date.now()}-a`, role: 'assistant', text: err instanceof Error ? err.message : '服务异常，请稍后再试' },
+          {
+            id: `m-${Date.now()}-a`,
+            role: 'assistant',
+            text: aborted ? '已暂停本次生成。' : err instanceof Error ? err.message : '服务异常，请稍后再试',
+          },
         ])
       } finally {
-        setBotThinking(false)
+        if (poll !== undefined) window.clearInterval(poll)
+        if (chatAbortRef.current === controller) {
+          chatPollRef.current = null
+          chatAbortRef.current = null
+          chatBusyRef.current = false
+          setChatProgress(null)
+          setChatStartedAt(null)
+          setBotThinking(false)
+        }
       }
     },
-    [selectedDocId, selectedKbId, questions, showToast],
+    [selectedDocId, selectedKbId, questions, sessionIsCurrent, showToast],
+  )
+
+  const pauseChat = useCallback(() => {
+    if (!sessionIsCurrent() || !chatBusyRef.current) return
+    const sessionId = chatSessionRef.current?.id
+    if (sessionId) void api.cancelChat(sessionId)
+      .catch((err) => showToast(err instanceof Error ? err.message : '服务端暂停未确认'))
+    chatAbortRef.current?.abort()
+    if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
+    chatPollRef.current = null
+    chatAbortRef.current = null
+    chatBusyRef.current = false
+    setBotThinking(false)
+    setChatProgress(null)
+    setChatStartedAt(null)
+    setMessages((prev) => [...prev, { id: `m-${Date.now()}-paused`, role: 'assistant', text: '已暂停本次生成。' }])
+  }, [sessionIsCurrent, showToast])
+
+  const retryChat = useCallback(
+    (messageId: string) => {
+      if (chatBusyRef.current) return
+      const index = messages.findIndex((m) => m.id === messageId)
+      if (index < 0) return
+      const text = messages[index].text
+      setMessages((prev) => prev.slice(0, index))
+      void sendChat(text)
+    },
+    [messages, sendChat],
+  )
+
+  const editChat = useCallback(
+    (messageId: string) => {
+      if (chatBusyRef.current) return
+      const index = messages.findIndex((m) => m.id === messageId)
+      if (index < 0) return
+      setInputDraft(messages[index].text)
+      setMessages((prev) => prev.slice(0, index))
+    },
+    [messages],
   )
 
   const updateQuestion = useCallback(
@@ -798,6 +1004,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const uploadDocument = useCallback(
     async (file: File) => {
+      if (!sessionIsCurrent()) return
       if (!selectedKbId) {
         showToast('请先在右侧选择知识库')
         return
@@ -805,7 +1012,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       showToast(`正在上传「${file.name}」…`)
       try {
         await banksApi.uploadAndWait(selectedKbId, file)
+        if (!sessionIsCurrent()) return
         const rows = await api.listDocuments(selectedKbId)
+        if (!sessionIsCurrent() || selectedKbRef.current !== selectedKbId) return
         setDocs(rows.map(api.mapDocument))
         const match = rows.find((d) => d.name === file.name)
         if (match) setSelectedDocId(match.id)
@@ -814,7 +1023,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(err instanceof Error ? err.message : '上传失败')
       }
     },
-    [selectedKbId, showToast],
+    [selectedKbId, sessionIsCurrent, showToast],
   )
 
   const createSpace = useCallback(
@@ -984,6 +1193,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearUrgeBadge,
     markUrgeRead,
     deleteUrge,
+    bankNotifUnread,
+    bankNotifItems,
+    clearBankNotifs,
+    deleteBankNotif,
     pendingSpacePaper,
     requestOpenSpacePaper,
     clearPendingSpacePaper,
@@ -992,6 +1205,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     inputDraft,
     setInputDraft,
     sendChat,
+    pauseChat,
+    chatProgress,
+    chatStartedAt,
+    retryChat,
+    editChat,
     toast,
     showToast,
   }

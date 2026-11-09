@@ -1,12 +1,13 @@
 /** 题库真实 API 适配层：保留题库页原有数据结构，数据全部来自后端。 */
+import type { ApiBank, ApiBankMember, ApiDocument } from './backend'
+import { assertCurrentSession, getSessionGeneration } from './session'
 import {
-  type ApiBank,
-  type ApiBankMember,
-  type ApiDocument,
   createBank as createBankApi,
+  createBankWithDocument,
   deleteBank as deleteBankApi,
   deleteDocument,
   downloadDocument,
+  fetchDocumentText,
   getBank,
   getDocument,
   joinBank,
@@ -21,6 +22,7 @@ import {
   transferBank as transferBankApi,
   updateBank as updateBankApi,
   uploadDocument,
+  viewDocument,
   formatFileSize,
 } from './backend'
 
@@ -30,6 +32,8 @@ export interface BankDoc {
   format: string
   size: string
   status?: string
+  /** 当前处理阶段描述（如「正在解析文档」「OCR 完成，正在切片」） */
+  stage?: string | null
   progress?: number
 }
 
@@ -77,6 +81,7 @@ function mapDoc(d: ApiDocument): BankDoc {
     format: d.format,
     size: formatFileSize(d.size_bytes),
     status: d.status,
+    stage: d.stage,
     progress: d.progress,
   }
 }
@@ -92,8 +97,10 @@ function mapMember(m: ApiBankMember): BankMember {
   }
 }
 
-async function enrich(bank: ApiBank): Promise<ManagedBank> {
+async function enrich(bank: ApiBank, started: number): Promise<ManagedBank> {
+  assertCurrentSession(started)
   const [members, docs] = await Promise.all([listBankMembers(bank.id), listDocuments(bank.id)])
+  assertCurrentSession(started)
   return {
     id: bank.id,
     name: bank.name,
@@ -117,27 +124,31 @@ async function enrich(bank: ApiBank): Promise<ManagedBank> {
 }
 
 export async function listOwned(): Promise<ManagedBank[]> {
+  const started = getSessionGeneration()
   const banks = await listBanks('owned')
-  return Promise.all(banks.map(enrich))
+  return Promise.all(banks.map((bank) => enrich(bank, started)))
 }
 
 export async function listJoined(): Promise<ManagedBank[]> {
+  const started = getSessionGeneration()
   const banks = await listBanks('joined')
-  return Promise.all(banks.map(enrich))
+  return Promise.all(banks.map((bank) => enrich(bank, started)))
 }
 
 export async function getBankDetail(id: string): Promise<ManagedBank> {
-  return enrich(await getBank(id))
+  const started = getSessionGeneration()
+  return enrich(await getBank(id), started)
 }
 
 export async function updateBank(
   id: string,
   patch: { name?: string },
 ): Promise<ManagedBank> {
+  const started = getSessionGeneration()
   const updated = await updateBankApi(id, {
     name: patch.name,
   })
-  return enrich(updated)
+  return enrich(updated, started)
 }
 
 export async function deleteBank(id: string): Promise<void> {
@@ -145,11 +156,13 @@ export async function deleteBank(id: string): Promise<void> {
 }
 
 export async function createBank(name: string): Promise<ManagedBank> {
-  return enrich(await createBankApi(name))
+  const started = getSessionGeneration()
+  return enrich(await createBankApi(name), started)
 }
 
 export async function joinByCode(code: string): Promise<ManagedBank> {
-  return enrich(await joinBank(code))
+  const started = getSessionGeneration()
+  return enrich(await joinBank(code), started)
 }
 
 export async function quitBankById(id: string): Promise<void> {
@@ -181,6 +194,15 @@ export async function downloadDoc(bankId: string, docId: string, name: string): 
   await downloadDocument(bankId, docId, name)
 }
 
+/** 读取简化版文档文本，供应用内预览渲染。 */
+export async function readDoc(bankId: string, docId: string): Promise<string> {
+  return fetchDocumentText(bankId, docId)
+}
+
+export async function viewDoc(bankId: string, docId: string): Promise<void> {
+  await viewDocument(bankId, docId)
+}
+
 export async function reprocessDoc(bankId: string, docId: string): Promise<void> {
   await reprocessDocument(bankId, docId)
 }
@@ -189,9 +211,24 @@ export async function uploadDoc(
   bankId: string,
   file: File,
   onProgress?: (percent: number) => void,
-): Promise<string> {
+): Promise<{ documentId: string; etaMinutes: number }> {
   const result = await uploadDocument(bankId, file, onProgress)
-  return result.document_id
+  return {
+    documentId: result.document_id,
+    etaMinutes: result.eta_minutes ?? 1,
+  }
+}
+
+/** 新建题库并上传首个文档：一次请求完成，返回题库、文档与预计等待分钟数。 */
+export async function createBankWithDoc(
+  name: string,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<{ bank: ManagedBank; documentName: string; etaMinutes: number }> {
+  const started = getSessionGeneration()
+  const result = await createBankWithDocument(name, file, onProgress)
+  const bank = await enrich(result.bank, started)
+  return { bank, documentName: result.document.name, etaMinutes: result.document.eta_minutes }
 }
 
 /** 上传并等待后端完成解析、OCR、切片、向量化。 */
@@ -200,9 +237,12 @@ export async function uploadAndWait(
   file: File,
   onStage?: (phase: 'upload' | 'vector' | 'done', percent: number, stage: string) => void,
 ): Promise<BankDoc> {
-  const docId = await uploadDoc(bankId, file, (pct) => onStage?.('upload', pct, '正在上传'))
+  const started = getSessionGeneration()
+  const { documentId: docId } = await uploadDoc(bankId, file, (pct) => onStage?.('upload', pct, '正在上传'))
   for (let i = 0; i < 120; i += 1) {
+    assertCurrentSession(started)
     const doc = await getDocument(bankId, docId)
+    assertCurrentSession(started)
     if (doc.status === 'ready') {
       onStage?.('done', 100, '入库完成')
       return mapDoc(doc)

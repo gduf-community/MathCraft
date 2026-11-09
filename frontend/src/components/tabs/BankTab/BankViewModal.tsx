@@ -1,9 +1,10 @@
 /** 题库查看弹窗：浏览信息、成员权限和文档操作。 */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import {
   Ban,
   Download,
+  Eye,
   FileUp,
   FolderOpen,
   Lock,
@@ -13,9 +14,11 @@ import {
 } from 'lucide-react'
 import * as bankApi from '../../../api/banks'
 import type { ManagedBank } from '../../../api/banks'
+import { getSessionGeneration } from '../../../api/session'
 import { useApp } from '../../../store/AppContext'
 import { Avatar, FormatBadge, SectionTitle } from './shared'
 import { useDocUpload } from './useDocUpload'
+import DocPreviewModal from './DocPreviewModal'
 
 export default function BankViewModal({
   bank,
@@ -29,10 +32,26 @@ export default function BankViewModal({
   const { showToast } = useApp()
   const [docs, setDocs] = useState(bank.docs)
   const [dragOver, setDragOver] = useState(false)
+  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const session = useRef(getSessionGeneration())
   const roleLabel = bank.myRole === 'creator' ? '创建者' : bank.myRole === 'editor' ? '可编辑' : '只读'
   const canUpload = bank.canUpload
-  const { upload, start } = useDocUpload(bank.id, (doc) => setDocs((prev) => [...prev, doc]), showToast)
+  const { start } = useDocUpload(bank.id, () => {
+    void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
+      .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+  }, showToast)
+
+  const processing = docs.some((doc) => doc.status && !['ready', 'failed'].includes(doc.status))
+  useEffect(() => {
+    if (!processing) return
+    const timer = window.setInterval(() => {
+      if (session.current !== getSessionGeneration()) return
+      void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
+        .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [bank.id, processing, showToast])
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -45,7 +64,7 @@ export default function BankViewModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={onClose}>
       <div
-        className="flex max-h-[88vh] w-[580px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="flex max-h-[88vh] w-[580px] max-w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 弹窗头部 */}
@@ -128,27 +147,49 @@ export default function BankViewModal({
             <SectionTitle icon={FileUp}>已上传文档（{docs.length}）</SectionTitle>
             {docs.length === 0 && <p className="text-xs text-ink-3">暂无文档</p>}
             <ul className="space-y-1.5">
-              {docs.map((d) => (
-                <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
-                  <FormatBadge format={d.format} />
-                  <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
-                  <span className="text-xs text-ink-3">{d.size}</span>
-                  <button
-                    type="button"
-                    title="下载文档"
-                    onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
-                    className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
-                  >
-                    <Download size={14} />
-                  </button>
+              {docs.map((d) => {
+                const busy = d.status && !['ready', 'failed'].includes(d.status)
+                const failed = d.status === 'failed'
+                return (
+                  <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
+                    <FormatBadge format={d.format} />
+                    <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
+                    <span
+                      title={failed ? d.stage ?? '' : undefined}
+                      className={`mr-3 text-xs ${
+                        failed ? 'text-red-500' : busy ? 'text-primary' : 'text-emerald-600'
+                      }`}
+                    >
+                      {failed ? '入库失败' : busy ? `${d.stage ?? '处理中'} ${d.progress ?? 0}%` : '可用'}
+                    </span>
+                    <button
+                      type="button"
+                      title="查看文档"
+                      onClick={() => setPreview({ id: d.id, name: d.name })}
+                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                    >
+                      <Eye size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      title="下载文档"
+                      onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
+                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                    >
+                      <Download size={14} />
+                    </button>
                   {bank.canDeleteDoc && (
                     <button
                       type="button"
                       title="删除文档"
                       onClick={async () => {
-                        await bankApi.removeDoc(bank.id, d.id)
-                        setDocs((prev) => prev.filter((x) => x.id !== d.id))
-                        onChanged()
+                        try {
+                          await bankApi.removeDoc(bank.id, d.id)
+                          setDocs((prev) => prev.filter((x) => x.id !== d.id))
+                          onChanged()
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : '删除文档失败')
+                        }
                       }}
                       className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
                     >
@@ -156,7 +197,8 @@ export default function BankViewModal({
                     </button>
                   )}
                 </li>
-              ))}
+                )
+              })}
             </ul>
 
             {/* 上传区域：可编辑成员可上传 */}
@@ -188,24 +230,6 @@ export default function BankViewModal({
                     }}
                   />
                 </div>
-                {upload && (
-                  <div className="rounded-xl border border-primary/30 bg-primary-light/30 p-3">
-                    <div className="mb-1.5 flex items-center justify-between text-xs">
-                      <span className="truncate font-medium text-ink">{upload.name}</span>
-                      <span className={upload.phase === 'done' ? 'text-emerald-600' : 'text-primary'}>
-                        {upload.phase === 'upload' && `上传中 ${Math.floor(upload.pct)}%`}
-                        {upload.phase === 'vector' && `向量化中 ${Math.floor(upload.pct)}%`}
-                        {upload.phase === 'done' && '已完成'}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-white">
-                      <div
-                        className={`h-full rounded-full transition-all duration-150 ${upload.phase === 'vector' ? 'bg-violet-500' : 'bg-primary'}`}
-                        style={{ width: `${upload.pct}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
               </>
             ) : (
               <div className="flex items-center gap-2.5 rounded-xl border border-dashed border-line bg-page px-4 py-3.5 text-ink-3">
@@ -227,6 +251,15 @@ export default function BankViewModal({
           </button>
         </div>
       </div>
+      {preview && (
+        <DocPreviewModal
+          key={preview.id}
+          bankId={bank.id}
+          docId={preview.id}
+          docName={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   )
 }

@@ -44,7 +44,7 @@ const backendSource = (await readFile(new URL('./src/api/backend.ts', import.met
 const backendCompiled = ts.transpileModule(backendSource, { compilerOptions: {
   module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020,
 } }).outputText
-const { uploadDocument } = await import('data:text/javascript;base64,' + Buffer.from(backendCompiled).toString('base64'))
+const { uploadDocument, createBankWithDocument } = await import('data:text/javascript;base64,' + Buffer.from(backendCompiled).toString('base64'))
 const user = (id, role = 'student') => ({ id, account: id, role,
   identity: role === 'admin' ? '管理员' : role === 'teacher' ? '教师' : '学生',
   display_name: id, email: null, email_verified: false })
@@ -277,3 +277,85 @@ for (const endSession of [async () => { await login(result('C')) }, async () => 
   }
 }
 console.log('PASS: actual uploadDocument preflight, one expired retry + progress, revoked no replay, identity and stale success isolation')
+
+// 新建并上传是独立写接口，必须验证其实际 XHR 错误解析及会话保护。
+const createdBank = {
+  bank: { id: 'bank-A', name: '合成题库', code: 'fake-code', creator: { id: 'A', display_name: 'A' },
+    member_count: 1, capacity: 100, source: 'owned', quitted: false, my_role: 'creator',
+    can_upload_document: true, can_download_document: true, can_delete_document: true,
+    can_manage_members: true, can_edit_bank: true, can_transfer_bank: false, can_delete_bank: true },
+  document: { document_id: 'document-A', name: 'synthetic.txt', eta_minutes: 3, status: 'uploaded' },
+}
+function creationAssertions(xhr, bearer) {
+  assert.equal(xhr.method, 'POST')
+  assert.equal(xhr.path, '/api/banks/with-document')
+  assert.equal(xhr.withCredentials, true)
+  assert.equal(xhr.headers.get('Authorization'), bearer)
+  assert.equal(xhr.headers.has('Content-Type'), false)
+  assert.equal(xhr.body.get('name'), '合成题库')
+  assert.equal(xhr.body.get('file').size, uploadFile.size)
+}
+const teacher = result('A', 'teacher')
+await prepareUpload({ ...teacher, expires_in: 1 }, { ...teacher, access_token: 'token-A-preflight' })
+TestXHR.sendAction = xhr => {
+  assert.equal(uploadRefreshes, 1)
+  creationAssertions(xhr, 'Bearer token-A-preflight')
+  xhr.respond(201, createdBank)
+}
+assert.deepEqual(await createBankWithDocument('合成题库', uploadFile), createdBank)
+assert.equal(TestXHR.requests.length, 1)
+
+await prepareUpload(teacher, { ...teacher, access_token: 'token-A-refreshed' })
+const creationProgress = []
+TestXHR.sendAction = xhr => {
+  const first = TestXHR.requests.length === 1
+  creationAssertions(xhr, first ? 'Bearer token-A' : 'Bearer token-A-refreshed')
+  xhr.upload.onprogress({ lengthComputable: true, loaded: first ? 1 : 4, total: 4 })
+  xhr.respond(first ? 401 : 201, first ? authFailure('ACCESS_TOKEN_EXPIRED') : createdBank)
+}
+assert.deepEqual(await createBankWithDocument('合成题库', uploadFile, value => creationProgress.push(value)), createdBank)
+assert.deepEqual(creationProgress, [25, 100])
+assert.equal(uploadRefreshes, 1)
+assert.equal(TestXHR.requests.length, 2)
+
+for (const [status, code] of [[401, 'SESSION_REVOKED'], [403, 'ACCESS_TOKEN_EXPIRED'], [401, 'UNAUTHORIZED']]) {
+  await prepareUpload(teacher, teacher)
+  TestXHR.sendAction = xhr => xhr.respond(status, authFailure(code))
+  await assert.rejects(createBankWithDocument('合成题库', uploadFile), error => error.code === code && error.status === status)
+  assert.equal(uploadRefreshes, 0)
+  assert.equal(TestXHR.requests.length, 1)
+}
+await prepareUpload(teacher, teacher)
+TestXHR.sendAction = xhr => xhr.respond(401, authFailure('ACCESS_TOKEN_EXPIRED'))
+await assert.rejects(createBankWithDocument('合成题库', uploadFile), error => error.status === 401)
+assert.equal(uploadRefreshes, 1)
+assert.equal(TestXHR.requests.length, 2)
+
+for (const changedIdentity of [result('B', 'teacher'), result('A', 'student')]) {
+  await prepareUpload(teacher, changedIdentity)
+  TestXHR.sendAction = xhr => xhr.respond(401, authFailure('ACCESS_TOKEN_EXPIRED'))
+  await assert.rejects(createBankWithDocument('合成题库', uploadFile), error => error.code === 'SESSION_IDENTITY_CHANGED')
+  assert.equal(TestXHR.requests.length, 1)
+}
+for (const status of [201, 401]) {
+  await prepareUpload(teacher, teacher)
+  const entered = deferred()
+  TestXHR.sendAction = xhr => entered.resolve(xhr)
+  const creation = createBankWithDocument('合成题库', uploadFile)
+  const rejection = assert.rejects(creation, error => error.code === 'SESSION_ENDED')
+  const xhr = await entered.promise
+  await login(result('B', 'teacher'))
+  xhr.respond(status, status === 201 ? createdBank : authFailure('ACCESS_TOKEN_EXPIRED'))
+  await rejection
+  assert.equal(TestXHR.requests.length, 1)
+  assert.equal(uploadRefreshes, 0)
+  assert.equal(session.getApiToken(), 'token-B')
+}
+for (const malformed of [{}, { ...createdBank, bank: { ...createdBank.bank, my_role: 'owner' } },
+  { ...createdBank, document: { ...createdBank.document, eta_minutes: 'invalid' } }]) {
+  await prepareUpload(teacher, teacher)
+  TestXHR.sendAction = xhr => xhr.respond(201, malformed)
+  await assert.rejects(createBankWithDocument('合成题库', uploadFile), error => error.code === 'REQUEST_FAILED')
+  assert.equal(TestXHR.requests.length, 1)
+}
+console.log('PASS: actual createBankWithDocument preflight, one expired retry, revoked no replay, stale identity and response contract')

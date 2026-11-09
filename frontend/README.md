@@ -51,6 +51,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作
 | src/components/tabs/ | 出题、预览、题库、组卷记录、空间、收藏 |
 | src/styles/login.css | 既有品牌/背景/玻璃面板与两种登录入口响应式布局 |
 | e2e-auth.mjs | 浏览器/HTTP 接缝合成认证回归 |
+| merge-frontend-regression.mjs | 主线整合的题库权限、预览、通知及聊天并发离线浏览器回归 |
 | vite.auth-test.config.mjs | 仅回环绑定、独立空环境目录、不代理真实后端的测试服务器 |
 
 ## 检查与浏览器验证
@@ -85,6 +86,28 @@ PR #8 修复回归：运行 `node auth-session-regression.mjs` 与 `node logout-
 账号由管理员开通，所有启用账号默认使用 account 密码登录；可选已验证邮箱登录，均由服务端识别三角色，页面不选身份。管理员安全区域支持自身邮箱配置，历史邮箱不自动验证，未验证邮箱不阻断密码登录。运维管理员进入管理面板，不能进入题库教学工作台。个人资料保存等待服务端成功，空手机号可清除；未填写性别不默认选择。个人模型凭据通过用户级接口保存或明确清除，连接测试只针对已保存凭据。当前支持的个人模型配置与认证边界见 [整合设计](../docs/design/账号系统整合与审查修复.md)。
 
 会话回归：`node auth-session-regression.mjs`、`node logout-session-regression.mjs`、`node isolation-session-regression.mjs`。管理面板离线回归：`node admin-panel-regression.mjs`。`src/components/tabs/ProfileTab/PersonalModelSettings.tsx` 为两页共享组件。Vite 使用启动时新建的空临时目录，隔离项目 `.env` 文件；进程显式注入的 `VITE_*` 仍属于公开前端配置。
+
+## 主线整合验证（2026-11-10）
+
+本轮以 `a9424fb` 为共同语义基线，对照账号分支 `937b83d` 与 `origin/main` 的 `4a89c2d`，检查有冲突及自动合并的全部重叠前端文件。题库保留仅教师可新建、创建者按登录账号添加成员、创建者／可编辑／只读三档权限和关闭凭题库编号加入；保留远端文档预览、后台入库与进度、通知、出题审核字段及对话暂停／编辑／重发。性别空值、两种登录入口、可选已验证邮箱及管理员工作台隔离保持现有账号契约。
+
+新建并上传 `POST /api/banks/with-document` 使用 `authenticatedOperation`，校验响应结构并解析后端 `detail.code`；仅明确 `ACCESS_TOKEN_EXPIRED` 可续期后重试一次。撤销、未知 401、身份或角色变化均不重放。上传 API 保留 `eta_minutes`，映射为预计等待时间。预览 `GET /api/banks/{bankId}/documents/{docId}/download?inline=1` 统一经 `sessionFetch`，在 text/blob 正文读取完成后再次检查会话代次；旧账号内容不得显示或打开新标签。题库详情补全、后台批量上传与入库轮询同样绑定发起会话，首个题库创建失败即停止后续上传。
+
+通知、聊天进度及暂停接口均经统一 `request`。通知仅刷新当前选中题库的文档；刷新返回时若已换库或换账号则丢弃。教师清除题库通知红点不会调用仅学生可用的催交接口。暂停立即释放当前聊天操作，旧结果和 finally 不得覆盖新对话或清理新轮询；退出／工作台卸载清理轮询并中止当前请求。文档状态、阶段及进度在 `KbDocument` 上显式声明，侧栏不依赖无依据断言。
+
+本轮实际检查：`npm run typecheck` 通过；`npm run lint` 为 0 错误、15 条既有警告，位于 EngineParsingFields、LightRagRoleFields、RecordsTab 与 AuthContext，本轮无新增诊断。`npm run build` 通过；Windows 默认 TEMP 首次遇到 esbuild 清理权限错误，进程 TEMP/TMP 指向本任务专用目录后重跑成功。构建仍提示主包大于 500 kB，最终主 JS 约 780.46 kB（gzip 230.02 kB）。
+
+三组会话 Node 回归 `auth-session-regression`、`logout-session-regression`、`isolation-session-regression` 与 `admin-panel-regression` 全部通过。前者新增真实创建并上传 XHR 的预续期、单次过期重试、撤销不重放、旧响应隔离及错误结构验证；隔离脚本新增延迟预览正文跨账号拒绝、当前会话预览成功和入库等待间隙换账号后停止旧文档轮询。
+
+运行 `node merge-frontend-regression.mjs` 进行针对性离线浏览器回归：实际渲染 React 组件及题库适配层，业务服务使用合成数据，浏览器所有网络均阻断，不启动后端、不使用真实账号或读取个人环境文件。结果如下：
+
+- 教师可创建、学生无创建弹窗；后台多文件队列成功，首个创建失败或切换账号后不发送后续上传。
+- 创建者／可编辑／只读的成员管理、上传和删除控件符合权限，入库进度保留。
+- 文档预览的成功、空内容、错误提示均通过；点击关闭或预览遮罩均不关闭父题库弹窗。
+- 外部题库通知不替换当前题库文档，换库后的旧刷新被丢弃，账号变化后停止通知请求，教师清红点不误调学生接口。
+- 暂停后发送新消息，旧结果不写入、旧 finally 不清理新请求，当前轮询保留；换账号后停止快速出题轮询；工作台卸载清除全部轮询。浏览器无 pageerror。
+
+本轮按新增风险完成上述定向浏览器检查，未重复完整 `e2e-auth`；早期完整认证浏览器结果保留为历史记录。本节只记录前端结果，后端全量、Chroma 环境失败及静态诊断以主任务同步文档为准。检查与构建均未复制个人 `.env` 或读取 `local_secrets`；`node_modules` 使用原工作区依赖 junction，`dist` 与临时构建目录不提交。
 
 ## 本次实施验证（2026-11-09）
 

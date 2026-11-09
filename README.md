@@ -1,5 +1,13 @@
 # MathCraft — 数学智能教学平台
 
+## 远端 main 整合（2026-11-10）
+
+本次提交将本地账号管理、可选邮箱及人机验证开关与远端 `main` 的知识库、出题审核和通知功能合并。保留双方提交历史，普通快进推送，不重写远端历史。新建题库并上传文档的组合入口沿用教师创建权限；下载内联预览仍校验题库成员，聊天仍校验资源归属。
+
+两侧已有 Alembic head 分别为 `f2b3c4d5e678` 和 `e3b7c1d94a62`，新增纯版本合并节点 `h3c4d5e6f789`，`down_revision` 同时引用两个 head，升级执行两侧尚未完成的迁移。该合并节点不修改业务数据、不轮换账号或密码，也不重写已有迁移标识。原有“本轮不新增字段或迁移”仅指登录/邮箱规则和人机验证开关本身，不包含此次远端分支集成。发布仍须在备份副本上完成迁移和只读审计。
+
+OpenAPI 与 API 文档已从合并后的应用、使用隔离测试配置重新生成，覆盖 104 个 HTTP 操作。根 `uv.lock` 同步仓库级 PyJWT 和 fakeredis 依赖，后端仍使用自己的 `backend/uv.lock`。合并后的后端完整 pytest 为 304 passed、79 subtests passed、22 failed（844.09 秒），不宣称全量通过。失败快照包含 1 项新增组合上传测试的状态码期望错误，修正为既有非成员 404 隐私约定后单项复核通过；其余 21 项关联 Chroma 原生绑定或 tenant 初始化及文档入库失败链路（题库 1、对话 5、文档 7、全流程 1、出题 6、健康 1）。认证、邮箱、Turnstile、迁移及审计没有失败；文档前置失败阻断的对话权限断言不算完成。补充验证另计：资源隔离与出题审核 16 项通过；从两个已发布 head 升级到统一 head 1 项及 2 个子测试通过。Ruff 全范围保留 2 项在合并前 HEAD 已存在的诊断；Pyright 26 项（5 项因隔离目录缺少个人 local_secrets、3 项远端既有回调类型、其余 18 项既有函数或未改文件，未另跑历史基线），认证文件没有诊断。本次合并修改的后端文件定向 Ruff 通过。前端最终 typecheck、lint（0 错误、15 条既有警告）和 build 均通过；auth-session、logout-session、isolation-session、admin-panel 四个 Node 回归通过，merge-frontend-regression 四组离线浏览器检查全部通过且无 pageerror，覆盖组合上传权限、预览、通知及暂停重发。构建保留主 JS 体积提示；完整 e2e-auth 沿用前一轮已通过记录，本轮未重复执行。
+
 账号系统状态（2026-11-09）：主体方案已实现，前端与浏览器回归已通过；公开 login/reset 挑战用户 ID 绑定修复及 127 项认证相关回归已通过，后端全量结果为 285 通过、79 个子用例通过、20 项 Chroma 相关失败。当前规则与本次检查记录见下方账号说明和设计入口。
 
 本机登录临时调整（2026-11-09，已实现并在本机启用）：本机后端已通过启动进程环境 `APP_ENV=development`、`TURNSTILE_ENABLED=false` 重启，监听 127.0.0.1 并使用 `--no-proxy-headers`。8000 和 5173 返回 turnstile_enabled=false、available=true。新增 7 项后端针对性测试通过；前端 typecheck、lint（0 错误、15 条既有警告）、定向 ESLint、auth-session-regression、logout-session-regression 与完整 e2e-auth 均通过。真实 5173 的匿名浏览器检查确认零 Cloudflare 请求、登录按钮可用且无认证配置错误，未提交真实登录。OpenAPI/API 文档已重新生成并核对。2026-11-10 后端全量结果为 291 passed、79 subtests passed、21 failed：20 项对应本环境此前出现的 Chroma 数据库打开失败，另 1 项迁移建表子进程 30 秒超时；该迁移用例单独复跑 1 passed（7.51 秒），未修改代码，超时未再复现。Ruff 保留 10 项、Pyright 保留 19 项既有诊断，本次文件无新增。
@@ -38,7 +46,7 @@ MathCraft/
 │   │   ├── local_secrets.example.py
 │   │   ├── api/                  # auth、admin、banks、documents、generate、questions、
 │   │   │                         # favourites、chat、spaces、papers、attempts、
-│   │   │                         # urges、users 等路由
+│   │   │                         # urges、notifications、users 等路由
 │   │   ├── models/               # 业务用户与资源、认证会话及验证码消费凭证
 │   │   ├── schemas/              # Pydantic 请求与响应模型
 │   │   └── services/
@@ -46,6 +54,8 @@ MathCraft/
 │   │       ├── auth.py           # bcrypt、JWT、数据库会话与撤销
 │   │       ├── auth_codes.py     # Redis 验证码、限流与 SQL 消费凭证
 │   │       ├── auth_delivery.py  # SMTP 与 Turnstile 适配
+│   │       ├── question_review.py # 出题审核、盲评、重复检测与修补
+│   │       ├── knowledge_simplify.py # 扫描件目录驱动简化入库
 │   │       ├── documents.py      # 解析、OCR、切片、入库状态机
 │   │       ├── banks.py          # 题库与成员权限
 │   │       ├── spaces.py         # 学习空间
@@ -66,6 +76,7 @@ MathCraft/
 │   ├── logout-session-regression.mjs # 注销 Bearer 绑定及跨标签隔离回归
 │   ├── isolation-session-regression.mjs # 跨账号、重载退出、延迟下载回归
 │   ├── admin-panel-regression.mjs # 管理面板离线交互回归
+│   ├── merge-frontend-regression.mjs # 主线合并后的权限、通知、预览与聊天回归
 │   ├── src/api/                  # 真实接口层与字段映射
 │   ├── src/components/           # 登录、导航、题库、出题、收藏、空间、组卷、个人中心
 │   │   ├── settings/             # 应用设置与共享个人模型配置入口
@@ -80,7 +91,8 @@ MathCraft/
 │   ├── design/管理员与账号开通设计.md # 管理员能力、开通流程与历史决策边界
 │   ├── design/Redis容器启动设计.md # 本地 Redis Compose 启停与持久化边界
 │   ├── design/认证密钥本地初始化设计.md # 本地认证密钥生成、保留与失败边界
-│   └── design/账号系统整合与审查修复.md # main 整合后的认证、资源权限与验收边界
+│   ├── design/账号系统整合与审查修复.md # main 整合后的认证、资源权限与验收边界
+│   └── design/出题审核中间件设计与实施记录.md # 查重、盲评、修补与解析流水线
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
@@ -89,6 +101,8 @@ MathCraft/
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
 
 当前 main 的账号设计与验收以 [账号系统整合与审查修复](docs/design/账号系统整合与审查修复.md) 为准，包含管理员开户、默认 account 密码登录、可选邮箱自助配置、JWT + SQL 会话及资源权限。原 [功能规格](docs/design/用户系统功能规格.md)、[实施规格](docs/design/用户系统实施规格.md) 与 [管理员设计](docs/design/管理员与账号开通设计.md) 保留来源决策，并标明与当前规则的对应关系。SMTP 缺配置时邮件流程仍不可用；Turnstile 默认启用，缺配置或验证失败仍拒绝相关操作，仅下述显式本机开发/测试开关允许跳过人机验证。
+
+出题审核中间件的目标、流程、数据契约、异常边界与验收结果见 [出题审核中间件设计与实施记录](docs/design/出题审核中间件设计与实施记录.md)。
 
 ## 技术栈
 
@@ -278,6 +292,8 @@ GET `/api/auth/config` 的 `AuthConfig` 新增布尔字段 `turnstile_enabled`�
 | `SESSION_TTL_SECONDS` | `604800` | 保留的历史配置字段；当前认证会话有效期使用 `AUTH_REFRESH_TTL_SECONDS`，不用它调整登录时长 |
 | `DEEPSEEK_API_KEY` | 空 | 从模型服务商取得的环境兜底密钥；用户个人中心的模型设置优先，不用于 JWT 或发码 |
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_DISPLAY_NAME` | `https://api.deepseek.com` / `deepseek-flash` / `DeepSeek Flash` | 模型接口及默认模型信息，由供应商信息与部署约定确定 |
+| `LLM_TIMEOUT_SECONDS` | `300` | 单次模型调用超时，秒；客户端内部重试已关闭，避免一次超时被放大成十几分钟 |
+| `REVIEW_SIMILARITY_THRESHOLD` / `REVIEW_MAX_REGEN_ROUNDS` / `REVIEW_CORPUS_LIMIT` | `0.92` / `1` / `300` | 出题中间件的语义查重阈值、换模板重出轮数与查重语料上限；重出轮数最多两轮，默认一轮以控制等待时间 |
 | `SILICONFLOW_BASE_URL` | `https://api.siliconflow.cn/v1` | 向量与重排服务接口；与认证密钥无关 |
 
 四项存储目录的相对路径以 `backend/` 为基准，绝对路径则直接使用；生产应由部署者指定源码之外、后端进程可写的持久卷绝对路径，例如 Linux 的 `DATABASE_URL=sqlite:////srv/mathcraft/data/mathcraft.db`、`UPLOAD_DIR=/srv/mathcraft/uploads`（仅为路径示例，其余存储目录同样指定）；并安排数据库、上传、头像和索引的备份/恢复。迁移路径时显式搬迁现有数据库及目录、核对归属与索引，不能只改变量而丢弃用户数据；填写路径并不表示支持任意多实例共享 SQLite/Chroma 的部署方式。
@@ -416,9 +432,9 @@ backend\.venv\Scripts\python.exe -m pytest -q
 
 ### 2026-11-09 账号实施与验证
 
-本轮完成管理员开户、默认 account 密码与可选邮箱登录，删除公开注册、学工号登录和身份选择；沿用运维管理与资源授权。历史 account、密码哈希、用户 ID 和资源保留，旧邮箱不自动验证，邮箱缺失/未验证仅为审计信息；不新增模型或迁移。
+本轮完成管理员开户、默认 account 密码与可选邮箱登录，删除公开注册、学工号登录和身份选择；沿用运维管理与资源授权。历史 account、密码哈希、用户 ID 和资源保留，旧邮箱不自动验证，邮箱缺失/未验证仅为审计信息；登录与邮箱规则调整本身不新增模型或迁移，远端整合新增纯版本合并节点，见上文。
 
-安全复核要求公开 login/reset_password 挑战绑定用途、规范化邮箱、用户 ID、认证版本，发码、邮箱登录和重置三处保持一致，修复正在最终验证。邮箱解绑后转给他人、双方版本相同时，旧码也不能作用新账号；部署后旧未消费挑战需重发，无数据库迁移。
+安全复核要求公开 login/reset_password 挑战绑定用途、规范化邮箱、用户 ID、认证版本，发码、邮箱登录和重置三处保持一致，修复及认证专项回归已通过。邮箱解绑后转给他人、双方版本相同时，旧码也不能作用新账号；部署后旧未消费挑战需重发，无数据库迁移。
 
 部署前备份并按实际状态升级既有 Alembic head、执行只读审计。空间顺序加入码经既有迁移轮换，原成员和资源 ID 不变，教师需重新分享；题库由创建者按账号授权。首次管理员在 backend 目录交互执行 create_admin.py，服务器用 SSH 连接；无默认密码或密码命令行参数。已有管理员通过面板开户，初始化不覆盖历史密码和状态。
 

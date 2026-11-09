@@ -71,3 +71,50 @@ def test_submitted_paper_respects_review_flag(client, teacher, student, db):
     db.commit()
     detail = client.get(f"/api/papers/{paper_id}", headers=student)
     assert all("answer" in q and "analysis" in q for q in detail.json()["questions"])
+
+
+def test_bank_with_document_requires_teacher_and_keeps_creator(client, teacher, student, db,
+                                                               monkeypatch):
+    """合并新增的上传开户组合接口仍遵循教师创建与创建者归属边界。"""
+    from app.api import banks
+    from app.models import Bank
+
+    before = db.query(Bank).count()
+    response = client.post(
+        "/api/banks/with-document", headers=student, data={"name": "学生不得创建"},
+        files={"file": ("fake.md", b"synthetic content", "text/markdown")},
+    )
+    assert response.status_code == 403
+    assert db.query(Bank).count() == before
+    monkeypatch.setattr(banks.doc_service, "queue_upload", lambda *a, **k: {
+        "document_id": "fake-document", "status": "uploaded",
+    })
+    response = client.post(
+        "/api/banks/with-document", headers=teacher, data={"name": "教师组合入口"},
+        files={"file": ("fake.md", b"synthetic content", "text/markdown")},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["bank"]["my_role"] == "creator"
+    bank_id = response.json()["bank"]["id"]
+    assert client.get(f"/api/banks/{bank_id}", headers=student).status_code == 404
+
+
+def test_review_corpus_never_includes_other_members_private_questions(client, teacher,
+                                                                     student, db):
+    """共享题库授权不会把其他账号的个人题干带入当前用户模型请求。"""
+    from app.models import Question
+    from app.services.question_review import load_corpus
+
+    teacher_id = client.get("/api/auth/me", headers=teacher).json()["user"]["id"]
+    student_id = client.get("/api/auth/me", headers=student).json()["user"]["id"]
+    teacher_question = db.get(Question, make_questions(db, teacher_id, [("single", "A", 5)])[0])
+    student_question = db.get(Question, make_questions(db, student_id, [("single", "B", 5)])[0])
+    teacher_question.stem = "教师私人题干：求复合函数在指定点的二阶导数"
+    student_question.stem = "学生私人题干：计算给定连续函数的定积分"
+    db.commit()
+    teacher_corpus = load_corpus(db, teacher_id, "bank_test")
+    student_corpus = load_corpus(db, student_id, "bank_test")
+    assert teacher_question.stem in teacher_corpus
+    assert student_question.stem not in teacher_corpus
+    assert student_question.stem in student_corpus
+    assert teacher_question.stem not in student_corpus

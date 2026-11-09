@@ -3,7 +3,7 @@ import io
 
 import pymupdf as fitz
 
-from app.services import mineru
+from app.services import knowledge_simplify, mineru
 from conftest import create_bank, upload_markdown
 
 
@@ -159,13 +159,18 @@ def test_scanned_pdf_uses_mineru(client, teacher, monkeypatch):
     """扫描件走 MinerU OCR：打桩 extract_pdf，验证状态机走 ocr 并最终 ready。"""
     bank = create_bank(client, teacher)
 
-    def fake_extract(token, file_path, result_dir):
+    def fake_extract(token, file_path, result_dir, on_progress=None):
         result_dir.mkdir(parents=True, exist_ok=True)
         md = result_dir / "full.md"
         md.write_text("# OCR 结果\n\n导数的定义与求导法则。", encoding="utf-8")
         return md.read_text(encoding="utf-8"), result_dir
 
+    def fake_simplify(markdown, source_name="教材", on_progress=None):
+        return ("# 《scan》知识点简化版\n\n## 第一章 函数与极限\n\n"
+                "### 第一节 映射与函数\n\n映射由定义域、目标集和对应法则确定。\n"), {}
+
     monkeypatch.setattr(mineru, "extract_pdf", fake_extract)
+    monkeypatch.setattr(knowledge_simplify, "build_simplified_markdown", fake_simplify)
 
     pdf = _make_pdf(False)
     resp = client.post(

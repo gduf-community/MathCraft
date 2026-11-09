@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import get_current_user, require_student
+from app.deps import require_student
 from app.errors import AppError
 from app.models import PaperAttempt, User
 from app.schemas.paper import AttemptCreateBody, AttemptSubmitBody
