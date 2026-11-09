@@ -62,6 +62,7 @@ def _snapshot_rows(paper_id: str, questions: list[Question]) -> list[PaperQuesti
                 type=q.type,
                 score=q.score,
                 difficulty=q.difficulty,
+                difficulty_score=q.difficulty_score,
                 stem=q.stem,
                 options_json=q.options_json,
                 answer=q.answer,

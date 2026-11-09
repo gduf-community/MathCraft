@@ -1,5 +1,6 @@
 """pytest 公共夹具：临时 SQLite + 进程内隔离 Redis，外部模型全部打桩。"""
 # ruff: noqa: E402 -- 必须先设置隔离环境与假凭据，再导入应用。
+import itertools
 import os
 import re
 import sys
@@ -24,6 +25,9 @@ os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
 os.environ["OCR_DIR"] = str(TEST_ROOT / "ocr")
 os.environ["AVATAR_DIR"] = str(TEST_ROOT / "avatars")
 os.environ["DEEPSEEK_API_KEY"] = ""
+# 用例固定回 DeepSeek 官方默认模型与地址，不受部署环境变量影响
+os.environ["DEEPSEEK_MODEL"] = "deepseek-flash"
+os.environ["DEEPSEEK_BASE_URL"] = "https://api.deepseek.com"
 os.environ["CORS_ORIGINS"] = "http://127.0.0.1:5173"
 
 # 测试从不读取个人 local_secrets.py；外部凭据固定为空。
@@ -72,6 +76,7 @@ from app.models import User, UserModelSetting
 from app.models.base import new_id
 from app.services.auth import hash_password
 from app.services import cache
+from app.services import question_review
 from app.services.rag import embeddings, llm, question_gen, rerank, slots
 
 
@@ -99,7 +104,10 @@ def fake_rerank(query: str, documents: list[str], top_n: int | None = None) -> l
     return [{"index": i, "score": s} for i, s in scored[: (top_n or len(documents))]]
 
 
-def fake_question_chat_json(messages, api_key=None, retries=1) -> dict:
+_stem_seq = itertools.count(1)
+
+
+def fake_question_chat_json(messages, api_key=None, retries=1, **kwargs) -> dict:
     prompt = messages[-1]["content"]
     m = re.search(r"必须严格为 ([a-z]+)", prompt)
     qtype = m.group(1) if m else "single"
@@ -107,12 +115,14 @@ def fake_question_chat_json(messages, api_key=None, retries=1) -> dict:
     count = int(m2.group(1)) if m2 else 1
 
     questions = []
-    for i in range(count):
+    for _ in range(count):
+        # 每次调用都换一个题干，单题拆批后多批并发才不会互相判重
+        i = next(_stem_seq)
         base = {
             "type": qtype,
             "score": 5,
             "difficulty": "中",
-            "stem": f"第{i + 1}题：函数 $f(x)=x^{i + 2}$ 的导数是什么？",
+            "stem": f"第{i}题：函数 $f(x)=x^{i + 2}$ 的导数是什么？",
             "options": [],
             "answer": f"${i + 2}x^{i + 1}$",
             "analysis": "由幂函数求导法则可得。",
@@ -133,7 +143,7 @@ def fake_question_chat_json(messages, api_key=None, retries=1) -> dict:
     return {"questions": questions}
 
 
-def fake_slot_chat_json(messages, api_key=None, retries=1) -> dict:
+def fake_slot_chat_json(messages, api_key=None, retries=1, **kwargs) -> dict:
     return {
         "types": [{"type": "single", "count": 2}],
         "scope": "导数",
@@ -180,6 +190,11 @@ def fake_models(monkeypatch):
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {})
     monkeypatch.setattr(question_gen, "chat_json", fake_question_chat_json)
     monkeypatch.setattr(slots, "chat_json", fake_slot_chat_json)
+    # 出题中间件默认直通：接口用例只验证编排，中间件逻辑由 test_question_review 单独覆盖
+    monkeypatch.setattr(
+        question_review, "review_questions",
+        lambda db, user_id, questions, *a, **k: (questions, question_review.ReviewStats()),
+    )
     yield
 
 

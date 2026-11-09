@@ -9,6 +9,16 @@ import Dropdown from '../ui/Dropdown'
 const PANEL_MIN_WIDTH = 220
 const PANEL_MAX_WIDTH = 300
 
+/** 非可用文档的下拉提示文案 */
+const DOC_STATUS_LABELS: Record<string, string> = {
+  uploaded: '排队等待解析',
+  parsing: '正在解析',
+  ocr: 'OCR 识别中',
+  chunking: '正在切片',
+  embedding: '正在向量化',
+  failed: '入库失败',
+}
+
 /** 右侧「快速出题」面板：仅出现在智能生成标签页，可向右折叠，左缘可拖拽调宽 */
 export default function ParamsSidebar() {
   const {
@@ -126,27 +136,49 @@ export default function ParamsSidebar() {
           <ul className="mt-2 space-y-1.5">
             {docs.map((d) => {
               const selected = d.id === selectedDocId
+              // 入库未完成的文档置灰不可选，但仍显示在列表中
+              const status = d.status
+              const ready = status === 'ready' || !status
+              const failed = status === 'failed'
               return (
                 <li key={d.id}>
                   <button
                     type="button"
-                    onClick={() => selectDoc(d.id)}
+                    disabled={!ready}
+                    onClick={() => ready && selectDoc(d.id)}
                     className={`flex w-full items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left text-[14px] transition-colors ${
                       selected
                         ? 'border-primary/50 bg-primary-weak'
-                        : 'border-line bg-white hover:border-primary/40'
+                        : ready
+                          ? 'border-line bg-white hover:border-primary/40'
+                          : 'cursor-not-allowed border-line/60 bg-page/70'
                     }`}
                   >
-                    <FileText size={16} className={selected ? 'text-primary' : 'text-ink-3'} />
-                    <span className={`flex-1 truncate ${selected ? 'font-medium text-ink' : 'text-ink-2'}`}>
+                    <FileText size={16} className={selected ? 'text-primary' : ready ? 'text-ink-3' : 'text-ink-3/60'} />
+                    <span
+                      className={`flex-1 truncate ${
+                        selected ? 'font-medium text-ink' : ready ? 'text-ink-2' : 'text-ink-3/70'
+                      }`}
+                    >
                       {d.name}
                     </span>
+                    {!ready && (
+                      <span className={`shrink-0 text-[11px] ${failed ? 'text-red-400' : 'text-primary/70'}`}>
+                        {failed ? '入库失败' : `${DOC_STATUS_LABELS[status] ?? '处理中'} ${d.progress ?? 0}%`}
+                      </span>
+                    )}
                     {selected && <span className="rounded bg-primary px-1.5 py-0.5 text-[11px] text-white">已选</span>}
                   </button>
                 </li>
               )
             })}
             {!docs.length && <li className="py-3 text-center text-xs text-ink-3">该题库暂无文档，可在题库管理中上传</li>}
+            {docs.some((d) => {
+              const s = d.status
+              return s && s !== 'ready' && s !== 'failed'
+            }) && (
+              <li className="py-1 text-center text-[11px] text-ink-3">处理中的文档在入库完成后即可选题出题</li>
+            )}
           </ul>
         </section>
 

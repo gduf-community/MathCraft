@@ -7,8 +7,8 @@ from app.schemas.question import Difficulty, QuestionType, TypeCount
 from app.services.rag.llm import chat_json
 from app.services.rag.prompts import SLOT_EXTRACT_SYSTEM
 
-# 槽位检查顺序即追问顺序
-SLOT_ORDER = ["types", "scope", "source_mode", "difficulty"]
+# 槽位检查顺序即追问顺序。题目来源已不再追问：知识库只存知识点，没有原题可还原。
+SLOT_ORDER = ["types", "scope", "difficulty"]
 
 SOURCE_ALIASES = {
     "原题": "original", "书中原题": "original", "书上的": "original",
@@ -30,6 +30,7 @@ def extract_slots(message: str, history: list[dict], api_key: str | None = None)
             {"role": "user", "content": prompt},
         ],
         api_key=api_key,
+        thinking_off=True,
     )
     return data if isinstance(data, dict) else {}
 
@@ -112,8 +113,7 @@ def missing_keys(state: dict) -> list[str]:
 FOLLOWUP_LINES = {
     "types": "1. 需要哪些题型，各多少道（如选择题 5 道、判断题 3 道）",
     "scope": "2. 题目考查哪些知识点，或者书中哪些章节的内容",
-    "source_mode": "3. 题目来源：书中原题、改数据的题、改背景的题，还是全新题",
-    "difficulty": "4. 难度：全都很难、就几道难（其余常规），还是整体常规",
+    "difficulty": "3. 难度：全都很难、就几道难（其余常规），还是整体常规",
 }
 
 

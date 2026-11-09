@@ -16,6 +16,17 @@ export interface Question {
   /** 分值 */
   score: number
   difficulty: Difficulty
+  /** 盲评加权总分 1~5，0 表示未评估 */
+  difficultyScore?: number
+  /** 盲评明细：各维分、判定档与缺陷码 */
+  difficultyReview?: {
+    total?: number
+    tier?: string
+    scores?: Record<string, number>
+    defectCodes?: string[]
+    suggestion?: string
+    passed?: boolean
+  }
   /** 题干，内联 LaTeX 用 $...$ 包裹 */
   stem: string
   /** 客观题选项；主观题为空数组 */
@@ -37,10 +48,16 @@ export interface KnowledgeBase {
   name: string
 }
 
+/** 文档入库状态，与后端文档契约一致。 */
+export type DocumentStatus = 'uploaded' | 'parsing' | 'ocr' | 'chunking' | 'embedding' | 'ready' | 'failed'
+
 export interface KbDocument {
   id: string
   kbId: string
   name: string
+  status?: DocumentStatus
+  stage?: string | null
+  progress?: number
 }
 
 export interface StudySpace {

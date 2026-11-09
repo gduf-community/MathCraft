@@ -188,3 +188,21 @@ command.upgrade(Config("alembic.ini"), "head")
                               "--database", str(self.database))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.rows("SELECT creator_id FROM banks"), [("legacy-teacher",)])
+
+    def test_each_premerge_head_upgrades_to_unified_head(self) -> None:
+        """双方已发布 head 均可收敛，保留原账号及题库归属。"""
+        for revision in ("f2b3c4d5e678", "e3b7c1d94a62"):
+            with self.subTest(revision=revision):
+                branch = AuthAlembicCommandTests()
+                branch.setUp()
+                try:
+                    branch.add_history()
+                    result = branch.upgrade(revision)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    result = branch.upgrade("head")
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(branch.rows("SELECT version_num FROM alembic_version"),
+                                     [(branch.expected_head(),)])
+                    branch.assert_bank_ownership()
+                finally:
+                    branch.doCleanups()

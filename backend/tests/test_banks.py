@@ -156,3 +156,11 @@ def test_creator_can_remove_member_but_cannot_remove_self(client, teacher, stude
     assert client.delete(f"/api/banks/{bank['id']}/members/{student_id}", headers=teacher).status_code == 204
     teacher_id = _me(client, teacher)["id"]
     assert client.delete(f"/api/banks/{bank['id']}/members/{teacher_id}", headers=teacher).status_code == 403
+
+
+def test_delete_bank(client, teacher):
+    bank = create_bank(client, teacher)
+    upload_markdown(client, teacher, bank["id"])
+    assert client.delete(f"/api/banks/{bank['id']}", headers=teacher).status_code == 204
+    assert client.get(f"/api/banks/{bank['id']}", headers=teacher).status_code == 404
+    assert client.get("/api/banks?scope=owned", headers=teacher).json() == []

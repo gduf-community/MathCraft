@@ -149,6 +149,70 @@ await backend.downloadDocument('fake-bank', 'fake-doc', 'fake.txt')
 assert.equal(clicks, 1)
 console.log('PASS: delayed download body rejected across identity change; current download works')
 
+// 文本与新标签预览同样必须等正文读取结束后检查身份，不能只检查响应头。
+let opened = 0
+globalThis.window = { open: () => { opened += 1 }, setTimeout: () => 0 }
+for (const [invoke, bodyMethod, payload] of [
+  [() => backend.fetchDocumentText('fake-bank', 'fake-doc'), 'text', 'synthetic preview'],
+  [() => backend.viewDocument('fake-bank', 'fake-doc'), 'blob', new Blob(['synthetic preview'])],
+]) {
+  await login(downloading, result('A'))
+  const received = deferred(), release = deferred()
+  globalThis.fetch = async (path, init) => {
+    assert.equal(path, '/api/banks/fake-bank/documents/fake-doc/download?inline=1')
+    assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer ' + result('A').access_token)
+    assert.equal(init.credentials, 'include')
+    return { ok: true, status: 200, [bodyMethod]: () => { received.resolve(); return release.promise } }
+  }
+  const preview = invoke()
+  const rejection = assert.rejects(preview, error => error.code === 'SESSION_ENDED')
+  await received.promise
+  await login(downloading, result('B'))
+  release.resolve(payload)
+  await rejection
+  assert.equal(opened, 0)
+}
+globalThis.fetch = async () => new Response('synthetic preview')
+assert.equal(await backend.fetchDocumentText('fake-bank', 'fake-doc'), 'synthetic preview')
+await backend.viewDocument('fake-bank', 'fake-doc')
+assert.equal(opened, 1)
+console.log('PASS: delayed text/blob preview rejected across identity change; current preview works')
+
+// 真实题库适配层的入库轮询在等待间隙切换账号后不得以新账号继续读旧文档。
+const bankSource = (await readFile(new URL('./src/api/banks.ts', import.meta.url), 'utf8'))
+  .replaceAll("from './backend'", `from '${backendUrl}'`)
+  .replaceAll("from './session'", `from '${downloading.url}'`)
+const banks = await import(compile(bankSource))
+const nativeTimeout = globalThis.setTimeout
+const requests = []
+await login(downloading, result('A'))
+globalThis.XMLHttpRequest = class {
+  upload = {}
+  open() {}
+  setRequestHeader() {}
+  send() {
+    this.status = 200
+    this.responseText = JSON.stringify({ document_id: 'fake-doc', status: 'uploaded', stage: 'queued', progress: 0, eta_minutes: 4 })
+    this.onload()
+  }
+}
+globalThis.fetch = async path => {
+  requests.push(path)
+  return Response.json({ id: 'fake-doc', name: 'synthetic.txt', format: 'TXT', size_bytes: 1, status: 'parsing', progress: 20 })
+}
+globalThis.setTimeout = (resolve, delay) => {
+  assert.equal(delay, 1000)
+  void login(downloading, result('B')).then(resolve)
+  return 0
+}
+try {
+  await assert.rejects(banks.uploadAndWait('fake-bank', new Blob(['synthetic upload'])), error => error.code === 'SESSION_ENDED')
+  assert.deepEqual(requests, ['/api/banks/fake-bank/documents/fake-doc'])
+} finally {
+  globalThis.setTimeout = nativeTimeout
+}
+console.log('PASS: actual bank upload polling stops before requesting old resources with a new account')
+
 // 两个登录入口均由响应识别三角色，不发送 role；账号入口允许有无邮箱。
 const authSource = (await readFile(new URL('./src/api/auth.ts', import.meta.url), 'utf8'))
   .replaceAll("from './session'", `from '${downloading.url}'`)
@@ -206,7 +270,7 @@ for (const purpose of ['login', 'reset_password', 'email_bind', 'email_change_ol
 console.log('PASS: binding/change code authenticated; login/reset code anonymous')
 
 // 所有真实安全操作必须持锁到 Cookie 删除响应到达；B 登录只能随后写入 Cookie。
-const deferred = () => {
+function deferred() {
   let resolve
   const promise = new Promise(done => { resolve = done })
   return { promise, resolve }

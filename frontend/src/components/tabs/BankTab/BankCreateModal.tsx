@@ -1,9 +1,10 @@
-/** 新建题库弹窗：先建题库，再逐个上传暂存文件并等待入库完成。 */
+/** 新建题库弹窗：创建题库并上传文档，入库在后台异步进行，关闭后用 toast 提示预计等待。 */
 import { useRef, useState } from 'react'
 import type { DragEvent } from 'react'
-import { FileUp, FolderPlus, Loader2, Trash2, X } from 'lucide-react'
+import { FileUp, FolderPlus, Trash2, X } from 'lucide-react'
 import * as bankApi from '../../../api/banks'
 import { formatFileSize } from '../../../api/backend'
+import { assertCurrentSession, getSessionGeneration } from '../../../api/session'
 import { useApp } from '../../../store/AppContext'
 import { FormatBadge, SectionTitle } from './shared'
 
@@ -13,24 +14,25 @@ const fmtOf = (name: string) => {
   return FORMATS.includes(ext) ? ext : 'PDF'
 }
 
-interface UploadState {
-  name: string
-  phase: 'upload' | 'vector' | 'done'
-  pct: number
-  stage?: string
-}
-
 export default function BankCreateModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const { role, showToast } = useApp()
   const year = new Date().getFullYear()
   const [name, setName] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [dragOver, setDragOver] = useState(false)
-  const [upload, setUpload] = useState<UploadState | null>(null)
-  const [submitting, setSubmitting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const autoFilledRef = useRef('')
+  const submitting = useRef(false)
 
-  const addFile = (file: File) => setFiles((prev) => [...prev, file])
+  const addFile = (file: File) => {
+    setFiles((prev) => [...prev, file])
+    // 便捷填充：题库名为空或仍是上次自动填充值时，用文档名（去后缀）填入
+    const base = file.name.replace(/\.[^.]+$/, '').trim()
+    if (base && (!name.trim() || name.trim() === autoFilledRef.current)) {
+      setName(base)
+      autoFilledRef.current = base
+    }
+  }
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -44,32 +46,51 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
       showToast('仅教师可以创建题库')
       return
     }
-    if (submitting) return
-    if (!name.trim()) {
+    if (submitting.current) return
+    const trimmed = name.trim()
+    if (!trimmed) {
       showToast('请输入题库名称')
       return
     }
-    setSubmitting(true)
-    try {
-      const bank = await bankApi.createBank(name.trim())
-      for (const file of files) {
-        setUpload({ name: file.name, phase: 'upload', pct: 0 })
-        await bankApi.uploadAndWait(bank.id, file, (phase, pct, stage) =>
-          setUpload({ name: file.name, phase, pct, stage }),
-        )
+    const queue = files.slice()
+    const started = getSessionGeneration()
+    submitting.current = true
+    // 点击创建立即关窗：上传与入库都在后台进行，进度通过 toast 与文档行状态呈现
+    onClose()
+    if (queue.length === 0) {
+      try {
+        await bankApi.createBank(trimmed)
+        assertCurrentSession(started)
+        onChanged()
+        showToast(`题库「${trimmed}」创建成功`)
+      } catch (err) {
+        if (started !== getSessionGeneration()) return
+        showToast(err instanceof Error ? err.message : '创建题库失败')
       }
-      showToast(
-        files.length
-          ? `题库「${name.trim()}」创建成功，${files.length} 个文档已入库`
-          : `题库「${name.trim()}」创建成功`,
-      )
-      onChanged()
-      onClose()
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '创建题库失败')
-    } finally {
-      setSubmitting(false)
-      setUpload(null)
+      return
+    }
+    let bankId = ''
+    for (let i = 0; i < queue.length; i += 1) {
+      const file = queue[i]
+      try {
+        assertCurrentSession(started)
+        showToast(`「${file.name}」正在上传中…`)
+        if (i === 0) {
+          const r = await bankApi.createBankWithDoc(trimmed, file)
+          assertCurrentSession(started)
+          bankId = r.bank.id
+          showToast(`「${r.documentName}」正在上传中，预计等待 ${r.etaMinutes} 分钟`)
+        } else {
+          const r = await bankApi.uploadDoc(bankId, file)
+          assertCurrentSession(started)
+          showToast(`「${file.name}」正在上传中，预计等待 ${r.etaMinutes} 分钟`)
+        }
+        onChanged()
+      } catch (err) {
+        if (started !== getSessionGeneration()) return
+        showToast(err instanceof Error ? err.message : '上传失败')
+        if (!bankId) return
+      }
     }
   }
 
@@ -163,25 +184,6 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
                 }}
               />
             </div>
-            {upload && (
-              <div className="rounded-xl border border-primary/30 bg-primary-light/30 p-3">
-                <div className="mb-1.5 flex items-center justify-between text-xs">
-                  <span className="truncate font-medium text-ink">{upload.name}</span>
-                  <span className={upload.phase === 'done' ? 'text-emerald-600' : 'text-primary'}>
-                    {upload.phase === 'upload' && `上传中 ${Math.floor(upload.pct)}%`}
-                    {upload.phase === 'vector' && `入库中 ${Math.floor(upload.pct)}%`}
-                    {upload.phase === 'done' && '已完成'}
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-white">
-                  <div
-                    className={`h-full rounded-full transition-all duration-150 ${upload.phase === 'vector' ? 'bg-violet-500' : 'bg-primary'}`}
-                    style={{ width: `${upload.phase === 'done' ? 100 : upload.pct}%` }}
-                  />
-                </div>
-                {upload.stage && <p className="mt-1 text-[11px] text-ink-3">{upload.stage}</p>}
-              </div>
-            )}
           </section>
         </div>
 
@@ -196,11 +198,9 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
           <button
             type="button"
             onClick={() => void submit()}
-            disabled={submitting}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6] disabled:opacity-60"
           >
-            {submitting && <Loader2 size={14} className="animate-spin" />}
-            {submitting ? '创建中…' : '新建'}
+            创建
           </button>
         </div>
       </div>

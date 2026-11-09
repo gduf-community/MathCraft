@@ -2,6 +2,7 @@
 import type {
   AssembleRecord,
   Difficulty,
+  DocumentStatus,
   ExamWindow,
   FavoriteGroup,
   KbDocument,
@@ -170,6 +171,24 @@ export interface ApiBankMember {
   joined_at: string
 }
 
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isApiBank(value: unknown): value is ApiBank {
+  return isRecord(value)
+    && typeof value.id === 'string' && typeof value.name === 'string'
+    && typeof value.code === 'string' && typeof value.member_count === 'number'
+    && typeof value.capacity === 'number' && typeof value.quitted === 'boolean'
+    && (value.source === 'owned' || value.source === 'joined')
+    && (value.my_role === 'creator' || value.my_role === 'editor' || value.my_role === 'readonly')
+    && (value.creator === null || (isRecord(value.creator)
+      && typeof value.creator.id === 'string' && typeof value.creator.display_name === 'string'))
+    && ['can_upload_document', 'can_download_document', 'can_delete_document',
+      'can_manage_members', 'can_edit_bank', 'can_transfer_bank', 'can_delete_bank']
+      .every((key) => typeof value[key] === 'boolean')
+}
+
 export async function listBanks(scope: 'owned' | 'joined' | 'all' = 'all'): Promise<ApiBank[]> {
   return request<ApiBank[]>(`/api/banks?scope=${scope}`)
 }
@@ -241,7 +260,7 @@ export interface ApiDocument {
   size_bytes: number
   page_count?: number | null
   is_scanned: boolean
-  status: 'uploaded' | 'parsing' | 'ocr' | 'chunking' | 'embedding' | 'ready' | 'failed'
+  status: DocumentStatus
   stage?: string | null
   progress: number
   chunk_count: number
@@ -257,7 +276,8 @@ export function formatFileSize(bytes: number): string {
 }
 
 export function mapDocument(doc: ApiDocument): KbDocument & { api: ApiDocument } {
-  return { id: doc.id, kbId: doc.bank_id, name: doc.name, api: doc }
+  return { id: doc.id, kbId: doc.bank_id, name: doc.name,
+    status: doc.status, stage: doc.stage, progress: doc.progress, api: doc }
 }
 
 export async function listDocuments(bankId: string): Promise<ApiDocument[]> {
@@ -272,7 +292,7 @@ export async function uploadDocument(
   bankId: string,
   file: File,
   onUploadProgress?: (percent: number) => void,
-): Promise<{ document_id: string; status: string; stage: string; progress: number }> {
+): Promise<{ document_id: string; status: string; stage: string; progress: number; eta_minutes?: number }> {
   return authenticatedOperation((token) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', apiUrl(`/api/banks/${bankId}/documents`))
@@ -290,9 +310,12 @@ export async function uploadDocument(
             if ('document_id' in body && typeof body.document_id === 'string'
               && 'status' in body && typeof body.status === 'string'
               && 'stage' in body && typeof body.stage === 'string'
-              && 'progress' in body && typeof body.progress === 'number') {
+              && 'progress' in body && typeof body.progress === 'number'
+              && (!('eta_minutes' in body) || typeof body.eta_minutes === 'number')) {
               resolve({ document_id: body.document_id, status: body.status,
-                stage: body.stage, progress: body.progress })
+                stage: body.stage, progress: body.progress,
+                ...('eta_minutes' in body && typeof body.eta_minutes === 'number'
+                  ? { eta_minutes: body.eta_minutes } : {}) })
               return
             }
           } else if ('detail' in body && body.detail !== null && typeof body.detail === 'object') {
@@ -340,6 +363,28 @@ export async function downloadDocument(bankId: string, docId: string, name: stri
   URL.revokeObjectURL(url)
 }
 
+/** 读取文档文本（简化版 Markdown），供应用内预览渲染。 */
+export async function fetchDocumentText(bankId: string, docId: string): Promise<string> {
+  const started = getSessionGeneration()
+  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download?inline=1`)
+  if (!resp.ok) throw new ApiError('打开失败（HTTP ' + resp.status + '）')
+  const text = await resp.text()
+  assertCurrentSession(started)
+  return text
+}
+
+/** 浏览器新标签页直接打开文档内容（inline 模式）。 */
+export async function viewDocument(bankId: string, docId: string): Promise<void> {
+  const started = getSessionGeneration()
+  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download?inline=1`)
+  if (!resp.ok) throw new ApiError('打开失败（HTTP ' + resp.status + '）')
+  const blob = await resp.blob()
+  assertCurrentSession(started)
+  const url = URL.createObjectURL(blob)
+  window.open(url, '_blank', 'noopener,noreferrer')
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+}
+
 /* ---------------- 出题与题目 ---------------- */
 
 export interface GenerateBody {
@@ -359,6 +404,18 @@ export interface ApiQuestion {
   type: QuestionType
   score: number
   difficulty: Difficulty
+  /** 盲评加权总分 1~5，0 表示未评估（列表接口用 snake_case，出题结果用 camelCase） */
+  difficulty_score?: number
+  difficultyScore?: number
+  /** 盲评明细：各维分、判定档与缺陷码 */
+  difficulty_review?: {
+    total?: number
+    tier?: string
+    scores?: Record<string, number>
+    defectCodes?: string[]
+    suggestion?: string
+    passed?: boolean
+  } | null
   stem: string
   options: OptionItem[]
   answer?: string
@@ -379,6 +436,8 @@ export function mapQuestion(q: ApiQuestion): Question {
     type: q.type,
     score: q.score,
     difficulty: q.difficulty,
+    difficultyScore: q.difficulty_score ?? q.difficultyScore ?? 0,
+    difficultyReview: q.difficulty_review ?? undefined,
     stem: q.stem,
     options: q.options ?? [],
     answer: q.answer ?? '',
@@ -403,6 +462,8 @@ export interface GenerateProgress {
   done: boolean
   batch_id: string | null
   questions: ApiQuestion[]
+  /** 出题中间件的处理统计：去重、重出、补解析的题数 */
+  review?: { duplicates: number; repaired?: number; regenerated: number; solved: number } | null
   error: { message?: string; kind?: string; available?: number; requested?: number } | null
 }
 
@@ -958,15 +1019,105 @@ export async function sendChatMessage(
   sessionId: string,
   message: string,
   existingStems: string[],
+  signal?: AbortSignal,
 ): Promise<{ reply: string; questions: ApiQuestion[]; done: boolean; batch_id: string | null; slot_state: Record<string, unknown> }> {
   return request(`/api/chat/sessions/${sessionId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ message, existing_stems: existingStems }),
+    signal,
   })
+}
+
+export async function getChatProgress(
+  sessionId: string,
+): Promise<{ active: boolean; percent: number; stage: string }> {
+  return request(`/api/chat/sessions/${sessionId}/progress`)
+}
+
+export async function cancelChat(sessionId: string): Promise<void> {
+  await request<{ canceled: boolean }>(`/api/chat/sessions/${sessionId}/cancel`, { method: 'POST' })
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
   await request<void>(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
+/* ---------------- 站内通知 ---------------- */
+
+export interface ApiNotification {
+  id: string
+  kind: 'bank_ready' | 'bank_failed'
+  title: string
+  body: string
+  bank_id?: string | null
+  document_name?: string | null
+  read: boolean
+  created_at: string
+}
+
+export async function listNotifications(): Promise<{ unread_count: number; items: ApiNotification[] }> {
+  return request('/api/notifications')
+}
+
+export async function markNotificationsRead(ids?: string[]): Promise<void> {
+  await request('/api/notifications/read', {
+    method: 'POST',
+    body: JSON.stringify({ ids: ids && ids.length ? ids : null }),
+  })
+}
+
+export async function deleteNotification(id: string): Promise<void> {
+  await request<void>(`/api/notifications/${id}`, { method: 'DELETE' })
+}
+
+/** 新建题库并上传首个文档：一次请求完成创建+上传，返回预计等待分钟数 */
+export async function createBankWithDocument(
+  name: string,
+  file: File,
+  onUploadProgress?: (percent: number) => void,
+): Promise<{
+  bank: ApiBank
+  document: { document_id: string; name: string; eta_minutes: number; status: string }
+}> {
+  return authenticatedOperation((token) => new Promise((resolve, reject) => {
+    const form = new FormData()
+    form.append('name', name)
+    form.append('file', file)
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', apiUrl('/api/banks/with-document'))
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onUploadProgress) onUploadProgress(Math.round((e.loaded / e.total) * 100))
+    }
+    xhr.onerror = () => reject(new ApiError('创建失败，请检查后端服务', 'REQUEST_FAILED', xhr.status))
+    xhr.onload = () => {
+      try {
+        const body: unknown = JSON.parse(xhr.responseText || '{}')
+        if (isRecord(body)) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const doc = body.document
+            if (isApiBank(body.bank) && isRecord(doc)
+              && typeof doc.document_id === 'string' && typeof doc.name === 'string'
+              && typeof doc.eta_minutes === 'number' && typeof doc.status === 'string') {
+              resolve({ bank: body.bank, document: { document_id: doc.document_id,
+                name: doc.name, eta_minutes: doc.eta_minutes, status: doc.status } })
+              return
+            }
+          } else if (isRecord(body.detail)) {
+            const { code, message } = body.detail
+            reject(new ApiError(typeof message === 'string' ? message : '创建题库失败',
+              typeof code === 'string' ? code : 'REQUEST_FAILED', xhr.status))
+            return
+          }
+        }
+        reject(new ApiError('创建题库失败', 'REQUEST_FAILED', xhr.status))
+      } catch {
+        reject(new ApiError('创建题库失败', 'REQUEST_FAILED', xhr.status))
+      }
+    }
+    xhr.send(form)
+  }))
 }
 
 /* ---------------- 通用映射 ---------------- */
