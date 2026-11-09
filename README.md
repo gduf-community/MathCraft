@@ -67,7 +67,8 @@ MathCraft/
 │   └── package.json
 ├── docs/                         # 当前方案及社区历史设计、API 与流程资料
 │   ├── design/用户系统功能规格.md # 已接受的邮箱认证、JWT 与开发账号设计
-│   └── design/用户系统实施规格.md # 用户故事、实施决策与验收规格
+│   ├── design/用户系统实施规格.md # 用户故事、实施决策与验收规格
+│   └── design/出题审核中间件设计与实施记录.md # 查重、盲评、修补、解析流水线的目标与契约
 ├── apps/desktop/                 # 跨端客户端预留目录
 ├── packages/contracts/           # 跨端契约预留目录
 └── tools/                        # 仓库维护脚本
@@ -76,6 +77,8 @@ MathCraft/
 `backend/data/`、`.venv/`、`node_modules/`、`dist/`、`.env` 等都是本地生成物，不进入版本库。
 
 用户系统已对齐的业务需求与拟议实现见 [用户系统功能规格与认证设计](docs/design/用户系统功能规格.md)，覆盖邮箱验证码、学工号密码、Turnstile、JWT 会话及 `.env` 开发账号；设计已获接受，实施范围及验收见 [用户系统实施规格](docs/design/用户系统实施规格.md)；当前实施进度与验证证据见实施规格，未配置 SMTP/Turnstile 时拒绝相关认证操作。
+
+出题审核中间件的目标、流程、数据契约、异常边界与验收结果见 [出题审核中间件设计与实施记录](docs/design/出题审核中间件设计与实施记录.md)。
 
 ## 技术栈
 
@@ -222,6 +225,8 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 | `SESSION_TTL_SECONDS` | `604800` | 保留的历史配置字段；当前认证会话有效期使用 `AUTH_REFRESH_TTL_SECONDS`，不用它调整登录时长 |
 | `DEEPSEEK_API_KEY` | 空 | 从模型服务商取得的环境兜底密钥；用户个人中心的模型设置优先，不用于 JWT 或发码 |
 | `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` / `DEEPSEEK_DISPLAY_NAME` | `https://api.deepseek.com` / `deepseek-flash` / `DeepSeek Flash` | 模型接口及默认模型信息，由供应商信息与部署约定确定 |
+| `LLM_TIMEOUT_SECONDS` | `300` | 单次模型调用超时，秒；客户端内部重试已关闭，避免一次超时被放大成十几分钟 |
+| `REVIEW_SIMILARITY_THRESHOLD` / `REVIEW_MAX_REGEN_ROUNDS` / `REVIEW_CORPUS_LIMIT` | `0.92` / `1` / `300` | 出题中间件的语义查重阈值、换模板重出轮数与查重语料上限；重出轮数最多两轮，默认一轮以控制等待时间 |
 | `SILICONFLOW_BASE_URL` | `https://api.siliconflow.cn/v1` | 向量与重排服务接口；与认证密钥无关 |
 
 四项存储目录的相对路径以 `backend/` 为基准，绝对路径则直接使用；生产应由部署者指定源码之外、后端进程可写的持久卷绝对路径，例如 Linux 的 `DATABASE_URL=sqlite:////srv/mathcraft/data/mathcraft.db`、`UPLOAD_DIR=/srv/mathcraft/uploads`（仅为路径示例，其余存储目录同样指定）；并安排数据库、上传、头像和索引的备份/恢复。迁移路径时显式搬迁现有数据库及目录、核对归属与索引，不能只改变量而丢弃用户数据；填写路径并不表示支持任意多实例共享 SQLite/Chroma 的部署方式。

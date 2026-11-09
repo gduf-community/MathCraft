@@ -9,14 +9,24 @@ import re
 import uuid
 from typing import Callable
 
-from app.config import settings
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType
+from app.schemas.question import GenerateParams, Question, QuestionType
 from app.services.rag import retrieval, vectorstore
 from app.services.rag.llm import chat_json
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 ProgressCB = Callable[[int, str], None]
 RetrieveFn = Callable[[str], list[dict]]
+
+# 单次模型调用只出 1 道题：十道题一次生成在慢通道上会拖到十分钟以上，
+# 拆成单题并发后单次响应可控，也不会因输出被截断而少给题
+GEN_BATCH_SIZE = 1
+# 并发出题数
+GEN_BATCH_WORKERS = 6
+# 单题的输出预算（token），含蓝图、评分点与自检。地狱难度带蓝图与自检实测 1100~2200，
+# 给到 3000 才不会被 finish_reason=length 截成半截 JSON
+GEN_TOKENS_PER_QUESTION = 3000
+# 单批固定的 JSON 结构开销
+GEN_TOKENS_OVERHEAD = 400
 
 TYPE_LABELS: dict[QuestionType, str] = {
     QuestionType.single: "选择题",
@@ -96,6 +106,144 @@ def _build_context(hits: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _split_counts(total: int, size: int) -> list[int]:
+    """把总题数拆成不超过 size 的小批。"""
+    out: list[int] = []
+    left = total
+    while left > 0:
+        take = min(size, left)
+        out.append(take)
+        left -= take
+    return out
+
+
+def _gen_batch(
+    tc,
+    params: GenerateParams,
+    doc_name: str,
+    scope: str | None,
+    count: int,
+    avoid_snapshot: list[str],
+    mixed_difficulty: bool,
+    api_key: str | None,
+    hits: list[dict],
+    directive: str,
+    hint: str = "",
+) -> list[Question]:
+    """一次模型调用生成 count 道题。不改共享状态，去重交给调用方。"""
+    type_label = TYPE_LABELS[tc.type]
+    extra = f"- 知识点范围：{scope}" if scope else ""
+    if hint:
+        extra += (
+            f"\n- 本题限定考点：{hint}。同一批的其他题已占用别的考点，"
+            "不要写成同一类题，也不要只换数字"
+        )
+    if count >= 5:
+        extra += (
+            "\n- 数量较多，各题必须覆盖不同的细分考点与题干结构，"
+            "禁止同一模板换数字，避免被查重判为重复"
+        )
+    if mixed_difficulty:
+        extra += "\n- 难度分布：约三分之一达到高难度，其余为中等难度"
+    if directive:
+        extra += "\n" + directive
+    if avoid_snapshot:
+        extra += (
+            "\n- 以下题目已经出过，新题不得与它们重复（考点组合与题干结构都要避开）：\n"
+            + "\n".join(f"  {i}. {s[:100]}" for i, s in enumerate(avoid_snapshot, 1))
+        )
+    user_prompt = QUESTION_USER_TEMPLATE.format(
+        context=_build_context(hits),
+        type_label=type_label,
+        count=count,
+        difficulty=params.difficulty.value,
+        source_mode=SOURCE_LABELS.get(params.source_mode, params.source_mode),
+        score=DEFAULT_SCORES.get(tc.type, 5),
+        extra=extra,
+    )
+    data = chat_json(
+        [
+            {"role": "system", "content": QUESTION_SYSTEM},
+            {
+                "role": "user",
+                "content": user_prompt
+                + f"\n\n【重要】本次生成的每一道题 type 字段必须严格为 {tc.type.value}（{type_label}），不得混入其他题型。"
+                + f"\n本次请恰好生成 {count} 道。",
+            },
+        ],
+        api_key=api_key,
+        # 输出预算按题数给，避免默认上限把 JSON 截断成非法结构
+        max_tokens=GEN_TOKENS_OVERHEAD + GEN_TOKENS_PER_QUESTION * count,
+        # 出题只要成品，开着思考时单题能拖三分钟以上，并发后必然撞超时
+        thinking_off=True,
+    )
+    raw = data.get("questions", data if isinstance(data, list) else [])
+    out: list[Question] = []
+    for item in raw:
+        try:
+            q = Question.model_validate(item)
+        except Exception:
+            continue
+        if q.type != tc.type:
+            continue  # 题型不符直接丢弃
+        q.id = f"q-{uuid.uuid4().hex[:10]}"
+        q.score = DEFAULT_SCORES.get(tc.type, 5)
+        q.difficulty = params.difficulty
+        q.docName = doc_name
+        if tc.type == QuestionType.judge and not q.options:
+            from app.schemas.question import OptionItem
+
+            q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
+            q.answer = "A" if q.answer in ("正确", "对", "T", "true", "√") else "B"
+        out.append(q)
+    return out
+
+
+PLAN_PROMPT = """你是高等数学命题组长。根据下面的教学材料与知识点范围，列出 {count} 个互不相同的细分考点，
+用于命制 {count} 道{difficulty}难度的{type_label}。
+要求：每个考点聚焦不同的概念、方法或题型结构，彼此不重叠，合起来尽量覆盖该范围的不同侧面。
+
+知识点范围：{scope}
+
+教学材料（节选）：
+{context}
+
+只输出 JSON：{{"points": ["考点或命题角度", "..."]}}，数组长度恰好 {count}。"""
+
+
+def _plan_points(
+    scope: str | None,
+    type_label: str,
+    difficulty: str,
+    count: int,
+    hits: list[dict],
+    api_key: str | None,
+) -> list[str]:
+    """先规划 count 个互不重复的考点。
+
+    单题并发时各批互相看不见，模型极易撞到同一个考点（分段函数连续性），
+    撞车后被查重砍掉再重出反而更慢，先分摊考点比事后去重便宜得多。
+    """
+    if count < 2:
+        return []
+    context = _build_context(hits)[:1500]
+    prompt = PLAN_PROMPT.format(
+        count=count, difficulty=difficulty, type_label=type_label,
+        scope=scope or "未限定", context=context,
+    )
+    try:
+        data = chat_json(
+            [{"role": "user", "content": prompt}],
+            api_key=api_key,
+            max_tokens=800,
+            thinking_off=True,
+        )
+    except Exception:  # noqa: BLE001
+        return []  # 规划失败就按原来的并行出题，不阻断
+    points = [str(p).strip() for p in (data.get("points") or []) if str(p).strip()]
+    return points[:count]
+
+
 def _gen_for_type(
     tc,
     params: GenerateParams,
@@ -107,8 +255,15 @@ def _gen_for_type(
     hyde_text: str | None,
     retrieve_fn: RetrieveFn | None = None,
     report: Callable[[float, str], None] | None = None,
+    directive: str = "",
 ) -> list[Question]:
-    """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。"""
+    """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。
+
+    单次模型调用只生成 GEN_BATCH_SIZE 道，多批并发。一次要十道题的输出量会超过模型
+    单次响应能力，慢通道下能拖十分钟以上，因此必须拆批。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     type_label = TYPE_LABELS[tc.type]
 
     # original 模式：先确认材料原题数量是否足够
@@ -128,73 +283,69 @@ def _gen_for_type(
         lambda q: retrieval.retrieve_for_generation(params.kb_id, q, params.doc_id or None, hyde_text)
     )
     hits = retrieve(" ".join(query_parts))
-    if report:
-        report(0.12, f"「{type_label}」检索完成，AI 生成中")
     if not hits:
         raise ValueError(f"知识库中没有可参考的内容，请先上传文档（检索「{type_label}」无结果）")
 
-    # 模型偶发不守题型或与已有题重复，最多重试 3 轮并逐轮收紧约束
-    for attempt in range(3):
-        extra = f"- 知识点范围：{scope}" if scope else ""
-        if mixed_difficulty:
-            extra += "\n- 难度分布：约三分之一达到高难度，其余为中等难度"
-        if avoid_norm:
-            extra += (
-                "\n- 以下题目已经出过，新题不得与它们重复（考点组合与题干结构都要避开）：\n"
-                + "\n".join(f"  {i}. {s[:100]}" for i, s in enumerate(list(avoid_norm)[-12:], 1))
-            )
-        user_prompt = QUESTION_USER_TEMPLATE.format(
-            context=_build_context(hits),
-            type_label=type_label,
-            count=tc.count,
-            difficulty=params.difficulty.value,
-            source_mode=SOURCE_LABELS.get(params.source_mode, params.source_mode),
-            score=DEFAULT_SCORES.get(tc.type, 5),
-            extra=extra,
-        )
-        data = chat_json(
-            [
-                {"role": "system", "content": QUESTION_SYSTEM},
-                {
-                    "role": "user",
-                    "content": user_prompt
-                    + f"\n\n【重要】本次生成的每一道题 type 字段必须严格为 {tc.type.value}（{type_label}），不得混入其他题型。",
-                },
-            ],
-            api_key=api_key,
-        )
-        if report:
-            report(0.82, f"「{type_label}」AI 已返回，正在校验格式")
-        raw = data.get("questions", data if isinstance(data, list) else [])
-        questions: list[Question] = []
-        for item in raw:
-            try:
-                q = Question.model_validate(item)
-            except Exception:
-                continue
-            if q.type != tc.type:
-                continue  # 题型不符直接丢弃
-            norm = _norm_stem(q.stem)
-            if norm in avoid_norm:
-                continue  # 与已有题目重复，丢弃
-            q.id = f"q-{uuid.uuid4().hex[:10]}"
-            q.score = DEFAULT_SCORES.get(tc.type, 5)
-            q.difficulty = params.difficulty
-            q.docName = doc_name
-            if tc.type == QuestionType.judge and not q.options:
-                from app.schemas.question import OptionItem
+    # 先分摊考点，再并发命题：十道题各自撞同一个考点是去重与重出的主要来源
+    if report:
+        report(0.06, f"正在规划「{type_label}」的考点分布")
+    points = _plan_points(scope, type_label, params.difficulty.value, tc.count, hits, api_key)
 
-                q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
-                q.answer = "A" if q.answer in ("正确", "对", "T", "true", "√") else "B"
-            questions.append(q)
-            avoid_norm.add(norm)
-        if len(questions) >= tc.count:
-            if report:
-                report(1.0, f"「{type_label}」已完成（{tc.count} 题）")
-            return questions[: tc.count]
+    collected: list[Question] = []
+    taken = set(avoid_norm)
+    errors: list[Exception] = []
+    # 生成不足时最多补两轮，每轮按剩余数量重新拆批
+    for round_no in range(3):
+        need = tc.count - len(collected)
+        if need <= 0:
+            break
+        batch_sizes = _split_counts(need, GEN_BATCH_SIZE)
         if report:
-            report(0.35 + 0.15 * attempt, f"「{type_label}」第 {attempt + 1} 轮不达标，正在重试")
-    raise ValueError(f"{type_label}生成数量或去重后不达标（要求 {tc.count} 道），请重试")
+            report(
+                max(0.12, len(collected) / tc.count),
+                f"「{type_label}」AI 生成中（{len(collected)}/{tc.count} 题）"
+                + ("，正在补齐" if round_no else ""),
+            )
+        snapshot = list(taken)[-12:]
+        with ThreadPoolExecutor(max_workers=min(len(batch_sizes), GEN_BATCH_WORKERS),
+                                thread_name_prefix="qgen-batch") as pool:
+            futures = [
+                pool.submit(
+                    _gen_batch, tc, params, doc_name, scope, size, snapshot,
+                    mixed_difficulty, api_key, hits, directive,
+                    # 按已完成题数取考点，补齐轮次接着往后排，避免重复同一考点
+                    points[len(collected) + index] if len(collected) + index < len(points) else "",
+                )
+                for index, size in enumerate(batch_sizes)
+            ]
+            for future in futures:
+                # 单批失败（截断、限流）只丢这一批，剩余数量由下一轮补齐
+                try:
+                    batch = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+                    continue
+                for q in batch:
+                    norm = _norm_stem(q.stem)
+                    if norm in taken:
+                        continue  # 跨批或与历史题目重复，丢弃
+                    taken.add(norm)
+                    collected.append(q)
+                    if report:
+                        report(
+                            min(0.95, max(0.12, len(collected) / tc.count)),
+                            f"「{type_label}」AI 生成中（{len(collected)}/{tc.count} 题）",
+                        )
+
+    if len(collected) >= tc.count:
+        if report:
+            report(1.0, f"「{type_label}」已完成（{tc.count} 题）")
+        return collected[: tc.count]
+    if not collected and errors:
+        raise errors[0]  # 一道都没出：把超时、限流、密钥失效的真实原因带出去
+    raise ValueError(
+        f"{type_label}生成数量或去重后不达标（要求 {tc.count} 道，实得 {len(collected)} 道），请重试"
+    )
 
 
 def generate_questions(
@@ -207,6 +358,7 @@ def generate_questions(
     api_key: str | None = None,
     hyde_text: str | None = None,
     retrieve_fn: RetrieveFn | None = None,
+    directive: str = "",
 ) -> list[Question]:
     """按题型并行出题：每个题型一个独立 agent（线程），全部完成后汇总呈现。
 
@@ -249,6 +401,7 @@ def generate_questions(
             hyde_text,
             retrieve_fn=retrieve_fn,
             report=make_report(idx),
+            directive=directive,
         )
         results[idx] = fresh
 

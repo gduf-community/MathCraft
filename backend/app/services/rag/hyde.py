@@ -9,7 +9,6 @@ import hashlib
 
 import redis
 
-from app.config import settings
 from app.services import cache
 from app.services.rag import llm
 from app.services.rag.prompts import HYDE_SYSTEM, HYDE_USER_TEMPLATE
@@ -32,6 +31,7 @@ def generate_hyde(scope: str, api_key: str | None) -> str | None:
             api_key=api_key,
             temperature=0.3,
             max_tokens=600,
+            thinking_off=True,
         )
         return text.strip() or None
     except Exception:

@@ -1,5 +1,4 @@
 """出题接口：异步任务（start + progress 轮询）、同步出题、最近批次（v2 5.5）。"""
-import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
@@ -110,6 +109,11 @@ def generate_sync(
             available=exc.available,
             requested=exc.requested,
         ) from exc
+    from app.services import question_review
+
+    questions, _stats = question_review.review_questions(
+        db, user.id, questions, params, doc.name, api_key, hyde_text
+    )
     generation.persist_batch(
         db, user.id, access.bank.id, doc.id, "parametric", params, hyde_text, questions
     )

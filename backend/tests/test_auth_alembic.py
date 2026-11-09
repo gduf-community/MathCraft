@@ -90,7 +90,7 @@ class AuthAlembicCommandTests(AuthCommandCase):
         result = self.upgrade("head")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.rows("SELECT version_num FROM alembic_version"),
-                         [("c3e8a1f5b279",)])
+                         [("e3b7c1d94a62",)])
         # 新增列以外的所有历史字段必须保留；不能仅证明当前 ID 仍可查到。
         old_columns = ("id, account, password_hash, role, identity, display_name, gender, phone, "
                        "email, user_no, school, avatar_url, status, created_at, updated_at")
