@@ -147,7 +147,7 @@ export interface FavoriteGroup {
 export interface TeacherProfile {
   name: string
   avatar: string
-  gender: '男' | '女'
+  gender: '' | '男' | '女'
   phone: string
   email: string
   teacherId: string

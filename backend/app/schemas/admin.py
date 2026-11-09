@@ -1,14 +1,20 @@
 """管理员账号与平台信息契约。"""
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
-from app.schemas.auth import ACCOUNT_PATTERN
+from app.services.auth import validate_password
+
+ACCOUNT_PATTERN = r"^[A-Za-z0-9_.-]+$"
 
 
 class AccountCreateBody(BaseModel):
     account: str = Field(min_length=1, max_length=64, pattern=ACCOUNT_PATTERN)
     display_name: str = Field(min_length=1, max_length=64)
     role: str = Field(pattern="^(admin|teacher|student)$")
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=8, max_length=64)
+    _password = field_validator("password")(validate_password)
 
     @field_validator("account", mode="before")
     @classmethod
@@ -31,7 +37,8 @@ class AccountDisplayNameBody(BaseModel):
 
 
 class AccountPasswordBody(BaseModel):
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=8, max_length=64)
+    _password = field_validator("password")(validate_password)
 
 
 class AccountListItem(BaseModel):
@@ -41,7 +48,18 @@ class AccountListItem(BaseModel):
     role: str
     identity: str
     status: str
-    created_at: object
+    created_at: datetime
+    password_change_recommended: bool
+
+
+class PersistedBatchItem(BaseModel):
+    """已持久化批次；当前模型没有完成时间，不从创建时间推导。"""
+
+    id: str
+    type: str
+    status: str
+    created_at: datetime
+    completed_at: None = None
 
 
 class PlatformOverview(BaseModel):
@@ -49,4 +67,7 @@ class PlatformOverview(BaseModel):
     accounts: dict[str, int]
     resources: dict[str, int]
     task_status_counts: dict[str, int]
-    tasks: list[dict[str, object]]
+    task_scope: Literal["persisted_generation_batches"]
+    task_total: int
+    recent_task_limit: Literal[50]
+    tasks: list[PersistedBatchItem]

@@ -14,43 +14,9 @@ import type {
   TeacherProfile,
 } from '../types'
 
-let apiToken = ''
-
-export function setApiToken(token: string | null) {
-  apiToken = token ?? ''
-}
-
-export class ApiError extends Error {
-  code: string
-  constructor(message: string, code = 'REQUEST_FAILED') {
-    super(message)
-    this.code = code
-  }
-}
-
-async function parseError(resp: Response): Promise<ApiError> {
-  try {
-    const body = await resp.json()
-    const detail = body?.detail
-    if (typeof detail === 'string') return new ApiError(detail)
-    if (detail && typeof detail === 'object') {
-      return new ApiError(String(detail.message ?? `HTTP ${resp.status}`), String(detail.code ?? 'REQUEST_FAILED'))
-    }
-    return new ApiError(`HTTP ${resp.status}`)
-  } catch {
-    return new ApiError(`HTTP ${resp.status}`)
-  }
-}
-
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  headers.set('Content-Type', 'application/json')
-  if (apiToken) headers.set('Authorization', `Bearer ${apiToken}`)
-  const resp = await fetch(path, { ...init, headers })
-  if (!resp.ok) throw await parseError(resp)
-  if (resp.status === 204) return undefined as T
-  return (await resp.json()) as T
-}
+import { apiUrl } from './urls'
+import { ApiError, authenticatedOperation, assertCurrentSession, getSessionGeneration, request, sessionFetch } from './session'
+export { ApiError, request, setApiToken } from './session'
 
 export function fileUrl(path: string): string {
   return path
@@ -58,7 +24,7 @@ export function fileUrl(path: string): string {
 
 /* ---------------- 认证 ---------------- */
 
-export type AuthRole = 'admin' | 'student' | 'teacher'
+export type AuthRole = 'student' | 'teacher' | 'admin'
 
 export interface ApiUser {
   id: string
@@ -66,16 +32,19 @@ export interface ApiUser {
   role: AuthRole
   identity: string
   display_name: string
+  password_change_recommended?: boolean
   gender?: string | null
   phone?: string | null
   email?: string | null
+  email_verified: boolean
   user_no?: string | null
   school?: string | null
   avatar_url?: string | null
 }
 
 export interface LoginResult {
-  token: string
+  access_token: string
+  token_type: string
   expires_in: number
   user: ApiUser
 }
@@ -87,12 +56,14 @@ export interface AuthUser {
   identity: string
   token: string
   userId: string
+  passwordChangeRecommended: boolean
   avatarUrl?: string
   userNo?: string
   school?: string
   gender?: string
   phone?: string
   email?: string
+  emailVerified: boolean
 }
 
 export function mapAuthUser(user: ApiUser, token: string): AuthUser {
@@ -103,64 +74,16 @@ export function mapAuthUser(user: ApiUser, token: string): AuthUser {
     identity: user.identity,
     token,
     userId: user.id,
+    passwordChangeRecommended: user.password_change_recommended ?? false,
     avatarUrl: user.avatar_url ?? undefined,
     userNo: user.user_no ?? undefined,
     school: user.school ?? undefined,
     gender: user.gender ?? undefined,
     phone: user.phone ?? undefined,
     email: user.email ?? undefined,
+    emailVerified: user.email_verified,
   }
 }
-
-export interface AuthConfig {
-  admin_contact: string
-}
-
-export function fetchAuthConfig() {
-  return request<AuthConfig>('/api/auth/config')
-}
-export async function login(account: string, password: string): Promise<AuthUser> {
-  const body = await request<LoginResult>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ account, password }),
-  })
-  return mapAuthUser(body.user, body.token)
-}
-
-export async function fetchAuthUser(token: string): Promise<AuthUser | null> {
-  setApiToken(token)
-  try {
-    const body = await request<{ user: ApiUser }>('/api/auth/me')
-    return mapAuthUser(body.user, token)
-  } catch {
-    setApiToken(null)
-    return null
-  }
-}
-
-export async function logout(): Promise<void> {
-  await request<void>('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
-  setApiToken(null)
-}
-
-export async function changePasswordPublic(
-  account: string,
-  oldPassword: string,
-  newPassword: string,
-): Promise<void> {
-  await request<void>('/api/auth/change-password', {
-    method: 'POST',
-    body: JSON.stringify({ account, old_password: oldPassword, new_password: newPassword }),
-  })
-}
-
-export async function changePasswordLoggedIn(oldPassword: string, newPassword: string): Promise<void> {
-  await request<void>('/api/auth/password', {
-    method: 'PUT',
-    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
-  })
-}
-
 
 /* ---------------- 平台管理员 ---------------- */
 
@@ -178,6 +101,8 @@ export interface PlatformOverview {
   admin_contact: string
   accounts: Record<string, number>
   resources: Record<string, number>
+  task_total: number
+  task_scope: string
   task_status_counts: Record<string, number>
   tasks: Array<{ id: string; type: string; status: string; created_at: string; completed_at: string | null }>
 }
@@ -343,32 +268,52 @@ export async function getDocument(bankId: string, docId: string): Promise<ApiDoc
   return request<ApiDocument>(`/api/banks/${bankId}/documents/${docId}`)
 }
 
-export function uploadDocument(
+export async function uploadDocument(
   bankId: string,
   file: File,
   onUploadProgress?: (percent: number) => void,
 ): Promise<{ document_id: string; status: string; stage: string; progress: number }> {
-  return new Promise((resolve, reject) => {
+  return authenticatedOperation((token) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `/api/banks/${bankId}/documents`)
-    if (apiToken) xhr.setRequestHeader('Authorization', `Bearer ${apiToken}`)
+    xhr.open('POST', apiUrl(`/api/banks/${bankId}/documents`))
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onUploadProgress) onUploadProgress(Math.round((e.loaded / e.total) * 100))
     }
-    xhr.onerror = () => reject(new ApiError('上传失败，请检查后端服务'))
+    xhr.onerror = () => reject(new ApiError('上传失败，请检查后端服务', 'REQUEST_FAILED', xhr.status))
     xhr.onload = () => {
       try {
-        const body = JSON.parse(xhr.responseText || '{}')
-        if (xhr.status >= 200 && xhr.status < 300) resolve(body)
-        else reject(new ApiError(body?.detail?.message ?? `HTTP ${xhr.status}`, body?.detail?.code))
+        const body: unknown = JSON.parse(xhr.responseText || '{}')
+        if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            if ('document_id' in body && typeof body.document_id === 'string'
+              && 'status' in body && typeof body.status === 'string'
+              && 'stage' in body && typeof body.stage === 'string'
+              && 'progress' in body && typeof body.progress === 'number') {
+              resolve({ document_id: body.document_id, status: body.status,
+                stage: body.stage, progress: body.progress })
+              return
+            }
+          } else if ('detail' in body && body.detail !== null && typeof body.detail === 'object') {
+            const detail = body.detail
+            const message = 'message' in detail && typeof detail.message === 'string'
+              ? detail.message : `HTTP ${xhr.status}`
+            const code = 'code' in detail && typeof detail.code === 'string'
+              ? detail.code : 'REQUEST_FAILED'
+            reject(new ApiError(message, code, xhr.status))
+            return
+          }
+        }
+        reject(new ApiError(`HTTP ${xhr.status}`, 'REQUEST_FAILED', xhr.status))
       } catch {
-        reject(new ApiError(`HTTP ${xhr.status}`))
+        reject(new ApiError(`HTTP ${xhr.status}`, 'REQUEST_FAILED', xhr.status))
       }
     }
     const form = new FormData()
     form.append('file', file)
     xhr.send(form)
-  })
+  }))
 }
 
 export async function reprocessDocument(bankId: string, docId: string): Promise<void> {
@@ -380,11 +325,11 @@ export async function deleteDocument(bankId: string, docId: string): Promise<voi
 }
 
 export async function downloadDocument(bankId: string, docId: string, name: string): Promise<void> {
-  const headers: HeadersInit = {}
-  if (apiToken) (headers as Record<string, string>).Authorization = `Bearer ${apiToken}`
-  const resp = await fetch(`/api/banks/${bankId}/documents/${docId}/download`, { headers })
-  if (!resp.ok) throw await parseError(resp)
+  const started = getSessionGeneration()
+  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download`)
+  if (!resp.ok) throw new ApiError('下载失败（HTTP ' + resp.status + '）')
   const blob = await resp.blob()
+  assertCurrentSession(started)
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -945,9 +890,8 @@ export async function updateProfile(patch: Partial<TeacherProfile> & { school?: 
     method: 'PUT',
     body: JSON.stringify({
       display_name: patch.name,
-      gender: patch.gender,
-      phone: patch.phone,
-      email: patch.email,
+      gender: patch.gender === '' ? null : patch.gender,
+      phone: patch.phone === '' ? null : patch.phone,
       school: patch.school,
     }),
   })

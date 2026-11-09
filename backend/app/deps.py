@@ -8,7 +8,6 @@ from app.db import get_db
 from app.errors import AppError
 from app.models import Bank, BankMember, Paper, SpaceMember, StudySpace, User
 from app.services import auth as auth_service
-from app.services import cache
 
 
 def get_token(authorization: str | None = Header(default=None, alias="Authorization")) -> str:
@@ -18,13 +17,7 @@ def get_token(authorization: str | None = Header(default=None, alias="Authorizat
 
 
 def get_current_user(token: str = Depends(get_token), db: Session = Depends(get_db)) -> User:
-    user_id = auth_service.resolve_token(cache.get_redis(), token)
-    if not user_id:
-        raise AppError("TOKEN_EXPIRED", "登录已失效，请重新登录", status_code=401)
-    user = db.get(User, user_id)
-    if user is None or user.status != "active":
-        raise AppError("ACCOUNT_DISABLED", "账号不可用", status_code=403)
-    return user
+    return auth_service.authenticate(db, token)
 
 
 def require_teacher(user: User = Depends(get_current_user)) -> User:
@@ -83,6 +76,8 @@ def normalize_bank_role(role: str) -> str:
 
 def resolve_bank_access(db: Session, user: User, bank_id: str) -> BankAccess:
     """在非路径参数场景（如 bank_id 位于请求体）手动解析题库权限。"""
+    if user.role not in {"teacher", "student"}:
+        raise AppError("FORBIDDEN", "管理员账号不具备教学资源权限", status_code=403)
     bank = db.get(Bank, bank_id)
     if bank is None or bank.status != "active":
         raise AppError("BANK_NOT_FOUND", "题库不存在或已被删除", status_code=404)

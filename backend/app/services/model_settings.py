@@ -5,15 +5,16 @@ from app import local_secrets
 from app.config import settings
 from app.errors import AppError
 from app.models import User, UserModelSetting
+from app.services.auth import has_verified_email
 
 
 def get_setting(db: Session, user_id: str) -> UserModelSetting:
+    """在调用者事务内获取或创建设置，不释放认证版本锁。"""
     row = db.get(UserModelSetting, user_id)
     if row is None:
         row = UserModelSetting(user_id=user_id)
         db.add(row)
-        db.commit()
-        db.refresh(row)
+        db.flush()
     return row
 
 
@@ -56,13 +57,14 @@ def user_payload(user: User) -> dict:
         "id": user.id,
         "account": user.account,
         "role": user.role,
-        "status": user.status,
-        "identity": user.identity,
+        "identity": {"teacher": "教师", "student": "学生", "admin": "管理员"}[user.role],
         "display_name": user.display_name,
         "gender": user.gender,
         "phone": user.phone,
         "email": user.email,
+        "email_verified": has_verified_email(user),
         "user_no": user.user_no,
         "school": user.school,
         "avatar_url": user.avatar_url,
+        "password_change_recommended": getattr(user, "password_change_recommended", False),
     }

@@ -8,7 +8,7 @@ def admin_headers(client, db):
         User(
             id=new_id("u"),
             account="admin",
-            password_hash=hash_password("123123"),
+            password_hash=hash_password("12345678"),
             role="admin",
             identity="管理员",
             display_name="管理员",
@@ -16,9 +16,12 @@ def admin_headers(client, db):
         )
     )
     db.commit()
-    resp = client.post("/api/auth/login", json={"account": "admin", "password": "123123"})
+    resp = client.post("/api/auth/login/account", json={
+        "account": "admin", "password": "12345678",
+        "turnstile_token": "test-turnstile-token",
+    })
     assert resp.status_code == 200, resp.text
-    return {"Authorization": f"Bearer {resp.json()['token']}"}
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
 
 def test_admin_can_create_and_filter_accounts(client, db):
@@ -26,7 +29,7 @@ def test_admin_can_create_and_filter_accounts(client, db):
 
     created = client.post(
         "/api/admin/accounts",
-        json={"account": "teacher2", "display_name": "李老师", "role": "teacher", "password": "123456"},
+        json={"account": "teacher2", "display_name": "李老师", "role": "teacher", "password": "12345678"},
         headers=headers,
     )
 

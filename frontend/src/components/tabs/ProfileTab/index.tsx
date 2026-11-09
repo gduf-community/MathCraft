@@ -1,5 +1,5 @@
 /** 个人中心页：资料、模型配置、密码修改（全部走后端）。头像为系统默认，不可修改。 */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   BadgeCheck,
   Building2,
@@ -7,122 +7,64 @@ import {
   Loader2,
   Pencil,
   Save,
-  Settings2,
   ShieldCheck,
   User,
   UserRound,
   X,
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
+
+import { PersonalModelSettings } from './PersonalModelSettings'
+import { SecuritySettings } from './SecuritySettings'
+import { changePasswordCurrent, validateNewPassword } from '../../../api/auth'
 import { useAuth } from '../../../store/AuthContext'
-import {
-  getModelSettings,
-  saveModelSettings,
-  testDeepSeek,
-  testMinerU,
-  type ModelSettings,
-} from '../../../api/backend'
-import { changePasswordCurrent } from '../../../api/auth'
 
 export default function ProfileTab() {
   const { profile, updateProfile, showToast } = useApp()
-  const { logout } = useAuth()
+  const { user } = useAuth()
+
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
-  const [model, setModel] = useState<ModelSettings | null>(null)
-  const [deepseekKey, setDeepseekKey] = useState('')
-  const [mineruToken, setMineruToken] = useState('')
-  const [testing, setTesting] = useState<'deepseek' | 'mineru' | null>(null)
-  const [savingModel, setSavingModel] = useState(false)
+  const [savingProfile, setSavingProfile] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdOld, setPwdOld] = useState('')
   const [pwdNew, setPwdNew] = useState('')
   const [pwdConfirm, setPwdConfirm] = useState('')
   const [savingPwd, setSavingPwd] = useState(false)
 
-  useEffect(() => {
-    void getModelSettings()
-      .then(setModel)
-      .catch((err) => showToast(err instanceof Error ? err.message : '加载模型配置失败'))
-  }, [showToast])
-
   const startEdit = () => {
     setDraft({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
     setEditing(true)
   }
 
-  const saveEdit = () => {
-    if (!draft.name.trim()) {
-      showToast('昵称不能为空')
-      return
-    }
-    if (!/^1\d{10}$/.test(draft.phone.trim())) {
-      showToast('请输入正确的 11 位手机号码')
-      return
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim())) {
-      showToast('请输入正确的邮箱地址')
-      return
-    }
-    updateProfile({
-      name: draft.name.trim(),
-      gender: draft.gender,
-      phone: draft.phone.trim(),
-      email: draft.email.trim(),
-    })
-    setEditing(false)
-    showToast('个人信息已保存')
+  const saveEdit = async () => {
+    if (savingProfile) return
+    if (!draft.name.trim()) { showToast('昵称不能为空'); return }
+    if (draft.phone.trim() && !/^1[0-9]{10}$/.test(draft.phone.trim())) { showToast('请输入正确的 11 位手机号码'); return }
+    setSavingProfile(true)
+    try {
+      await updateProfile({ name: draft.name.trim(), gender: draft.gender, phone: draft.phone.trim() })
+      setEditing(false)
+      showToast('个人信息已保存')
+    } catch (error) { showToast(error instanceof Error ? error.message : '保存失败') }
+    finally { setSavingProfile(false) }
   }
 
   const patchDraft = (patch: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...patch }))
 
-  const saveModel = async () => {
-    setSavingModel(true)
-    try {
-      await saveModelSettings({
-        ...(deepseekKey.trim() ? { deepseek_api_key: deepseekKey.trim() } : {}),
-        ...(mineruToken.trim() ? { mineru_token: mineruToken.trim() } : {}),
-      })
-      const fresh = await getModelSettings()
-      setModel(fresh)
-      setDeepseekKey('')
-      setMineruToken('')
-      showToast('模型配置已保存')
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '保存失败')
-    } finally {
-      setSavingModel(false)
-    }
-  }
-
-  const runTest = async (which: 'deepseek' | 'mineru') => {
-    setTesting(which)
-    try {
-      if (which === 'deepseek') await testDeepSeek()
-      else await testMinerU()
-      showToast(which === 'deepseek' ? 'DeepSeek 连接正常' : 'MinerU Token 有效')
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '测试失败')
-    } finally {
-      setTesting(null)
-    }
-  }
-
   const submitPassword = async () => {
-    if (pwdNew.length < 6) {
-      showToast('新密码至少 6 位')
-      return
-    }
+    const passwordError = validateNewPassword(pwdNew)
+    if (passwordError) { showToast(passwordError); return }
     if (pwdNew !== pwdConfirm) {
       showToast('两次输入的新密码不一致')
       return
     }
     setSavingPwd(true)
     try {
-      await changePasswordCurrent(pwdOld, pwdNew)
+      await changePasswordCurrent(pwdOld, pwdNew, pwdConfirm)
       showToast('密码已修改，请重新登录')
       setPwdOpen(false)
-      logout()
+      setPwdOld(''); setPwdNew(''); setPwdConfirm('')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '修改密码失败')
     } finally {
@@ -190,11 +132,12 @@ export default function ProfileTab() {
           {editing ? (
             <button
               type="button"
-              onClick={saveEdit}
+              onClick={() => void saveEdit()}
+              disabled={savingProfile}
               className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1a5fe6]"
             >
               <Save size={13} />
-              保存
+              {savingProfile ? '保存中…' : '保存'}
             </button>
           ) : (
             <button
@@ -208,11 +151,15 @@ export default function ProfileTab() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-x-10 gap-y-5 px-2">
+        <div className="grid grid-cols-1 gap-x-10 gap-y-5 px-2 md:grid-cols-2">
+          <div className="flex items-center gap-6">
+            <span className="w-16 shrink-0 text-sm text-ink-3">登录账号</span>
+            <span className="break-all text-sm text-ink">{user?.username}</span>
+          </div>
           <div className="flex items-center gap-6">
             <span className="w-16 shrink-0 text-sm text-ink-3">昵称</span>
             {editing ? (
-              <input type="text" value={draft.name} maxLength={20} onChange={(e) => patchDraft({ name: e.target.value })} className={fieldCls} />
+              <input aria-label="昵称" disabled={savingProfile} type="text" value={draft.name} maxLength={20} onChange={(e) => patchDraft({ name: e.target.value })} className={fieldCls} />
             ) : (
               <span className="text-sm text-ink">{profile.name}</span>
             )}
@@ -220,117 +167,41 @@ export default function ProfileTab() {
           <div className="flex items-center gap-6">
             <span className="w-16 shrink-0 text-sm text-ink-3">性别</span>
             {editing ? (
-              <select value={draft.gender} onChange={(e) => patchDraft({ gender: e.target.value as '男' | '女' })} className={fieldCls}>
+              <select aria-label="性别" disabled={savingProfile} value={draft.gender} onChange={(e) => {
+                const gender = e.target.value
+                if (gender === '' || gender === '男' || gender === '女') patchDraft({ gender })
+              }} className={fieldCls}>
+                <option value="">未填写</option>
                 <option value="男">男</option>
                 <option value="女">女</option>
               </select>
             ) : (
               <span className="flex items-center gap-1.5 text-sm text-ink">
                 <UserRound size={14} className="text-primary" />
-                {profile.gender}
+                {profile.gender || '未填写'}
               </span>
             )}
           </div>
           <div className="flex items-center gap-6">
             <span className="w-16 shrink-0 text-sm text-ink-3">手机号码</span>
             {editing ? (
-              <input type="tel" value={draft.phone} maxLength={11} onChange={(e) => patchDraft({ phone: e.target.value })} className={fieldCls} />
+              <input aria-label="手机号码（可选，留空清除）" disabled={savingProfile} type="tel" value={draft.phone} maxLength={11} onChange={(e) => patchDraft({ phone: e.target.value })} className={fieldCls} />
             ) : (
-              <span className="text-sm text-ink">{profile.phone}</span>
+              <span className="text-sm text-ink">{profile.phone || '未填写'}</span>
             )}
           </div>
           <div className="flex items-center gap-6">
-            <span className="w-16 shrink-0 text-sm text-ink-3">邮箱</span>
-            {editing ? (
-              <input type="email" value={draft.email} onChange={(e) => patchDraft({ email: e.target.value })} className={fieldCls} />
-            ) : (
-              <span className="text-sm text-ink">{profile.email}</span>
-            )}
+            <span className="w-16 shrink-0 text-sm text-ink-3">邮箱（可选）</span>
+            <span className="break-all text-sm text-ink">{user?.email ? `${user.email}（${user.emailVerified ? '已验证' : '待验证'}，通过账号安全管理）` : '未绑定，可在下方账号安全中绑定'}</span>
           </div>
         </div>
       </div>
 
-      {/* 模型配置 */}
-      <div className="mb-4 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-ink">
-            <span className="h-3.5 w-1 rounded-full bg-primary" />
-            模型配置
-          </h3>
-          <button
-            type="button"
-            onClick={() => void saveModel()}
-            disabled={savingModel}
-            className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1a5fe6] disabled:opacity-60"
-          >
-            {savingModel && <Loader2 size={12} className="animate-spin" />}
-            保存
-          </button>
-        </div>
+      <p className="mb-4 text-xs text-ink-3">性别和手机号码为可选资料；选择“未填写”或清空号码后保存可移除对应资料。</p>
 
-        <div className="space-y-4 px-2">
-          <div className="rounded-xl border border-line p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-ink">{model?.deepseek_model ?? 'DeepSeek Flash'}</span>
-              <span className={`rounded px-1.5 py-0.5 text-[11px] ${model?.deepseek_key_configured ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                {model?.deepseek_key_configured ? `已配置 ${model.deepseek_key_masked ?? ''}` : '未配置'}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-ink-3">用于出题、HyDE 查询优化与主观题批卷</p>
-            <div className="mt-2.5 flex gap-2">
-              <input
-                type="password"
-                value={deepseekKey}
-                onChange={(e) => setDeepseekKey(e.target.value)}
-                placeholder="填写新的 DeepSeek API Key，留空表示不修改"
-                className={fieldCls}
-              />
-              <button
-                type="button"
-                onClick={() => void runTest('deepseek')}
-                disabled={testing === 'deepseek'}
-                className="shrink-0 rounded-lg border border-line px-3 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
-              >
-                {testing === 'deepseek' ? '测试中…' : '测试连接'}
-              </button>
-            </div>
-          </div>
+      <SecuritySettings />
 
-          <div className="rounded-xl border border-line p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-ink">MinerU OCR</span>
-              <span className={`rounded px-1.5 py-0.5 text-[11px] ${model?.mineru_token_configured ? 'bg-emerald-50 text-emerald-600' : 'bg-page text-ink-3'}`}>
-                {model?.mineru_token_configured ? `已配置 ${model.mineru_token_masked ?? ''}` : '使用系统默认 Token'}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-ink-3">
-              扫描件解析，单文件 ≤ {model?.mineru_limits.max_file_mb ?? 200} MB，页数 ≤ {model?.mineru_limits.max_pages ?? 200} 页
-            </p>
-            <div className="mt-2.5 flex gap-2">
-              <input
-                type="password"
-                value={mineruToken}
-                onChange={(e) => setMineruToken(e.target.value)}
-                placeholder="填写新的 MinerU Token，留空表示不修改"
-                className={fieldCls}
-              />
-              <button
-                type="button"
-                onClick={() => void runTest('mineru')}
-                disabled={testing === 'mineru'}
-                className="shrink-0 rounded-lg border border-line px-3 text-xs text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
-              >
-                {testing === 'mineru' ? '测试中…' : '测试连接'}
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-dashed border-line bg-page/60 p-3 text-xs text-ink-3">
-            <p>系统内置向量模型：{model?.embedding_model ?? 'BAAI/bge-m3'}（不可配置）</p>
-            <p className="mt-1">系统内置重排模型：{model?.rerank_model ?? 'BAAI/bge-reranker-v2-m3'}（不可配置）</p>
-          </div>
-        </div>
-      </div>
+      <PersonalModelSettings />
 
       {/* 其他设置 */}
       <div className="rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
@@ -375,21 +246,21 @@ export default function ProfileTab() {
             <div className="space-y-3 px-5 py-4">
               <input
                 type="password"
-                value={pwdOld}
+                aria-label="当前密码" autoComplete="current-password" value={pwdOld}
                 onChange={(e) => setPwdOld(e.target.value)}
                 placeholder="当前密码"
                 className={fieldCls}
               />
               <input
                 type="password"
-                value={pwdNew}
+                aria-label="新密码" autoComplete="new-password" value={pwdNew}
                 onChange={(e) => setPwdNew(e.target.value)}
-                placeholder="新密码（至少 6 位）"
+                placeholder="新密码（8–64 字符）"
                 className={fieldCls}
               />
               <input
                 type="password"
-                value={pwdConfirm}
+                aria-label="确认新密码" autoComplete="new-password" value={pwdConfirm}
                 onChange={(e) => setPwdConfirm(e.target.value)}
                 placeholder="确认新密码"
                 className={fieldCls}

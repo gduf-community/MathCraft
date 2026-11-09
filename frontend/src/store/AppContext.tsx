@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as api from '../api/backend'
 import * as banksApi from '../api/banks'
@@ -40,7 +40,7 @@ function buildProfile(user: AuthUser | null): TeacherProfile {
   return {
     name: user?.displayName ?? '',
     avatar: user?.avatarUrl ?? '',
-    gender: (user?.gender as '男' | '女') || '男',
+    gender: user?.gender === '男' || user?.gender === '女' ? user.gender : '',
     phone: user?.phone ?? '',
     email: user?.email ?? '',
     teacherId: user?.userNo ?? '',
@@ -105,7 +105,7 @@ interface AppState {
   unfavoriteQuestion: (questionId: string) => void
   setFavoriteGroup: (questionId: string, groupId: string) => void
   profile: TeacherProfile
-  updateProfile: (patch: Partial<TeacherProfile>) => void
+  updateProfile: (patch: Partial<TeacherProfile>) => Promise<void>
 
   selectedIds: string[]
   toggleSelect: (id: string) => void
@@ -630,21 +630,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const updateProfile = useCallback(
-    (patch: Partial<TeacherProfile>) => {
-      setProfile((prev) => ({ ...prev, ...patch }))
-      if (!user) return
-      void api
-        .updateProfile({
-          name: patch.name,
-          gender: patch.gender,
-          phone: patch.phone,
-          email: patch.email,
-          school: patch.school,
-        })
-        .then((updated) => setProfile(profileFromApi(updated, user.token)))
-        .catch((err) => showToast(err instanceof Error ? err.message : '资料保存失败'))
+    async (patch: Partial<TeacherProfile>) => {
+      if (!user) throw new Error('请先登录')
+      const updated = await api.updateProfile({ name: patch.name, gender: patch.gender, phone: patch.phone, school: patch.school })
+      setProfile(profileFromApi(updated, user.token))
     },
-    [user, showToast],
+    [user],
   )
 
   const publishPaper = useCallback(

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { changePasswordCurrent, validateNewPassword } from '../../api/auth'
 import {
   createAdminAccount,
   fetchPlatformOverview,
@@ -9,9 +10,19 @@ import {
   updateAdminAccount,
 } from '../../api/backend'
 import type { AdminAccount, PlatformOverview } from '../../api/backend'
+import { clearSession } from '../../api/session'
 import { useAuth } from '../../store/AuthContext'
+import { SecuritySettings } from '../tabs/ProfileTab/SecuritySettings'
 
 const ROLE_LABELS = { admin: '管理员', teacher: '教师', student: '学生' } as const
+
+function validPassword(value: string): boolean {
+  return validateNewPassword(value) === undefined
+}
+
+type RunAction = (
+  action: () => Promise<unknown>, success: string, revokesSelf?: boolean,
+) => Promise<boolean>
 
 export default function AdminPanel() {
   const { user, logout } = useAuth()
@@ -22,6 +33,14 @@ export default function AdminPanel() {
   const [statusFilter, setStatusFilter] = useState<AdminAccount['status'] | ''>('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [refresh, setRefresh] = useState(0)
+  const [sessionRevoked, setSessionRevoked] = useState(false)
+  const [security, setSecurity] = useState({ current: '', password: '', confirmation: '' })
+  const loadGeneration = useRef(0)
+  const mutationBusy = useRef(false)
+  const revoked = useRef(false)
   const [form, setForm] = useState({
     account: '',
     display_name: '',
@@ -29,38 +48,99 @@ export default function AdminPanel() {
     password: '',
   })
 
-  const load = useCallback(async () => {
-    const [nextAccounts, nextOverview] = await Promise.all([
-      listAdminAccounts(query, roleFilter || undefined, statusFilter || undefined),
-      fetchPlatformOverview(),
-    ])
-    setAccounts(nextAccounts)
-    setOverview(nextOverview)
-  }, [query, roleFilter, statusFilter])
-
   useEffect(() => {
-    void load().catch((error: unknown) => setMessage(error instanceof Error ? error.message : '加载失败'))
-  }, [load])
+    if (revoked.current) return
+    const generation = ++loadGeneration.current
+    let active = true
+    const load = async () => {
+      setLoading(true)
+      setLoadError('')
+      try {
+        const [nextAccounts, nextOverview] = await Promise.all([
+          listAdminAccounts(query, roleFilter || undefined, statusFilter || undefined),
+          fetchPlatformOverview(),
+        ])
+        if (!active || generation !== loadGeneration.current || revoked.current) return
+        setAccounts(nextAccounts)
+        setOverview(nextOverview)
+      } catch (error: unknown) {
+        if (active && generation === loadGeneration.current && !revoked.current) {
+          setLoadError(error instanceof Error ? error.message : '加载失败')
+        }
+      } finally {
+        if (active && generation === loadGeneration.current && !revoked.current) setLoading(false)
+      }
+    }
+    void load()
+    return () => { active = false }
+  }, [query, roleFilter, statusFilter, refresh])
 
-  const run = async (action: () => Promise<unknown>, success: string) => {
+  const run: RunAction = async (action, success, revokesSelf = false) => {
+    if (mutationBusy.current || revoked.current) return false
+    mutationBusy.current = true
     setBusy(true)
     setMessage('')
     try {
       await action()
-      await load()
       setMessage(success)
+      if (revokesSelf) {
+        revoked.current = true
+        loadGeneration.current += 1
+        setSessionRevoked(true)
+      } else {
+        setRefresh(value => value + 1)
+      }
+      return true
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '操作失败')
+      return false
     } finally {
+      mutationBusy.current = false
       setBusy(false)
     }
   }
 
   const submitCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    await run(() => createAdminAccount(form), '账号已创建')
-    setForm({ account: '', display_name: '', role: 'teacher', password: '' })
+    if (!validPassword(form.password)) {
+      setMessage('密码须为 8–64 字符，且 UTF-8 编码不超过 72 字节')
+      return
+    }
+    if (await run(() => createAdminAccount(form), '账号已创建，请提醒用户登录后修改初始密码、按需绑定邮箱')) {
+      setForm({ account: '', display_name: '', role: 'teacher', password: '' })
+    }
   }
+
+  const submitOwnPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!validPassword(security.password) || security.password !== security.confirmation) {
+      setMessage('请检查新密码长度、UTF-8 字节限制及两次输入是否一致')
+      return
+    }
+    if (mutationBusy.current) return
+    mutationBusy.current = true
+    setBusy(true)
+    setMessage('')
+    try {
+      await changePasswordCurrent(security.current, security.password, security.confirmation)
+      // 认证 API 成功后清除当前会话，由 AuthContext 展示登录页。
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : '修改密码失败')
+    } finally {
+      mutationBusy.current = false
+      setBusy(false)
+    }
+  }
+
+  if (sessionRevoked) return (
+    <div className="min-h-screen bg-page p-6 text-ink">
+      <section className="mx-auto max-w-lg rounded-2xl border border-line bg-white p-6">
+        <h1 className="text-xl font-semibold">操作已完成</h1>
+        <p className="mt-3" role="status">{message}。当前账号的全部会话已撤销，请重新登录；已禁用账号需由其他管理员恢复。</p>
+        <button type="button" onClick={() => clearSession(false)} className="mt-4 rounded-lg bg-primary px-4 py-2 text-white">返回登录</button>
+      </section>
+    </div>
+  )
 
   return (
     <div className="min-h-screen bg-page px-6 py-6 text-ink">
@@ -71,12 +151,31 @@ export default function AdminPanel() {
             <h1 className="mt-1 text-2xl font-bold">管理员面板</h1>
             <p className="mt-1 text-sm text-ink-3">当前账号：{user?.displayName}</p>
           </div>
-          <button type="button" onClick={logout} className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page">
+          <button type="button" onClick={() => void logout().catch((error: unknown) => setMessage(error instanceof Error ? error.message : '退出未确认，请重试'))} className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page">
             退出登录
           </button>
         </header>
 
+        <details className="rounded-xl border border-line bg-white p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-ink">个人账号安全</summary>
+          <p className="my-4 break-all text-sm text-ink-2">当前登录账号：<span className="font-medium text-ink">{user?.username}</span></p>
+          <SecuritySettings key={user?.userId} />
+        </details>
+
         {message && <div className="rounded-lg bg-primary-weak px-4 py-3 text-sm text-primary" role="status">{message}</div>}
+        {loadError && <div role="alert" className="rounded-lg border border-line bg-white p-4 text-sm">列表刷新失败：{loadError} <button type="button" onClick={() => setRefresh(value => value + 1)} className="underline">重试</button></div>}
+
+        <section className="rounded-2xl border border-line bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold">修改我的密码</h2>
+          {user?.passwordChangeRecommended && <p role="status" className="mt-2 text-sm text-primary">你正在使用初始或管理员重置的密码，建议修改。此提醒不影响其他功能。</p>}
+          <p className="mt-2 text-sm text-ink-3">新密码须为 8–64 字符，UTF-8 编码不超过 72 字节。修改成功后全部会话退出，请用新密码重新登录。</p>
+          <form onSubmit={event => void submitOwnPassword(event)} className="mt-4 grid gap-3 md:grid-cols-4">
+            <input aria-label="我的当前密码" type="password" autoComplete="current-password" value={security.current} onChange={event => setSecurity({ ...security, current: event.target.value })} placeholder="当前密码" required className="rounded-lg border border-line px-3 py-2 text-sm" />
+            <input aria-label="我的新密码" type="password" autoComplete="new-password" value={security.password} onChange={event => setSecurity({ ...security, password: event.target.value })} placeholder="新密码" required className="rounded-lg border border-line px-3 py-2 text-sm" />
+            <input aria-label="确认我的新密码" type="password" autoComplete="new-password" value={security.confirmation} onChange={event => setSecurity({ ...security, confirmation: event.target.value })} placeholder="确认新密码" required className="rounded-lg border border-line px-3 py-2 text-sm" />
+            <button type="submit" disabled={busy} className="rounded-lg bg-primary px-4 py-2 text-sm text-white disabled:opacity-60">验证当前密码并修改</button>
+          </form>
+        </section>
 
         <section className="grid gap-4 sm:grid-cols-3">
           <StatCard label="教师" value={overview ? (overview.accounts.teacher_active ?? 0) + (overview.accounts.teacher_disabled ?? 0) : '—'} />
@@ -93,8 +192,9 @@ export default function AdminPanel() {
               <h2 className="text-lg font-semibold">平台信息</h2>
               <p className="mt-1 text-sm text-ink-3">联系管理员：{overview?.admin_contact || '未配置'}</p>
             </div>
-            <div className="text-sm text-ink-3">任务总数：{overview ? overview.tasks.length : '—'}</div>
+            <div className="text-sm text-ink-3">持久化生成批次总数：{overview?.task_total ?? '—'}</div>
           </div>
+          <p className="mt-2 text-sm text-ink-3">状态统计覆盖全部持久化生成批次；下表仅展示最近 50 条，不包含仅存于任务缓存的运行中或失败任务。完成时间未记录。</p>
           <div className="mt-4 flex flex-wrap gap-2">
             {overview && Object.entries(overview.task_status_counts).map(([status, count]) => (
               <span key={status} className="rounded-full bg-page px-3 py-1 text-xs text-ink-2">{status}：{count}</span>
@@ -112,7 +212,7 @@ export default function AdminPanel() {
                       <td className="px-3 py-2">{task.type}</td>
                       <td className="px-3 py-2">{task.status}</td>
                       <td className="px-3 py-2 text-ink-3">{task.created_at}</td>
-                      <td className="px-3 py-2 text-ink-3">{task.completed_at ?? '—'}</td>
+                      <td className="px-3 py-2 text-ink-3">{task.completed_at ?? '未记录'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -123,13 +223,14 @@ export default function AdminPanel() {
 
         <section className="rounded-2xl border border-line bg-white p-5 shadow-sm">
           <h2 className="text-lg font-semibold">创建账号</h2>
+          <p className="mt-2 text-sm text-ink-3">无需邮箱，用户使用登录账号进入。初始密码及重置密码须为 8–64 字符，UTF-8 编码不超过 72 字节；请提醒用户登录后修改。</p>
           <form className="mt-4 grid gap-3 md:grid-cols-5" onSubmit={(event) => void submitCreate(event)}>
             <input aria-label="登录账号" value={form.account} onChange={(event) => setForm({ ...form, account: event.target.value })} placeholder="登录账号" className="rounded-lg border border-line px-3 py-2 text-sm" required />
             <input aria-label="显示名称" value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="显示名称" className="rounded-lg border border-line px-3 py-2 text-sm" required />
             <select aria-label="角色" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as AdminAccount['role'] })} className="rounded-lg border border-line px-3 py-2 text-sm">
               <option value="teacher">教师</option><option value="student">学生</option><option value="admin">管理员</option>
             </select>
-            <input aria-label="初始密码" type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="初始密码" className="rounded-lg border border-line px-3 py-2 text-sm" minLength={6} required />
+            <input aria-label="初始密码" type="password" autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="初始密码" className="rounded-lg border border-line px-3 py-2 text-sm" required />
             <button type="submit" disabled={busy} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">创建</button>
           </form>
         </section>
@@ -150,9 +251,10 @@ export default function AdminPanel() {
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[720px] text-left text-sm">
               <thead className="border-b border-line text-ink-3"><tr><th className="px-3 py-2">账号</th><th className="px-3 py-2">名称</th><th className="px-3 py-2">角色</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">操作</th></tr></thead>
-              <tbody>{accounts.map((account) => <AccountRow key={account.id} account={account} busy={busy} onRun={run} />)}</tbody>
+              <tbody>{!loading && !loadError && accounts.map((account) => <AccountRow key={account.id} account={account} currentUserId={user?.userId} busy={busy} onRun={run} />)}</tbody>
             </table>
-            {accounts.length === 0 && <p className="py-8 text-center text-sm text-ink-3">没有匹配的账号</p>}
+            {loading && <p role="status" className="py-8 text-center text-sm text-ink-3">正在加载账号…</p>}
+            {!loading && !loadError && accounts.length === 0 && <p className="py-8 text-center text-sm text-ink-3">没有匹配的账号</p>}
           </div>
         </section>
       </div>
@@ -164,7 +266,7 @@ function StatCard({ label, value }: { label: string; value: number | string }) {
   return <div className="rounded-xl border border-line bg-white p-4 shadow-sm"><p className="text-sm text-ink-3">{label}</p><p className="mt-2 text-2xl font-semibold text-primary">{value}</p></div>
 }
 
-function AccountRow({ account, busy, onRun }: { account: AdminAccount; busy: boolean; onRun: (action: () => Promise<unknown>, success: string) => Promise<void> }) {
+function AccountRow({ account, currentUserId, busy, onRun }: { account: AdminAccount; currentUserId: string | undefined; busy: boolean; onRun: RunAction }) {
   const [name, setName] = useState(account.display_name)
   const [password, setPassword] = useState('')
   return (
@@ -177,8 +279,10 @@ function AccountRow({ account, busy, onRun }: { account: AdminAccount; busy: boo
         <div className="flex flex-wrap gap-2">
           <button type="button" disabled={busy} onClick={() => void onRun(() => updateAdminAccount(account.id, name), '名称已更新')} className="rounded border border-line px-2 py-1 text-xs">保存名称</button>
           <input aria-label={`${account.account}新密码`} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="新密码" className="w-24 rounded border border-line px-2 py-1 text-xs" />
-          <button type="button" disabled={busy || password.length < 6} onClick={() => void onRun(() => resetAdminPassword(account.id, password), '密码已重置')} className="rounded border border-line px-2 py-1 text-xs">重置密码</button>
-          <button type="button" disabled={busy} onClick={() => void onRun(() => setAdminAccountStatus(account.id, account.status === 'active' ? 'disable' : 'restore'), account.status === 'active' ? '账号已禁用' : '账号已恢复')} className="rounded border border-line px-2 py-1 text-xs">{account.status === 'active' ? '禁用' : '恢复'}</button>
+          <button type="button" disabled={busy || !validPassword(password)} onClick={() => void (async () => {
+            if (await onRun(() => resetAdminPassword(account.id, password), '密码已重置，请使用新密码登录并及时修改', account.id === currentUserId)) setPassword('')
+          })()} className="rounded border border-line px-2 py-1 text-xs">重置密码</button>
+          <button type="button" disabled={busy} onClick={() => void onRun(() => setAdminAccountStatus(account.id, account.status === 'active' ? 'disable' : 'restore'), account.status === 'active' ? '账号已禁用' : '账号已恢复', account.status === 'active' && account.id === currentUserId)} className="rounded border border-line px-2 py-1 text-xs">{account.status === 'active' ? '禁用' : '恢复'}</button>
         </div>
       </td>
     </tr>

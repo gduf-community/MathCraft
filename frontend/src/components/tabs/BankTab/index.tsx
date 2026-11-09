@@ -67,8 +67,9 @@ function BankCode({ code }: { code: string }) {
 }
 
 export default function BankTab() {
-  const { showToast, refreshKbs } = useApp()
-  const [tab, setTab] = useState<SubTab>('owned')
+  const { role, showToast, refreshKbs } = useApp()
+  const canCreate = role === 'teacher'
+  const [tab, setTab] = useState<SubTab>(canCreate ? 'owned' : 'joined')
   const [owned, setOwned] = useState<ManagedBank[]>([])
   const [joined, setJoined] = useState<ManagedBank[]>([])
   const [loading, setLoading] = useState(true)
@@ -124,13 +125,13 @@ export default function BankTab() {
         <div className="mt-4 rounded-xl border border-line/70 bg-white shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
           <div className="flex items-center justify-between gap-4 px-5 pt-4 pb-3">
             <h3 className="text-sm font-bold text-ink">题库管理</h3>
-            <button
+            {canCreate && <button
               type="button"
               onClick={() => setCreateOpen(true)}
               className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
             >
               <FolderPlus size={15} /> 新建题库
-            </button>
+            </button>}
           </div>
 
           <table className="w-full">
@@ -174,7 +175,13 @@ export default function BankTab() {
                   </td>
                   <td className="px-5 py-3.5">
                     <div className="flex items-center justify-end gap-2">
-                      <button type="button" onClick={() => setEditTarget(b)} className={editBtn}>
+                      <button type="button" onClick={async () => {
+                        try {
+                          setEditTarget(await bankApi.getBankDetail(b.id))
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : '读取题库最新信息失败')
+                        }
+                      }} className={editBtn}>
                         <Pencil size={12} /> 编辑
                       </button>
                       <button type="button" onClick={() => setDeleteTarget(b)} className={dangerBtn}>
@@ -213,7 +220,7 @@ export default function BankTab() {
         />
       )}
       {viewTarget && <BankViewModal bank={viewTarget} onClose={() => setViewTarget(null)} onChanged={() => void refresh()} />}
-      {createOpen && <BankCreateModal onClose={() => setCreateOpen(false)} onChanged={() => void refresh()} />}
+      {canCreate && createOpen && <BankCreateModal onClose={() => setCreateOpen(false)} onChanged={() => void refresh()} />}
       {deleteTarget && (
         <ConfirmDialog
           title="删除题库"

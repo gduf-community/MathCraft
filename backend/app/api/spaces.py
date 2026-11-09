@@ -70,6 +70,8 @@ def join_space(
         .filter(SpaceMember.space_id == space.id, SpaceMember.user_id == user.id)
         .one_or_none()
     )
+    if existing and existing.status == "removed":
+        raise AppError("SPACE_JOIN_FORBIDDEN", "已被移出该空间，请联系创建者", status_code=403)
     if existing and existing.status == "active":
         raise AppError("ALREADY_IN_SPACE", "你已在该学习空间中", status_code=409)
     if spaces.member_count(db, space.id) >= space.capacity:

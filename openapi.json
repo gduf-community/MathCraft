@@ -29,33 +29,76 @@
         "tags": [
           "auth"
         ],
-        "summary": "Public Config",
-        "description": "登录页所需的公开平台配置。",
-        "operationId": "public_config_api_auth_config_get",
+        "summary": "Auth Config",
+        "description": "公开当前请求的人机验证要求及认证配置可用状态。",
+        "operationId": "auth_config_api_auth_config_get",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfig"
+                }
               }
             }
           }
         }
       }
     },
-    "/api/auth/login": {
+    "/api/auth/email-code": {
       "post": {
         "tags": [
           "auth"
         ],
-        "summary": "Login",
-        "operationId": "login_api_auth_login_post",
+        "summary": "Email Code",
+        "operationId": "email_code_api_auth_email_code_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/LoginBody"
+                "$ref": "#/components/schemas/EmailCodeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailCodeResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login/email": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login Email",
+        "operationId": "login_email_api_auth_login_email_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailLoginBody"
               }
             }
           },
@@ -66,7 +109,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResult"
+                }
               }
             }
           },
@@ -75,7 +120,49 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login/account": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login Account",
+        "description": "所有启用账号均可使用账号密码登录，角色取自数据库。",
+        "operationId": "login_account_api_auth_login_account_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountLoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -113,7 +200,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUserResult"
+                }
               }
             }
           },
@@ -122,7 +211,99 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Refresh",
+        "operationId": "refresh_api_auth_refresh_post",
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "description": "可信前端来源；缺失或不可信时返回 403。",
+              "title": "Origin",
+              "type": "string"
+            },
+            "description": "可信前端来源；缺失或不可信时返回 403。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "description": "必须与 mc_csrf Cookie 一致；缺失或不匹配时返回 403。",
+              "title": "X-Csrf-Token",
+              "type": "string"
+            },
+            "description": "必须与 mc_csrf Cookie 一致；缺失或不匹配时返回 403。"
+          },
+          {
+            "name": "mc_refresh",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mc Refresh"
+            }
+          },
+          {
+            "name": "mc_csrf",
+            "in": "cookie",
+            "required": true,
+            "schema": {
+              "description": "由认证配置接口设置的双提交 CSRF Cookie；缺失时返回 403。",
+              "title": "Mc Csrf",
+              "type": "string"
+            },
+            "description": "由认证配置接口设置的双提交 CSRF Cookie；缺失时返回 403。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -139,8 +320,39 @@
         "operationId": "logout_api_auth_logout_post",
         "parameters": [
           {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "description": "可信前端来源；缺失或不可信时返回 403。",
+              "title": "Origin",
+              "type": "string"
+            },
+            "description": "可信前端来源；缺失或不可信时返回 403。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "description": "必须与 mc_csrf Cookie 一致；缺失或不匹配时返回 403。",
+              "title": "X-Csrf-Token",
+              "type": "string"
+            },
+            "description": "必须与 mc_csrf Cookie 一致；缺失或不匹配时返回 403。"
+          },
+          {
             "name": "Authorization",
             "in": "header",
+            "required": true,
+            "schema": {
+              "title": "Authorization",
+              "type": "string"
+            }
+          },
+          {
+            "name": "mc_refresh",
+            "in": "cookie",
             "required": false,
             "schema": {
               "anyOf": [
@@ -151,10 +363,31 @@
                   "type": "null"
                 }
               ],
-              "title": "Authorization"
+              "title": "Mc Refresh"
             }
+          },
+          {
+            "name": "mc_csrf",
+            "in": "cookie",
+            "required": true,
+            "schema": {
+              "description": "由认证配置接口设置的双提交 CSRF Cookie；缺失时返回 403。",
+              "title": "Mc Csrf",
+              "type": "string"
+            },
+            "description": "由认证配置接口设置的双提交 CSRF Cookie；缺失时返回 403。"
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyBody"
+              }
+            }
+          }
+        },
         "responses": {
           "204": {
             "description": "Successful Response"
@@ -164,7 +397,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -172,19 +405,18 @@
         }
       }
     },
-    "/api/auth/change-password": {
+    "/api/auth/password/reset": {
       "post": {
         "tags": [
           "auth"
         ],
-        "summary": "Change Password Public",
-        "description": "登录页修改密码：账号 + 原密码验证，无需登录态。",
-        "operationId": "change_password_public_api_auth_change_password_post",
+        "summary": "Reset Password",
+        "operationId": "reset_password_api_auth_password_reset_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChangePasswordBody"
+                "$ref": "#/components/schemas/ResetPasswordBody"
               }
             }
           },
@@ -199,7 +431,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -212,8 +444,8 @@
         "tags": [
           "auth"
         ],
-        "summary": "Change Password Logged In",
-        "operationId": "change_password_logged_in_api_auth_password_put",
+        "summary": "Change Password",
+        "operationId": "change_password_api_auth_password_put",
         "parameters": [
           {
             "name": "Authorization",
@@ -251,7 +483,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -333,7 +565,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountListItem"
+                  },
+                  "title": "Response List Accounts Api Admin Accounts Get"
+                }
               }
             }
           },
@@ -342,7 +580,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -388,7 +626,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AccountListItem"
+                }
               }
             }
           },
@@ -397,7 +637,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -454,7 +694,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AccountListItem"
+                }
               }
             }
           },
@@ -463,7 +705,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -524,7 +766,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -575,7 +817,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -626,7 +868,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -664,7 +906,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformOverview"
+                }
               }
             }
           },
@@ -673,7 +917,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -687,7 +931,7 @@
           "users"
         ],
         "summary": "Update Profile",
-        "description": "修改昵称、性别、手机号、邮箱、学校。",
+        "description": "普通资料不得修改认证标识；写入前再次校验版本。",
         "operationId": "update_profile_api_users_me_put",
         "parameters": [
           {
@@ -722,7 +966,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserPayload"
+                }
               }
             }
           },
@@ -731,7 +977,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -789,7 +1035,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -836,7 +1082,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -891,7 +1137,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -938,7 +1184,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -985,7 +1231,284 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/email-binding": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Bind Email",
+        "description": "密码及新邮箱 proof 校验后，在同一事务绑定邮箱并撤销全部会话。",
+        "operationId": "bind_email_api_users_me_email_binding_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailBindingBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/email": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Unbind Email",
+        "description": "校验当前密码后清空邮箱及验证标记，并原子撤销全部会话。",
+        "operationId": "unbind_email_api_users_me_email_delete",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurrentPasswordBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Commit Email Change",
+        "description": "双 proof、版本、邮箱写入和全部会话撤销位于同一事务。",
+        "operationId": "commit_email_change_api_users_me_email_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailCommitBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/email-change": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Start Email Change",
+        "description": "建立十分钟双邮箱快照；后续发码由事务确定真实收件人。",
+        "operationId": "start_email_change_api_users_me_email_change_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailChangeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailChangeResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/user-no": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Change User No",
+        "description": "学工号增改删验证当前密码和原认证版本，保留用户身份归属。",
+        "operationId": "change_user_no_api_users_me_user_no_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserNoBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPayload"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1053,7 +1576,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1108,7 +1631,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1184,7 +1707,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1248,7 +1771,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1297,7 +1820,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1348,7 +1871,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1414,7 +1937,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1468,7 +1991,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1538,7 +2061,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1598,7 +2121,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1659,7 +2182,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1715,7 +2238,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1780,7 +2303,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1845,7 +2368,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1903,7 +2426,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1968,7 +2491,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2033,7 +2556,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2100,7 +2623,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2158,7 +2681,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2215,7 +2738,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2273,7 +2796,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2341,7 +2864,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2462,7 +2985,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2528,7 +3051,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2577,7 +3100,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2629,7 +3152,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2676,7 +3199,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2731,7 +3254,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2797,7 +3320,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2846,7 +3369,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2923,7 +3446,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2978,7 +3501,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3039,7 +3562,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3088,7 +3611,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3145,7 +3668,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3201,7 +3724,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3250,7 +3773,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3317,7 +3840,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3364,7 +3887,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3419,7 +3942,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3476,7 +3999,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3532,7 +4055,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3596,7 +4119,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3645,7 +4168,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3696,7 +4219,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3752,7 +4275,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3812,7 +4335,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3868,7 +4391,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3945,7 +4468,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4000,7 +4523,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4052,7 +4575,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4108,7 +4631,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4172,7 +4695,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4232,7 +4755,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4298,7 +4821,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4364,7 +4887,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4424,7 +4947,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4484,7 +5007,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4544,7 +5067,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4610,7 +5133,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4675,7 +5198,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4723,7 +5246,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4765,7 +5288,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4817,7 +5340,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4869,7 +5392,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -4941,7 +5464,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -5007,7 +5530,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -5073,7 +5596,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -5129,7 +5652,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -5146,7 +5669,7 @@
             "type": "string",
             "maxLength": 64,
             "minLength": 1,
-            "pattern": "^[\\u4e00-\\u9fffA-Za-z0-9_.-]+$",
+            "pattern": "^[A-Za-z0-9_.-]+$",
             "title": "Account"
           },
           "display_name": {
@@ -5162,8 +5685,8 @@
           },
           "password": {
             "type": "string",
-            "maxLength": 128,
-            "minLength": 6,
+            "maxLength": 64,
+            "minLength": 8,
             "title": "Password"
           }
         },
@@ -5191,12 +5714,91 @@
         ],
         "title": "AccountDisplayNameBody"
       },
+      "AccountListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "account": {
+            "type": "string",
+            "title": "Account"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "password_change_recommended": {
+            "type": "boolean",
+            "title": "Password Change Recommended"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "account",
+          "display_name",
+          "role",
+          "identity",
+          "status",
+          "created_at",
+          "password_change_recommended"
+        ],
+        "title": "AccountListItem"
+      },
+      "AccountLoginBody": {
+        "properties": {
+          "account": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Account"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password"
+          },
+          "turnstile_token": {
+            "type": "string",
+            "maxLength": 2048,
+            "title": "Turnstile Token",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "account",
+          "password"
+        ],
+        "title": "AccountLoginBody",
+        "description": "所有启用账号均可使用账号密码登录，兼容历史账号字符。"
+      },
       "AccountPasswordBody": {
         "properties": {
           "password": {
             "type": "string",
-            "maxLength": 128,
-            "minLength": 6,
+            "maxLength": 64,
+            "minLength": 8,
             "title": "Password"
           }
         },
@@ -5263,6 +5865,57 @@
         },
         "type": "object",
         "title": "AttemptSubmitBody"
+      },
+      "AuthConfig": {
+        "properties": {
+          "site_key": {
+            "type": "string",
+            "title": "Site Key"
+          },
+          "turnstile_enabled": {
+            "type": "boolean",
+            "title": "Turnstile Enabled"
+          },
+          "csrf_token": {
+            "type": "string",
+            "title": "Csrf Token"
+          },
+          "methods": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "account_password",
+                "email_code"
+              ]
+            },
+            "type": "array",
+            "title": "Methods"
+          },
+          "admin_contact": {
+            "type": "string",
+            "title": "Admin Contact",
+            "default": "请联系本校或平台管理员"
+          },
+          "development_accounts_enabled": {
+            "type": "boolean",
+            "title": "Development Accounts Enabled"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_key",
+          "turnstile_enabled",
+          "csrf_token",
+          "methods",
+          "development_accounts_enabled",
+          "available"
+        ],
+        "title": "AuthConfig",
+        "description": "公开认证能力与双提交 CSRF 令牌，不包含服务端密钥。"
       },
       "BankCreateBody": {
         "properties": {
@@ -5344,37 +5997,6 @@
         ],
         "title": "Body_upload_document_api_banks__bank_id__documents_post"
       },
-      "ChangePasswordBody": {
-        "properties": {
-          "account": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "pattern": "^[\\u4e00-\\u9fffA-Za-z0-9_.-]+$",
-            "title": "Account"
-          },
-          "old_password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Old Password"
-          },
-          "new_password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 6,
-            "title": "New Password"
-          }
-        },
-        "type": "object",
-        "required": [
-          "account",
-          "old_password",
-          "new_password"
-        ],
-        "title": "ChangePasswordBody",
-        "description": "未登录改密（登录页）。"
-      },
       "ChatMessageBody": {
         "properties": {
           "message": {
@@ -5418,6 +6040,254 @@
           "document_id"
         ],
         "title": "ChatSessionCreateBody"
+      },
+      "CurrentPasswordBody": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Current Password"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_password"
+        ],
+        "title": "CurrentPasswordBody",
+        "description": "敏感操作需要当前账号密码。"
+      },
+      "CurrentUserResult": {
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/UserPayload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "title": "CurrentUserResult",
+        "description": "当前登录用户，保持既有 user 外层对象。"
+      },
+      "EmailBindingBody": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Current Password"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Challenge Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_password",
+          "email",
+          "challenge_id",
+          "code"
+        ],
+        "title": "EmailBindingBody",
+        "description": "首次绑定或验证历史未验证邮箱，不替代已验证邮箱的换绑流程。"
+      },
+      "EmailChangeBody": {
+        "properties": {
+          "new_email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "New Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "new_email"
+        ],
+        "title": "EmailChangeBody"
+      },
+      "EmailChangeResult": {
+        "properties": {
+          "change_id": {
+            "type": "string",
+            "title": "Change Id"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          }
+        },
+        "type": "object",
+        "required": [
+          "change_id",
+          "expires_in"
+        ],
+        "title": "EmailChangeResult",
+        "description": "双邮箱验证事务的标识与有效期。"
+      },
+      "EmailCodeBody": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "login",
+              "reset_password",
+              "email_bind",
+              "email_change_old",
+              "email_change_new"
+            ],
+            "title": "Purpose"
+          },
+          "turnstile_token": {
+            "type": "string",
+            "maxLength": 2048,
+            "title": "Turnstile Token",
+            "default": ""
+          },
+          "change_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "purpose"
+        ],
+        "title": "EmailCodeBody"
+      },
+      "EmailCodeResult": {
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "title": "Challenge Id"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "retry_after": {
+            "type": "integer",
+            "title": "Retry After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "challenge_id",
+          "expires_in",
+          "retry_after"
+        ],
+        "title": "EmailCodeResult",
+        "description": "发码统一受理结果，不泄露邮箱是否已注册。"
+      },
+      "EmailCommitBody": {
+        "properties": {
+          "change_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Change Id"
+          },
+          "old_challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Old Challenge Id"
+          },
+          "old_code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Old Code"
+          },
+          "new_challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "New Challenge Id"
+          },
+          "new_code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "New Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "change_id",
+          "old_challenge_id",
+          "old_code",
+          "new_challenge_id",
+          "new_code"
+        ],
+        "title": "EmailCommitBody"
+      },
+      "EmailLoginBody": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Challenge Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "challenge_id",
+          "code"
+        ],
+        "title": "EmailLoginBody",
+        "description": "邮箱所有权校验通过后由服务端确定身份。"
+      },
+      "EmptyBody": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EmptyBody",
+        "description": "Cookie 认证请求必须提供 JSON 对象，不接受表单或任意原始正文。"
       },
       "FavoriteAddBody": {
         "properties": {
@@ -5565,28 +6435,34 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
-      "LoginBody": {
+      "LoginResult": {
         "properties": {
-          "account": {
+          "access_token": {
             "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "pattern": "^[\\u4e00-\\u9fffA-Za-z0-9_.-]+$",
-            "title": "Account"
+            "title": "Access Token"
           },
-          "password": {
+          "token_type": {
             "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Password"
+            "const": "bearer",
+            "title": "Token Type"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserPayload"
           }
         },
         "type": "object",
         "required": [
-          "account",
-          "password"
+          "access_token",
+          "token_type",
+          "expires_in",
+          "user"
         ],
-        "title": "LoginBody"
+        "title": "LoginResult",
+        "description": "登录与刷新共用的短期访问凭证和用户资料。"
       },
       "MemberAddBody": {
         "properties": {
@@ -5964,26 +6840,125 @@
       },
       "PasswordBody": {
         "properties": {
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          },
+          "confirm_password": {
+            "type": "string",
+            "title": "Confirm Password"
+          },
           "old_password": {
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
             "title": "Old Password"
-          },
-          "new_password": {
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "new_password",
+          "confirm_password",
+          "old_password"
+        ],
+        "title": "PasswordBody"
+      },
+      "PersistedBatchItem": {
+        "properties": {
+          "id": {
             "type": "string",
-            "maxLength": 128,
-            "minLength": 6,
-            "title": "New Password"
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "type": "null",
+            "title": "Completed At"
           }
         },
         "type": "object",
         "required": [
-          "old_password",
-          "new_password"
+          "id",
+          "type",
+          "status",
+          "created_at"
         ],
-        "title": "PasswordBody",
-        "description": "已登录改密。"
+        "title": "PersistedBatchItem",
+        "description": "已持久化批次；当前模型没有完成时间，不从创建时间推导。"
+      },
+      "PlatformOverview": {
+        "properties": {
+          "admin_contact": {
+            "type": "string",
+            "title": "Admin Contact"
+          },
+          "accounts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Accounts"
+          },
+          "resources": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Resources"
+          },
+          "task_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Task Status Counts"
+          },
+          "task_scope": {
+            "type": "string",
+            "const": "persisted_generation_batches",
+            "title": "Task Scope"
+          },
+          "task_total": {
+            "type": "integer",
+            "title": "Task Total"
+          },
+          "recent_task_limit": {
+            "type": "integer",
+            "const": 50,
+            "title": "Recent Task Limit"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PersistedBatchItem"
+            },
+            "type": "array",
+            "title": "Tasks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "admin_contact",
+          "accounts",
+          "resources",
+          "task_status_counts",
+          "task_scope",
+          "task_total",
+          "recent_task_limit",
+          "tasks"
+        ],
+        "title": "PlatformOverview"
       },
       "QuestionUpdateBody": {
         "properties": {
@@ -6088,6 +7063,44 @@
         },
         "type": "object",
         "title": "QuestionUpdateBody"
+      },
+      "ResetPasswordBody": {
+        "properties": {
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          },
+          "confirm_password": {
+            "type": "string",
+            "title": "Confirm Password"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Email"
+          },
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Challenge Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "new_password",
+          "confirm_password",
+          "email",
+          "challenge_id",
+          "code"
+        ],
+        "title": "ResetPasswordBody"
       },
       "SearchBody": {
         "properties": {
@@ -6216,6 +7229,160 @@
         ],
         "title": "TypeCountBody"
       },
+      "UserNoBody": {
+        "properties": {
+          "user_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User No"
+          },
+          "current_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Current Password"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_no",
+          "current_password"
+        ],
+        "title": "UserNoBody"
+      },
+      "UserPayload": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "account": {
+            "type": "string",
+            "title": "Account"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "teacher",
+              "student",
+              "admin"
+            ],
+            "title": "Role"
+          },
+          "identity": {
+            "type": "string",
+            "enum": [
+              "教师",
+              "学生",
+              "管理员"
+            ],
+            "title": "Identity"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "email_verified": {
+            "type": "boolean",
+            "title": "Email Verified"
+          },
+          "user_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User No"
+          },
+          "school": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "School"
+          },
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "password_change_recommended": {
+            "type": "boolean",
+            "title": "Password Change Recommended",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "account",
+          "role",
+          "identity",
+          "display_name",
+          "gender",
+          "phone",
+          "email",
+          "email_verified",
+          "user_no",
+          "school",
+          "avatar_url"
+        ],
+        "title": "UserPayload",
+        "description": "真实公开用户字段；历史与未填写的资料允许 null，角色严格限定。"
+      },
       "UserUpdateBody": {
         "properties": {
           "display_name": {
@@ -6241,7 +7408,8 @@
                 "type": "null"
               }
             ],
-            "title": "Gender"
+            "title": "Gender",
+            "description": "省略保留原值，null 清除性别"
           },
           "phone": {
             "anyOf": [
@@ -6253,19 +7421,8 @@
                 "type": "null"
               }
             ],
-            "title": "Phone"
-          },
-          "email": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 128
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Email"
+            "title": "Phone",
+            "description": "省略保留原值，null 清除手机号"
           },
           "school": {
             "anyOf": [
@@ -6280,6 +7437,7 @@
             "title": "School"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "UserUpdateBody"
       },
@@ -6322,6 +7480,39 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "ErrorDetail": {
+        "additionalProperties": true,
+        "description": "实际业务错误；额外上下文保持兼容，不返回请求输入。",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "统一脱敏错误外层，422 不使用默认验证错误数组。",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
       }
     }
   }

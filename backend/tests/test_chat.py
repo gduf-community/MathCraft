@@ -77,7 +77,9 @@ def test_chat_requires_membership(client, teacher, student):
 
 def test_chat_requires_deepseek_key(client, teacher, student):
     bank, doc = _setup(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
+    assert client.post(f"/api/banks/{bank['id']}/members",
+                       json={"account": "student", "role": "readonly"},
+                       headers=teacher).status_code == 201
     session = client.post(
         "/api/chat/sessions",
         json={"bank_id": bank["id"], "document_id": doc["document_id"]},

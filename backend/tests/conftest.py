@@ -1,16 +1,24 @@
-"""pytest 公共夹具：临时 SQLite + Redis 15 号库，外部模型全部打桩。"""
+"""pytest 公共夹具：临时 SQLite + 进程内隔离 Redis，外部模型全部打桩。"""
+# ruff: noqa: E402 -- 必须先设置隔离环境与假凭据，再导入应用。
 import os
 import re
 import sys
+import socket
 import tempfile
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # 必须在导入 app 之前设置环境变量（settings 在模块导入时实例化）
 TEST_ROOT = Path(tempfile.mkdtemp(prefix="mathcraft_test_"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(TEST_ROOT / 'test.db').as_posix()}?check_same_thread=false"
-os.environ["REDIS_URL"] = "redis://127.0.0.1:6379/15"
+os.environ["REDIS_URL"] = "redis://127.0.0.1:1/15"
+os.environ["APP_ENV"] = "test"
+os.environ["AUTH_JWT_SECRET"] = "test-only-jwt-secret-not-for-production-0123456789"
+os.environ["AUTH_CODE_SECRET"] = "test-only-code-secret-not-for-production-0123456789"
 os.environ["CHROMA_DIR"] = str(TEST_ROOT / "chroma")
 os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
 os.environ["OCR_DIR"] = str(TEST_ROOT / "ocr")
@@ -18,6 +26,41 @@ os.environ["AVATAR_DIR"] = str(TEST_ROOT / "avatars")
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["CORS_ORIGINS"] = "http://127.0.0.1:5173"
 
+# 测试从不读取个人 local_secrets.py；外部凭据固定为空。
+_test_secrets = ModuleType("app.local_secrets")
+_test_secrets.SILICONFLOW_API_KEY = ""
+_test_secrets.MINERU_DEFAULT_TOKEN = "fake-mineru-token-for-isolated-tests-only"
+sys.modules["app.local_secrets"] = _test_secrets
+
+# 在 Settings 类首次实例化前排除 dotenv/file-secret 来源及继承的个人环境值。
+# 只接收上方显式设置的测试变量；构造参数仍可供配置单元测试使用。
+from pydantic_settings import BaseSettings
+
+_TEST_ENV_KEYS = {
+    "database_url", "redis_url", "app_env", "auth_jwt_secret", "auth_code_secret",
+    "chroma_dir", "upload_dir", "ocr_dir", "avatar_dir", "deepseek_api_key", "cors_origins",
+}
+_original_sources = BaseSettings.settings_customise_sources.__func__
+
+
+def _test_settings_sources(cls, settings_cls, init_settings, env_settings,
+                           dotenv_settings, file_secret_settings):
+    if settings_cls.__module__ == "app.config":
+        env_settings.env_vars = {
+            key: value for key, value in env_settings.env_vars.items() if key in _TEST_ENV_KEYS
+        }
+        return init_settings, env_settings
+    return _original_sources(cls, settings_cls, init_settings, env_settings,
+                             dotenv_settings, file_secret_settings)
+
+
+# DotEnvSettingsSource 会在 sources 选择前读取文件，因此同时禁止其读取入口。
+from pydantic_settings.sources import DotEnvSettingsSource
+
+DotEnvSettingsSource._read_env_files = lambda self: {}
+BaseSettings.settings_customise_sources = classmethod(_test_settings_sources)
+
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -37,10 +80,10 @@ from app.services.rag import embeddings, llm, question_gen, rerank, slots
 def fake_embed_texts(texts: list[str]) -> list[list[float]]:
     """确定性 1024 维向量，保证 Chroma 可正常检索且不访问网络。"""
     out = []
-    for text in texts:
+    for content in texts:
         vec = [0.0] * 1024
         vec[0] = 0.5
-        for i, ch in enumerate(text[:128]):
+        for i, ch in enumerate(content[:128]):
             vec[(ord(ch) + i * 17) % 1024] += 1.0
         out.append(vec)
     return out
@@ -101,6 +144,34 @@ def fake_slot_chat_json(messages, api_key=None, retries=1) -> dict:
 
 
 @pytest.fixture(autouse=True)
+def prohibit_network(monkeypatch):
+    """拒绝服务网络；仅允许 Windows asyncio 自身 socketpair 的本地管道。"""
+    pair_context = threading.local()
+    original_connect = socket.socket.connect
+    original_pair = socket.socketpair
+
+    def denied(*args, **kwargs):
+        raise AssertionError("测试禁止真实网络连接；请注入假服务")
+
+    def connect(instance, address):
+        if getattr(pair_context, "active", False):
+            return original_connect(instance, address)
+        return denied()
+
+    def socketpair(*args, **kwargs):
+        pair_context.active = True
+        try:
+            return original_pair(*args, **kwargs)
+        finally:
+            pair_context.active = False
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", denied)
+    monkeypatch.setattr(socket, "create_connection", denied)
+    monkeypatch.setattr(socket, "socketpair", socketpair)
+
+
+@pytest.fixture(autouse=True)
 def fake_models(monkeypatch):
     monkeypatch.setattr(embeddings, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(embeddings, "embed_one", lambda t: fake_embed_texts([t])[0])
@@ -138,6 +209,10 @@ def _seed_users() -> None:
                 identity="教师" if role == "teacher" else "学生",
                 display_name=name,
                 user_no=user_no,
+                email=f"{account}@example.test",
+                email_normalized=f"{account}@example.test",
+                email_verified=True,
+                email_verified_at=datetime.now(timezone.utc),
                 school="广东金融学院",
                 status="active",
             )
@@ -149,10 +224,34 @@ def _seed_users() -> None:
         db.close()
 
 
+@pytest.fixture(autouse=True)
+def fake_auth_verification():
+    """在 HTTP 依赖边界替换 Turnstile，测试不访问外部验证服务。"""
+    from app.services.auth_delivery import get_turnstile_verifier
+
+    class Verifier:
+        def verify(self, token: str, action: str, remote_ip: str) -> None:
+            if token != "test-turnstile-token":
+                from app.errors import AppError
+                raise AppError("TURNSTILE_FAILED", "测试人机验证失败", 403)
+
+    fastapi_app.dependency_overrides[get_turnstile_verifier] = lambda: Verifier()
+    yield
+    fastapi_app.dependency_overrides.pop(get_turnstile_verifier, None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_redis(monkeypatch):
+    """每个测试使用独立内存 Redis，绝不连接或清空本机实例。"""
+    instance = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(cache, "get_redis", lambda: instance)
+    yield instance
+    instance.close()
+
+
 @pytest.fixture()
 def client():
     _reset_database()
-    cache.get_redis().flushdb()
     _seed_users()
     with TestClient(fastapi_app) as c:
         yield c
@@ -169,22 +268,25 @@ def db():
 
 @pytest.fixture()
 def auth(client):
-    def _login(account: str, password: str = "123123") -> dict:
-        resp = client.post("/api/auth/login", json={"account": account, "password": password})
+    def _login(account: str, role: str, password: str = "123123") -> dict:
+        resp = client.post("/api/auth/login/account", json={
+            "account": account, "password": password,
+            "turnstile_token": "test-turnstile-token",
+        })
         assert resp.status_code == 200, resp.text
-        return {"Authorization": f"Bearer {resp.json()['token']}"}
+        return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
     return _login
 
 
 @pytest.fixture()
 def teacher(auth):
-    return auth("teacher")
+    return auth("teacher", "teacher")
 
 
 @pytest.fixture()
 def student(auth):
-    return auth("student")
+    return auth("student", "student")
 
 
 # ---------------- 常用辅助 ----------------
@@ -194,15 +296,6 @@ def create_bank(client, headers, name="测试题库") -> dict:
     assert resp.status_code == 201, resp.text
     return resp.json()
 
-
-def add_bank_member(client, headers, bank_id: str, account="student", role="readonly") -> dict:
-    resp = client.post(
-        f"/api/banks/{bank_id}/members",
-        json={"account": account, "role": role},
-        headers=headers,
-    )
-    assert resp.status_code == 201, resp.text
-    return resp.json()
 
 def upload_markdown(client, headers, bank_id: str, name="notes.md") -> dict:
     content = """# 导数与微分

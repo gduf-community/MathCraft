@@ -128,6 +128,7 @@ export default function BankEditModal({
                     setMembers((prev) => [...prev, member])
                     setMemberAccount('')
                     showToast('成员已添加')
+                    onChanged()
                   } catch (err) {
                     showToast(err instanceof Error ? err.message : '添加成员失败')
                   }
@@ -165,6 +166,7 @@ export default function BankEditModal({
                             await bankApi.setMemberRole(bank.id, member.id, role)
                             setMembers((prev) => prev.map((item) => item.id === member.id ? { ...item, role } : item))
                             showToast('成员权限已更新')
+                            onChanged()
                           } catch (err) {
                             showToast(err instanceof Error ? err.message : '更新成员权限失败')
                           }

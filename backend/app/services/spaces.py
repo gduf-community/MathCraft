@@ -1,5 +1,5 @@
 """学习空间业务：编号、列表载荷、成员操作、解散。"""
-from datetime import datetime, timezone
+import secrets
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -11,15 +11,11 @@ from app.models.base import new_id
 
 
 def generate_space_code(db: Session) -> str:
-    year = datetime.now(timezone.utc).year
-    prefix = f"SP{year}"
-    base = db.query(func.count(StudySpace.id)).filter(StudySpace.code.like(f"{prefix}%")).scalar() or 0
-    seq = base + 1
+    """生成不可枚举的 96 位加入码，编号同时作为邀请凭据。"""
     while True:
-        code = f"{prefix}{seq:04d}"
+        code = "SP" + secrets.token_hex(12).upper()
         if not db.query(StudySpace.id).filter(StudySpace.code == code).first():
             return code
-        seq += 1
 
 
 def member_count(db: Session, space_id: str) -> int:

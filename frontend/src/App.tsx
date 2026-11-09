@@ -17,11 +17,16 @@ import LoginPage from './components/auth/LoginPage'
 import AdminPanel from './components/admin/AdminPanel'
 
 function Shell() {
-  const { activeTab, settingsTarget } = useApp()
+  const { activeTab, settingsTarget, setActiveTab } = useApp()
+  const { user } = useAuth()
   return (
-    <div className="flex h-screen animate-fade-in flex-col bg-page text-ink">
+    <div className="workspace-shell flex h-screen animate-fade-in flex-col bg-page text-ink">
       <TopBar />
-      <div className="relative flex min-h-0 flex-1">
+      {user?.passwordChangeRecommended && <div className="flex items-center justify-center gap-3 bg-primary-weak px-4 py-2 text-sm text-primary" role="status">
+        <span>当前密码由管理员设置，建议登录后修改。</span>
+        <button type="button" className="underline" onClick={() => setActiveTab('me')}>前往个人中心修改</button>
+      </div>}
+      <div className="workspace-body relative flex min-h-0 flex-1">
         <SideNav />
         <main className="z-10 mx-4 my-4 flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-line/70 bg-white shadow-[0_6px_24px_rgba(30,90,180,0.06)]">
           {activeTab === 'settings' ? (
@@ -64,11 +69,12 @@ function Shell() {
 
 /** 登录门禁：未登录渲染登录页（登录成功整页淡出），已登录挂载主应用并淡入 */
 function AuthGate() {
-  const { user } = useAuth()
+  const { user, restoring } = useAuth()
+  if (restoring) return <div className="flex min-h-screen items-center justify-center bg-page text-ink" role="status">正在恢复安全会话…</div>
   if (!user) return <LoginPage />
   if (user.role === 'admin') return <AdminPanel />
   return (
-    <AppProvider>
+    <AppProvider key={`${user.userId}:${user.role}`}>
       <Shell />
     </AppProvider>
   )

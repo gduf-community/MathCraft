@@ -1,244 +1,149 @@
 # MathCraft 后端
 
-MathCraft 后端以 `app.main:app` 为入口，提供管理员账号管理、教师与学生登录、题库协作、文档入库、RAG 检索与智能出题、题目收藏、学习空间、组卷发布、学生作答、批卷、催交通知及个人中心。业务数据通过 SQLAlchemy 持久化，登录会话和异步任务状态保存在 Redis。
+当前后端以 `app.main:app` 为入口，使用 FastAPI、SQLAlchemy、Alembic、SQLite、Redis 与 Chroma。历史 `/api/kb`、Ollama 和单租户入口不代表当前实现。
 
-当前行为以 [`app/`](app/)、根 [`openapi.json`](../openapi.json) 和实际路由为准。项目整体说明与前端启动方式见[根 README](../README.md)。
-
-## 技术栈与运行条件
-
-| 部分 | 当前实现 |
-| --- | --- |
-| 运行环境 | Python 3.11 及以上，使用 uv 安装和运行后端依赖 |
-| HTTP 服务 | FastAPI、Uvicorn、Pydantic Settings |
-| 数据库与迁移 | SQLite、SQLAlchemy 2.x、Alembic；SQLite 开启 WAL、外键和 FTS5 |
-| 会话与任务缓存 | Redis 7 及以上；保存登录会话、出题任务、文档入库进度和对话槽位 |
-| 密码校验 | bcrypt |
-| 文档解析 | PyMuPDF、python-docx、openpyxl，以及 Markdown、TXT 解析器 |
-| 向量与重排 | 硅基流动 `BAAI/bge-m3`（1024 维）与 `BAAI/bge-reranker-v2-m3` |
-| 检索 | Chroma 持久化向量索引、jieba 分词、SQLite FTS5、RRF 融合与重排 |
-| 生成与评分 | 通过 OpenAI 兼容客户端调用 DeepSeek，默认模型为 `deepseek-flash` |
-| 扫描件 OCR | MinerU 云端 API，已接入文档入库流程 |
-
-Redis 是硬依赖。即使 SQLite 中已有账号，登录仍需要把会话写入 Redis；Redis 不可用时，登录与依赖缓存的任务无法正常工作。Windows 可以通过下文的 [Docker Compose 选项](#redis-启动选项docker-compose)或 WSL 提供 Redis。WSL 的安装与前台启动命令见[根 README 的 Redis 启动说明](../README.md#1-启动-redis)，使用 WSL 前台运行时保持 Redis 终端开启。
-
-仅验收登录与账号管理不需要配置真实模型密钥；文档向量化、检索、生成、主观题评分及 OCR 需要相应服务的凭据和网络。
-
-## 目录结构
+## 模块结构
 
 ```text
 backend/
 ├── app/
-│   ├── main.py                  # 应用装配、路由注册、/media 头像静态目录
-│   ├── config.py                # backend/.env 与环境变量配置
-│   ├── db.py                    # SQLAlchemy 引擎、会话与 SQLite 配置
-│   ├── deps.py                  # 登录用户、平台角色与资源归属校验
-│   ├── errors.py                # 业务错误及统一响应
-│   ├── local_secrets.example.py # 系统服务凭据的占位样例
-│   ├── api/                     # auth、admin、users、banks、documents、generate、
-│   │                            # questions、favorites、chat、spaces、papers、
-│   │                            # urges、attempts、health 路由
-│   ├── models/                  # 用户、题库、文档、题目、空间与试卷等 ORM 模型
-│   ├── schemas/                 # Pydantic 请求与数据契约
+│   ├── main.py              # 应用装配与路由注册
+│   ├── auth_validators.py   # HTTP 与离线审计共用的纯标识校验
+│   ├── config.py            # backend/.env 配置
+│   ├── db.py                # SQLite WAL、SQLAlchemy 会话和 FTS
+│   ├── deps.py              # 登录用户及角色依赖
+│   ├── api/                 # auth/admin/users、题库/文档、出题/空间/试卷等
+│   ├── models/              # 业务数据与认证会话/消费凭证
+│   ├── schemas/             # 请求、响应与外部契约
 │   └── services/
-│       ├── auth.py              # 密码哈希与 Redis 会话
-│       ├── bootstrap.py         # 显式初始化管理员、教师和学生账号
-│       ├── cache.py             # Redis 客户端与缓存键
-│       ├── model_settings.py    # 个人模型配置与凭据解析
-│       ├── documents.py         # 解析、OCR、切片与入库编排
-│       ├── banks.py             # 题库与成员权限
-│       ├── generation.py        # 出题任务编排
-│       ├── spaces.py            # 学习空间
-│       ├── papers.py            # 组卷、发布与催交
-│       ├── attempts.py          # 作答、交卷与复盘
-│       ├── grading.py           # 客观题判分与主观题 AI 评分
-│       ├── parsing/             # PDF、DOCX、XLSX、MD、TXT 解析
-│       ├── mineru.py            # MinerU 云端 OCR 客户端
-│       └── rag/                 # 切片、向量、检索、重排、出题与对话编排
-├── alembic/                     # 环境与版本化数据库迁移
-├── scripts/                     # 账号初始化、辅助建号和手动链路检查
-├── tests/                       # 接口与服务测试、外部服务替身夹具
-├── .env.example                 # 后端配置样例
-├── alembic.ini                  # Alembic 配置
-├── pyproject.toml               # 后端独立依赖与 uv 配置
-├── uv.lock                      # 后端依赖锁文件
-└── README.md
+│       ├── auth.py          # 密码、JWT、数据库会话、刷新与撤销
+│       ├── auth_codes.py    # 验证码、限流和数据库消费凭证
+│       ├── auth_delivery.py # SMTP 与 Turnstile 边界
+│       └── rag/             # 向量、检索、出题及对话编排
+├── alembic/                 # 数据库版本迁移
+├── scripts/                 # 开发初始化与只读迁移审计
+│   └── init_auth_secrets.py  # 手动补齐本地认证密钥，不输出秘密值
+├── tests/                   # HTTP、事务、迁移与命令测试
+├── .env.example             # 空凭据配置模板
+├── pyproject.toml
+└── uv.lock
 ```
 
-运行后默认产生 `data/`，包含 `mathcraft.db`、`chroma/`、`uploads/`、`ocr/` 和 `avatars/`。本地配置文件 `backend/.env`、`app/local_secrets.py` 与运行数据不进入版本库。
+## 启动与配置
 
-## 配置
+先启动 Redis。在仓库根目录执行本地 Docker Compose 命令，确认最后返回 `PONG` 后再进入 `backend/`：
 
-配置入口为 [`app/config.py`](app/config.py)，dotenv 文件固定为 `backend/.env`，模板为 [`.env.example`](.env.example)。环境变量可以覆盖 dotenv 中的设置。后端运行、迁移与初始化命令均在 `backend/` 执行，以保证 SQLite 相对路径、迁移配置及脚本入口一致。
-
-| 变量 | 默认值或用途 |
-| --- | --- |
-| `DATABASE_URL` | `sqlite:///./data/mathcraft.db`，相对当前工作目录 |
-| `REDIS_URL` | `redis://127.0.0.1:6379/0` |
-| `SESSION_TTL_SECONDS` | 登录会话默认 604800 秒，即 7 天 |
-| `DEEPSEEK_API_KEY` | DeepSeek 兜底密钥；个人中心配置优先 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` |
-| `DEEPSEEK_MODEL` | `deepseek-flash` |
-| `CHROMA_DIR` | `data/chroma` |
-| `UPLOAD_DIR` | `data/uploads` |
-| `OCR_DIR` | `data/ocr` |
-| `AVATAR_DIR` | `data/avatars` |
-| `CORS_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173`，逗号分隔 |
-| `INITIAL_ADMIN_ACCOUNT` / `INITIAL_ADMIN_PASSWORD` | 显式初始化所需的管理员账号与密码 |
-| `INITIAL_TEACHER_ACCOUNT` / `INITIAL_TEACHER_PASSWORD` | 显式初始化所需的教师账号与密码 |
-| `INITIAL_STUDENT_ACCOUNT` / `INITIAL_STUDENT_PASSWORD` | 显式初始化所需的学生账号与密码 |
-| `ADMIN_CONTACT` | 登录页公开展示的管理员联系说明，可留空 |
-
-`CHROMA_DIR`、`UPLOAD_DIR`、`OCR_DIR`、`AVATAR_DIR` 的相对路径由配置方法基于 `backend/` 解析。迁移存储位置时，需要同时保留数据库、上传资料、OCR 文件、头像与向量索引，并更新对应配置，避免已有资源失联。
-
-系统硅基流动密钥及 MinerU 默认 Token 使用 `app/local_secrets.py`，首次使用可从 `app/local_secrets.example.py` 复制。该文件需要存在；只验收登录时可保留样例中的空值或占位值。个人 DeepSeek 密钥与 MinerU Token 通过 `/api/users/me/model-settings` 保存到 `UserModelSetting`，调用时优先采用个人配置。环境变量、dotenv 或系统凭据文件变更后重新启动后端进程；个人模型配置通过接口保存后按请求读取。
-
-## Redis 启动选项：Docker Compose
-
-仓库根目录的 [`compose.yaml`](../compose.yaml) 仅提供 `redis` 服务，后端与前端仍在本地运行。启动前确认 Docker Desktop 的引擎正在运行，并先关闭旧的 WSL Redis，避免占用主机 `6379` 端口：前台运行的实例在对应终端按 `Ctrl+C` 停止，以服务方式运行的实例则在对应 WSL 发行版内停止该服务。
-
-该服务使用 `redis:7-alpine` 镜像，端口映射为 `127.0.0.1:6379:6379`，仅绑定主机回环地址；命名卷 `redis_data:/data` 配合 `--appendonly yes` 持久化 Redis 数据，使用 `redis-cli ping` 进行健康检查，重启策略为 `unless-stopped`。
-
-以下命令均在**仓库根目录**执行，启动并等待 Redis 健康检查通过后，检查连通性、状态与日志：
+Compose 默认读取根目录 `.env`；若其中的格式或 `COMPOSE_*` 配置导致报错，请检查该文件，后端配置仍放在 `backend/.env`，当前 Redis 服务不依赖其中的变量。
 
 ```powershell
 docker compose up -d --wait redis
 docker compose exec redis redis-cli ping
-# 期望：PONG
-docker compose ps
-docker compose logs --tail 50 redis
 ```
 
-本地后端继续使用 `REDIS_URL=redis://127.0.0.1:6379/0`，无需改为 `redis` 主机名。若需在当前 PowerShell 终端显式设置，可在启动后端前执行：
-
-```powershell
-$env:REDIS_URL = "redis://127.0.0.1:6379/0"
-```
-
-临时停止 Redis，或移除 Compose 容器和网络时，在仓库根目录选择执行：
-
-```powershell
-# 停止 Redis，保留容器与命名卷
-docker compose stop redis
-
-# 移除容器和网络，保留命名卷 redis_data
-docker compose down
-```
-
-`docker compose down` 不加 `-v`，以保留命名卷中的数据。切换到 Docker Redis 不会自动迁移旧 WSL Redis 中的登录会话和任务状态，用户需要重新登录；账号及其他关系数据仍保存在原有数据库中，无需重新初始化账号。
-
-## 首次准备与数据库迁移
-
-先通过上述 Docker Compose 选项或 WSL 启动 Redis，并确认 `REDIS_URL` 指向的实例可访问。若本机已安装 Redis CLI，默认本地实例可检查：
-
-```powershell
-redis-cli -h 127.0.0.1 -p 6379 ping
-# 期望：PONG
-```
-
-若 Redis 在 WSL 中运行，可在对应发行版内执行 `redis-cli ping`；后端仍须能够连接配置中的 Redis 地址。
-
-在仓库根目录打开 PowerShell，准备后端依赖与配置；已有本地配置时保留原文件：
+Docker 引擎须已启动，6379 端口须空闲；默认 `REDIS_URL=redis://127.0.0.1:6379/0`。日常在仓库根执行 `docker compose stop redis` 暂停，`docker compose up -d --wait redis` 恢复；`docker compose down` 移除容器与网络但保留 AOF 命名卷，不添加 `-v`。已有原生 Redis 可继续使用，同一时间只运行一个占用 6379 的实例。完整命令及切换边界见 [根 README](../README.md#1-启动-redis) 与 [Redis 容器设计](../docs/design/Redis容器启动设计.md)。
 
 ```powershell
 cd backend
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-if (-not (Test-Path app/local_secrets.py)) { Copy-Item app/local_secrets.example.py app/local_secrets.py }
 uv sync
-New-Item -ItemType Directory -Force data | Out-Null
-```
-
-在本地编辑 `backend/.env`，为管理员、教师和学生分别填写六个 `INITIAL_*` 字段。三个账号必须互不相同；账号可使用中文、字母、数字、下划线、点和连字符，最长 64 字符。密码不能为空；建议至少 6 位并为每个账号分别设置。
-
-然后创建或升级数据库，再显式初始化账号：
-
-```powershell
+uv run python scripts/init_auth_secrets.py
+# 缺少 .env 时脚本从 .env.example 创建；按根 README 配置清单补齐其余配置后再继续
 uv run alembic upgrade head
-uv run python scripts/init_accounts.py
-```
-
-Alembic 从 `app.config.settings.database_url` 获取连接串，负责关系表及初始 FTS5 虚拟表迁移。使用自定义 SQLite 位置时，先创建数据库文件的父目录；升级已有数据前应先备份。
-
-账号初始化入口为 [`scripts/init_accounts.py`](scripts/init_accounts.py)，调用 [`services/bootstrap.py`](app/services/bootstrap.py) 补建管理员、教师和学生及其模型设置记录。重复执行会跳过同名同角色的已有账号，保留其密码、资料和状态；同名账号的角色不匹配或配置不合法时会报错。修改 `INITIAL_*_PASSWORD` 后重复初始化不会重置已有密码。
-
-日常启动不会自动建表、运行迁移或创建账号。初始化完成后，后续账号通过管理员面板或 `/api/admin/accounts` 管理。
-
-## 日常启动
-
-先启动 Redis，再从 `backend/` 执行：
-
-```powershell
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-拉取包含新迁移的代码后，启动前执行 `uv run alembic upgrade head`。需要补建配置中的初始账号时，再单独执行 `uv run python scripts/init_accounts.py`。
+配置以 [app/config.py](app/config.py) 和 [.env.example](.env.example) 为准，环境变量可覆盖固定位置的 `backend/.env`。完整字段、默认值、用途和获取来源集中在根 [生产配置清单](../README.md#生产配置清单) 与 [数据、缓存与模型配置](../README.md#数据缓存与模型配置)，部署时逐项填写。`config.py` 默认 `APP_ENV=production`，模板则为 `development`；生产须显式设为 `production`，`DEV_ACCOUNTS_ENABLED=false`，并清空教师/学生各自的 `EMAIL`、`USER_NO`、`PASSWORD`、`DISPLAY_NAME` 八个开发字段。Redis 存储验证码、限流和业务任务；认证会话在数据库中。缺少必要配置时相关认证操作拒绝或返回不可用。真实配置、数据库和上传文件不入库。
 
-前端从仓库根目录另开终端启动：
+### 本机 Turnstile 临时开关与恢复（2026-11-09，已实现并在本机启用）
 
-```powershell
-cd frontend
-npm ci
-npm run dev
-```
+`TURNSTILE_ENABLED` 默认 `true`。仅配置为 `false`、`APP_ENV` 属于 `development/test`，且请求实际 ASGI peer 为回环 IP（如 `127.0.0.1` 或 `::1`）时跳过人机验证；不信任 Host、Origin 或转发头来扩展该范围。非本机 peer 即使在该配置下仍执行完整 Turnstile。production 配置 `false` 时在启动校验阶段拒绝，不能启动。
 
-访问 `http://localhost:5173`。Vite 将 `/api` 和 `/media` 代理至后端 `127.0.0.1:8000`；前端依赖已安装且锁文件未变化时，日常只需 `npm run dev`。
+`AuthConfig.turnstile_enabled` 为必填 boolean，由 GET `/api/auth/config` 按当前请求计算有效值。有效值为 `false` 时不调用 Cloudflare；有效值为 `true` 时保留票据、站点配置、action、hostname 等完整验证，空票据仍拒绝。`POST /api/auth/email-code` 与 `POST /api/auth/login/account` 的 `turnstile_token` 可缺省或为空字符串，但仅有效禁用请求可跳过其验证。前端据有效状态决定脚本加载与提交条件。
 
-## 接口与文档入口
+本次已以新后台启动进程的环境 `TURNSTILE_ENABLED=false` 重启本机后端，继续绑定回环地址，不改真实 `.env`、`local_secrets.py` 或密钥；重启及当前有效配置已通过实际接口确认。恢复时终止该进程，以 `TURNSTILE_ENABLED=true` 重启后端，再重新加载前端配置；只有确认其他受控配置仍为默认 `true` 时才能仅移除临时覆盖。配置变更不热更新，必须重启后端。
 
-| 入口 | 说明 |
-| --- | --- |
-| `http://127.0.0.1:8000/docs` | 当前服务的交互式 Swagger 文档 |
-| `http://127.0.0.1:8000/openapi.json` | 运行中服务的 OpenAPI 契约 |
-| [根 openapi.json](../openapi.json) | 仓库中的接口契约快照 |
-| [docs/api.md](../docs/api.md) | API 文档；维护时需核对生成脚本分组覆盖情况 |
-| [docs/design/](../docs/design/) | 当前功能设计说明 |
+账号密码、JWT/SQL 会话及撤销、Origin/CSRF、邮箱验证码、限流、proof 消费、角色与资源权限保留，SMTP 不可用仍不能完成邮件流程。新增 7 项后端针对性测试、前端检查及完整浏览器回归已通过；本机关闭已确认生效，后端全量 291 passed、79 subtests passed、21 failed（20 项 Chroma 相关失败、1 项迁移子进程超时）；迁移超时用例单独复跑通过，见下方验收说明。本轮验收完成于 2026-11-10；迁移用例复跑耗时 7.51 秒，未修改代码。Ruff 10 项、Pyright 19 项既有诊断，本次文件无新增。本文其他原有数量保留为开关调整前记录。验收矩阵见 [实施规格](../docs/design/用户系统实施规格.md)。
 
-常用路由如下；请求字段与完整路径以运行中 OpenAPI 为准。
+### 认证密钥本地初始化与保存
 
-| 路由 | 用途 |
-| --- | --- |
-| `GET /api/auth/config` | 登录页公开配置 |
-| `POST /api/auth/login` | 使用 `account`、`password` 登录 |
-| `GET /api/auth/me` | 校验当前会话并返回用户资料与角色 |
-| `POST /api/auth/logout` | 销毁当前会话 |
-| `/api/admin/accounts`、`GET /api/admin/overview` | 管理员账号管理与平台概况 |
-| `/api/users/me`、`/api/users/me/model-settings` | 个人资料与个人模型配置 |
-| `/api/banks`、`/api/banks/{bank_id}/documents` | 题库协作与文档管理 |
-| `POST /api/banks/{bank_id}/search` | 题库内检索 |
-| `POST /api/generate/start`、`GET /api/generate/progress/{task_id}` | 异步出题与进度查询 |
-| `/api/chat/sessions` | 对话会话与消息 |
-| `/api/questions`、`/api/favorites` | 题目维护与收藏 |
-| `/api/spaces`、`/api/papers`、`/api/attempts/{attempt_id}/submit` | 学习空间、组卷发布与交卷 |
-| `/api/urges` | 催交通知 |
-| `GET /api/health` | 数据库、Redis、外部服务与 Chroma 探测 |
-| `/media/...` | 头像静态资源 |
-
-`/api/health` 返回 `database`、`redis`、`siliconflow_embedding`、`siliconflow_rerank`、`mineru_default_token` 和 `chroma`。该接口会实际调用硅基流动探测向量与重排；`mineru_default_token` 仅表示系统默认 Token 是否存在，不能证明 OCR 可用。HTTP 200 也不代表各组件全部通过，需检查字段值；登录验收可直接使用认证接口。
-
-## 本地三角色登录验收
-
-以下为人工验收方法；先完成数据库迁移、显式账号初始化和 Redis、后端、前端启动。
-
-1. 打开登录页，确认只需填写登录账号和密码，管理员联系说明与 `ADMIN_CONTACT` 一致。
-2. 分别使用配置中的管理员、教师、学生账号登录，每次退出后再验证下一角色。管理员应进入管理员面板，教师与学生进入各自工作台；浏览器刷新后仍应保留有效登录态。
-3. 核对登录请求为 `POST /api/auth/login`，JSON 请求体为 `{"account":"<对应账号>","password":"<对应密码>"}`。成功响应应为 HTTP 200，包含 `token`、`expires_in` 和 `user`，其中 `user.role` 分别为 `admin`、`teacher`、`student`。
-4. 使用本次登录返回的 Token 请求 `GET /api/auth/me`，请求头为 `Authorization: Bearer <token>`；应返回 HTTP 200，`user` 的账号与角色和登录响应一致。Token 只在本地使用，不粘贴到日志、文档或提交中。
-5. 用管理员会话请求 `GET /api/admin/accounts` 应成功；用教师和学生会话请求相同接口应返回 HTTP 403。无 Token 请求 `GET /api/auth/me` 应返回 HTTP 401。
-6. 对当前账号调用 `POST /api/auth/logout` 应返回 HTTP 204。继续使用原 Token 请求 `GET /api/auth/me` 应返回 HTTP 401，前端再次刷新也应回到登录页。
-7. 使用错误密码登录应返回 HTTP 401；已禁用账号使用正确密码登录应返回 HTTP 403。禁用状态可在需要验收时通过管理员面板准备，恢复后再继续使用该账号。
-
-若登录失败，先从实际运行后端的 Windows 环境验证 Redis 连通性：
+安装依赖后手动执行 `uv run python scripts/init_auth_secrets.py`，再迁移数据库并启动后端。脚本不接受参数，从脚本路径定位固定的 `backend/.env`，不随执行目录变化；缺少文件时从 `backend/.env.example` 创建。在仓库根目录已有 `.venv` 依赖环境时，也可执行：
 
 ```powershell
-# 在 backend/ 目录执行，应输出 Redis: PONG
-uv run python -c "from app.services.cache import get_redis; assert get_redis().ping(); print('Redis: PONG')"
+.venv\Scripts\python.exe backend\scripts\init_auth_secrets.py
 ```
 
-仅在 WSL 内返回 `PONG` 不代表 Windows 后端已连通。Redis 未运行时，即使密码校验通过，创建会话仍会失败；恢复 Redis 后重试登录即可，无需重复初始化账号。随后核对是否在正确的 `DATABASE_URL` 上完成迁移和初始化，以及账号状态。外部模型未配置导致的健康检查失败，应按对应组件排查。
+脚本分别用 `secrets.token_urlsafe(48)` 生成 `AUTH_JWT_SECRET` 与 `AUTH_CODE_SECRET`，只填缺项或空值（包括 `''`、`""`）；已有非空合法值保留，重复执行不变。非空值不足 32 个 UTF-8 字节、两项密钥相同、认证键重复、目标认证键的值含变量插值或 dotenv 语法错误时，拒绝修改并返回非零，只输出固定脱敏错误提示。原有配置与注释保留，采用原子写入，写入失败保持原文件。完整契约见 [认证密钥本地初始化设计](../docs/design/认证密钥本地初始化设计.md)。
 
-## 辅助脚本与检查边界
+脚本不打印密钥，不导入应用，不连接数据库、Redis 或网络，不生成 SMTP、Turnstile 或模型服务凭据，也不会随服务启动自动执行。运行期间不要同时用编辑器或其他程序保存 `.env`。环境变量仍覆盖文件值，修改配置后须重启后端。生产也可通过部署平台的秘密管理服务或经批准的密码管理器，独立生成两项高熵密钥（各至少 32 字节，建议 48 随机字节），使用受控秘密注入配置。避免秘密值进入 stdout、CI/共享日志、截图或聊天；真实 `backend/.env` 不提交，并限制为部署账号可访问。SMTP、Cloudflare Turnstile 与模型凭据须从各自服务商获取。
 
-- `scripts/create_user.py`：命令行创建教师或学生，不支持创建管理员；日常账号管理使用管理员面板。
-- `scripts/seed.py`：写入固定的演示教师、学生账号，仅用于本地演示，不能代替三角色初始化。
-- `scripts/test_retrieval.py`、`scripts/smoke_live.py`、`scripts/smoke_paper_live.py`：检索或业务链路的手动检查脚本，使用前需核对脚本参数及其数据库、模型和服务配置，部分操作会访问真实外部服务。
+同一部署所有后端进程与实例保持相同密钥和 issuer/audience，不要每次启动重新生成。轮换 JWT 密钥使旧访问 JWT 验签失败，轮换验证码密钥使旧邮件码校验失败；数据库中刷新会话的摘要、状态与用户认证版本独立管理，不能把换 JWT 密钥视为必然撤销 refresh。需要撤销时使用现有会话撤销流程。详见根 [密钥生成与轮换说明](../README.md#生产认证密钥生成与保存)。
 
-自动化测试位于 `tests/`，外部模型由 `tests/conftest.py` 打桩。夹具会使用临时 SQLite 和本机 Redis 15 号库并调用 `flushdb()`；只有确认该实例与逻辑库专供测试后才运行后端测试。文档维护与人工登录验收不需要清空 Redis 或运行测试套件。
+生产 `CORS_ORIGINS` 使用精确 HTTPS Origin，例如 `https://learn.example.com`；`TURNSTILE_ALLOWED_HOSTNAMES` 对应填写 `learn.example.com`，与 Cloudflare widget 的 hostname 配置一致。前者包含协议及必要端口，后者不含协议、端口或路径；二者都不是 URL 路径白名单。
+
+SQLite 默认相对文件路径按启动工作目录解析，从本目录启动对应 `backend/data/mathcraft.db`；`CHROMA_DIR`、`UPLOAD_DIR`、`OCR_DIR`、`AVATAR_DIR` 的相对路径以 `backend/` 为基准。生产改用部署者提供的持久卷绝对路径和受控 `REDIS_URL`，保留既有用户、模型设置、上传及索引的迁移与备份。个人模型配置经 `/api/users/me/model-settings` 保存在 `UserModelSetting`，优先于环境兜底模型密钥；认证脚本不生成模型服务凭据。本文说明部署准备，不代表已配置真实服务、执行生产迁移或完成上线。
+
+开发账号仅在 `APP_ENV=development` 且 `DEV_ACCOUNTS_ENABLED=true` 时显式运行 `uv run python scripts/seed.py`；教师与学生配置均需完整，重复执行不改已有密码、角色及归属。开发凭据接口只用于受控本机环境，前端按钮仅填充；生产禁止此能力及开发凭据配置。
+
+## 认证与接口
+
+状态（2026-11-09）：方案已实现，前端、浏览器、契约与 127 项认证相关回归已通过；完整后端验收受 Chroma 初始化失败阻塞，详见实施规格。
+
+账号由管理员开通，首个管理员用 create_admin.py 交互创建；公开注册、学工号登录及 purpose=register 删除。登录页仅“密码登录”“邮箱登录”，默认密码模式，无身份选择；服务端识别 admin/teacher/student。POST /api/auth/login/account 继续接收 {account,password,turnstile_token}，其中 turnstile_token 可缺省或为空，有效启用时仍拒绝空票据；按 account 精确匹配，邮箱缺失/未验证/已验证均可密码登录。POST /api/auth/login/email 接收 {email,challenge_id,code}，无 role，仅已验证邮箱可用。GET /api/auth/config 的 methods 为 [account_password,email_code]，新增请求级布尔字段 turnstile_enabled；开发填充返回 account、password、role，role 仅选样例，填充 account。
+
+UserPayload 新增必填布尔字段 email_verified，沿用既有模型，无新增数据库迁移。学工号及 PUT /api/users/me/user-no 继续作为资料维护，需当前密码；普通资料不能改邮箱、学工号或身份。
+
+| 邮箱安全接口 | 请求与前置条件 | 结果 |
+| --- | --- | --- |
+| POST /api/auth/email-code | email、purpose=email_bind；turnstile_token 可缺省或为空，有效启用时仍需有效票据；需 Bearer，仅无已验证邮箱；绑定 user_id、auth_version、原邮箱快照与目标邮箱 | 同步投递，成功 202，失败 503；失败不清限额 |
+| PUT /api/users/me/email-binding | Bearer；{email,current_password,challenge_id,code}；仅无已验证邮箱，含历史未验证邮箱 | 当前密码、专用 proof、版本/快照和唯一性通过后绑定，204 |
+| POST /api/users/me/email-change；PUT /api/users/me/email | Bearer；沿用已验证旧邮箱与新邮箱双码契约 | 双 proof、事务快照和版本复核，换绑 204 |
+| DELETE /api/users/me/email | Bearer；JSON {current_password} | 清空 email/email_normalized/email_verified_at，email_verified=false，204 |
+
+三类邮箱变更均同事务递增认证版本、撤销全部会话，清目标用户 Cookie，返回默认密码登录页，不自动创建会话。错误密码、邮箱冲突、错码/过期/重放、跨用户/用途、版本或原邮箱快照变化不改邮箱。管理员在管理面板自身安全区域使用同一自助契约，不替其他用户操作。
+
+公开 login/reset_password 发码在有效启用时经 Turnstile、始终经限流后统一 202、响应后投递；失败不激活码，202 不表示送达。安全复核正在补齐挑战绑定：用途＋规范化邮箱＋用户 ID＋认证版本，发码/邮箱登录/重置三处一致。邮箱解绑转给他人、相同版本下旧 login/reset 码不得作用新账号；部署后旧未消费挑战需重发，无数据库迁移。绑定/换绑仍为已认证同步投递，失败 503。
+
+Access 仅驻留前端内存，刷新凭据由 HttpOnly Cookie 管理，摘要与撤销状态在 SQL。refresh/logout 校验可信 Origin、JSON、CSRF；普通退出按 Bearer 的 sid 仅撤销当前设备。改密、重置、邮箱变更及管理员重置/禁用撤销全部旧会话。浏览器跨标签锁与目标用户 Cookie 清理沿用。
+
+完整接口见根 [openapi.json](../openapi.json) 与 [API 索引](../docs/api.md)，业务、契约与验收见 [整合设计](../docs/design/账号系统整合与审查修复.md)、[功能规格](../docs/design/用户系统功能规格.md)、[实施规格](../docs/design/用户系统实施规格.md)。旧 create_user.py 固定退出 2，不解析凭据或访问数据库；开发 seed 只限 development＋显式开关，生产不初始化开发账号。
+
+## 迁移与验证
+
+迁移前先备份，将该进程的 `DATABASE_URL` 显式指向受控副本并确认路径，再执行 `uv run alembic upgrade head`，随后审计升级后的同一副本；确认通过后在维护窗口升级目标库并复核。不要让副本验收命令继续使用目标库地址。审计会检查当前 head 及实际结构，未升级的副本不能通过。脚本路径参数使用实际受控副本路径：
+
+```powershell
+uv run python scripts/auth_migration.py audit --operator-confirmed --database <受控副本路径>
+```
+
+该命令不修复数据，不输出邮箱或密码。邮箱缺失/未验证仅为信息项，不阻断发布或启用账号的 account 密码登录；禁用状态仍阻断登录。缺失认证表/列/约束、错误 head、重复标识、角色身份、规范化异常和开发种子来源等独立门禁继续生效。保留历史 account、密码哈希、用户 ID 和资源归属，不合并、认领或自动验证旧邮箱；本轮无新增模型迁移，旧 Redis token 不再接受。
+
+后端测试使用每测试独立 fakeredis 和临时 SQLite，SMTP、Turnstile、模型均为假服务，不连接或清空本机 Redis：
+
+```powershell
+uv run pytest -q
+uv run ruff check app tests
+```
+
+本次前端与浏览器检查已通过，后端用户 ID 绑定修复及 127 项相关回归已通过，完整 pytest 为 285 通过、79 个子用例通过、20 项 Chroma 相关失败；实施规格区分本轮验证和历史数量。不要为运行测试读取个人 `.env` 或 `app/local_secrets.py`。
+
+### 历史记录｜PR #8 安全与契约修复
+
+以下保留当时修复背景，其中注册与邮箱审计门禁按历史阅读，以本轮认证和迁移规则为准。
+
+- `/api/auth/logout` 使用 Authorization 中签名有效（允许已到期）的 access 绑定 sid；仍校验 Origin 与 CSRF。不得通过共享 Cookie 选定撤销对象，Cookie 只在同 sid 时删除，重复注销幂等。
+- 注册、登录、重置密码发码统一返回 202，再通过响应后任务发送邮件，避免 SMTP 慢响应或超时泄露邮箱是否存在；只有发送成功的最新挑战才激活。后台投递不是持久队列，进程退出可能丢失待发邮件，用户须等待冷却后重发。已认证邮箱换绑仍同步发送，失败返回 503，日志不含地址或供应商错误内容。
+- 历史账号审计复用认证的格式、长度及控制字符规则（含学工号 Unicode 空白、C1 控制字符和邮箱空域名标签），并保持只读、仅数量输出及发布阻断。
+- 认证与个人资料接口有显式响应模型，空值资料字段保持 null；OpenAPI 中 422 为实际 `{detail:{code,message}}`，刷新及退出声明 Cookie、Origin、CSRF 和 Bearer 要求。
+
+`backend/app/auth_validators.py` 是不加载应用配置的邮箱／学工号校验模块，认证服务保留原导出接口并复用它，离线审计直接依赖此纯模块。
+
+## main 账号整合说明
+
+认证、管理员开通、随机空间加入码迁移与发布审计参见 [整合设计](../docs/design/账号系统整合与审查修复.md)。首次运维管理员通过 `uv run python scripts/create_admin.py` 在受控终端交互创建；密码仅隐藏输入。`ADMIN_CONTACT` 是公开联系指引。部署须按实际状态升级既有 Alembic head，再执行只读审计；未验证邮箱不自动标记可信，但不阻断启用账号密码登录。数据库中的开发种子账号必须经数据拥有者处置后才能发布。
+
+测试使用临时 SQLite、进程内 fakeredis 和假 SMTP/Turnstile/模型服务，并显式禁用环境文件；不清理本机 Redis。仓库根执行 `.venv\Scripts\python.exe -m pytest -q`。测试配置不能用于生产。
+
+## 本次实施验证（2026-11-09）
+
+本次已通过前端 typecheck；lint 为 0 错误、15 条原有警告。build 在独立 TEMP 重试成功，首次失败为 esbuild 默认 TEMP 清理权限问题。OpenAPI 与 docs/api.md 已在测试隔离环境重新生成并核对注册/学工号登录路由删除、绑定/解绑存在、EmailLogin 无 role、UserPayload.email_verified 为必填字段。
+
+本次已通过 auth-session-regression、logout-session-regression、isolation-session-regression、admin-panel-regression、e2e-auth 五个脚本，五个脚本 ESLint 为 0 错误、0 警告。浏览器无异常或意外外网请求；桌面与 375px 截图已完成视觉检查，产物在 output/playwright/auth-account/，包含 login-desktop/mobile 及安全区 8 张截图。本次七份文档的相对本地链接检查 missing_local_links=0。后端用户 ID 绑定修复后的 127 项认证相关测试已通过。Ruff（含 scripts）保留 11 项既有诊断、Pyright 保留 19 项既有诊断，新增诊断均为 0，本次修改文件的 Ruff 通过。后端完整 pytest 已执行：285 passed、79 subtests passed、20 failed，耗时 16 分 26 秒。20 项失败集中于文档、聊天、出题和健康检查，底层 Chroma PersistentClient 报 `InternalError: (code: 14) unable to open database file`；独立新目录初始化同样复现，无需经过认证或业务 API。扫描 PDF 用例也在扫描检测前的向量清理处中断。本次认证用例没有失败，但完整后端验收未通过，不能将本轮记录为全量通过。

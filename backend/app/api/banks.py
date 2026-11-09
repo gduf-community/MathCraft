@@ -9,14 +9,13 @@ from app.deps import (
     BankAccess,
     get_bank_access,
     get_current_user,
-    require_bank_admin,
     require_bank_owner,
     require_teacher,
 )
 from app.errors import AppError
 from app.models import Bank, BankMember, User
 from app.models.base import new_id
-from app.schemas.bank import BankCreateBody, BankJoinBody, BankUpdateBody, MemberAddBody, MemberRoleBody, TransferBody
+from app.schemas.bank import BankCreateBody, BankUpdateBody, MemberAddBody, MemberRoleBody, TransferBody
 from app.services import banks as bank_service
 
 router = APIRouter(prefix="/api/banks", tags=["banks"])
@@ -113,9 +112,11 @@ def add_member(
         .filter(BankMember.bank_id == access.bank.id, BankMember.user_id == target.id)
         .one_or_none()
     )
+    if target.role not in {"teacher", "student"} or target.status != "active":
+        raise AppError("FORBIDDEN", "只能添加启用的教师或学生账号", status_code=403)
     if member is not None and member.status == "active":
         raise AppError("ALREADY_IN_BANK", "该账号已是题库成员", status_code=409)
-    if bank_service.member_count(db, access.bank.id) >= access.bank.capacity and member is None:
+    if bank_service.member_count(db, access.bank.id) >= access.bank.capacity:
         raise AppError("BANK_FULL", "该题库人数已满", status_code=409)
     if member is None:
         member = BankMember(id=new_id("bm"), bank_id=access.bank.id, user_id=target.id, role=body.role, status="active")
@@ -156,6 +157,8 @@ def set_member_role(
     m, _u = bank_service.get_member_or_404(db, access.bank.id, member_id)
     if m.role in ("owner", "creator"):
         raise AppError("FORBIDDEN", "创建者的角色不可修改", status_code=403)
+    if _u.role not in {"teacher", "student"} or _u.status != "active":
+        raise AppError("FORBIDDEN", "该账号不能获得教学权限", status_code=403)
     m.role = body.role
     db.commit()
     return None
@@ -190,8 +193,10 @@ def transfer_bank(
         raise AppError("FORBIDDEN", "该成员已是创建者", status_code=400)
     # 新创建者接管资源，原创建者降为可编辑成员
     # creator_id 同步转移，保证双方看到的"创建者"标签一致
-    m.role = "owner"
-    access.member.role = "admin"
+    if u.role != "teacher" or u.status != "active":
+        raise AppError("FORBIDDEN", "只能转让给启用的教师", status_code=403)
+    m.role = "creator"
+    access.member.role = "editor"
     access.bank.creator_id = m.user_id
     access.bank.admin_level = "super"
     db.commit()

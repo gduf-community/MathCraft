@@ -21,7 +21,7 @@ interface UploadState {
 }
 
 export default function BankCreateModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
-  const { showToast } = useApp()
+  const { role, showToast } = useApp()
   const year = new Date().getFullYear()
   const [name, setName] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -40,6 +40,11 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
   }
 
   const submit = async () => {
+    if (role !== 'teacher') {
+      showToast('仅教师可以创建题库')
+      return
+    }
+    if (submitting) return
     if (!name.trim()) {
       showToast('请输入题库名称')
       return
@@ -67,6 +72,8 @@ export default function BankCreateModal({ onClose, onChanged }: { onClose: () =>
       setUpload(null)
     }
   }
+
+  if (role !== 'teacher') return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={onClose}>

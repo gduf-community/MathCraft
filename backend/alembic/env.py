@@ -2,7 +2,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, event, pool
 
 from app.config import settings
 from app.db import Base
@@ -34,8 +34,20 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    if connectable.dialect.name == "sqlite":
+        # sqlite3 legacy transaction mode does not BEGIN for DDL. Explicit BEGIN
+        # makes batch table rebuilds and the revision marker one atomic transaction.
+        @event.listens_for(connectable, "connect")
+        def disable_implicit_begin(dbapi_connection, connection_record):
+            dbapi_connection.isolation_level = None
+
+        @event.listens_for(connectable, "begin")
+        def begin_sqlite(connection):
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
+        context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True,
+                          transactional_ddl=True)
         with context.begin_transaction():
             context.run_migrations()
 

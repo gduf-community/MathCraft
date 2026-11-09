@@ -13,7 +13,7 @@ class StudySpace(Base, TimestampMixin):
 
     id: Mapped[StrPK]
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)  # SP + 年份 + 序号
+    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)  # SP + 96 位随机加入码
     creator_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), nullable=False)
     capacity: Mapped[int] = mapped_column(nullable=False)                        # 1~500
     status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)  # active / dissolved

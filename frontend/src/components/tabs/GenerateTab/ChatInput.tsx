@@ -34,9 +34,9 @@ export default function ChatInput() {
           placeholder="请输入你的问题，或粘贴相关文档内容..."
           className="block w-full resize-none bg-transparent px-1 text-sm leading-6 text-ink outline-none placeholder:text-ink-3"
         />
-        <div className="mt-1 flex items-center justify-between">
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
           <span className="text-xs text-ink-3">支持将文档直接拖拽到对话区上传</span>
-          <div className="flex items-center gap-4">
+          <div className="ml-auto flex shrink-0 items-center gap-4">
             <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
             <button
               type="button"

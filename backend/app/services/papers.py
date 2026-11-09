@@ -197,8 +197,8 @@ def paper_payload(
             .order_by(PaperQuestion.order_no)
             .all()
         )
-        # 学生未交卷时不下发答案与解析
-        include_answer = viewer.role != "student" or submitted
+        # 他人试卷仅在交卷且允许复盘时下发答案，个人练习拥有者保留查看权限
+        include_answer = viewer.id == paper.owner_id or (submitted and bool(paper.allow_review))
         data["questions"] = [paper_question_payload(r, include_answer) for r in rows]
     return data
 

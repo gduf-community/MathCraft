@@ -96,7 +96,9 @@ def test_batch_delete_questions(client, teacher):
 
 def test_generation_requires_deepseek_key(client, teacher, student):
     bank, doc = _setup(client, teacher)
-    client.post("/api/banks/join", json={"code": bank["code"]}, headers=student)
+    assert client.post(f"/api/banks/{bank['id']}/members",
+                       json={"account": "student", "role": "readonly"},
+                       headers=teacher).status_code == 201
 
     resp = client.post("/api/generate/start", json=_body(bank, doc), headers=student)
     assert resp.status_code == 400
