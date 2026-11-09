@@ -34,6 +34,9 @@ class Question(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)   # single/multiple/judge/blank/compute/essay
     score: Mapped[int] = mapped_column(default=5, nullable=False)
     difficulty: Mapped[str] = mapped_column(String(8), nullable=False)          # 低/中/高/地狱
+    difficulty_score: Mapped[float] = mapped_column(default=0.0, nullable=False)  # 盲评加权总分 1~5
+    blueprint_json: Mapped[Optional[str]] = mapped_column(Text)                  # 命题蓝图
+    review_json: Mapped[Optional[str]] = mapped_column(Text)                     # 盲评明细
     stem: Mapped[str] = mapped_column(Text, nullable=False)
     options_json: Mapped[Optional[str]] = mapped_column(Text)                   # [{"label","text"}]
     answer: Mapped[str] = mapped_column(Text, nullable=False)

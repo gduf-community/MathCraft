@@ -5,7 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.config import BASE_DIR, settings
+from app.config import BASE_DIR
 from app.db import get_db
 from app.deps import (
     BankAccess,
@@ -14,8 +14,7 @@ from app.deps import (
     require_bank_super_admin,
 )
 from app.errors import AppError
-from app.models import Document, User
-from app.models.base import new_id
+from app.models import Document
 from app.schemas.bank import SearchBody
 from app.services import banks as bank_service
 from app.services import documents as doc_service

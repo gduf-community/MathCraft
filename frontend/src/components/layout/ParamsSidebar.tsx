@@ -142,7 +142,6 @@ export default function ParamsSidebar() {
               const status = api?.status
               const ready = status === 'ready' || !status
               const failed = status === 'failed'
-              const busy = !ready && !failed
               return (
                 <li key={d.id}>
                   <button

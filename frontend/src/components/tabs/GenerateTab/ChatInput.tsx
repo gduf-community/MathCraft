@@ -1,9 +1,9 @@
-import { Loader2, SendHorizontal } from 'lucide-react'
+import { SendHorizontal, Square } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 
 /** 底部输入区：消息输入、字数统计与发送；文档通过拖拽到对话区上传 */
 export default function ChatInput() {
-  const { inputDraft, setInputDraft, sendChat, botThinking, showToast, selectedDocId } = useApp()
+  const { inputDraft, setInputDraft, sendChat, botThinking, showToast, selectedDocId, pauseChat } = useApp()
   const canSend = inputDraft.trim().length > 0 && !botThinking
 
   const submit = () => {
@@ -38,15 +38,26 @@ export default function ChatInput() {
           <span className="text-xs text-ink-3">支持将文档直接拖拽到对话区上传</span>
           <div className="ml-auto flex shrink-0 items-center gap-4">
             <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
-            <button
-              type="button"
-              disabled={!canSend}
-              onClick={submit}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white transition-all hover:bg-[#1a5fe6] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {botThinking ? <Loader2 size={14} className="animate-spin" /> : <SendHorizontal size={14} />}
-              发送
-            </button>
+            {botThinking ? (
+              <button
+                type="button"
+                onClick={pauseChat}
+                className="flex items-center gap-1.5 rounded-lg bg-ink px-5 py-2 text-sm font-medium text-white transition-all hover:bg-ink/90 active:scale-[0.97]"
+              >
+                <Square size={12} fill="currentColor" />
+                暂停
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!canSend}
+                onClick={submit}
+                className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white transition-all hover:bg-[#1a5fe6] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <SendHorizontal size={14} />
+                发送
+              </button>
+            )}
           </div>
         </div>
       </div>

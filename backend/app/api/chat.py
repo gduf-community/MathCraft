@@ -16,7 +16,7 @@ from app.services import cache
 from app.services.generation import persist_batch
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.rag import chat_flow, hyde
-from app.services.rag.chat_flow import handle_chat
+from app.services.rag.chat_flow import ChatCanceled, build_result_reply, handle_chat
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -25,6 +25,23 @@ WELCOME = "你好，我是出题助手。告诉我知识点范围、题型与数
 
 def _slot_key(session_id: str) -> str:
     return cache.PREFIX_CHAT_SESSION.format(session_id=session_id)
+
+
+def _progress_key(session_id: str) -> str:
+    return f"chat:progress:{session_id}"
+
+
+def _cancel_key(session_id: str) -> str:
+    return f"chat:cancel:{session_id}"
+
+
+def _write_progress(r, session_id: str, percent: int, stage: str) -> None:
+    r.hset(_progress_key(session_id), mapping={"percent": int(percent), "stage": stage})
+    r.expire(_progress_key(session_id), 1800)
+
+
+def _is_canceled(r, session_id: str) -> bool:
+    return bool(r.exists(_cancel_key(session_id)))
 
 
 def _get_session(session_id: str, user: User, db: Session) -> ChatSession:
@@ -41,7 +58,7 @@ def create_session(
     db: Session = Depends(get_db),
 ):
     # 校验题库成员与文档状态
-    access = _bank_access_for(db, user, body.bank_id)
+    _bank_access_for(db, user, body.bank_id)
     doc = db.get(Document, body.document_id)
     if doc is None or doc.bank_id != body.bank_id:
         raise AppError("DOCUMENT_NOT_FOUND", "文档不存在或已被删除", status_code=404)
@@ -143,6 +160,8 @@ def send_message(
             r, s.bank_id, s.document_id, str(slot_state["scope"]), str(slot_state.get("difficulty", "中")), api_key
         )
 
+    r.delete(_cancel_key(s.id))
+    _write_progress(r, s.id, 1, "正在准备")
     try:
         result = handle_chat(
             s.bank_id,
@@ -154,10 +173,26 @@ def send_message(
             existing_stems=body.existing_stems,
             api_key=api_key,
             hyde_text=hyde_text,
+            progress_cb=lambda p, stage: _write_progress(r, s.id, p, stage),
+            cancel_check=lambda: _is_canceled(r, s.id),
         )
+    except ChatCanceled:
+        result = {"reply": chat_flow.PAUSED_REPLY, "slot_state": slot_state, "questions": [], "done": False}
     except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
         result = {
             "reply": f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
+            "slot_state": slot_state,
+            "questions": [],
+            "done": False,
+        }
+    except Exception as exc:  # noqa: BLE001
+        # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
+        from app.services.rag.llm import LLMError, friendly_error
+
+        if not isinstance(exc, LLMError):
+            raise
+        result = {
+            "reply": friendly_error(exc),
             "slot_state": slot_state,
             "questions": [],
             "done": False,
@@ -171,8 +206,34 @@ def send_message(
         from app.services.generation import build_params_from_slots
 
         params = build_params_from_slots(result["slot_state"], s.bank_id, s.document_id)
-        batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions)
-        batch_id = batch.id
+        requested = sum(t.count for t in params.types)
+        from app.services import question_review
+
+        def review_progress(percent: int, stage: str) -> None:
+            if _is_canceled(r, s.id):
+                raise ChatCanceled
+            # 审核阶段自报 78~98，直接透传，避免长时间停在同一个数字上像卡死
+            _write_progress(r, s.id, min(99, max(78, percent)), stage)
+
+        try:
+            questions, stats = question_review.review_questions(
+                db, user.id, questions, params, doc.name, api_key, hyde_text,
+                progress=review_progress,
+            )
+        except ChatCanceled:
+            result["reply"] = chat_flow.PAUSED_REPLY
+            result["questions"] = []
+            questions, stats = [], None
+        if _is_canceled(r, s.id):
+            result["reply"] = chat_flow.PAUSED_REPLY
+            result["questions"] = []
+            questions = []
+        if questions:
+            _write_progress(r, s.id, 98, "正在写入题目")
+            batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions)
+            batch_id = batch.id
+        result["questions"] = [q.model_dump() for q in questions]
+        result["reply"] = build_result_reply(len(questions), requested, stats)
     db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=result["reply"], batch_id=batch_id))
     s.slot_state_json = json.dumps(result["slot_state"], ensure_ascii=False)
     s.last_message_at = utcnow()
@@ -181,6 +242,7 @@ def send_message(
     # Redis 保存最新槽位
     r.hset(_slot_key(s.id), mapping={"slot_state": json.dumps(result["slot_state"], ensure_ascii=False)})
     r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
+    r.delete(_progress_key(s.id), _cancel_key(s.id))
 
     return {
         "reply": result["reply"],
@@ -189,6 +251,38 @@ def send_message(
         "done": result["done"],
         "batch_id": batch_id,
     }
+
+
+@router.get("/sessions/{session_id}/progress")
+def read_generation_progress(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """对话生成的实时阶段，供前端在等待时轮询。"""
+    s = _get_session(session_id, user, db)
+    data = cache.get_redis().hgetall(_progress_key(s.id))
+    if not data:
+        return {"active": False, "percent": 0, "stage": ""}
+    return {
+        "active": True,
+        "percent": int(data.get("percent") or 0),
+        "stage": data.get("stage") or "",
+    }
+
+
+@router.post("/sessions/{session_id}/cancel", status_code=202)
+def cancel_generation(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """请求暂停：后台在下一个检查点停下，并且不写入题目预览。"""
+    s = _get_session(session_id, user, db)
+    r = cache.get_redis()
+    r.set(_cancel_key(s.id), "1", ex=900)
+    _write_progress(r, s.id, 0, "已收到暂停请求")
+    return {"canceled": True}
 
 
 @router.delete("/sessions/{session_id}", status_code=204)

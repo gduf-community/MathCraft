@@ -325,6 +325,18 @@ export interface ApiQuestion {
   type: QuestionType
   score: number
   difficulty: Difficulty
+  /** 盲评加权总分 1~5，0 表示未评估（列表接口用 snake_case，出题结果用 camelCase） */
+  difficulty_score?: number
+  difficultyScore?: number
+  /** 盲评明细：各维分、判定档与缺陷码 */
+  difficulty_review?: {
+    total?: number
+    tier?: string
+    scores?: Record<string, number>
+    defectCodes?: string[]
+    suggestion?: string
+    passed?: boolean
+  } | null
   stem: string
   options: OptionItem[]
   answer?: string
@@ -345,6 +357,8 @@ export function mapQuestion(q: ApiQuestion): Question {
     type: q.type,
     score: q.score,
     difficulty: q.difficulty,
+    difficultyScore: q.difficulty_score ?? q.difficultyScore ?? 0,
+    difficultyReview: q.difficulty_review ?? undefined,
     stem: q.stem,
     options: q.options ?? [],
     answer: q.answer ?? '',
@@ -369,6 +383,8 @@ export interface GenerateProgress {
   done: boolean
   batch_id: string | null
   questions: ApiQuestion[]
+  /** 出题中间件的处理统计：去重、重出、补解析的题数 */
+  review?: { duplicates: number; repaired?: number; regenerated: number; solved: number } | null
   error: { message?: string; kind?: string; available?: number; requested?: number } | null
 }
 
@@ -924,11 +940,23 @@ export async function sendChatMessage(
   sessionId: string,
   message: string,
   existingStems: string[],
+  signal?: AbortSignal,
 ): Promise<{ reply: string; questions: ApiQuestion[]; done: boolean; batch_id: string | null; slot_state: Record<string, unknown> }> {
   return request(`/api/chat/sessions/${sessionId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ message, existing_stems: existingStems }),
+    signal,
   })
+}
+
+export async function getChatProgress(
+  sessionId: string,
+): Promise<{ active: boolean; percent: number; stage: string }> {
+  return request(`/api/chat/sessions/${sessionId}/progress`)
+}
+
+export async function cancelChat(sessionId: string): Promise<void> {
+  await request<{ canceled: boolean }>(`/api/chat/sessions/${sessionId}/cancel`, { method: 'POST' })
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {

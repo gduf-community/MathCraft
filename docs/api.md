@@ -37,6 +37,7 @@
 | `GET` | `/api/banks` | List Banks |
 | `POST` | `/api/banks` | Create Bank |
 | `POST` | `/api/banks/join` | Join Bank By Code |
+| `POST` | `/api/banks/with-document` | Create Bank With Document |
 | `DELETE` | `/api/banks/{bank_id}` | Delete Bank |
 | `GET` | `/api/banks/{bank_id}` | Get Bank |
 | `PUT` | `/api/banks/{bank_id}` | Update Bank |
@@ -65,7 +66,9 @@
 | `POST` | `/api/chat/sessions` | Create Session |
 | `DELETE` | `/api/chat/sessions/{session_id}` | Delete Session |
 | `GET` | `/api/chat/sessions/{session_id}` | Get Session |
+| `POST` | `/api/chat/sessions/{session_id}/cancel` | Cancel Generation |
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
+| `GET` | `/api/chat/sessions/{session_id}/progress` | Read Generation Progress |
 
 ## favorites
 
@@ -94,6 +97,14 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health |
+
+## notifications
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/notifications` | List Notifications |
+| `POST` | `/api/notifications/read` | Mark Notifications Read |
+| `DELETE` | `/api/notifications/{notification_id}` | Delete Notification |
 
 ## papers
 
@@ -160,4 +171,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 89 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 95 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。

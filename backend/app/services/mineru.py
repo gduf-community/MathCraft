@@ -13,7 +13,6 @@ from typing import Callable
 import httpx
 import pymupdf as fitz
 
-from app.config import settings
 
 BASE_URL = "https://mineru.net/api/v4"
 MODEL_VERSION = "vlm"

@@ -176,6 +176,16 @@ interface AppState {
   inputDraft: string
   setInputDraft: (v: string) => void
   sendChat: (text: string) => Promise<void>
+  /** 中止当前对话请求（服务端仍会跑完，前端不再等结果） */
+  pauseChat: () => void
+  /** 回退到这条消息重新发送 */
+  retryChat: (messageId: string) => void
+  /** 把这条消息放回输入框继续编辑 */
+  editChat: (messageId: string) => void
+  /** 对话生成的实时阶段，等待时显示 */
+  chatProgress: { percent: number; stage: string } | null
+  /** 本次对话开始时间，用于显示已等待时长 */
+  chatStartedAt: number | null
 
   toast: { id: number; text: string } | null
   showToast: (text: string) => void
@@ -211,6 +221,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [records, setRecords] = useState<AssembleRecord[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatProgress, setChatProgress] = useState<{ percent: number; stage: string } | null>(null)
+  const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null)
@@ -226,6 +238,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toastTimer = useRef<number | undefined>(undefined)
   const activeBatchRef = useRef<string | null>(null)
   const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
+  const chatAbortRef = useRef<AbortController | null>(null)
+  const chatBusyRef = useRef(false)
+  const chatPollRef = useRef<number | null>(null)
 
   const showToast = useCallback((text: string) => {
     // 相同文案连续触发时只重置计时，不重新挂载，避免 toast 重复闪现
@@ -493,7 +508,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSelectedIds([])
         setTypeFilter('all')
         setDiffFilter('all')
-        if (!opts?.silent) showToast(`已生成 ${incoming.length} 道题目`)
+        if (!opts?.silent) {
+          const rv = state.review
+          const detail: string[] = []
+          if (rv?.duplicates) detail.push(`去重 ${rv.duplicates} 题`)
+          if (rv?.repaired) detail.push(`修补 ${rv.repaired} 题`)
+          if (rv?.regenerated) detail.push(`重出 ${rv.regenerated} 题`)
+          const extra = detail.length ? `（${detail.join('，')}）` : ''
+          showToast(`已生成 ${incoming.length} 道题目${extra}`)
+        }
         setActiveTab('preview')
         return true
       } catch (err) {
@@ -510,12 +533,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const sendChat = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed || chatBusyRef.current) return
       if (!selectedDocId || !selectedKbId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
+      chatBusyRef.current = true
+      const controller = new AbortController()
+      chatAbortRef.current = controller
       setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
+      setChatStartedAt(Date.now())
       setBotThinking(true)
       try {
         let session = chatSessionRef.current
@@ -524,7 +551,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
           chatSessionRef.current = session
         }
-        const res = await api.sendChatMessage(session.id, trimmed, questions.map((q) => q.stem))
+        const sessionId = session.id
+        chatPollRef.current = window.setInterval(() => {
+          void api.getChatProgress(sessionId).then((p) => {
+            if (p.active) setChatProgress({ percent: p.percent, stage: p.stage })
+          }).catch(() => undefined)
+        }, 1500)
+        const res = await api.sendChatMessage(
+          sessionId, trimmed, questions.map((q) => q.stem), controller.signal,
+        )
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
         if (res.questions.length) {
           const incoming = res.questions.map(api.mapQuestion)
@@ -535,15 +570,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
           showToast(`已生成 ${incoming.length} 道题目，已合并到「题目预览」`)
         }
       } catch (err) {
+        const aborted = err instanceof DOMException && err.name === 'AbortError'
         setMessages((prev) => [
           ...prev,
-          { id: `m-${Date.now()}-a`, role: 'assistant', text: err instanceof Error ? err.message : '服务异常，请稍后再试' },
+          {
+            id: `m-${Date.now()}-a`,
+            role: 'assistant',
+            text: aborted ? '已暂停本次生成。' : err instanceof Error ? err.message : '服务异常，请稍后再试',
+          },
         ])
       } finally {
+        if (chatPollRef.current) {
+          window.clearInterval(chatPollRef.current)
+          chatPollRef.current = null
+        }
+        setChatProgress(null)
+        setChatStartedAt(null)
+        if (chatAbortRef.current === controller) chatAbortRef.current = null
+        chatBusyRef.current = false
         setBotThinking(false)
       }
     },
     [selectedDocId, selectedKbId, questions, showToast],
+  )
+
+  const pauseChat = useCallback(() => {
+    const sessionId = chatSessionRef.current?.id
+    if (sessionId) void api.cancelChat(sessionId).catch(() => undefined)
+    chatAbortRef.current?.abort()
+    chatAbortRef.current = null
+    chatBusyRef.current = false
+    setBotThinking(false)
+  }, [])
+
+  const retryChat = useCallback(
+    (messageId: string) => {
+      const index = messages.findIndex((m) => m.id === messageId)
+      if (index < 0) return
+      const text = messages[index].text
+      setMessages((prev) => prev.slice(0, index))
+      void sendChat(text)
+    },
+    [messages, sendChat],
+  )
+
+  const editChat = useCallback(
+    (messageId: string) => {
+      const index = messages.findIndex((m) => m.id === messageId)
+      if (index < 0) return
+      setInputDraft(messages[index].text)
+      setMessages((prev) => prev.slice(0, index))
+    },
+    [messages],
   )
 
   const updateQuestion = useCallback(
@@ -1059,6 +1137,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     inputDraft,
     setInputDraft,
     sendChat,
+    pauseChat,
+    chatProgress,
+    chatStartedAt,
+    retryChat,
+    editChat,
     toast,
     showToast,
   }

@@ -1,7 +1,32 @@
 """领域模型：与前端 frontend/src/types/index.ts 的 Question 结构严格对齐。"""
+import re
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+# 选项文本里常见的「A. xxx」前缀
+_OPTION_PREFIX = re.compile(r"^([A-Ha-h])[.、．:：]\s*(.+)$")
+
+
+def _as_dict(value) -> dict:
+    """模型有时把蓝图、自检写成一段话，统一收成字典，避免整题被判为非法。"""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {"note": value.strip()} if value.strip() else {}
+    if isinstance(value, list):
+        return {"items": value}
+    return {}
+
+
+def _as_str_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, dict):
+        return [f"{k}：{v}" for k, v in value.items()]
+    return []
 
 
 class QuestionType(str, Enum):
@@ -36,8 +61,44 @@ class Question(BaseModel):
     answer: str
     analysis: str
     knowledgePoint: str = ""
+    # 命题阶段写下的蓝图、评分点与自检结果，用于审计与展示
+    blueprint: dict = {}
+    scoringPoints: list[str] = []
+    selfCheck: dict = {}
+    # 中间件盲评得到的加权总分（1~5），0 表示未评估
+    difficultyScore: float = 0.0
+    # 盲评明细：各维分、判定档、缺陷码与建议
+    difficultyReview: dict = {}
     starred: bool = False
     docName: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data):
+        """兼容模型输出的常见偏差：蓝图/自检写成字符串、选项写成字符串数组。"""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for key in ("blueprint", "selfCheck", "difficultyReview"):
+            if key in out:
+                out[key] = _as_dict(out[key])
+        if "scoringPoints" in out:
+            out["scoringPoints"] = _as_str_list(out["scoringPoints"])
+        options = out.get("options")
+        if isinstance(options, list) and any(isinstance(item, str) for item in options):
+            fixed = []
+            for index, item in enumerate(options):
+                if isinstance(item, str):
+                    label = "ABCDEFGH"[index] if index < 8 else str(index + 1)
+                    text = item.strip()
+                    matched = _OPTION_PREFIX.match(text)
+                    if matched:
+                        label, text = matched.group(1).upper(), matched.group(2).strip()
+                    fixed.append({"label": label, "text": text})
+                else:
+                    fixed.append(item)
+            out["options"] = fixed
+        return out
 
 
 class TypeCount(BaseModel):

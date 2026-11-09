@@ -241,7 +241,6 @@ export default function QuestionCard({ q, index, snapshot, disableAnswer = false
         </div>
       </div>
 
-      <p className="mt-2 pl-[54px] text-xs text-ink-3">所属知识点：{q.knowledgePoint}</p>
 
       {/* 收藏分组弹窗：选择收藏到哪个标签页 */}
       {starPicking && <FavoriteGroupModal question={q} onClose={() => setStarPicking(false)} />}

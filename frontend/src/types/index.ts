@@ -16,6 +16,17 @@ export interface Question {
   /** 分值 */
   score: number
   difficulty: Difficulty
+  /** 盲评加权总分 1~5，0 表示未评估 */
+  difficultyScore?: number
+  /** 盲评明细：各维分、判定档与缺陷码 */
+  difficultyReview?: {
+    total?: number
+    tier?: string
+    scores?: Record<string, number>
+    defectCodes?: string[]
+    suggestion?: string
+    passed?: boolean
+  }
   /** 题干，内联 LaTeX 用 $...$ 包裹 */
   stem: string
   /** 客观题选项；主观题为空数组 */
