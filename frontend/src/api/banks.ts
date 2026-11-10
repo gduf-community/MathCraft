@@ -35,6 +35,8 @@ export interface BankDoc {
   /** 当前处理阶段描述（如「正在解析文档」「OCR 完成，正在切片」） */
   stage?: string | null
   progress?: number
+  errorMessage?: string | null
+  ocrStatus?: string | null
 }
 
 export interface BankMember {
@@ -83,6 +85,8 @@ function mapDoc(d: ApiDocument): BankDoc {
     status: d.status,
     stage: d.stage,
     progress: d.progress,
+    errorMessage: d.error_message,
+    ocrStatus: d.ocr_status,
   }
 }
 

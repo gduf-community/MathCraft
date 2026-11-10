@@ -1,6 +1,5 @@
 /** 题库查看弹窗：浏览信息、成员权限和文档操作。 */
 import { useEffect, useRef, useState } from 'react'
-import type { DragEvent } from 'react'
 import {
   Ban,
   Download,
@@ -13,10 +12,11 @@ import {
   X,
 } from 'lucide-react'
 import * as bankApi from '../../../api/banks'
-import type { ManagedBank } from '../../../api/banks'
-import { getSessionGeneration } from '../../../api/session'
+import type { BankDoc, ManagedBank } from '../../../api/banks'
+import { openPdfDocument } from '../../../api/documentPreview'
+import { assertCurrentSession, getSessionGeneration } from '../../../api/session'
 import { useApp } from '../../../store/AppContext'
-import { Avatar, FormatBadge, SectionTitle } from './shared'
+import { Avatar, DocumentDropZone, DocumentFailure, FormatBadge, SectionTitle } from './shared'
 import { useDocUpload } from './useDocUpload'
 import DocPreviewModal from './DocPreviewModal'
 
@@ -27,19 +27,21 @@ export default function BankViewModal({
 }: {
   bank: ManagedBank
   onClose: () => void
-  onChanged: () => void
+  onChanged: (deletedDocumentId?: string) => void
 }) {
   const { showToast } = useApp()
   const [docs, setDocs] = useState(bank.docs)
-  const [dragOver, setDragOver] = useState(false)
-  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
-  const fileInput = useRef<HTMLInputElement>(null)
+  const [preview, setPreview] = useState<BankDoc | null>(null)
   const session = useRef(getSessionGeneration())
   const roleLabel = bank.myRole === 'creator' ? '创建者' : bank.myRole === 'editor' ? '可编辑' : '只读'
   const canUpload = bank.canUpload
-  const { start } = useDocUpload(bank.id, () => {
-    void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
-      .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+  const { start, busy: uploading } = useDocUpload(bank.id, () => {
+    onChanged()
+    void bankApi.getBankDetail(bank.id).then((fresh) => {
+      assertCurrentSession(session.current)
+      setDocs(fresh.docs)
+    })
+      .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败', 'error'))
   }, showToast)
 
   const processing = docs.some((doc) => doc.status && !['ready', 'failed'].includes(doc.status))
@@ -47,23 +49,28 @@ export default function BankViewModal({
     if (!processing) return
     const timer = window.setInterval(() => {
       if (session.current !== getSessionGeneration()) return
-      void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
-        .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+      void bankApi.getBankDetail(bank.id).then((fresh) => {
+        assertCurrentSession(session.current)
+        setDocs(fresh.docs)
+      })
+        .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败', 'error'))
     }, 3000)
     return () => window.clearInterval(timer)
   }, [bank.id, processing, showToast])
 
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault()
-    setDragOver(false)
-    if (!canUpload) return
-    const file = e.dataTransfer.files?.[0]
-    if (file) start(file)
+  const close = () => {
+    if (uploading) {
+      showToast('文档正在批量上传，请等待本批完成后再关闭', 'error')
+      return
+    }
+    onClose()
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={close}
+      onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close() } }}>
       <div
+        role="dialog" aria-modal="true" aria-label={`查看题库 · ${bank.name}`} aria-busy={uploading}
         className="flex max-h-[88vh] w-[580px] max-w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -74,7 +81,7 @@ export default function BankViewModal({
             <h3 className="text-base font-bold text-ink">查看题库 · {bank.name}</h3>
             <span className="rounded bg-page px-1.5 py-0.5 text-[10px] font-semibold text-ink-2">{roleLabel}</span>
           </div>
-          <button type="button" onClick={onClose} className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink">
+          <button type="button" onClick={close} disabled={uploading} aria-label="关闭查看题库" className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink disabled:opacity-50">
             <X size={18} />
           </button>
         </div>
@@ -151,7 +158,8 @@ export default function BankViewModal({
                 const busy = d.status && !['ready', 'failed'].includes(d.status)
                 const failed = d.status === 'failed'
                 return (
-                  <li key={d.id} className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
+                  <li key={d.id} className="rounded-lg border border-line px-3 py-2">
+                    <div className="flex items-center gap-2.5">
                     <FormatBadge format={d.format} />
                     <span className="flex-1 truncate text-sm text-ink">{d.name}</span>
                     <span
@@ -165,7 +173,16 @@ export default function BankViewModal({
                     <button
                       type="button"
                       title="查看文档"
-                      onClick={() => setPreview({ id: d.id, name: d.name })}
+                      onClick={() => {
+                        const format = d.format.toUpperCase()
+                        if (format === 'PDF') {
+                          void openPdfDocument(bank.id, d.id).catch((err) => showToast(err instanceof Error ? err.message : '打开 PDF 失败', 'error'))
+                        } else if (['MD', 'MARKDOWN', 'TXT'].includes(format)) {
+                          setPreview(d)
+                        } else {
+                          showToast(`${format} 暂不支持内联预览，请使用下载按钮`, 'info')
+                        }
+                      }}
                       className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
                     >
                       <Eye size={14} />
@@ -173,7 +190,7 @@ export default function BankViewModal({
                     <button
                       type="button"
                       title="下载文档"
-                      onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
+                      onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败', 'error'))}
                       className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
                     >
                       <Download size={14} />
@@ -185,10 +202,11 @@ export default function BankViewModal({
                       onClick={async () => {
                         try {
                           await bankApi.removeDoc(bank.id, d.id)
+                          assertCurrentSession(session.current)
                           setDocs((prev) => prev.filter((x) => x.id !== d.id))
-                          onChanged()
+                          onChanged(d.id)
                         } catch (err) {
-                          showToast(err instanceof Error ? err.message : '删除文档失败')
+                          showToast(err instanceof Error ? err.message : '删除文档失败', 'error')
                         }
                       }}
                       className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
@@ -196,6 +214,21 @@ export default function BankViewModal({
                       <Ban size={14} />
                     </button>
                   )}
+                    </div>
+                    {['DOCX', 'XLSX'].includes(d.format.toUpperCase()) && <p className="mt-1 text-xs text-ink-3">暂不支持内联预览，请使用下载按钮。</p>}
+                    <DocumentFailure doc={d} onRetry={bank.canUpload ? async () => {
+                      try {
+                        await bankApi.reprocessDoc(bank.id, d.id)
+                        assertCurrentSession(session.current)
+                        onChanged()
+                        showToast(`「${d.name}」已重新排队解析`, 'success')
+                        const fresh = await bankApi.getBankDetail(bank.id)
+                        assertCurrentSession(session.current)
+                        setDocs(fresh.docs)
+                      } catch (err) {
+                        showToast(err instanceof Error ? err.message : '重新解析失败', 'error')
+                      }
+                    } : undefined} />
                 </li>
                 )
               })}
@@ -204,32 +237,7 @@ export default function BankViewModal({
             {/* 上传区域：可编辑成员可上传 */}
             {canUpload ? (
               <>
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault()
-                    setDragOver(true)
-                  }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={onDrop}
-                  onClick={() => fileInput.current?.click()}
-                  className={`flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-4 text-center transition-colors ${
-                    dragOver ? 'border-primary bg-primary-light/40' : 'border-line hover:border-primary/50 hover:bg-page'
-                  }`}
-                >
-                  <FileUp size={18} className="text-primary" />
-                  <p className="text-sm text-ink-2">点击选择或拖拽文件到此处上传</p>
-                  <p className="text-xs text-ink-3">上传后自动向量化</p>
-                  <input
-                    ref={fileInput}
-                    type="file"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0]
-                      if (f) start(f)
-                      e.target.value = ''
-                    }}
-                  />
-                </div>
+                <DocumentDropZone busy={uploading} onFiles={(files) => { void start(files) }} />
               </>
             ) : (
               <div className="flex items-center gap-2.5 rounded-xl border border-dashed border-line bg-page px-4 py-3.5 text-ink-3">
@@ -244,7 +252,8 @@ export default function BankViewModal({
         <div className="flex justify-end border-t border-line px-5 py-3.5">
           <button
             type="button"
-            onClick={onClose}
+            onClick={close}
+            disabled={uploading}
             className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 transition-colors hover:bg-page"
           >
             关闭
@@ -257,6 +266,7 @@ export default function BankViewModal({
           bankId={bank.id}
           docId={preview.id}
           docName={preview.name}
+          docFormat={preview.format}
           onClose={() => setPreview(null)}
         />
       )}

@@ -9,6 +9,7 @@ from app.errors import AppError
 from app.models import Document, GenerationBatch, Question, User
 from app.models.base import new_id
 from app.schemas.api import GenerateStartBody
+from app.schemas.auth import ErrorResponse
 from app.services import cache, generation
 from app.services.model_settings import require_deepseek_key
 
@@ -74,7 +75,9 @@ def get_progress(task_id: str, user: User = Depends(get_current_user)):
     return data
 
 
-@router.post("")
+@router.post("", responses={
+    503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
+})
 def generate_sync(
     body: GenerateStartBody,
     user: User = Depends(get_current_user),

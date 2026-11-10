@@ -16,9 +16,12 @@ from app.config import settings
 from app.errors import AppError
 from app.schemas.auth import ErrorResponse
 from app.services.rag import tokenizer  # 预热 jieba 词典
+from app.services.rag.embeddings import EmbeddingError
+from app.services.rag.vectorstore import VectorStoreError
 
 from app.api import (
     admin,
+    admin_rag,
     attempts,
     auth,
     banks,
@@ -43,12 +46,15 @@ async def lifespan(_app: FastAPI):
     # 收尾上次进程退出时中断的入库任务，避免文档永久停在「正在识别」
     from app.db import SessionLocal
     from app.models import Document
+    from app.services.rag_settings import recover_interrupted_rebuild
+
+    recover_interrupted_rebuild()
 
     db = SessionLocal()
     try:
         stuck = (
             db.query(Document)
-            .filter(Document.status.in_(("parsing", "ocr", "chunking", "embedding")))
+            .filter(Document.status.in_(("uploaded", "parsing", "ocr", "chunking", "embedding")))
             .all()
         )
         for doc in stuck:
@@ -77,6 +83,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(admin_rag.router)
 app.include_router(users.router)
 app.include_router(banks.router)
 app.include_router(documents.router)
@@ -105,6 +112,24 @@ async def app_error_handler(_request: Request, exc: AppError):
         result.delete_cookie("mc_refresh", path="/api/auth", httponly=True,
                              secure=settings.app_env == "production", samesite="lax")
     return result
+
+
+@app.exception_handler(VectorStoreError)
+@app.exception_handler(EmbeddingError)
+async def rag_service_error_handler(
+    _request: Request, exc: VectorStoreError | EmbeddingError,
+) -> JSONResponse:
+    """统一处理未在入口转换的 RAG 故障，固定文案避免回显底层异常及凭据。"""
+    if isinstance(exc, VectorStoreError):
+        code = "VECTOR_STORE_UNAVAILABLE"
+        message = str(exc)
+    else:
+        code = "EMBEDDING_UNAVAILABLE"
+        message = "向量服务暂不可用，请稍后重试或联系管理员"
+    return JSONResponse(
+        status_code=503, content={"detail": {"code": code, "message": message}},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.exception_handler(RequestValidationError)

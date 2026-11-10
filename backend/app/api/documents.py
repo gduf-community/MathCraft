@@ -11,14 +11,17 @@ from app.deps import (
     BankAccess,
     get_bank_access,
     require_bank_admin,
-    require_bank_super_admin,
 )
 from app.errors import AppError
 from app.models import Document
+from app.schemas.auth import ErrorResponse
 from app.schemas.bank import SearchBody
 from app.services import banks as bank_service
 from app.services import documents as doc_service
-from app.services.model_settings import get_effective_mineru_token
+from app.services.model_settings import get_effective_deepseek_key, get_effective_mineru_token
+from app.services.rag import embeddings, vectorstore
+from app.services.rag_runtime import with_snapshot
+from app.services.rag_settings import assert_mutations_allowed
 
 router = APIRouter(prefix="/api/banks/{bank_id}", tags=["documents"])
 
@@ -78,6 +81,7 @@ async def upload_document(
         db, background, access.bank.id, access.member.user_id,
         file.filename or "", content,
         get_effective_mineru_token(db, access.member.user_id),
+        deepseek_api_key=get_effective_deepseek_key(db, access.member.user_id),
     )
     return result
 
@@ -99,62 +103,107 @@ def reprocess_document(
     access: BankAccess = Depends(require_bank_admin),
     db: Session = Depends(get_db),
 ):
+    assert_mutations_allowed(db)
     doc = _get_document(access.bank.id, document_id, db)
     if doc.status not in ("failed", "ready"):
         raise AppError("BAD_STATE", "仅失败或已完成的文档可重新解析", status_code=400)
-    # 曾被简化改写为 MD 的扫描件：还原原始 PDF 再重新解析（OCR 结果有缓存，不重复消耗额度）
-    original = doc_service.original_upload_path(doc)
-    if original is not None:
-        doc.format = "PDF"
-        doc.storage_path = original["rel"]
-        doc.name = original["name"]
-    doc.status = "uploaded"
-    doc.stage = "已重新排队，等待解析"
-    doc.error_message = None
-    db.commit()
+    doc_service.requeue_document(db, doc)
     mineru_token = get_effective_mineru_token(db, access.member.user_id)
-    background.add_task(doc_service.run_ingestion, doc.id, mineru_token)
+    deepseek_api_key = get_effective_deepseek_key(db, access.member.user_id)
+    background.add_task(
+        doc_service.run_ingestion, doc.id, mineru_token, deepseek_api_key=deepseek_api_key,
+    )
     return {"document_id": doc.id, "status": doc.status, "stage": doc.stage, "progress": 0}
 
 
-@router.get("/documents/{document_id}/download")
+@router.get(
+    "/documents/{document_id}/download",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "description": "当前 storage_path 指向的文件；inline 参数决定内联展示或附件下载",
+            "headers": {
+                "Content-Disposition": {
+                    "description": "inline 或 attachment，附带 filename 或 filename* 文件名",
+                    "schema": {"type": "string"},
+                },
+            },
+            "content": {
+                media: {"schema": {"type": "string", "format": "binary"}}
+                for media in (
+                    "application/pdf", "text/plain",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/octet-stream",
+                )
+            },
+        },
+        401: {"model": ErrorResponse, "description": "未登录或凭据已失效"},
+        403: {"model": ErrorResponse, "description": "当前账号无教学资源访问权限"},
+        404: {"model": ErrorResponse, "description": "题库、文档或当前文件不存在或不可访问"},
+        503: {"model": ErrorResponse, "description": "依赖服务暂不可用"},
+    },
+)
 def download_document(
     document_id: str,
     inline: bool = False,
     access: BankAccess = Depends(get_bank_access),
     db: Session = Depends(get_db),
 ):
-    """下载文档原件；inline=1 供前端「查看」按钮在浏览器直接打开。"""
+    """下载当前 storage_path 指向的产物；inline=1 供浏览器直接查看。"""
     doc = _get_document(access.bank.id, document_id, db)
     p = Path(doc.storage_path)
     if not p.is_absolute():
         p = BASE_DIR / p
     if not p.exists():
         raise AppError("DOCUMENT_NOT_FOUND", "源文件已不存在", status_code=404)
-    if inline and doc.format == "MD":
-        # Markdown 以纯文本内联展示，浏览器可直接阅读
-        return FileResponse(p, filename=doc.name, media_type="text/plain; charset=utf-8",
-                            content_disposition_type="inline")
-    return FileResponse(p, filename=doc.name, content_disposition_type="inline" if inline else "attachment")
+    media_types = {
+        "PDF": "application/pdf",
+        "MD": "text/plain; charset=utf-8",
+        "TXT": "text/plain; charset=utf-8",
+        "DOCX": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    return FileResponse(
+        p, filename=doc.name, media_type=media_types.get(doc.format, "application/octet-stream"),
+        content_disposition_type="inline" if inline else "attachment",
+    )
 
 
-@router.delete("/documents/{document_id}", status_code=204)
+@router.delete("/documents/{document_id}", status_code=204, responses={
+    503: {"model": ErrorResponse, "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试"},
+})
 def delete_document(
     document_id: str,
     access: BankAccess = Depends(require_bank_admin),
     db: Session = Depends(get_db),
 ):
     doc = _get_document(access.bank.id, document_id, db)
-    bank_service.purge_document(db, doc)
+    try:
+        bank_service.purge_document(db, doc)
+    except vectorstore.VectorStoreError as exc:
+        raise AppError("VECTOR_STORE_UNAVAILABLE", str(exc), status_code=503) from exc
     return None
 
 
-@router.post("/search")
+@router.post("/search", responses={
+    503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
+})
+@with_snapshot
 def search_bank(
     body: SearchBody,
     access: BankAccess = Depends(get_bank_access),
 ):
     """检索测试：mode=dense/sparse/hybrid/hybrid_rerank，默认完整链路。"""
+    try:
+        return _search_bank(body, access)
+    except vectorstore.VectorStoreError as exc:
+        raise AppError("VECTOR_STORE_UNAVAILABLE", str(exc), status_code=503) from exc
+    except embeddings.EmbeddingError as exc:
+        raise AppError("EMBEDDING_UNAVAILABLE", str(exc), status_code=503) from exc
+
+
+def _search_bank(body: SearchBody, access: BankAccess) -> dict:
     from app.services.rag import fts, retrieval, vectorstore
     from app.services.rag import embeddings
 

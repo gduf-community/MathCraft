@@ -8,6 +8,7 @@ from sqlalchemy import text as sql_text
 
 from app.config import settings
 from app.db import SessionLocal
+from app.services.rag_runtime import with_snapshot
 from app.services.rag import embeddings, fts, rerank, vectorstore
 
 
@@ -57,6 +58,7 @@ def _fetch_chunks(chunk_ids: list[str]) -> dict[str, dict]:
         db.close()
 
 
+@with_snapshot
 def hybrid_retrieve(
     bank_id: str,
     query: str,

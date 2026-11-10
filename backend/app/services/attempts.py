@@ -274,7 +274,7 @@ def submit_attempt(
     if needs_llm and not api_key:
         raise AppError(
             "DEEPSEEK_KEY_MISSING",
-            "主观题批卷需要 DeepSeek API Key，请到个人中心 → 模型配置中填写",
+            "主观题批卷需要 DeepSeek API Key，请到设置 → 模型与服务中填写",
             status_code=400,
         )
 

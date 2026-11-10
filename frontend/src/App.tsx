@@ -1,5 +1,6 @@
 import { AppProvider, useApp } from './store/AppContext'
 import { AuthProvider, useAuth } from './store/AuthContext'
+import { ToastProvider } from './store/ToastContext'
 import TopBar from './components/layout/TopBar'
 import SideNav from './components/layout/SideNav'
 import ParamsSidebar from './components/layout/ParamsSidebar'
@@ -17,7 +18,7 @@ import LoginPage from './components/auth/LoginPage'
 import AdminPanel from './components/admin/AdminPanel'
 
 function Shell() {
-  const { activeTab, settingsTarget, setActiveTab } = useApp()
+  const { activeTab, setActiveTab } = useApp()
   const { user } = useAuth()
   return (
     <div className="workspace-shell flex h-screen animate-fade-in flex-col bg-page text-ink">
@@ -31,7 +32,7 @@ function Shell() {
         <main className="z-10 mx-4 my-4 flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-line/70 bg-white shadow-[0_6px_24px_rgba(30,90,180,0.06)]">
           {activeTab === 'settings' ? (
             <div className="flex min-h-0 flex-1 flex-col">
-              <SettingsPage key={settingsTarget?.request ?? 0} initialEngine={settingsTarget?.engine} />
+              <SettingsPage />
             </div>
           ) : activeTab === 'bank' ? (
             <div className="flex min-h-0 flex-1 flex-col">
@@ -62,7 +63,6 @@ function Shell() {
         </main>
         {activeTab === 'generate' && <ParamsSidebar />}
       </div>
-      <Toast />
     </div>
   )
 }
@@ -83,7 +83,10 @@ function AuthGate() {
 export default function App() {
   return (
     <AuthProvider>
-      <AuthGate />
+      <ToastProvider>
+        <AuthGate />
+        <Toast />
+      </ToastProvider>
     </AuthProvider>
   )
 }

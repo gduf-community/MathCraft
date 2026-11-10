@@ -75,7 +75,7 @@ def _add_usage(a: dict, b: dict | None) -> dict:
 
 
 def _chat_text(messages: list[dict], max_tokens: int = 8192, max_retries: int = 2,
-               json_mode: bool = False) -> tuple[str, dict]:
+               json_mode: bool = False, *, api_key: str | None = None) -> tuple[str, dict]:
     """DeepSeek 文本调用：低推理档位、显式 max_tokens/超时；返回 (内容, 用量)。"""
     last: Exception | None = None
     usage = dict(_ZERO_USAGE)
@@ -86,11 +86,11 @@ def _chat_text(messages: list[dict], max_tokens: int = 8192, max_retries: int = 
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
             try:
-                resp = llm.get_client().chat.completions.create(
+                resp = llm.get_client(api_key=api_key).chat.completions.create(
                     **kwargs, extra_body={"effort": "low"})
             except openai.BadRequestError as exc:
                 if "effort" in str(exc):  # 档位参数不受支持时退回默认档位
-                    resp = llm.get_client().chat.completions.create(**kwargs)
+                    resp = llm.get_client(api_key=api_key).chat.completions.create(**kwargs)
                 else:
                     raise
             if resp is None or not getattr(resp, "choices", None):
@@ -126,11 +126,12 @@ def _chat_text(messages: list[dict], max_tokens: int = 8192, max_retries: int = 
     raise SimplifyServiceError(f"DeepSeek 调用失败：{last}")
 
 
-def _chat_json(messages: list[dict], max_tokens: int = 16384) -> tuple[dict, dict]:
+def _chat_json(messages: list[dict], max_tokens: int = 16384,
+               *, api_key: str | None = None) -> tuple[dict, dict]:
     msgs = list(messages)
     usage = dict(_ZERO_USAGE)
     for _ in range(2):
-        content, u = _chat_text(msgs, max_tokens=max_tokens, json_mode=True)
+        content, u = _chat_text(msgs, max_tokens=max_tokens, json_mode=True, api_key=api_key)
         usage = _add_usage(usage, u)
         try:
             return json.loads(content), usage
@@ -189,14 +190,14 @@ def _normalize_toc(data) -> dict:
     return {"chapters": clean}
 
 
-def _parse_toc(toc_md: str) -> tuple[dict, dict]:
+def _parse_toc(toc_md: str, *, api_key: str | None = None) -> tuple[dict, dict]:
     """从 OCR 文本开头提取三级目录；多次为空视为提取失败。"""
     # 模板内含 JSON 花括号示例，不能用 str.format 拼接（KeyError 陷阱）
     prompt = _TOC_PROMPT + "\nOCR 文本如下：\n" + toc_md[:TOC_HEAD_CHARS]
     data: dict = {}
     usage = dict(_ZERO_USAGE)
     for _ in range(3):
-        data, u = _chat_json([{"role": "user", "content": prompt}])
+        data, u = _chat_json([{"role": "user", "content": prompt}], api_key=api_key)
         usage = _add_usage(usage, u)
         data = _normalize_toc(data)
         chapters = data.get("chapters") or []
@@ -397,7 +398,8 @@ def _plan_batches(chapter: dict) -> list[list[dict]]:
     return batches
 
 
-def _summarize_batch(chapter: dict, sections: list[dict], corpus: str) -> tuple[str, dict]:
+def _summarize_batch(chapter: dict, sections: list[dict], corpus: str,
+                     *, api_key: str | None = None) -> tuple[str, dict]:
     """概括一章中的若干节，输出仅含 ### 节标题与 #### 知识点。"""
     blocks = []
     for section in sections:
@@ -415,7 +417,9 @@ def _summarize_batch(chapter: dict, sections: list[dict], corpus: str) -> tuple[
         chapter=chapter["title"], toc_json=toc_json, chapter_input=batch_input)
     prompt += ("\n\n注意：本次只写目录中列出的这几节，节标题逐个用 ### 输出，"
                "不要遗漏任何一节，也不要补写其他节。")
-    md, usage = _chat_text([{"role": "user", "content": prompt}], max_tokens=8192)
+    md, usage = _chat_text(
+        [{"role": "user", "content": prompt}], max_tokens=8192, api_key=api_key,
+    )
     return sanitize_chapter(md), usage
 
 
@@ -464,14 +468,16 @@ def json_dumps_chapter(chapter: dict) -> str:
 
 
 def build_simplified_markdown(ocr_markdown: str, source_name: str = "教材",
-                              on_progress: Callable[[int, int], None] | None = None) -> tuple[str, dict]:
+                              on_progress: Callable[[int, int], None] | None = None,
+                              *, api_key: str | None = None) -> tuple[str, dict]:
     """完整简化流程：清洗 → 提目录 → 按节定位 → 按章概括 → 组装。
 
     返回 (简化文档 Markdown, LLM 用量统计)。目录提取失败或 LLM 服务不可用时抛异常，
     由调用方决定失败或回退策略。on_progress(已完成章数, 总章数) 用于汇报概括进度。
+    api_key 为本次操作者的有效凭据，显式传入并发子任务；为空时沿用服务端默认。
     """
     corpus = "\n" + clean_ocr_text(ocr_markdown)
-    toc, usage = _parse_toc(corpus[:TOC_HEAD_CHARS])
+    toc, usage = _parse_toc(corpus[:TOC_HEAD_CHARS], api_key=api_key)
     chapters = toc.get("chapters") or []
     if not chapters:
         raise RuntimeError("目录解析失败：无法定位章节结构")
@@ -490,7 +496,7 @@ def build_simplified_markdown(ocr_markdown: str, source_name: str = "教材",
     chapter_done = [0] * len(chapters)
     done_chapters = 0
     with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as pool:
-        futures = {pool.submit(_summarize_batch, ch, batch, corpus): (ci, bi)
+        futures = {pool.submit(_summarize_batch, ch, batch, corpus, api_key=api_key): (ci, bi)
                    for ci, bi, ch, batch in tasks}
         for fut in as_completed(futures):
             ci, bi = futures[fut]
@@ -513,7 +519,7 @@ def build_simplified_markdown(ocr_markdown: str, source_name: str = "教材",
             if not title or _norm_title(title) in written:
                 continue
             try:
-                md, u = _summarize_batch(chapter, [section], corpus)
+                md, u = _summarize_batch(chapter, [section], corpus, api_key=api_key)
                 chapter_mds[ci].append((10**6, md))
                 usage = _add_usage(usage, u)
                 written.add(_norm_title(title))
