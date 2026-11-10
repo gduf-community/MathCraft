@@ -1,22 +1,63 @@
 # 依赖与构建产物
 node_modules/
 dist/
+build/
+*.egg-info/
+*.tsbuildinfo
+.vite/
+.build-temp*/
 
 # 工作区内部数据
 .workbuddy/
+.scratch/
+/data/
+/output/
 
 # 本地环境与临时文件
 *.local
 .DS_Store
 .playwright-cli/
+.tmp/
+.cache/
+*.tmp
+*.temp
+*.log
+logs/
+.env
+.env.*
+!.env.example
+local_secrets.py
+
+# 测试、静态检查与浏览器验证产物
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+pytest-of-*/
+test-results/
+playwright-report/
 
 # 演示用练习卷（不入库）
 导数与微分_50题练习卷.pdf
 
 # Python 运行时与本地数据（双保险，backend 内另有 .gitignore）
 backend/.venv/
+.venv/
 backend/data/
 backend/.env
 __pycache__/
 *.pyc
+*.pyo
+*.cache
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+/docs/数学智能体题目/
+/docs/数学智能体skill集合/
+/docs/deeptutor参考前端/
+.agents/
