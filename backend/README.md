@@ -56,18 +56,18 @@ uv sync
 uv run python scripts/init_auth_secrets.py
 # 缺少 .env 时脚本从 .env.example 创建；按根 README 配置清单补齐其余配置后再继续
 uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
 ```
 
 配置以 [app/config.py](app/config.py) 和 [.env.example](.env.example) 为准，环境变量可覆盖固定位置的 `backend/.env`。完整字段、默认值、用途和获取来源集中在根 [生产配置清单](../README.md#生产配置清单) 与 [数据、缓存与模型配置](../README.md#数据缓存与模型配置)，部署时逐项填写。`config.py` 默认 `APP_ENV=production`，模板则为 `development`；生产须显式设为 `production`，`DEV_ACCOUNTS_ENABLED=false`，并清空教师/学生各自的 `EMAIL`、`USER_NO`、`PASSWORD`、`DISPLAY_NAME` 八个开发字段。Redis 存储验证码、限流和业务任务；认证会话在数据库中。缺少必要配置时相关认证操作拒绝或返回不可用。真实配置、数据库和上传文件不入库。
 
 ### 本机 Turnstile 临时开关与恢复（2026-11-09，已实现并在本机启用）
 
-`TURNSTILE_ENABLED` 默认 `true`。仅配置为 `false`、`APP_ENV` 属于 `development/test`，且请求实际 ASGI peer 为回环 IP（如 `127.0.0.1` 或 `::1`）时跳过人机验证；不信任 Host、Origin 或转发头来扩展该范围。非本机 peer 即使在该配置下仍执行完整 Turnstile。production 配置 `false` 时在启动校验阶段拒绝，不能启动。
+`TURNSTILE_ENABLED` 的代码默认值为 `true`；[.env.example](.env.example) 面向本机开发，显式设为 `false` 并配合 `APP_ENV=development`。首次初始化从模板创建 `backend/.env`，已有配置需手动编辑这两项，初始化命令不会覆盖它们。仅配置为 `false`、`APP_ENV` 属于 `development/test`，且请求实际 ASGI peer 为回环 IP（如 `127.0.0.1` 或 `::1`）时跳过人机验证；不信任 Host、Origin 或转发头来扩展该范围。非本机 peer 即使在该配置下仍执行完整 Turnstile。production 必须设为 `true` 并补齐真实站点配置，配置 `false` 时在启动校验阶段拒绝，不能启动。
 
 `AuthConfig.turnstile_enabled` 为必填 boolean，由 GET `/api/auth/config` 按当前请求计算有效值。有效值为 `false` 时不调用 Cloudflare；有效值为 `true` 时保留票据、站点配置、action、hostname 等完整验证，空票据仍拒绝。`POST /api/auth/email-code` 与 `POST /api/auth/login/account` 的 `turnstile_token` 可缺省或为空字符串，但仅有效禁用请求可跳过其验证。前端据有效状态决定脚本加载与提交条件。
 
-本次已以新后台启动进程的环境 `TURNSTILE_ENABLED=false` 重启本机后端，继续绑定回环地址，不改真实 `.env`、`local_secrets.py` 或密钥；重启及当前有效配置已通过实际接口确认。恢复时终止该进程，以 `TURNSTILE_ENABLED=true` 重启后端，再重新加载前端配置；只有确认其他受控配置仍为默认 `true` 时才能仅移除临时覆盖。配置变更不热更新，必须重启后端。
+2026-11-09 曾仅以启动进程环境 `TURNSTILE_ENABLED=false` 临时重启本机后端；该覆盖不会随普通重启保留。2026-11-10 排查确认本机重启后回到 `APP_ENV=production`、`TURNSTILE_ENABLED=true`，且未配置 Turnstile 站点，导致认证配置不可用、密码登录按钮禁用。本次将 `APP_ENV=development`、`TURNSTILE_ENABLED=false` 保存到已被 Git 忽略的本机 `backend/.env`，继续绑定回环地址并使用 `--no-proxy-headers`。需要恢复人机验证时，将本机配置改为 `TURNSTILE_ENABLED=true` 并补齐站点配置；配置变更后重启后端并刷新页面。环境变量仍优先于文件，须同时核对启动环境中的覆盖值。
 
 账号密码、JWT/SQL 会话及撤销、Origin/CSRF、邮箱验证码、限流、proof 消费、角色与资源权限保留，SMTP 不可用仍不能完成邮件流程。新增 7 项后端针对性测试、前端检查及完整浏览器回归已通过；本机关闭已确认生效，后端全量 291 passed、79 subtests passed、21 failed（20 项 Chroma 相关失败、1 项迁移子进程超时）；迁移超时用例单独复跑通过，见下方验收说明。本轮验收完成于 2026-11-10；迁移用例复跑耗时 7.51 秒，未修改代码。Ruff 10 项、Pyright 19 项既有诊断，本次文件无新增。本文其他原有数量保留为开关调整前记录。验收矩阵见 [实施规格](../docs/design/用户系统实施规格.md)。
 

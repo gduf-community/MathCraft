@@ -173,8 +173,12 @@ uv sync
 uv run python scripts/init_auth_secrets.py
 # 缺少 .env 时脚本从 .env.example 创建；按下方配置说明补齐其余配置后再继续
 uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
 ```
+
+本机开发使用 [backend/.env.example](backend/.env.example)，模板默认 `APP_ENV=development`、`TURNSTILE_ENABLED=false`，无需配置 Cloudflare Turnstile 即可使用账号密码登录。首次运行上面的认证密钥初始化命令会从模板创建 `backend/.env`；已有文件不会被模板覆盖，需手动将其中这两个开关改为上述值，然后按上面的回环地址启动后端。
+
+仅在某次启动进程中设置开关，后续普通重启会丢失该覆盖，重新要求人机验证；缺少站点配置时页面显示“认证配置不可用”，登录按钮禁用。将开关保存到 `backend/.env` 后，重启后端并刷新登录页，确认 `/api/auth/config` 返回 `turnstile_enabled=false`、`available=true`。启动环境变量优先于文件，根目录 `.env.example` 是历史样例，不用于当前后端配置。生产须设 `APP_ENV=production`、`TURNSTILE_ENABLED=true`，并补齐 Turnstile 站点配置。
 
 账号系统按 [当前整合设计](docs/design/账号系统整合与审查修复.md)实施，正式账号由管理员开通，首个管理员使用下方交互命令。开发默认账号不再硬编码：在 `backend/.env` 填写教师/学生的邮箱、学工号、密码、显示名，并显式开启 `DEV_ACCOUNTS_ENABLED`，再执行 `uv run python scripts/seed.py`。初始化只供开发环境使用，已有账号不重置密码，冲突会报错，生产禁止执行。开发登录接口返回 account、password、role，按钮仅填充 account 和密码，仍需手动登录；人机验证按当前请求的有效开关执行。开发凭据不得复用个人或生产密码。
 
@@ -210,7 +214,7 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 ## 配置说明
 
-后端配置由 [app/config.py](backend/app/config.py) 定义，读取固定位置的 `backend/.env`；环境变量可覆盖文件值。模板见 [backend/.env.example](backend/.env.example)，根目录 `.env.example` 是历史样例。以下默认值以当前 `Settings` 为准，空字符串表示没有可用凭据。模板中的 `APP_ENV=development` 和本机域名不能直接用于生产。
+后端配置由 [app/config.py](backend/app/config.py) 定义，读取固定位置的 `backend/.env`；环境变量可覆盖文件值。模板见 [backend/.env.example](backend/.env.example)，根目录 `.env.example` 是历史样例。以下默认值以当前 `Settings` 为准，空字符串表示没有可用凭据。模板中的 `APP_ENV=development`、`TURNSTILE_ENABLED=false` 和本机域名不能直接用于生产。
 
 ### 本机临时关闭与恢复 Turnstile
 
@@ -218,7 +222,7 @@ uv run python -c "import json, sys; sys.path.insert(0,'.'); from app.main import
 
 GET `/api/auth/config` 的 `AuthConfig` 新增布尔字段 `turnstile_enabled`，表示当前请求是否需要人机验证，而非原样返回环境变量。有效值为 `false` 时，后端不调用 Cloudflare，前端不加载 Turnstile 脚本、不因缺票据或站点公钥阻止提交。POST `/api/auth/email-code` 与 `/api/auth/login/account` 的 `turnstile_token` 可缺省或传空字符串；有效值为 `true` 时仍拒绝空票据，非空票据仍须完整验证。
 
-本次已向本机后台的新启动进程注入 `TURNSTILE_ENABLED=false` 并重启后端，保持回环绑定并使用 `--no-proxy-headers`；不修改真实 `.env`、`local_secrets.py` 或密钥。重启及当前有效配置已通过实际接口确认。恢复时停止该后台进程，以 `TURNSTILE_ENABLED=true` 启动新进程并重启后端，随后重新加载前端取得当前请求配置；若移除临时变量，须确保其余受控配置仍取默认 `true`。运行中的后端不会因父进程环境变化自动切换。
+`Settings` 的代码默认值仍为 `true`；本机开发模板显式设为 `false`，保存到 `backend/.env` 后可跨普通重启保留。2026-11-09 曾仅向后台启动进程注入临时覆盖，2026-11-10 已将本机开发开关保存到配置文件并验证。恢复人机验证时，在 `backend/.env` 中改为 `TURNSTILE_ENABLED=true`，补齐 `TURNSTILE_SITE_KEY`、`TURNSTILE_SECRET_KEY`、`TURNSTILE_ALLOWED_HOSTNAMES`，并核对启动环境是否仍有覆盖；随后重启后端并刷新页面。运行中的后端不会自动重载配置。
 
 该开关仅控制人机验证。账号密码校验、启用状态、JWT/SQL 会话、Origin/CSRF、邮箱验证码及其限流与消费、角色与资源归属校验继续生效；关闭后不会生成邮件码或替代 SMTP。新增配置、验证器及三角色 HTTP 针对性测试已通过，禁用时零 Cloudflare 请求、前端可提交及恢复开启流程已通过浏览器回归，当前本机服务保持临时关闭；后端全量 291 passed、79 subtests passed、21 failed（20 项 Chroma 相关失败、1 项迁移子进程超时）；迁移超时用例单独复跑通过，见下方验收说明，详见 [实施规格](docs/design/用户系统实施规格.md)。
 
@@ -264,7 +268,7 @@ GET `/api/auth/config` 的 `AuthConfig` 新增布尔字段 `turnstile_enabled`�
 | `SMTP_FROM` | 空 | 经服务商授权的发件人邮箱，应与该账号的发件权限匹配 |
 | `SMTP_TLS_MODE` | `starttls` | 按服务商要求选择 `starttls`（连接后升级 TLS）或 `tls`（直接 TLS），不支持明文模式 |
 | `SMTP_TIMEOUT_SECONDS` | `10` | SMTP 连接/操作超时，秒，由部署者设置 |
-| `TURNSTILE_ENABLED` | `true` | `false` 仅允许 development/test 启动，且仅实际 ASGI peer 为回环 IP 的请求跳过人机验证；非本机仍验证，production 配置 false 拒绝启动 |
+| `TURNSTILE_ENABLED` | `true`（本机开发模板为 `false`） | `false` 仅允许 development/test 启动，且仅实际 ASGI peer 为回环 IP 的请求跳过人机验证；非本机仍验证，production 配置 false 拒绝启动 |
 | `TURNSTILE_SITE_KEY` | 空 | 在 Cloudflare 控制台为生产站点创建 Turnstile widget 后取得的站点公钥，供前端渲染 |
 | `TURNSTILE_SECRET_KEY` | 空 | 同一 widget 的服务端 Siteverify 密钥，仅后端保存；生产拒绝官方测试密钥 |
 | `TURNSTILE_ALLOWED_HOSTNAMES` | 空（模板为 `localhost,127.0.0.1`） | 部署者填写逗号分隔的精确前端 hostname，并与 Cloudflare widget 的站点配置一致 |
