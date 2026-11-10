@@ -34,6 +34,10 @@ MathCraft/
 ├── docs/
 │   ├── api.md                # API 文档
 │   └── design/               # 功能设计、实施记录与待实现方案
+│       ├── 运维后台升级方案.md # 已确认的待实施运维方案
+│       ├── 运维后台接口与联调契约.md   # 拟新增接口、状态和联调样例
+│       ├── 运维后台模块说明.md     # 模块职责、依赖与验收要点
+│       └── 运维后台系统方案说明.md # 面向方案评审的系统说明
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
 ├── tools/                    # API 文档生成等维护脚本
@@ -196,6 +200,8 @@ npm run build
 - [后端说明](backend/README.md)、[前端说明](frontend/README.md)：各端开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
 - [账号与权限设计](docs/design/账号系统整合与审查修复.md)、[模型配置说明](docs/design/模型配置来源与普通知识库流程.md)、[知识库说明](docs/design/知识库模块说明.md)：业务规则与能力边界。
+- [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)：面向方案评审与协作沟通，介绍系统目标、使用场景、功能模块和建设边界；文末列明代码实施必须参考的三份约定文档。
+- [运维后台扩展方案](docs/design/运维后台升级方案.md)：已确认、待实现；OpenAI Agents SDK 原生追踪导出到本地 Phoenix，正文默认 3 天、摘要 14 天、每日清理；先接入验收，再扩展运行、依赖与异常告警。配套[接口与联调契约](docs/design/运维后台接口与联调契约.md)和[模块说明](docs/design/运维后台模块说明.md)说明模块职责、依赖和验收边界，拟新增接口尚未实现。
 - [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)：开发约定与术语定义。
 
 当前实现以 `backend/app/`、`frontend/src/` 与根 `openapi.json` 为准；设计文档中的历史记录仅供参考。
