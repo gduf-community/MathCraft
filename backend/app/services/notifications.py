@@ -13,8 +13,8 @@ def notify_bank_ingest_done(db: Session, doc: Document, ok: bool, message: str) 
     if bank is None:
         return
     if ok:
-        title = "题库创建完成"
-        body = f"「{bank.name}」已创建完成，文档「{doc.name}」已上传，可以开始使用"
+        title = "文档入库完成"
+        body = f"题库「{bank.name}」的文档「{doc.name}」已完成解析入库，可以开始使用"
         kind = "bank_ready"
     else:
         title = "文档入库失败"

@@ -67,7 +67,7 @@ function BankCode({ code }: { code: string }) {
 }
 
 export default function BankTab() {
-  const { role, showToast, refreshKbs } = useApp()
+  const { role, showToast, refreshKbs, invalidateDocument } = useApp()
   const canCreate = role === 'teacher'
   const [tab, setTab] = useState<SubTab>(canCreate ? 'owned' : 'joined')
   const [owned, setOwned] = useState<ManagedBank[]>([])
@@ -216,10 +216,16 @@ export default function BankTab() {
         <BankEditModal
           bank={editTarget}
           onClose={() => setEditTarget(null)}
-          onChanged={() => void refresh()}
+          onChanged={(deletedDocumentId) => {
+            if (deletedDocumentId) invalidateDocument(editTarget.id, deletedDocumentId)
+            void refresh()
+          }}
         />
       )}
-      {viewTarget && <BankViewModal bank={viewTarget} onClose={() => setViewTarget(null)} onChanged={() => void refresh()} />}
+      {viewTarget && <BankViewModal bank={viewTarget} onClose={() => setViewTarget(null)} onChanged={(deletedDocumentId) => {
+        if (deletedDocumentId) invalidateDocument(viewTarget.id, deletedDocumentId)
+        void refresh()
+      }} />}
       {canCreate && createOpen && <BankCreateModal onClose={() => setCreateOpen(false)} onChanged={() => void refresh()} />}
       {deleteTarget && (
         <ConfirmDialog

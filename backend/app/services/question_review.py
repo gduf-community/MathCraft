@@ -25,6 +25,7 @@ from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
 from app.services.rag import embeddings, llm, question_gen
+from app.services.rag_runtime import with_snapshot
 
 logger = logging.getLogger("app.review")
 
@@ -198,6 +199,7 @@ def load_corpus(db: Session, user_id: str, bank_id: str) -> list[str]:
     return out[: limit * 2]
 
 
+@with_snapshot
 def _drop_duplicates(
     questions: list[Question], corpus: list[str]
 ) -> tuple[list[Question], list[Question]]:

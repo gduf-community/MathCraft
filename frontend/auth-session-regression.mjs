@@ -38,9 +38,17 @@ const source = (await readFile(new URL('./src/api/session.ts', import.meta.url),
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText
 const sessionModuleUrl = 'data:text/javascript;base64,' + Buffer.from(compiled).toString('base64')
 const session = await import(sessionModuleUrl)
+// 预览与后端复用同一真实会话实例，显式映射 data URL 的相对依赖。
+const previewSource = (await readFile(new URL('./src/api/documentPreview.ts', import.meta.url), 'utf8'))
+  .replaceAll("from './session'", `from '${sessionModuleUrl}'`)
+const previewCompiled = ts.transpileModule(previewSource, { compilerOptions: {
+  module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020,
+} }).outputText
+const previewModuleUrl = 'data:text/javascript;base64,' + Buffer.from(previewCompiled).toString('base64')
 const backendSource = (await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8'))
   .replace("import { apiUrl } from './urls'", 'const apiUrl = path => path')
   .replaceAll("from './session'", `from '${sessionModuleUrl}'`)
+  .replaceAll("from './documentPreview'", `from '${previewModuleUrl}'`)
 const backendCompiled = ts.transpileModule(backendSource, { compilerOptions: {
   module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020,
 } }).outputText

@@ -15,10 +15,12 @@ from app.deps import (
 from app.errors import AppError
 from app.models import Bank, BankMember, User
 from app.models.base import new_id
+from app.schemas.auth import ErrorResponse
 from app.schemas.bank import BankCreateBody, BankUpdateBody, MemberAddBody, MemberRoleBody, TransferBody
 from app.services import banks as bank_service
 from app.services import documents as doc_service
-from app.services.model_settings import get_effective_mineru_token
+from app.services.model_settings import get_effective_deepseek_key, get_effective_mineru_token
+from app.services.rag_settings import assert_mutations_allowed
 
 router = APIRouter(prefix="/api/banks", tags=["banks"])
 
@@ -65,12 +67,14 @@ async def create_bank_with_document(
     db: Session = Depends(get_db),
 ):
     """新建题库并上传首个文档：题库与文档一次创建，入库异步进行，立即返回预计耗时。"""
-    bank = bank_service.create_bank(db, user, name.strip())
     content = await file.read()
+    assert_mutations_allowed(db)
+    bank = bank_service.create_bank(db, user, name.strip(), commit=False)
     document = doc_service.queue_upload(
         db, background, bank.id, user.id,
         file.filename or "", content,
         get_effective_mineru_token(db, user.id),
+        deepseek_api_key=get_effective_deepseek_key(db, user.id),
     )
     return {"bank": bank_service.bank_payload(db, bank, user), "document": document}
 
@@ -98,7 +102,9 @@ def update_bank(
     return bank_service.bank_payload(db, access.bank, access.user)
 
 
-@router.delete("/{bank_id}", status_code=204)
+@router.delete("/{bank_id}", status_code=204, responses={
+    503: {"model": ErrorResponse, "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试"},
+})
 def delete_bank(
     access: BankAccess = Depends(require_bank_owner),
     db: Session = Depends(get_db),

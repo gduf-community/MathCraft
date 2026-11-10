@@ -1,5 +1,5 @@
-/** 个人中心页：资料、模型配置、密码修改（全部走后端）。头像为系统默认，不可修改。 */
-import { useState } from 'react'
+/** 个人中心页：个人资料与账号安全。头像为系统默认，不可修改。 */
+import { useRef, useState } from 'react'
 import {
   BadgeCheck,
   Building2,
@@ -14,14 +14,20 @@ import {
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 
-import { PersonalModelSettings } from './PersonalModelSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { changePasswordCurrent, validateNewPassword } from '../../../api/auth'
 import { useAuth } from '../../../store/AuthContext'
+import { getSessionGeneration } from '../../../api/session'
 
 export default function ProfileTab() {
   const { profile, updateProfile, showToast } = useApp()
-  const { user } = useAuth()
+  const { user, setAuthNotice } = useAuth()
+
+  const session = useRef(getSessionGeneration())
+  const [profileError, setProfileError] = useState('')
+  const [pwdError, setPwdError] = useState('')
+  const reportProfileError = (message: string) => { setProfileError(message); showToast(message, 'error') }
+  const reportPasswordError = (message: string) => { setPwdError(message); showToast(message, 'error') }
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
@@ -33,40 +39,45 @@ export default function ProfileTab() {
   const [savingPwd, setSavingPwd] = useState(false)
 
   const startEdit = () => {
+    setProfileError('')
     setDraft({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
     setEditing(true)
   }
 
   const saveEdit = async () => {
     if (savingProfile) return
-    if (!draft.name.trim()) { showToast('昵称不能为空'); return }
-    if (draft.phone.trim() && !/^1[0-9]{10}$/.test(draft.phone.trim())) { showToast('请输入正确的 11 位手机号码'); return }
+    if (!draft.name.trim()) { reportProfileError('昵称不能为空'); return }
+    if (draft.phone.trim() && !/^1[0-9]{10}$/.test(draft.phone.trim())) { reportProfileError('请输入正确的 11 位手机号码'); return }
+    setProfileError('')
     setSavingProfile(true)
     try {
       await updateProfile({ name: draft.name.trim(), gender: draft.gender, phone: draft.phone.trim() })
       setEditing(false)
-      showToast('个人信息已保存')
-    } catch (error) { showToast(error instanceof Error ? error.message : '保存失败') }
+      showToast('个人信息已保存', 'success')
+    } catch (error) { reportProfileError(error instanceof Error ? error.message : '保存失败') }
     finally { setSavingProfile(false) }
   }
 
   const patchDraft = (patch: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...patch }))
 
   const submitPassword = async () => {
+    if (savingPwd) return
+    if (!pwdOld) { reportPasswordError('请输入当前密码'); return }
+    setPwdError('')
     const passwordError = validateNewPassword(pwdNew)
-    if (passwordError) { showToast(passwordError); return }
+    if (passwordError) { reportPasswordError(passwordError); return }
     if (pwdNew !== pwdConfirm) {
-      showToast('两次输入的新密码不一致')
+      reportPasswordError('两次输入的新密码不一致')
       return
     }
     setSavingPwd(true)
     try {
       await changePasswordCurrent(pwdOld, pwdNew, pwdConfirm)
-      showToast('密码已修改，请重新登录')
+      if (getSessionGeneration() === session.current + 1) setAuthNotice('密码已修改，请使用新密码重新登录')
       setPwdOpen(false)
       setPwdOld(''); setPwdNew(''); setPwdConfirm('')
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '修改密码失败')
+      reportPasswordError(err instanceof Error ? err.message : '修改密码失败')
     } finally {
       setSavingPwd(false)
     }
@@ -151,6 +162,7 @@ export default function ProfileTab() {
           )}
         </div>
 
+        {profileError && <p role="alert" className="mb-3 text-sm text-red-700">{profileError}</p>}
         <div className="grid grid-cols-1 gap-x-10 gap-y-5 px-2 md:grid-cols-2">
           <div className="flex items-center gap-6">
             <span className="w-16 shrink-0 text-sm text-ink-3">登录账号</span>
@@ -201,8 +213,6 @@ export default function ProfileTab() {
 
       <SecuritySettings />
 
-      <PersonalModelSettings />
-
       {/* 其他设置 */}
       <div className="rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
         <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-ink">
@@ -220,6 +230,7 @@ export default function ProfileTab() {
           <button
             type="button"
             onClick={() => {
+              setPwdError('')
               setPwdOld('')
               setPwdNew('')
               setPwdConfirm('')
@@ -244,6 +255,7 @@ export default function ProfileTab() {
               </button>
             </div>
             <div className="space-y-3 px-5 py-4">
+              {pwdError && <p role="alert" className="text-sm text-red-700">{pwdError}</p>}
               <input
                 type="password"
                 aria-label="当前密码" autoComplete="current-password" value={pwdOld}

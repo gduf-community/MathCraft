@@ -20,9 +20,9 @@ def friendly_error(exc: Exception) -> str:
     text = str(exc)
     lower = text.lower()
     if "Insufficient Balance" in text or "402" in text:
-        return "DeepSeek 账户余额不足，请到个人中心 → 模型配置更换密钥或充值后重试"
+        return "DeepSeek 账户余额不足，请到设置 → 模型与服务更换密钥或充值后重试"
     if "invalid_api_key" in text or "401" in text:
-        return "DeepSeek API Key 无效，请到个人中心 → 模型配置检查密钥"
+        return "DeepSeek API Key 无效，请到设置 → 模型与服务检查密钥"
     if "429" in text or "rate limit" in lower or "频率" in text:
         return "模型接口请求过于频繁，请等一两分钟再试"
     if "timeout" in lower or "timed out" in lower:
@@ -36,7 +36,7 @@ _clients: dict[str, OpenAI] = {}
 def get_client(api_key: str | None = None) -> OpenAI:
     key = api_key or settings.deepseek_api_key
     if not key:
-        raise LLMError("DeepSeek API Key 未配置：请到个人中心 → 模型配置中填写")
+        raise LLMError("DeepSeek API Key 未配置：请到设置 → 模型与服务中填写")
     cli = _clients.get(key)
     if cli is None:
         cli = OpenAI(api_key=key, base_url=settings.deepseek_base_url,

@@ -1,6 +1,96 @@
 /** 题库管理页共享小组件：头像、格式徽标、权限开关 */
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useId, useRef, useState } from 'react'
+import { FileUp } from 'lucide-react'
+import type { BankDoc } from '../../../api/banks'
+import { DOCUMENT_ACCEPT } from './uploadFiles'
+
+/** 原生按钮提供键盘选择入口；拖放只由虚线区接收。 */
+export function DocumentDropZone({
+  onFiles, busy = false,
+}: {
+  onFiles: (files: File[]) => void
+  busy?: boolean
+}) {
+  const input = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+  return (
+    <div>
+      <button
+        type="button"
+        aria-label="选择或拖入文档"
+        aria-busy={busy}
+        onClick={() => input.current?.click()}
+        onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget instanceof Node ? event.relatedTarget : null)) {
+            setDragOver(false)
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault()
+          setDragOver(false)
+          onFiles(Array.from(event.dataTransfer.files))
+        }}
+        className={`flex w-full cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-5 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${dragOver ? 'border-primary bg-primary-light/40' : 'border-line hover:border-primary/50 hover:bg-page'}`}
+      >
+        <FileUp size={20} className="text-primary" aria-hidden="true" />
+        <span className="text-sm text-ink-2">{busy ? '正在批量上传，请等待完成' : '点击选择或拖拽多个文件到此处上传'}</span>
+        <span className="text-xs text-ink-3">支持 PDF / DOCX / XLSX / MD / markdown / TXT</span>
+        <span className="text-xs text-ink-3">仅此虚线区接受拖放；可按 Enter 或空格选择文件，大小限制以服务端为准</span>
+      </button>
+      <input
+        ref={input}
+        type="file"
+        multiple
+        accept={DOCUMENT_ACCEPT}
+        aria-label="上传文档"
+        className="hidden"
+        onChange={(event) => {
+          onFiles(Array.from(event.target.files ?? []))
+          event.target.value = ''
+        }}
+      />
+    </div>
+  )
+}
+
+/** 错误正文可选中复制，按钮暴露展开状态，重试在受理后由父级刷新。 */
+export function DocumentFailure({ doc, onRetry }: { doc: BankDoc; onRetry?: () => Promise<void> }) {
+  const id = useId()
+  const [expanded, setExpanded] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  const retryLock = useRef(false)
+  if (doc.status !== 'failed') return null
+  return (
+    <div className="mt-2 space-y-2 text-sm">
+      <div className="flex gap-3">
+        <button type="button" aria-expanded={expanded} aria-controls={id}
+          onClick={() => setExpanded((value) => !value)}
+          className="rounded px-2 py-1 text-red-700 underline focus-visible:outline-2 focus-visible:outline-primary">
+          {expanded ? '收起失败详情' : '展开失败详情'}
+        </button>
+        {onRetry && <button type="button" disabled={retrying}
+          className="rounded px-2 py-1 text-primary underline focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50"
+          onClick={async () => {
+            if (retryLock.current) return
+            retryLock.current = true
+            setRetrying(true)
+            try { await onRetry() } finally { retryLock.current = false; setRetrying(false) }
+          }}>
+          {retrying ? '重新排队中…' : '重新解析'}
+        </button>}
+      </div>
+      <div id={id} hidden={!expanded}>
+        <p className="mb-1 text-xs text-ink-3">可选择下方文本复制错误详情</p>
+        <textarea readOnly aria-label={`${doc.name}的失败详情`} rows={4}
+          value={[doc.errorMessage || '未返回具体错误，请稍后重试或联系管理员', doc.stage && `处理阶段：${doc.stage}`, doc.ocrStatus && `OCR 状态：${doc.ocrStatus}`].filter(Boolean).join('\n')}
+          className="w-full select-text rounded border border-red-200 bg-red-50 p-2 text-red-700 focus-visible:outline-2 focus-visible:outline-primary" />
+      </div>
+    </div>
+  )
+}
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-emerald-500', 'bg-violet-500', 'bg-orange-500', 'bg-rose-500', 'bg-cyan-600']
 
