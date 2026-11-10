@@ -116,7 +116,7 @@ def send_message(
     if not api_key:
         raise AppError(
             "DEEPSEEK_KEY_MISSING",
-            "尚未配置 DeepSeek API Key，请到个人中心 → 模型配置中填写",
+            "尚未配置 DeepSeek API Key，请到设置 → 模型与服务中填写",
             status_code=400,
         )
 

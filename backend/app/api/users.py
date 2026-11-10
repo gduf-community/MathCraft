@@ -21,13 +21,12 @@ from app.services import auth as auth_service
 from app.services import auth_codes
 from app.schemas.user import EmailChangeResult, UserPayload, UserUpdateBody
 from app.services.model_settings import get_effective_mineru_token, get_setting, mask, user_payload
+from app.services.rag_runtime import current_snapshot
 
 router = APIRouter(prefix="/api/users/me", tags=["users"])
 
-# 硅基流动 / 向量 / 重排为系统内置，不提供配置入口（v2 文档 8.1）
+# 普通用户仅查看系统模型状态，编辑入口归平台管理员。
 SYSTEM_BUILTIN = {
-    "embedding_model": "BAAI/bge-m3",
-    "rerank_model": "BAAI/bge-reranker-v2-m3",
     "embedding_configurable": False,
     "rerank_configurable": False,
 }
@@ -92,6 +91,7 @@ async def upload_avatar(
 @router.get("/model-settings")
 def read_model_settings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     row = get_setting(db, user.id)
+    runtime = current_snapshot().config
     return {
         "deepseek_model": settings.deepseek_display_name,
         "deepseek_model_id": settings.deepseek_model,
@@ -102,6 +102,8 @@ def read_model_settings(user: User = Depends(get_current_user), db: Session = De
         "mineru_using_default": not row.mineru_token,
         "mineru_limits": MINERU_LIMITS,
         **SYSTEM_BUILTIN,
+        "embedding_model": runtime.embedding_model,
+        "rerank_model": runtime.rerank_model,
     }
 
 

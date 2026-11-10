@@ -10,6 +10,7 @@ from app.errors import AppError
 from app.models import Bank, BankMember, Document, Favorite, Question, User
 from app.models.base import new_id
 from app.services.rag import fts, vectorstore
+from app.services.rag_settings import assert_mutations_allowed
 from app.deps import normalize_bank_role
 
 
@@ -75,62 +76,86 @@ def member_payload(m: BankMember, u: User, me_id: str, bank: Bank) -> dict:
     }
 
 
-def create_bank(db: Session, user: User, name: str) -> Bank:
+def create_bank(db: Session, user: User, name: str, *, commit: bool = True) -> Bank:
+    """创建题库及创建者成员；组合上传可在同一事务内一起提交。"""
     bank = Bank(id=new_id("bank"), name=name, code=generate_bank_code(db), creator_id=user.id, admin_level="super")
     db.add(bank)
     db.flush()
     db.add(BankMember(id=new_id("bm"), bank_id=bank.id, user_id=user.id, role="creator", status="active"))
-    db.commit()
-    db.refresh(bank)
+    if commit:
+        db.commit()
+        db.refresh(bank)
+    else:
+        db.flush()
     return bank
 
 
 def purge_bank(db: Session, bank: Bank) -> None:
-    """删除题库：成员/文档/切片/FTS/向量/题目/收藏一并清理，题库行置 deleted。"""
-    bank_id = bank.id
-    # 题目与收藏
-    q_ids = [row[0] for row in db.query(Question.id).filter(Question.bank_id == bank_id).all()]
-    if q_ids:
-        db.query(Favorite).filter(Favorite.question_id.in_(q_ids)).delete(synchronize_session=False)
-    db.query(Question).filter(Question.bank_id == bank_id).delete(synchronize_session=False)
-    # 文档与切片
-    fts.delete_bank(db, bank_id)
-    docs = db.query(Document).filter(Document.bank_id == bank_id).all()
-    for d in docs:
-        p = Path(d.storage_path)
-        if not p.is_absolute():
-            p = BASE_DIR / p
+    """向量删除成功后提交题库 SQL 清理，最后删除文件。
+
+    向量故障会回滚 SQL 并保留文件，允许重试。SQL、Chroma 与文件系统不具备
+    跨存储原子性：向量已删而 SQL 提交失败时，SQL/文件保留但需重新解析恢复向量；
+    提交后文件清理失败可能遗留文件，不会回滚已完成的 SQL/向量删除。
+    """
+    try:
+        assert_mutations_allowed(db)
+        bank_id = bank.id
+        paths = [Path(d.storage_path) for d in db.query(Document).filter_by(bank_id=bank_id)]
+        q_ids = [row[0] for row in db.query(Question.id).filter_by(bank_id=bank_id).all()]
+        if q_ids:
+            db.query(Favorite).filter(Favorite.question_id.in_(q_ids)).delete(
+                synchronize_session=False
+            )
+        db.query(Question).filter_by(bank_id=bank_id).delete(synchronize_session=False)
+        fts.delete_bank(db, bank_id)
+        db.query(Document).filter_by(bank_id=bank_id).delete(synchronize_session=False)
+        db.query(BankMember).filter_by(bank_id=bank_id).delete(synchronize_session=False)
+        bank.status = "deleted"
+        # SQL 仍在事务内；向量异常时回滚，禁止提前删除任何文件。
+        vectorstore.delete_bank_collection(bank_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    for path in paths:
+        path = path if path.is_absolute() else BASE_DIR / path
         try:
-            p.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError:
             pass
-    db.query(Document).filter(Document.bank_id == bank_id).delete(synchronize_session=False)
-    db.query(BankMember).filter(BankMember.bank_id == bank_id).delete(synchronize_session=False)
-    bank.status = "deleted"
-    db.commit()
-    # 向量库 collection 整体删除
-    vectorstore.delete_bank_collection(bank_id)
 
 
 def purge_document(db: Session, doc: Document) -> None:
-    """删除单个文档：文件、chunk、FTS、向量、批次与题目（历史试卷快照后续步骤处理）。"""
+    """向量删除成功后提交文档 SQL 清理，最后删除文件。
+
+    向量故障会回滚 SQL 并保留文件以便重试；SQL/Chroma/文件系统无法原子提交。
+    向量已删而 SQL 提交失败时，保留的文档需重新解析恢复向量；提交后文件清理
+    失败可能遗留文件。历史试卷快照不在本次清理范围内。
+    """
     from app.models import DocumentChunk, GenerationBatch
 
-    fts.delete_document(db, doc.id)
-    db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete(synchronize_session=False)
-    q_ids = [row[0] for row in db.query(Question.id).filter(Question.document_id == doc.id).all()]
-    if q_ids:
-        db.query(Favorite).filter(Favorite.question_id.in_(q_ids)).delete(synchronize_session=False)
-    db.query(Question).filter(Question.document_id == doc.id).delete(synchronize_session=False)
-    db.query(GenerationBatch).filter(GenerationBatch.document_id == doc.id).delete(synchronize_session=False)
-    db.delete(doc)
-    db.commit()
-    vectorstore.delete_document_chunks(doc.bank_id, doc.id)
-    p = Path(doc.storage_path)
-    if not p.is_absolute():
-        p = BASE_DIR / p
     try:
-        p.unlink(missing_ok=True)
+        assert_mutations_allowed(db)
+        bank_id, doc_id = doc.bank_id, doc.id
+        path = Path(doc.storage_path)
+        fts.delete_document(db, doc_id)
+        db.query(DocumentChunk).filter_by(document_id=doc_id).delete(synchronize_session=False)
+        q_ids = [row[0] for row in db.query(Question.id).filter_by(document_id=doc_id).all()]
+        if q_ids:
+            db.query(Favorite).filter(Favorite.question_id.in_(q_ids)).delete(
+                synchronize_session=False
+            )
+        db.query(Question).filter_by(document_id=doc_id).delete(synchronize_session=False)
+        db.query(GenerationBatch).filter_by(document_id=doc_id).delete(synchronize_session=False)
+        db.delete(doc)
+        vectorstore.delete_document_chunks(bank_id, doc_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    path = path if path.is_absolute() else BASE_DIR / path
+    try:
+        path.unlink(missing_ok=True)
     except OSError:
         pass
 

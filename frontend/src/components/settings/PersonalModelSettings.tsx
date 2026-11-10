@@ -1,14 +1,17 @@
 import { Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { getModelSettings, saveModelSettings, testDeepSeek, testMinerU } from '../../../api/modelSettings'
-import type { ModelSettings } from '../../../api/modelSettings'
+import { getModelSettings, saveModelSettings, testDeepSeek, testMinerU } from '../../api/modelSettings'
+import type { ModelSettings } from '../../api/modelSettings'
+import { useToast } from '../../store/ToastContext'
 
 interface PersonalModelSettingsProps {
   onDirtyChange?: (dirty: boolean) => void
+  onSavingChange?: (saving: boolean) => void
 }
 
-/** 个人中心和设置页共用个人凭据编辑；测试只验证服务端已保存的配置。 */
-export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsProps) {
+/** 设置页个人凭据编辑；测试只验证服务端已保存的配置。 */
+export function PersonalModelSettings({ onDirtyChange, onSavingChange }: PersonalModelSettingsProps) {
+  const { showToast } = useToast()
   const [model, setModel] = useState<ModelSettings | null>(null)
   const [deepseekKey, setDeepseekKey] = useState('')
   const [mineruToken, setMineruToken] = useState('')
@@ -25,12 +28,25 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
 
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+  useEffect(() => () => onSavingChange?.(false), [onSavingChange])
   useEffect(() => {
-    if (!dirty) return
+    if (!dirty && busy !== 'save') return
     const preventLoss = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', preventLoss)
     return () => window.removeEventListener('beforeunload', preventLoss)
-  }, [dirty])
+  }, [dirty, busy])
+
+  const reportError = useCallback((message: string) => {
+    if (!mounted.current) return
+    setError(message)
+    showToast(message, 'error')
+  }, [showToast])
+
+  const reportSuccess = (message: string) => {
+    if (!mounted.current) return
+    setNotice(message)
+    showToast(message, 'success')
+  }
 
   const load = useCallback(async () => {
     if (lock.current) return
@@ -41,12 +57,12 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
       const fresh = await getModelSettings()
       if (mounted.current) setModel(fresh)
     } catch {
-      if (mounted.current) setError('模型配置读取失败，请重试。')
+      reportError('模型配置读取失败，请重试。')
     } finally {
       lock.current = false
       if (mounted.current) setBusy(null)
     }
-  }, [])
+  }, [reportError])
 
   useEffect(() => {
     mounted.current = true
@@ -58,11 +74,12 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
     if (lock.current || !model || !dirty) return
     if ((!clearDeepseek && deepseekKey !== '' && !deepseekKey.trim()) ||
       (!clearMineru && mineruToken !== '' && !mineruToken.trim())) {
-      setError('凭据不能仅含空格；如需删除，请勾选清除个人凭据。')
+      reportError('凭据不能仅含空格；如需删除，请勾选清除个人凭据。')
       return
     }
     lock.current = true
     setBusy('save')
+    onSavingChange?.(true)
     setError('')
     setNotice('')
     try {
@@ -70,6 +87,7 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
         ...(clearDeepseek ? { deepseek_api_key: '' } : deepseekKey.trim() ? { deepseek_api_key: deepseekKey.trim() } : {}),
         ...(clearMineru ? { mineru_token: '' } : mineruToken.trim() ? { mineru_token: mineruToken.trim() } : {}),
       })
+      if (!mounted.current) return
       setDeepseekKey('')
       setMineruToken('')
       setClearDeepseek(false)
@@ -77,23 +95,26 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
       // 写入已确认后，读回失败需明确提示，不能以旧状态继续测试。
       setModel(null)
       try {
-        setModel(await getModelSettings())
-        setNotice('模型配置已保存。现在可以测试已保存的配置。')
+        const fresh = await getModelSettings()
+        if (!mounted.current) return
+        setModel(fresh)
+        reportSuccess('模型配置已保存。现在可以测试已保存的配置。')
       } catch {
-        setError('保存已完成，但最新配置读取失败。请重新读取后再测试。')
+        reportError('保存已完成，但最新配置读取失败。请重新读取后再测试。')
       }
     } catch {
-      setError('模型配置保存未获确认，请重试；当前输入已保留。')
+      reportError('模型配置保存未获确认，请重试；当前输入已保留。')
     } finally {
       lock.current = false
-      setBusy(null)
+      onSavingChange?.(false)
+      if (mounted.current) setBusy(null)
     }
   }
 
   const test = async (service: 'deepseek' | 'mineru') => {
     if (lock.current || !model) return
     if (dirty) {
-      setError('请先保存当前修改，再测试已保存的配置。')
+      reportError('请先保存当前修改，再测试已保存的配置。')
       return
     }
     lock.current = true
@@ -103,12 +124,12 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
     try {
       if (service === 'deepseek') await testDeepSeek()
       else await testMinerU()
-      setNotice(`${service === 'deepseek' ? 'DeepSeek' : 'MinerU'} 已保存配置连接测试通过（含服务端默认配置）。`)
+      reportSuccess(`${service === 'deepseek' ? 'DeepSeek' : 'MinerU'} 已保存配置连接测试通过（含服务端默认配置）。`)
     } catch {
-      setError('已保存配置测试失败，请检查凭据或服务可用性。')
+      reportError('已保存配置测试失败，请检查凭据或服务可用性。')
     } finally {
       lock.current = false
-      setBusy(null)
+      if (mounted.current) setBusy(null)
     }
   }
 
@@ -162,8 +183,8 @@ export function PersonalModelSettings({ onDirtyChange }: PersonalModelSettingsPr
       </fieldset>
       {dirty && <p role="status" className="text-sm text-ink-2">有未保存的修改，请先保存再测试。</p>}
       {model && <div className="rounded-xl border border-dashed border-line bg-page/60 p-3 text-xs text-ink-3">
-        <p>系统内置向量模型：{model.embedding_model}（不可配置）</p>
-        <p className="mt-1">系统内置重排模型：{model.rerank_model}（不可配置）</p>
+        <p>系统向量模型（由管理员配置）：{model.embedding_model}</p>
+        <p className="mt-1">系统重排模型（由管理员配置）：{model.rerank_model}</p>
       </div>}
     </div>
   </section>

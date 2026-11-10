@@ -925,6 +925,234 @@
         }
       }
     },
+    "/api/admin/rag-settings": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Read Settings",
+        "description": "读取系统模型、待应用配置、只读 Chroma 状态与重建进度。",
+        "operationId": "read_settings_api_admin_rag_settings_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RagSettingsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Save Settings",
+        "description": "保存配置；embedding 模型或地址变化须另行重建应用。",
+        "operationId": "save_settings_api_admin_rag_settings_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RagSettingsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RagSettingsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/rag-settings/test": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Test Service",
+        "description": "测试本次模型草稿，不保存输入。",
+        "operationId": "test_service_api_admin_rag_settings_test_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceTestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTestResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/rag-settings/rebuild": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Rebuild",
+        "description": "提交重建任务；成功后原子切换，失败继续使用旧配置及索引。",
+        "operationId": "rebuild_api_admin_rag_settings_rebuild_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RebuildBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RagSettingsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/me": {
       "put": {
         "tags": [
@@ -1873,6 +2101,16 @@
           "204": {
             "description": "Successful Response"
           },
+          "503": {
+            "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -2479,6 +2717,16 @@
           "204": {
             "description": "Successful Response"
           },
+          "503": {
+            "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -2563,7 +2811,7 @@
           "documents"
         ],
         "summary": "Download Document",
-        "description": "下载文档原件；inline=1 供前端「查看」按钮在浏览器直接打开。",
+        "description": "下载当前 storage_path 指向的产物；inline=1 供浏览器直接查看。",
         "operationId": "download_document_api_banks__bank_id__documents__document_id__download_get",
         "parameters": [
           {
@@ -2613,10 +2861,85 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "当前 storage_path 指向的文件；inline 参数决定内联展示或附件下载",
+            "headers": {
+              "Content-Disposition": {
+                "description": "inline 或 attachment，附带 filename 或 filename* 文件名",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或凭据已失效",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "当前账号无教学资源访问权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "题库、文档或当前文件不存在或不可访问",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "依赖服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -2684,6 +3007,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "向量存储或嵌入服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -2857,6 +3190,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "向量存储或嵌入服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -6142,6 +6485,77 @@
         ],
         "title": "AccountPasswordBody"
       },
+      "ActiveSettings": {
+        "properties": {
+          "embedding_model": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Embedding Model"
+          },
+          "embedding_base_url": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Embedding Base Url"
+          },
+          "rerank_model": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Rerank Model"
+          },
+          "rerank_base_url": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Rerank Base Url"
+          },
+          "embedding_key_configured": {
+            "type": "boolean",
+            "title": "Embedding Key Configured"
+          },
+          "embedding_key_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Key Masked"
+          },
+          "rerank_key_configured": {
+            "type": "boolean",
+            "title": "Rerank Key Configured"
+          },
+          "rerank_key_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Key Masked"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "embedding_model",
+          "embedding_base_url",
+          "rerank_model",
+          "rerank_base_url",
+          "embedding_key_configured",
+          "embedding_key_masked",
+          "rerank_key_configured",
+          "rerank_key_masked"
+        ],
+        "title": "ActiveSettings"
+      },
       "AttemptAnswerBody": {
         "properties": {
           "paper_question_id": {
@@ -6641,6 +7055,39 @@
         "type": "object",
         "title": "EmptyBody",
         "description": "Cookie 认证请求必须提供 JSON 对象，不接受表单或任意原始正文。"
+      },
+      "ErrorDetail": {
+        "additionalProperties": true,
+        "description": "实际业务错误；额外上下文保持兼容，不返回请求输入。",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "统一脱敏错误外层，422 不使用默认验证错误数组。",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
       },
       "FavoriteAddBody": {
         "properties": {
@@ -7238,6 +7685,41 @@
         ],
         "title": "PasswordBody"
       },
+      "PendingSettings": {
+        "properties": {
+          "embedding_model": {
+            "type": "string",
+            "title": "Embedding Model"
+          },
+          "embedding_base_url": {
+            "type": "string",
+            "title": "Embedding Base Url"
+          },
+          "embedding_key_configured": {
+            "type": "boolean",
+            "title": "Embedding Key Configured"
+          },
+          "embedding_key_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Key Masked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "embedding_model",
+          "embedding_base_url",
+          "embedding_key_configured",
+          "embedding_key_masked"
+        ],
+        "title": "PendingSettings"
+      },
       "PersistedBatchItem": {
         "properties": {
           "id": {
@@ -7438,6 +7920,172 @@
         "type": "object",
         "title": "QuestionUpdateBody"
       },
+      "RagSettingsBody": {
+        "properties": {
+          "embedding_model": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Embedding Model"
+          },
+          "embedding_base_url": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Embedding Base Url"
+          },
+          "rerank_model": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Rerank Model"
+          },
+          "rerank_base_url": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Rerank Base Url"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          },
+          "embedding_api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Api Key"
+          },
+          "rerank_api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Api Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "embedding_model",
+          "embedding_base_url",
+          "rerank_model",
+          "rerank_base_url",
+          "revision"
+        ],
+        "title": "RagSettingsBody",
+        "description": "空凭据保持原值；revision 用于防止其他管理员的修改被覆盖。"
+      },
+      "RagSettingsResult": {
+        "properties": {
+          "active": {
+            "$ref": "#/components/schemas/ActiveSettings"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vector_store": {
+            "$ref": "#/components/schemas/VectorStoreStatus"
+          },
+          "rebuild": {
+            "$ref": "#/components/schemas/RebuildStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active",
+          "pending",
+          "vector_store",
+          "rebuild",
+          "revision"
+        ],
+        "title": "RagSettingsResult"
+      },
+      "RebuildBody": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "title": "RebuildBody",
+        "description": "明确应用当前待处理配置，不接受任意索引或文件路径。"
+      },
+      "RebuildStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "progress",
+          "stage",
+          "error"
+        ],
+        "title": "RebuildStatus"
+      },
       "ResetPasswordBody": {
         "properties": {
           "new_password": {
@@ -7514,6 +8162,72 @@
           "query"
         ],
         "title": "SearchBody"
+      },
+      "ServiceTestBody": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "enum": [
+              "embedding",
+              "rerank"
+            ],
+            "title": "Service"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Model"
+          },
+          "base_url": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "service",
+          "model",
+          "base_url"
+        ],
+        "title": "ServiceTestBody",
+        "description": "连接测试只使用本次输入和相应已保存凭据，不保存草稿。"
+      },
+      "ServiceTestResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true,
+            "title": "Ok",
+            "default": true
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ServiceTestResult"
       },
       "SpaceCreateBody": {
         "properties": {
@@ -7855,38 +8569,34 @@
         ],
         "title": "ValidationError"
       },
-      "ErrorDetail": {
-        "additionalProperties": true,
-        "description": "实际业务错误；额外上下文保持兼容，不返回请求输入。",
+      "VectorStoreStatus": {
         "properties": {
-          "code": {
-            "title": "Code",
-            "type": "string"
+          "backend": {
+            "type": "string",
+            "const": "chroma",
+            "title": "Backend",
+            "default": "chroma"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
           },
           "message": {
-            "title": "Message",
-            "type": "string"
+            "type": "string",
+            "title": "Message"
           }
         },
+        "type": "object",
         "required": [
-          "code",
+          "path",
+          "available",
           "message"
         ],
-        "title": "ErrorDetail",
-        "type": "object"
-      },
-      "ErrorResponse": {
-        "description": "统一脱敏错误外层，422 不使用默认验证错误数组。",
-        "properties": {
-          "detail": {
-            "$ref": "#/components/schemas/ErrorDetail"
-          }
-        },
-        "required": [
-          "detail"
-        ],
-        "title": "ErrorResponse",
-        "type": "object"
+        "title": "VectorStoreStatus"
       }
     }
   }
