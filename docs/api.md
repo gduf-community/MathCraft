@@ -2,6 +2,8 @@
 
 本文件由根目录 `openapi.json` 自动生成；运行时契约以 `/openapi.json` 和 `/docs` 为准。
 
+已确认但尚未实现的运维扩展见[运维后台方案](design/运维后台升级方案.md)及[接口与联调契约](design/运维后台接口与联调契约.md)。其中拟新增端点不属于当前 OpenAPI；实施时需同步 schema、生成契约、本文及前端映射，并核对生成器覆盖范围。
+
 后端入口为 `app.main:app`，示例地址 `http://127.0.0.1:8000`。除健康检查及公开认证流程外，受保护 HTTP 接口使用 `Authorization: Bearer <access_token>`；刷新要求 HttpOnly Cookie、可信 Origin 和 `X-CSRF-Token`；退出另外要求本标签的 `Authorization`，仅撤销该访问令牌绑定的会话，不清除其他会话的共享 Cookie。
 
 认证、资料字段、错误响应以 OpenAPI schema 为准，不再使用历史单用户设置接口。完整认证与迁移约定见 [用户系统实施规格](design/用户系统实施规格.md) 和[认证设计](design/用户系统功能规格.md)。
