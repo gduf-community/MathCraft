@@ -1,6 +1,6 @@
 # MathCraft 前端
 
-React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作台，管理员进入管理面板。账号由管理员开通，认证接入真实 HTTP API。主体方案已实现，前端及浏览器回归通过，完整后端验收受 Chroma 初始化失败阻塞。
+React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作台，管理员进入管理面板。账号由管理员开通，认证接入真实 HTTP API。主体方案与上传／预览增量已实现；实际 SQL 迁移／存储与运行设置服务已核验，标准 build／typecheck 通过，lint 仅 3 条既有 warnings。完整后端全量基线已通过，末轮定向验证与独立审查已完成；文末及旧章节数字均为各自历史批次，不能累计或视为当前全量通过。
 
 ## 启动与开发安全
 
@@ -35,6 +35,41 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作
 - 单标签刷新单飞，Web Locks 跨标签串行登录、刷新、退出、config Cookie 更新及改密/重置/绑定/换绑/解绑响应；需要续期先在锁外完成，锁内不自动刷新或重放安全写请求。BroadcastChannel 按用户/会话/已验证目标邮箱传播失效，不广播 token；不支持安全协调时明确失败。
 - 401 写请求仅在 ACCESS_TOKEN_EXPIRED 明确认证阶段未执行时最多重试一次；SESSION_REVOKED、TOKEN_EXPIRED 清理状态，不盲目重放。启动清理旧 mathcraft-auth/mc_token/mathcraft-token。
 
+## 模型配置与知识库边界（2026-11-10）
+
+本轮设置职责拆分、管理员模型与检索及统一保存反馈已实现，验证记录见文末，完整流程见 [设置拆分与保存反馈设计](../docs/design/设置拆分与保存反馈设计.md)。
+
+应用设置仅展示“模型与服务”，由 `src/components/settings/PersonalModelSettings.tsx` 调用 `/api/users/me/model-settings` 保存个人 DeepSeek Key、MinerU Token。留空保留、勾选清除后保存；个人连接测试使用服务端已保存配置及兜底，有未保存输入或写后读回失败时禁用测试。向量／重排只读展示平台活动模型。个人中心仅保留资料和安全设置，不再展示模型编辑或模型状态摘要。
+
+管理员页面采用左侧导航、右侧内容，保留平台概览、账号管理和账号安全，增加“模型与检索”。`RagSettingsPanel` 可分别编辑嵌入／重排的模型标识、服务 URL 和凭据，Chroma 类型、路径与状态只读。经 `src/api/adminRagSettings.ts` 调用 `GET/PUT /api/admin/rag-settings`、`POST .../test` 与 `POST .../rebuild`（202）；响应无明文凭据，密钥留空保留，管理员不提供清除入口。管理员连接测试使用当前草稿但不保存，与个人模型测试规则不同。
+
+嵌入模型／URL 保存后显示“已保存，待重建应用”，同次嵌入凭据跟随 pending；活动嵌入凭据单独更新、重排模型／URL／凭据更新用于后续请求。确认重建后复用 ready 文档的 SQL chunks，无需重新 OCR；旧库继续查询与出题，上传、重解析和文档／整库删除暂时暂停。状态每 2 秒轮询，成功切换、失败保留旧配置和索引及 pending 并支持重试；保存与重建携带 revision，409 冲突时保留草稿，要求载入已保存配置后重新编辑。
+
+`ToastProvider` 位于认证上下文内、业务上下文外，普通工作台和管理员共用顶部居中提示：成功绿色约 3 秒，错误红色约 6 秒，带图标、文字、手动关闭及辅助技术播报；字段错误仍就地保留。覆盖模型与服务、资料与安全操作、题库设置、管理员配置和模型测试，会话失效清除提示并拒绝旧请求迟到反馈。个人配置写入确认后读回失败明确提示“已保存，最新配置读取失败”，禁用测试直到重新读取。
+
+普通设置与管理员模型配置均有草稿保护：未保存修改时内部导航通过 `window.confirm` 确认放弃，取消后保留页面与草稿；保存中阻止内部导航，未保存或操作进行中通过 `beforeunload` 保护关闭／刷新页面。
+
+题库资料主流程继续通过 `/api/banks`，包含三档权限、上传、轮询、预览、重解析及单文档出题；应用设置已移除旧知识库连接、引擎与解析分区，题库配置从题库管理进入。扫描件简化后查看／下载返回当前 MD 产物，独立原 PDF 入口、多资料共同出题和解析版本选择仍有缺口。
+
+当前配置范围及契约见 [模型配置功能规格](../docs/design/模型直接配置功能规格.md)、[配置来源和流程](../docs/design/模型配置来源与普通知识库流程.md) 及 [API 文档](../docs/api.md)；知识库完成情况、权限和验收边界见 [知识库模块说明](../docs/design/知识库模块说明.md)。后端部署前须完成 `i4d5e6f7a890` 的 `alembic upgrade head` 并保持单 worker，详见 [后端 README](../backend/README.md)。本轮验证记录见文末，历史通过记录不替代本轮验收。
+
+## 上传、预览、失败详情与删除缓存
+
+题库新建／编辑／查看共用格式、空文件和名称+`size`+`lastModified` 去重校验，支持 PDF、DOCX、XLSX、MD、markdown、TXT（扩展名不区分大小写，markdown 显示为 MD）。同名不同大小或修改时间允许加入；没有内容哈希／服务端去重保证，不另设前端上传大小上限。选择支持 multiple，虚线区接收全部拖放文件并串行处理，支持 Enter／空格及拖放／键盘焦点高亮；忙时再次加入明确显示红色提示。
+
+新建首请求受理前保留名称与全部文件，首拒绝保留草稿；首成功后记录 `bankId`，后续只上传到该题库。部分成功时保留未受理文件，重试不重复建库或重传已成功文件。批量提交中禁止关闭；新建全部受理成功后才关闭并提示绿色，部分失败保留弹窗与红色详情。受理不等于后台 `ready`。列表将 `error_message/ocr_status` 映射为 `errorMessage/ocrStatus`，通过可访问按钮展开失败原因、处理阶段及 OCR 状态，文本可选择复制；有编辑权限时可重新解析，只读成员仅查看。重试成功表示重新排队，处理中使用信息色。
+
+| 当前格式／边界 | 预览与失败处理 |
+| --- | --- |
+| MD、TXT | 传递 `docFormat`；严格 UTF-8 与媒体类型校验，最多 2 MiB，按声明长度和流式实际字节双重检查，60 秒超时。TXT 保留源文本，不解释 Markdown／公式 |
+| 文本分页 | 每页最多 40 块／2 万 UTF-16 字符单位，只挂载当前页公式；MD 超长单块截断为纯文本并提示下载全文，TXT 连续切页保留全文，切分避免断开代理对 |
+| PDF | 点击同步预开窗口，通过认证请求取 PDF Blob（不解码文本），校验 `application/pdf` 后用对象 URL 显示；180 秒超时，窗口内可重试或下载，弹窗被拦截明确提示 |
+| DOCX、XLSX | 显示不支持内联预览并提供下载，不触发文本预览 |
+| 取消与下载 | 关闭／切换文档／注销取消关联请求，抑制旧反馈，释放对象 URL；主动取消不显示错误。下载同样为 180 秒超时，不受 2 MiB 文本预览上限限制 |
+| 错误分类 | 客户端区分 `DOCUMENT_TIMEOUT`、`DOCUMENT_HTTP_ERROR`、`DOCUMENT_CONTENT_TYPE`、`DOCUMENT_TOO_LARGE`、`DOCUMENT_POPUP_BLOCKED`；后台嵌入／向量存储失败使用安全中文消息，OCR／未知异常按结构化分类及固定文案脱敏；上传体积拒绝与文本预览上限按所在环节区分 |
+
+上传受理和重新解析通过 `onChanged() → refreshKbs` 刷新题库与当前 docs 缓存。编辑／查看弹窗确认删除成功后先移除本地行，再调用 `onChanged(documentId)`；`BankTab/index.tsx` 先调用 `AppContext.invalidateDocument(bankId, documentId)`，立即移除当前题库 docs 中的该项、清空对应文档选择并递增请求版本，随后异步刷新。刷新失败时保持删除后的缓存状态，删除前的旧请求不能重新写回已删项。刷新另以会话、题库 ID 和请求版本防止旧响应覆盖，题库消失时清空题库／文档选择和 docs。刷新失败显示错误；客户端缓存失效不表示服务端 OCR／Redis 缓存或全部派生文件已清理。服务端先在事务内清理 SQL、向量成功后 commit、最后删除当前文件，向量失败会回滚 SQL 并保留文件；跨存储异常边界见 [知识库说明](../docs/design/知识库模块说明.md#9-数据布局删除与待实现目标)。
+
 ## 目录与模块
 
 | 路径 | 职责 |
@@ -42,16 +77,25 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作
 | src/api/session.ts | 内存会话、CSRF、Cookie、刷新协调、统一认证 HTTP |
 | src/api/auth.ts | 严格认证与安全资料契约、密码规则 |
 | src/api/backend.ts | 业务请求和 DTO 映射；共用会话传输 |
-| src/api/settingsHttp.ts、urls.ts | 设置接口及公开服务地址 |
+| src/api/banks.ts | 题库适配、权限与文档字段映射，保留失败详情和 OCR 状态 |
+| src/api/documentPreview.ts | 认证预览／下载、2 MiB 文本读取、超时取消和 PDF Blob 窗口生命周期 |
+| src/api/modelSettings.ts、adminRagSettings.ts、urls.ts | 个人凭据、管理员模型与重建接口及公开服务地址 |
 | src/store/AuthContext.tsx | 会话恢复、登录门禁、退出 |
 | src/store/AppContext.tsx | 业务状态与资料保存 |
+| src/store/ToastContext.tsx、src/components/ui/Toast.tsx | 普通用户／管理员共用的顶部居中反馈、显示时间与会话隔离 |
 | src/components/auth/ | LoginPage、EmailCodeFields、Turnstile |
-| src/components/tabs/ProfileTab/ | 基本资料、模型配置、SecuritySettings |
-| src/components/settings/ | 模型、知识库、解析配置 |
+| src/components/tabs/ProfileTab/ | 基本资料与 SecuritySettings |
+| src/components/settings/ | SettingsPage、ModelSettings、PersonalModelSettings，普通设置仅模型与服务 |
+| src/components/admin/AdminPanel.tsx、RagSettingsPanel.tsx | 左侧导航／右侧内容，系统模型编辑、只读 Chroma 与重建进度 |
 | src/components/tabs/ | 出题、预览、题库、组卷记录、空间、收藏 |
+| src/components/tabs/BankTab/BankCreateModal.tsx、BankEditModal.tsx、BankViewModal.tsx | 建库草稿／部分成功重试、批量上传、失败详情、权限与预览分流 |
+| src/components/tabs/BankTab/uploadFiles.ts、useDocUpload.ts、shared.tsx | 共用格式／空文件／文件身份去重、串行受理、键盘与拖放上传区、错误展开 |
+| src/components/tabs/BankTab/DocPreviewModal.tsx、documentPreviewBlocks.ts | MD／TXT 分页、超长块降级、当前页公式、重试与关闭取消 |
 | src/styles/login.css | 既有品牌/背景/玻璃面板与两种登录入口响应式布局 |
 | e2e-auth.mjs | 浏览器/HTTP 接缝合成认证回归 |
 | merge-frontend-regression.mjs | 主线整合的题库权限、预览、通知及聊天并发离线浏览器回归 |
+| document-upload-regression.mjs | 离线真实上传／列表组件、串行与失败草稿／重试、字段映射、权限及预览分流回归 |
+| document-preview-regression.mjs | 真实预览传输与组件的有界读取、格式／UTF-8、分页、超时／取消及 PDF 窗口回归 |
 | vite.auth-test.config.mjs | 仅回环绑定、独立空环境目录、不代理真实后端的测试服务器 |
 
 ## 检查与浏览器验证
@@ -69,9 +113,31 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，教师与学生共用工作
 
 Windows 若 esbuild 报系统临时目录 Access denied，可将当前进程 TEMP/TMP 指向本任务专用可写临时目录后重试构建；该目录与 dist、node_modules junction 均不得提交。
 
+2026-11-10 本次标准 `npm run build` 已在仅将启动进程 TEMP／TMP 指向可写 `backend/data/tmp` 后成功，无需 manualChunks workaround，未修改仓库构建配置或依赖版本。typecheck 通过；lint 为 0 errors、3 条既有 warnings，无新增。该临时目录及产物不提交。
+
+以下命令保留为此前设置拆分阶段的历史 workaround：当时曾临时分包并保留默认压缩和转译，不修改仓库 Vite 配置；当前标准构建已通过，不再把它作为本次构建的必要条件：
+
+```powershell
+node --input-type=module -e "import { build } from 'vite'; await build({ build: { rollupOptions: { output: { manualChunks(id) { if (id.includes('node_modules/katex')) return 'katex'; if (id.includes('node_modules')) return 'vendor'; } } } } });"
+```
+
 
 认证审查回归：在 frontend 目录运行 `node auth-session-regression.mjs`。该脚本通过真实会话模块的公开接口验证认证响应原子提交、跨标签身份切换不重放和旧刷新不清理新登录；仅替换浏览器协调与 HTTP，不访问真实服务。开发账号按钮使用 POST `/api/auth/development-account?role=...`（JSON `{}`），保持精确 Origin 来源校验。原 GET 仅为兼容入口。
 
+
+### 上传与预览离线回归
+
+本轮完整后端全量基线（主代理提供，2026-11-10）：仓库根 `.venv` 在可写进程 `TEMP/TMP` 下运行完整 pytest，**479 passed、81 subtests passed、无失败，耗时 1329.22 秒**，日志 `pytest-full.log`。该基线早于随后追加的 Redis 排队／错误脱敏修复，不能作为这些后续修改的最终全量快照。验证记录统一采用“全量基线＋末轮定向”，末轮后端定向 81 项通过，独立审查的三项新发现均已修复并复核关闭；各批次数量不累计。
+
+在 `frontend/` 执行 `node document-upload-regression.mjs` 与 `node document-preview-regression.mjs`。脚本复用本机 `mathcraft-auth-browser` 测试工具目录中的 `playwright-core` 及已安装 Chromium，`AUTH_BROWSER` 可指定浏览器路径；不启动后端、无需真实账号或模型。运行前按脚本实际依赖准备测试工具，不将它们误写成已声明的生产依赖。
+
+上传脚本挂载真实新建／编辑／查看弹窗、上传 hook、banks 字段映射和 Toast，替换请求／会话与预览边界，阻断外网。覆盖 multiple／全部拖放文件、串行、首拒绝保草稿、部分成功保留 `bankId` 且只重试未提交文件、busy 拒绝与关闭保护、格式／空文件／同批跨批去重、同名不同文件、失败详情与角色权限、上传／删除回调及 PDF／MD／TXT／Office 分流。它验证回调与预览契约，不据此宣称真实 AppContext 或完整预览实现已经验收。
+
+预览脚本独立覆盖真实预览边界和组件的上限、严格 UTF-8、媒体类型、分页与长块、超时、取消／注销、对象 URL、PDF 窗口／重试／下载及渲染隔离；AppContext 当前文档缓存与选择同步由相应主线整合回归核对。最终预览 23 项、上传 10 组、整合 24 组通过，其余结果见下方「末轮收尾记录」，各批次数量不累计。
+
+### 本次运行恢复与最终验收边界（2026-11-10）
+
+主代理已确认实际库迁至 `i4d5e6f7a890`，业务行数量不变、quick_check=ok；Chroma 1.5.9 在进程可写 TEMP／TMP 下，副本假向量 probe 与原路径 heartbeat／list 通过，运行 settings service 返回 `vector_store.available=true`、pending=false、rebuild idle。原索引记录为 0，原 PDF 仍 failed、chunks=0、原件存在；这不是资料已重新入库或真实嵌入／OCR 已验收。当前没有可复用活动管理员会话，未伪造／创建会话；运行 OpenAPI 四个管理员配置操作存在不等于管理员已认证 HTTP／UI 已验收。备份和证据文件见 [后端恢复记录](../backend/README.md#本机-sqlite-备份与-chroma-临时目录恢复2026-11-10已核验)。末轮定向验证与独立审查结果已记录在下方「末轮收尾记录」。
 
 ### 工作台窄屏布局
 
@@ -85,7 +151,7 @@ PR #8 修复回归：运行 `node auth-session-regression.mjs` 与 `node logout-
 
 账号由管理员开通，所有启用账号默认使用 account 密码登录；可选已验证邮箱登录，均由服务端识别三角色，页面不选身份。管理员安全区域支持自身邮箱配置，历史邮箱不自动验证，未验证邮箱不阻断密码登录。运维管理员进入管理面板，不能进入题库教学工作台。个人资料保存等待服务端成功，空手机号可清除；未填写性别不默认选择。个人模型凭据通过用户级接口保存或明确清除，连接测试只针对已保存凭据。当前支持的个人模型配置与认证边界见 [整合设计](../docs/design/账号系统整合与审查修复.md)。
 
-会话回归：`node auth-session-regression.mjs`、`node logout-session-regression.mjs`、`node isolation-session-regression.mjs`。管理面板离线回归：`node admin-panel-regression.mjs`。`src/components/tabs/ProfileTab/PersonalModelSettings.tsx` 为两页共享组件。Vite 使用启动时新建的空临时目录，隔离项目 `.env` 文件；进程显式注入的 `VITE_*` 仍属于公开前端配置。
+会话回归：`node auth-session-regression.mjs`、`node logout-session-regression.mjs`、`node isolation-session-regression.mjs`。管理面板离线回归：`node admin-panel-regression.mjs`。`src/components/settings/PersonalModelSettings.tsx` 为当前设置页的个人模型编辑组件，个人中心不再挂载。Vite 使用启动时新建的空临时目录，隔离项目 `.env` 文件；进程显式注入的 `VITE_*` 仍属于公开前端配置。
 
 ## 主线整合验证（2026-11-10）
 
@@ -114,3 +180,19 @@ PR #8 修复回归：运行 `node auth-session-regression.mjs` 与 `node logout-
 本次已通过前端 typecheck；lint 为 0 错误、15 条原有警告。build 在独立 TEMP 重试成功，首次失败为 esbuild 默认 TEMP 清理权限问题。OpenAPI 与 docs/api.md 已在测试隔离环境重新生成并核对注册/学工号登录路由删除、绑定/解绑存在、EmailLogin 无 role、UserPayload.email_verified 为必填字段。
 
 本次已通过 auth-session-regression、logout-session-regression、isolation-session-regression、admin-panel-regression、e2e-auth 五个脚本，五个脚本 ESLint 为 0 错误、0 警告。浏览器无异常或意外外网请求；桌面与 375px 截图已完成视觉检查，产物在 output/playwright/auth-account/，包含 login-desktop/mobile 及安全区 8 张截图。本次七份文档的相对本地链接检查 missing_local_links=0。后端用户 ID 绑定修复后的 127 项认证相关测试已通过。Ruff（含 scripts）保留 11 项既有诊断、Pyright 保留 19 项既有诊断，新增诊断均为 0，本次修改文件的 Ruff 通过。后端完整 pytest 已执行：285 passed、79 subtests passed、20 failed，耗时 16 分 26 秒。20 项失败集中于文档、聊天、出题和健康检查，底层 Chroma PersistentClient 报 `InternalError: (code: 14) unable to open database file`；独立新目录初始化同样复现，无需经过认证或业务 API。扫描 PDF 用例也在扫描检测前的向量清理处中断。本次认证用例没有失败，但完整后端验收未通过，不能将本轮记录为全量通过。
+
+## 本轮设置拆分验证记录（2026-11-10）
+
+三组会话 Node 脚本和桌面／320px／375px 的 19 项隔离浏览器检查已通过，未访问真实服务。最终 `npm run typecheck` 通过，`npm run lint` 为 0 errors、3 条既有 warnings（旧孤立组件清理后由 15 条降至 3 条）。默认 `npm run build` 遇到 esbuild 输入临时文件删除 `Access denied`；保持仓库原构建配置，通过 Vite Node API 临时传入 katex／vendor 的 manualChunks 分包参数、保留默认 minify／target 后生产构建通过。admin-panel-regression 与 merge-frontend-regression 两组既有浏览器回归均通过，包含未保存确认与保存／读回期间导航保护。完整记录与验证边界见[设置拆分设计的本轮验证记录](../docs/design/设置拆分与保存反馈设计.md#验证记录)，历史批次不替代本轮结果。
+
+#### 末轮收尾记录（2026-11-10）
+
+后续补丁定向运行 `backend/tests/test_document_failure_recovery.py` 与现有文档接口测试：**81 passed**。覆盖原生 Chroma 假向量读写、Redis 进度缓存失效后仍能调度及重试、OCR／简化／兜底异常脱敏、删除失败保留 SQL 与原件、全局安全 503、下载媒体类型。此结果与前述 479 项全量基线分别记录，不相加，也不称为后续补丁的再次全量执行。
+
+前端最终 typecheck、lint 和标准 build 通过；lint 为 **0 errors、3 条既有 warnings**，build 保留既有大包体积提示，构建进程使用可写 TEMP／TMP。预览 **23 项**、上传 **10 组**、整合 **24 组**回归通过，auth／logout／isolation 会话回归及管理员面板回归通过。整合用例包括删除立即失效、同名上传按 ID 选择、通知与上传交错、切库期间题库列表同步；题库列表和文档列表使用独立版本，待选上传 ID 由最后有效文档结果消费，手动选择、切库和删除清理旧意图。
+
+最终 Ruff 的本轮实现及新增测试通过；全范围仍有 `backend/tests/test_banks.py:73` 的既有 F841。Pyright 为 **16 项既有诊断，无本轮新增**，没有把两项全范围静态检查记为零诊断通过。根 OpenAPI 已重新生成并核对 **108 个 HTTP 操作**，下载声明五种文件媒体类型及二进制 schema，API 索引同步生成。
+
+两名未参与实现的独立审查员覆盖前端 20 个、后端 11 个增量文件：三项新发现（Redis 排队卡死、上传选择被通知刷新吞掉、切库丢弃全局题库列表）已修复并复核关闭，末轮无未关闭发现。OCR 异常脱敏也已独立复核。限定审查及复核记录在 `output/implementation/documents-recovery-20261110/`，备份与证据为忽略的本机运行产物，不提交。
+
+本机后端已用最终源码、原持久化路径、可写进程 TEMP／TMP 和单 worker 再次启动，运行 OpenAPI 四项管理员配置操作及下载媒体类型一致，运行 settings service 的向量存储可用。当前没有可复用的活动管理员会话，未伪造或创建会话，因此未将真实管理员已认证 HTTP／UI 登录流程列为已验收。真实 PDF 保持 failed、chunks=0 且原件保留，由用户主动“重新解析”触发后续处理；本轮没有真实 OCR、嵌入或付费模型验收，也没有清库或升级 Chroma。

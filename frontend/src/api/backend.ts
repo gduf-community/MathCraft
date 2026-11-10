@@ -16,7 +16,9 @@ import type {
 } from '../types'
 
 import { apiUrl } from './urls'
-import { ApiError, authenticatedOperation, assertCurrentSession, getSessionGeneration, request, sessionFetch } from './session'
+import { downloadDocument as downloadPreviewDocument, fetchDocumentText as fetchPreviewText, openPdfDocument as openPdfPreview } from './documentPreview'
+import type { TextDocumentFormat } from './documentPreview'
+import { ApiError, authenticatedOperation, request } from './session'
 export { ApiError, request, setApiToken } from './session'
 
 export function fileUrl(path: string): string {
@@ -347,42 +349,24 @@ export async function deleteDocument(bankId: string, docId: string): Promise<voi
   await request<void>(`/api/banks/${bankId}/documents/${docId}`, { method: 'DELETE' })
 }
 
-export async function downloadDocument(bankId: string, docId: string, name: string): Promise<void> {
-  const started = getSessionGeneration()
-  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download`)
-  if (!resp.ok) throw new ApiError('下载失败（HTTP ' + resp.status + '）')
-  const blob = await resp.blob()
-  assertCurrentSession(started)
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
+/** 文档下载，支持预览生命周期取消。 */
+export async function downloadDocument(bankId: string, docId: string, name: string, signal?: AbortSignal): Promise<void> {
+  await downloadPreviewDocument(bankId, docId, name, signal)
 }
 
-/** 读取文档文本（简化版 Markdown），供应用内预览渲染。 */
-export async function fetchDocumentText(bankId: string, docId: string): Promise<string> {
-  const started = getSessionGeneration()
-  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download?inline=1`)
-  if (!resp.ok) throw new ApiError('打开失败（HTTP ' + resp.status + '）')
-  const text = await resp.text()
-  assertCurrentSession(started)
-  return text
+/** UTF-8 文本限 2 MiB、60 秒，默认 MD 兼容旧入口。 */
+export async function fetchDocumentText(bankId: string, docId: string, signal?: AbortSignal, docFormat: TextDocumentFormat = 'MD'): Promise<string> {
+  return fetchPreviewText(bankId, docId, signal, docFormat)
 }
 
-/** 浏览器新标签页直接打开文档内容（inline 模式）。 */
+/** 点击时同步预开 PDF 窗口，随后携带认证请求 Blob。 */
+export async function openPdfDocument(bankId: string, docId: string): Promise<void> {
+  return openPdfPreview(bankId, docId)
+}
+
+/** 兼容旧 PDF 查看入口。 */
 export async function viewDocument(bankId: string, docId: string): Promise<void> {
-  const started = getSessionGeneration()
-  const resp = await sessionFetch(`/api/banks/${bankId}/documents/${docId}/download?inline=1`)
-  if (!resp.ok) throw new ApiError('打开失败（HTTP ' + resp.status + '）')
-  const blob = await resp.blob()
-  assertCurrentSession(started)
-  const url = URL.createObjectURL(blob)
-  window.open(url, '_blank', 'noopener,noreferrer')
-  window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+  return openPdfPreview(bankId, docId)
 }
 
 /* ---------------- 出题与题目 ---------------- */

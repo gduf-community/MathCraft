@@ -1,12 +1,10 @@
 /** 题库信息编辑弹窗：基本信息、创建者管理成员、文档预览与入库进度 */
 import { useEffect, useRef, useState } from 'react'
-import type { DragEvent } from 'react'
 import {
   Download,
   Eye,
   FileUp,
   FolderCog,
-  RotateCcw,
   Settings2,
   Trash2,
   UserX,
@@ -14,10 +12,12 @@ import {
   X,
 } from 'lucide-react'
 import * as bankApi from '../../../api/banks'
-import type { ManagedBank } from '../../../api/banks'
+import type { BankDoc, ManagedBank } from '../../../api/banks'
+import { openPdfDocument } from '../../../api/documentPreview'
 import { assertCurrentSession, getSessionGeneration } from '../../../api/session'
-import { useApp } from '../../../store/AppContext'
-import { Avatar, FormatBadge, SectionTitle } from './shared'
+import { useToast } from '../../../store/ToastContext'
+import { updateBank } from '../../../api/backend'
+import { Avatar, DocumentDropZone, DocumentFailure, FormatBadge, SectionTitle } from './shared'
 import DocPreviewModal from './DocPreviewModal'
 import { useDocUpload } from './useDocUpload'
 
@@ -28,22 +28,26 @@ export default function BankEditModal({
 }: {
   bank: ManagedBank
   onClose: () => void
-  onChanged: () => void
+  onChanged: (deletedDocumentId?: string) => void
 }) {
-  const { showToast } = useApp()
+  const { showToast } = useToast()
+  const [saveError, setSaveError] = useState('')
+  const saveLock = useRef(false)
   const [name, setName] = useState(bank.name)
   const [memberAccount, setMemberAccount] = useState('')
   const [memberRole, setMemberRole] = useState<'editor' | 'readonly'>('readonly')
   const [docs, setDocs] = useState(bank.docs)
   const [members, setMembers] = useState(bank.members)
-  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
+  const [preview, setPreview] = useState<BankDoc | null>(null)
   const [saving, setSaving] = useState(false)
-  const [dragOver, setDragOver] = useState(false)
-  const fileInput = useRef<HTMLInputElement>(null)
   const session = useRef(getSessionGeneration())
-  const { start } = useDocUpload(bank.id, () => {
-    void bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
-      .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+  const { start, busy: uploading } = useDocUpload(bank.id, () => {
+    onChanged()
+    void bankApi.getBankDetail(bank.id).then((fresh) => {
+      assertCurrentSession(session.current)
+      setDocs(fresh.docs)
+    })
+      .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败', 'error'))
   }, showToast)
 
   const iconBtn = 'flex h-7 w-7 items-center justify-center rounded-md transition-colors'
@@ -56,35 +60,55 @@ export default function BankEditModal({
       if (session.current !== getSessionGeneration()) return
       void bankApi
         .getBankDetail(bank.id)
-        .then((fresh) => setDocs(fresh.docs))
-        .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败'))
+        .then((fresh) => {
+          assertCurrentSession(session.current)
+          setDocs(fresh.docs)
+        })
+        .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败', 'error'))
     }, 3000)
     return () => window.clearInterval(timer)
   }, [processing, bank.id, showToast])
 
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault()
-    setDragOver(false)
-    if (!bank.canUpload) return
-    const file = e.dataTransfer.files?.[0]
-    if (file) start(file)
+  const close = () => {
+    if (uploading || saveLock.current) {
+      showToast('正在上传或保存，请等待完成后再关闭', 'error')
+      return
+    }
+    onClose()
   }
 
   const save = async () => {
-    if (!bank.canEdit || saving) return
-    if (!name.trim()) {
-      showToast('题库名称不能为空')
+    if (!bank.canEdit || saveLock.current) return
+    if (uploading) {
+      showToast('文档正在批量上传，请等待完成后再保存', 'error')
       return
     }
+    if (!name.trim()) {
+      setSaveError('题库名称不能为空')
+      showToast('题库名称不能为空', 'error')
+      return
+    }
+    saveLock.current = true
     setSaving(true)
+    setSaveError('')
+    let writeConfirmed = false
     try {
-      await bankApi.updateBank(bank.id, { name: name.trim() })
-      showToast('题库信息已保存')
+      await updateBank(bank.id, { name: name.trim() })
+      writeConfirmed = true
+      const fresh = await bankApi.getBankDetail(bank.id)
+      assertCurrentSession(session.current)
+      setName(fresh.name)
+      setDocs(fresh.docs)
+      setMembers(fresh.members)
       onChanged()
+      showToast('题库信息已保存', 'success')
       onClose()
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '保存题库失败')
+      const message = writeConfirmed ? '题库信息已保存，但最新状态读取失败。请关闭后重新打开核对。' : err instanceof Error ? err.message : '保存题库失败'
+      setSaveError(message)
+      showToast(message, 'error')
     } finally {
+      saveLock.current = false
       setSaving(false)
     }
   }
@@ -92,8 +116,10 @@ export default function BankEditModal({
   if (!bank.canEdit) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={close}
+      onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close() } }}>
       <div
+        role="dialog" aria-modal="true" aria-label={`题库信息 · ${bank.name}`} aria-busy={uploading || saving}
         className="flex max-h-[88vh] w-[620px] max-w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -103,7 +129,7 @@ export default function BankEditModal({
             <FolderCog size={18} className="text-primary" />
             <h3 className="text-base font-bold text-ink">题库信息 · {bank.name}</h3>
           </div>
-          <button type="button" onClick={onClose} className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink">
+          <button type="button" onClick={close} disabled={uploading || saving} aria-label="关闭题库信息" className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-ink disabled:opacity-50">
             <X size={18} />
           </button>
         </div>
@@ -117,10 +143,14 @@ export default function BankEditModal({
               <input
                 type="text"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                disabled={saving}
+                aria-invalid={!!saveError}
+                aria-describedby={saveError ? 'bank-save-error' : undefined}
+                onChange={(e) => { setName(e.target.value); setSaveError('') }}
                 className="block w-full rounded-lg border border-line px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary"
               />
             </label>
+            {saveError && <p id="bank-save-error" role="alert" className="text-sm text-red-700">{saveError}</p>}
             <label className="block">
               <span className="mb-1 block text-xs text-ink-3">题库编号（只读）</span>
               <input
@@ -166,10 +196,10 @@ export default function BankEditModal({
                     const member = await bankApi.addMember(bank.id, memberAccount.trim(), memberRole)
                     setMembers((prev) => [...prev, member])
                     setMemberAccount('')
-                    showToast('成员已添加')
+                    showToast('成员已添加', 'success')
                     onChanged()
                   } catch (err) {
-                    showToast(err instanceof Error ? err.message : '添加成员失败')
+                    showToast(err instanceof Error ? err.message : '添加成员失败', 'error')
                   }
                 }}
                 disabled={!memberAccount.trim()}
@@ -205,10 +235,10 @@ export default function BankEditModal({
                           try {
                             await bankApi.setMemberRole(bank.id, member.id, role)
                             setMembers((prev) => prev.map((item) => item.id === member.id ? { ...item, role } : item))
-                            showToast('成员权限已更新')
+                            showToast('成员权限已更新', 'success')
                             onChanged()
                           } catch (err) {
-                            showToast(err instanceof Error ? err.message : '更新成员权限失败')
+                            showToast(err instanceof Error ? err.message : '更新成员权限失败', 'error')
                           }
                         }}
                         className="rounded border border-line px-2 py-1 text-xs"
@@ -223,10 +253,10 @@ export default function BankEditModal({
                           try {
                             await bankApi.removeMember(bank.id, member.id)
                             setMembers((prev) => prev.filter((item) => item.id !== member.id))
-                            showToast(`已将 ${member.name} 移出题库`)
+                            showToast(`已将 ${member.name} 移出题库`, 'success')
                             onChanged()
                           } catch (err) {
-                            showToast(err instanceof Error ? err.message : '移出成员失败')
+                            showToast(err instanceof Error ? err.message : '移出成员失败', 'error')
                           }
                         }}
                         className={`${iconBtn} text-red-500 hover:bg-red-50`}
@@ -261,29 +291,19 @@ export default function BankEditModal({
                       >
                         {failed ? '入库失败' : busy ? `${d.stage ?? '处理中'} ${d.progress ?? 0}%` : '可用'}
                       </span>
-                      {failed && (
-                        <button
-                          type="button"
-                          title="重新解析"
-                          onClick={() => {
-                            void bankApi
-                              .reprocessDoc(bank.id, d.id)
-                              .then(() => {
-                                assertCurrentSession(session.current)
-                                showToast(`「${d.name}」已重新排队解析`)
-                                return bankApi.getBankDetail(bank.id).then((fresh) => setDocs(fresh.docs))
-                              })
-                              .catch((err) => showToast(err instanceof Error ? err.message : '操作失败'))
-                          }}
-                          className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
-                        >
-                          <RotateCcw size={14} />
-                        </button>
-                      )}
                       <button
                         type="button"
                         title="查看文档"
-                        onClick={() => setPreview({ id: d.id, name: d.name })}
+                        onClick={() => {
+                          const format = d.format.toUpperCase()
+                          if (format === 'PDF') {
+                            void openPdfDocument(bank.id, d.id).catch((err) => showToast(err instanceof Error ? err.message : '打开 PDF 失败', 'error'))
+                          } else if (['MD', 'MARKDOWN', 'TXT'].includes(format)) {
+                            setPreview(d)
+                          } else {
+                            showToast(`${format} 暂不支持内联预览，请使用下载按钮`, 'info')
+                          }
+                        }}
                         className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
                       >
                         <Eye size={14} />
@@ -291,7 +311,7 @@ export default function BankEditModal({
                       <button
                         type="button"
                         title="下载文档"
-                        onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败'))}
+                        onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败', 'error'))}
                         className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
                       >
                         <Download size={14} />
@@ -302,10 +322,11 @@ export default function BankEditModal({
                         onClick={async () => {
                           try {
                             await bankApi.removeDoc(bank.id, d.id)
+                            assertCurrentSession(session.current)
                             setDocs((prev) => prev.filter((x) => x.id !== d.id))
-                            onChanged()
+                            onChanged(d.id)
                           } catch (err) {
-                            showToast(err instanceof Error ? err.message : '删除文档失败')
+                            showToast(err instanceof Error ? err.message : '删除文档失败', 'error')
                           }
                         }}
                         className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
@@ -313,39 +334,30 @@ export default function BankEditModal({
                         <Trash2 size={14} />
                       </button>
                     </div>
+                    {['DOCX', 'XLSX'].includes(d.format.toUpperCase()) && <p className="mt-1 text-xs text-ink-3">暂不支持内联预览，请使用下载按钮。</p>}
+                    <DocumentFailure doc={d} onRetry={bank.canUpload ? async () => {
+                      try {
+                        await bankApi.reprocessDoc(bank.id, d.id)
+                        assertCurrentSession(session.current)
+                        onChanged()
+                        showToast(`「${d.name}」已重新排队解析`, 'success')
+                        const fresh = await bankApi.getBankDetail(bank.id)
+                        assertCurrentSession(session.current)
+                        setDocs(fresh.docs)
+                      } catch (err) {
+                        showToast(err instanceof Error ? err.message : '重新解析失败', 'error')
+                      }
+                    } : undefined} />
                   </li>
                 )
               })}
             </ul>
 
             {/* 上传区域 */}
-            <div
-              onDragOver={(e) => {
-                e.preventDefault()
-                setDragOver(true)
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={onDrop}
-              onClick={() => fileInput.current?.click()}
-              className={`flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-5 text-center transition-colors ${
-                dragOver ? 'border-primary bg-primary-light/40' : 'border-line hover:border-primary/50 hover:bg-page'
-              }`}
-            >
-              <FileUp size={20} className="text-primary" />
-              <p className="text-sm text-ink-2">点击选择或拖拽文件到此处上传</p>
-              <p className="text-xs text-ink-3">支持 PDF / DOCX / XLSX / MD / TXT，上传后自动向量化</p>
-              <input
-                ref={fileInput}
-                type="file"
-                accept=".pdf,.docx,.xlsx,.md,.markdown,.txt"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) start(f)
-                  e.target.value = ''
-                }}
-              />
-            </div>
+            {bank.canUpload && <DocumentDropZone busy={uploading} onFiles={(files) => {
+              if (saving) { showToast('正在保存题库，请稍后再上传', 'error'); return }
+              void start(files)
+            }} />}
           </section>
         </div>
 
@@ -353,7 +365,8 @@ export default function BankEditModal({
         <div className="flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
           <button
             type="button"
-            onClick={onClose}
+            onClick={close}
+            disabled={uploading || saving}
             className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 transition-colors hover:bg-page"
           >
             取消
@@ -361,7 +374,7 @@ export default function BankEditModal({
           <button
             type="button"
             onClick={() => void save()}
-            disabled={saving}
+            disabled={saving || uploading}
             className="rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-colors hover:bg-[#1a5fe6]"
           >
             {saving ? '保存中…' : '保存'}
@@ -375,6 +388,7 @@ export default function BankEditModal({
           bankId={bank.id}
           docId={preview.id}
           docName={preview.name}
+          docFormat={preview.format}
           onClose={() => setPreview(null)}
         />
       )}

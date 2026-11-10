@@ -1,4 +1,4 @@
-/* global URL, Response, Headers, console, Blob, process */
+/* global URL, Response, Headers, console, Blob, process, EventTarget, Event, ReadableStream, TextEncoder */
 /** 多标签、重新加载及下载边界；只使用假网络和内存浏览器替身。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
@@ -126,11 +126,46 @@ console.log('PASS: failed logout blocks restore after reload until explicit succ
 // 使用真实下载函数，延迟 blob 完成至 B 登录后，不得触发浏览器保存。
 const downloading = await tab()
 await login(downloading, result('A'))
+// 预览和后端必须共享当前标签的真实会话实例。
+const previewUrl = compile((await readFile(new URL('./src/api/documentPreview.ts', import.meta.url), 'utf8'))
+  .replaceAll("from './session'", `from '${downloading.url}'`))
 const backendSource = (await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8'))
   .replace("import { apiUrl } from './urls'", 'const apiUrl = path => path')
   .replaceAll("from './session'", `from '${downloading.url}'`)
+  .replaceAll("from './documentPreview'", `from '${previewUrl}'`)
 const backendUrl = compile(backendSource)
 const backend = await import(backendUrl)
+// 仅模拟 DOM 和定时器，正文消费、取消、会话检查及 Blob URL 使用真实实现。
+const previewWindows = []
+function element(tagName) {
+  return { tagName, children: [],
+    append(...children) { this.children.push(...children) },
+    appendChild(child) { this.children.push(child); return child },
+    replaceChildren(...children) { this.children = children },
+    setAttribute(name, value) { this[name] = value },
+    removeAttribute(name) { delete this[name] },
+  }
+}
+globalThis.window = Object.assign(new EventTarget(), {
+  setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+  open: (path, target) => {
+    assert.equal(path, '')
+    assert.equal(target, '_blank')
+    const elements = []
+    const popup = Object.assign(new EventTarget(), {
+      closed: false, opener: globalThis.window,
+      document: { documentElement: {}, head: element('head'), body: element('body'),
+        createElement: tagName => { const node = element(tagName); elements.push(node); return node },
+      },
+      elements,
+      close() { this.closed = true; this.dispatchEvent(new Event('pagehide')) },
+    })
+    previewWindows.push(popup)
+    return popup
+  },
+})
+const opened = () => previewWindows.filter(popup => popup.elements.some(node => node.tagName === 'iframe' && node.src)).length
+const sessionCancelled = error => error.code === 'SESSION_ENDED' || error.name === 'AbortError'
 let finishBlob, beginBlob
 const body = new Promise(resolve => { finishBlob = resolve })
 const entered = new Promise(resolve => { beginBlob = resolve })
@@ -138,7 +173,7 @@ globalThis.fetch = async () => ({ ok: true, status: 200, blob: () => { beginBlob
 let clicks = 0
 globalThis.document = { createElement: () => ({ click: () => { clicks += 1 }, remove() {} }), body: { appendChild() {} } }
 const download = backend.downloadDocument('fake-bank', 'fake-doc', 'fake.txt')
-const rejectedDownload = assert.rejects(download, error => error.code === 'SESSION_ENDED')
+const rejectedDownload = assert.rejects(download, sessionCancelled)
 await entered
 await login(downloading, result('B'))
 finishBlob(new Blob(['synthetic document']))
@@ -150,32 +185,51 @@ assert.equal(clicks, 1)
 console.log('PASS: delayed download body rejected across identity change; current download works')
 
 // 文本与新标签预览同样必须等正文读取结束后检查身份，不能只检查响应头。
-let opened = 0
-globalThis.window = { open: () => { opened += 1 }, setTimeout: () => 0 }
 for (const [invoke, bodyMethod, payload] of [
-  [() => backend.fetchDocumentText('fake-bank', 'fake-doc'), 'text', 'synthetic preview'],
-  [() => backend.viewDocument('fake-bank', 'fake-doc'), 'blob', new Blob(['synthetic preview'])],
+  [() => backend.fetchDocumentText('fake-bank', 'fake-doc'), 'stream', 'synthetic preview'],
+  [() => backend.viewDocument('fake-bank', 'fake-doc'), 'blob', new Blob(['synthetic preview'], { type: 'application/pdf' })],
 ]) {
   await login(downloading, result('A'))
   const received = deferred(), release = deferred()
+  const windowsBefore = previewWindows.length
+  let requestSignal
   globalThis.fetch = async (path, init) => {
     assert.equal(path, '/api/banks/fake-bank/documents/fake-doc/download?inline=1')
     assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer ' + result('A').access_token)
     assert.equal(init.credentials, 'include')
-    return { ok: true, status: 200, [bodyMethod]: () => { received.resolve(); return release.promise } }
+    requestSignal = init.signal
+    if (bodyMethod === 'stream') return new Response(new ReadableStream({
+      async pull(controller) {
+        received.resolve()
+        controller.enqueue(new TextEncoder().encode(await release.promise))
+        controller.close()
+      },
+    }), { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+    assert.equal(previewWindows.length, windowsBefore + 1, 'PDF 必须先同步预开空窗口')
+    return { ok: true, status: 200, headers: new Headers({ 'Content-Type': 'application/pdf' }),
+      blob: () => { received.resolve(); return release.promise } }
   }
   const preview = invoke()
-  const rejection = assert.rejects(preview, error => error.code === 'SESSION_ENDED')
+  // 文本取消会拒绝；PDF 主动关闭由真实预览 API 正常完成。
+  const rejection = bodyMethod === 'stream' ? assert.rejects(preview, sessionCancelled) : preview
   await received.promise
   await login(downloading, result('B'))
   release.resolve(payload)
   await rejection
-  assert.equal(opened, 0)
+  assert.equal(requestSignal.aborted, true, '身份切换必须取消原正文请求')
+  assert.equal(opened(), 0)
+  if (bodyMethod === 'blob') {
+    assert.equal(previewWindows.at(-1).closed, true, '旧 PDF 窗口必须关闭')
+    assert.equal(previewWindows.at(-1).opener, null)
+  }
 }
 globalThis.fetch = async () => new Response('synthetic preview')
 assert.equal(await backend.fetchDocumentText('fake-bank', 'fake-doc'), 'synthetic preview')
+globalThis.fetch = async () => new Response('synthetic preview', { headers: { 'Content-Type': 'application/pdf' } })
 await backend.viewDocument('fake-bank', 'fake-doc')
-assert.equal(opened, 1)
+assert.equal(opened(), 1)
+assert.equal(previewWindows.at(-1).opener, null)
+previewWindows.at(-1).close()
 console.log('PASS: delayed text/blob preview rejected across identity change; current preview works')
 
 // 真实题库适配层的入库轮询在等待间隙切换账号后不得以新账号继续读旧文档。
