@@ -6,7 +6,53 @@ export type OpsEntrypoint = 'parameterized' | 'conversation'
 export type OpsObservationFlag = 'waiting_suspected' | 'long_running_suspected' | 'heartbeat_stale'
 export type OpsStageName = 'preparing' | 'retrieval' | 'generation' | 'review' | 'repair' | 'persisting' | 'finalizing' | 'unknown'
 export type OpsQualityReason = 'QUANTITY_SHORTFALL' | 'REVIEW_SKIPPED' | 'REVIEW_FAILED' | 'DEGRADED'
-export type OpsAlertRule = 'dependency_failure' | 'waiting_suspected' | 'long_running_suspected' | 'heartbeat_stale' | 'run_failure' | 'quality_attention'
+export const opsKnownAlertRules = ['dependency_failure', 'waiting_suspected', 'long_running_suspected', 'heartbeat_stale', 'run_failure', 'quality_attention', 'monitoring_pipeline_failure', 'capacity_warning', 'notification_failure'] as const
+export type OpsKnownAlertRule = typeof opsKnownAlertRules[number]
+/** 未识别规则仍保留经边界校验的原始标识。 */
+export type OpsAlertRule = string
+
+export interface OpsEffectiveConfig {
+  warning: number | null
+  critical: number | null
+  unit: string | null
+  window_seconds: number | null
+  source: string | null
+}
+
+export interface OpsMonitoringMetric {
+  metric_id: string
+  status: 'healthy' | 'degraded' | 'unavailable' | 'unknown' | 'monitoring_unavailable'
+  value: number | null
+  unit: string | null
+  observed_at: string | null
+  fresh_until: string | null
+  unknown_reason: string | null
+  effective_config?: OpsEffectiveConfig | null
+}
+
+export interface OpsSelfMonitoring {
+  metrics: OpsMonitoringMetric[] | null
+  regeneration_config?: OpsEffectiveConfig | null
+}
+
+export interface OpsReviewVersions {
+  final_content_revision: string | null
+  final_questions: { question_id: string; content_revision: string | null }[] | null
+  required_scopes: string[] | null
+  evidence: { question_id: string; content_revision: string | null; scope: string; status: 'passed' | 'failed' | 'skipped' | 'unknown' }[] | null
+}
+
+export interface OpsAlertGuidance {
+  impact: string | null
+  owner_module: string | null
+  manual_action_required: boolean | null
+  next_step: string | null
+}
+
+export interface OpsTraceAccessResult {
+  status: 'not_integrated' | 'denied' | 'audit_failed' | 'expired' | 'simulated_success'
+  message: string
+}
 
 export interface OpsMeta {
   schema_version: 'v1'
@@ -30,6 +76,7 @@ export interface OpsRate {
 }
 
 export interface OpsOverview extends OpsMeta {
+  self_monitoring?: OpsSelfMonitoring | null
   scope: 'sdk_agent_runs_v1'
   window: OpsWindow
   collection: {
@@ -148,6 +195,8 @@ export interface OpsStage {
 }
 
 export interface OpsRunDetail extends OpsMeta {
+  regeneration_config?: OpsEffectiveConfig | null
+  review_versions?: OpsReviewVersions | null
   run: OpsRun
   stages: OpsStage[] | null
 }
@@ -173,6 +222,8 @@ export interface OpsDependency {
 }
 
 export interface OpsAlert {
+  guidance?: OpsAlertGuidance | null
+  effective_config?: OpsEffectiveConfig | null
   alert_id: string
   dedupe_key: string
   episode_no: number
@@ -246,5 +297,5 @@ export interface OpsClient {
   listNotifications(signal: AbortSignal): Promise<OpsNotifications>
   markNotificationsRead(ids: string[], signal: AbortSignal): Promise<void>
   deleteNotification(id: string, signal: AbortSignal): Promise<void>
-  openTrace(path: string): void
+  openTrace(path: string): Promise<OpsTraceAccessResult>
 }

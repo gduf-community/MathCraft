@@ -3,13 +3,16 @@ import type { ReactNode } from 'react'
 import type {
   OpsAlert, OpsClient, OpsDependency, OpsOverview, OpsPage, OpsQuery, OpsRate, OpsRun,
 } from '../../../types/ops'
+import { opsKnownAlertRules } from '../../../types/ops'
 import {
   OpsBadge, OpsCard, OpsFacts, OpsFeedback, OpsFilters, OpsMetaNotice, OpsReasons,
   OpsRunStates, opsButtonClass, opsDuration, opsInputClass, opsLabel, opsNumber,
-  opsPercent, opsPrimaryClass, opsTime,
+  opsPercent, opsPrimaryClass, opsTime, opsAlertRuleLabel,
 } from './OpsShared'
 import type { OpsFilterField } from './OpsShared'
 import { useOpsQuery } from './useOpsQuery'
+import { AlertGuidance, EffectiveConfig, SelfMonitoring } from './OpsExtensions'
+import { useOpsClock } from './useOpsClock'
 
 const overviewFields: OpsFilterField[] = [
   { name: 'owner_user_id', label: '归属账号 ID' },
@@ -33,7 +36,7 @@ const dependencyFields: OpsFilterField[] = [
 const alertFields: OpsFilterField[] = [
   { name: 'alert_id', label: '告警 ID（通知精确定位）' },
   { name: 'status', label: '轮次状态', options: ['firing', 'resolved'] },
-  { name: 'rule_id', label: '规则', options: ['dependency_failure', 'waiting_suspected', 'long_running_suspected', 'heartbeat_stale', 'run_failure', 'quality_attention'] },
+  { name: 'rule_id', label: '规则', options: [...opsKnownAlertRules] },
   { name: 'severity', label: '级别', options: ['warning', 'critical'] },
   { name: 'scope', label: '范围', options: ['platform', 'account', 'run'] },
   { name: 'owner_user_id', label: '归属账号 ID' },
@@ -65,17 +68,19 @@ function useCursorPage<T>(
   const anchoredQuery = useRef<OpsQuery>(query)
 
   const request = useCallback(async (append: boolean, reset = false) => {
-    if (append && (busy.current || !current.current?.page.has_more)) return
+    if ((!reset && busy.current) || (append && !current.current?.page.has_more)) return
     controller.current?.abort()
     const serial = ++generation.current
     const abort = new AbortController()
     controller.current = abort
     busy.current = true
-    paused.current = append
-    if (reset) current.current = null
+    if (reset) {
+      current.current = null
+      paused.current = false
+    }
     setState(previous => ({
       ...previous, data: reset ? null : previous.data, loading: true, error: '',
-      appended: append, lastSuccess: reset ? null : previous.lastSuccess,
+      appended: reset ? false : previous.appended, lastSuccess: reset ? null : previous.lastSuccess,
     }))
     const nextQuery: OpsQuery = append
       ? { ...anchoredQuery.current, limit: 20, cursor: current.current?.page.next_cursor ?? undefined }
@@ -104,6 +109,7 @@ function useCursorPage<T>(
         window: previous?.window ?? next.window,
       }
       current.current = data
+      paused.current = append
       setState({ data, loading: false, error: '', appended: append, lastSuccess: new Date().toISOString() })
     } catch (error: unknown) {
       if (!abort.signal.aborted && serial === generation.current) {
@@ -130,7 +136,7 @@ function useCursorPage<T>(
     }
   }, [request])
 
-  const refresh = useCallback(() => { void request(false) }, [request])
+  const refresh = useCallback(() => { if (!busy.current) void request(false) }, [request])
   const loadMore = useCallback(() => { void request(true) }, [request])
   return { ...state, refresh, loadMore }
 }
@@ -186,15 +192,17 @@ export function OpsOverviewPanel({ client, onOpenRuns, onOpenAlerts }: {
   const load = useCallback((signal: AbortSignal) => client.getOverview(query, signal), [client, query])
   const result = useOpsQuery<OpsOverview>(load)
   const { data } = result
+  const now = useOpsClock(data?.generated_at ?? '')
   const cohort: OpsQuery = data ? { ...query, from: data.window.from, to: data.window.to } : query
   return <div className="space-y-4">
     <PanelHeading title="出题运维概览" description="统计范围：SDK Agent v1 已观测运行；执行正常结束、交付质量与详细追踪分别判定。">
       <button type="button" className={opsButtonClass} disabled={result.loading} onClick={result.refresh}>刷新概览</button>
     </PanelHeading>
     <OpsFilters fields={overviewFields} query={query} onApply={setQuery} />
-    <OpsFeedback loading={result.loading} error={result.error} hasData={!!data} onRetry={result.refresh} />
+    <OpsFeedback loading={result.loading} error={result.error} hasData={!!data} onRetry={result.refresh} retryLabel="重新加载概览" />
     <OpsMetaNotice meta={data} lastSuccess={result.lastSuccess} />
     {data && <>
+      <SelfMonitoring overview={data} now={now} onOpenAlerts={onOpenAlerts} />
       <OpsCard title="采集窗口与覆盖范围" action={<OpsBadge value={data.collection.coverage_state} />}>
         <OpsFacts items={[
           ['受理时间窗口 [from, to)', `${opsTime(data.window.from)} — ${opsTime(data.window.to)}`],
@@ -256,9 +264,9 @@ export function OpsOverviewPanel({ client, onOpenRuns, onOpenAlerts }: {
             ['逻辑重出尝试总数', opsNumber(data.regeneration_metrics.attempt_total)],
             ['有效样本运行数', opsNumber(data.regeneration_metrics.sample_runs)],
             ['已结束重出尝试耗时之和', opsDuration(data.regeneration_metrics.total_attempt_ms)],
-            ['频繁重出告警阈值', '未配置（unconfigured）'],
           ]} />
         </div>
+        <div className="mt-3"><p className="mb-2 text-sm font-medium text-ink">频繁重出告警阈值</p><EffectiveConfig config={data.self_monitoring?.regeneration_config} /></div>
         <p className="mt-3 text-xs text-ink-2">重出可并行，耗时之和不是运行墙钟耗时；成功的重出题目可能被后续去重丢弃。</p>
       </OpsCard>
       <OpsCard title="保留与清理" action={<OpsBadge value={data.retention.last_cleanup_status} />}>
@@ -317,7 +325,7 @@ function RunsContent({ client, initialQuery, onOpenRun }: RunsProps) {
         ['最终实际数 / 目标题量', `${opsNumber(run.counts.actual_count)} / ${opsNumber(run.counts.target_count)}`],
         ['审核覆盖', opsPercent(run.review.coverage_rate)],
         ['逻辑重出尝试', opsNumber(run.regeneration.attempt_count)],
-        ['采集 / 版本', `${opsLabel(run.collection_state)} / ${run.revision}`],
+        ['采集 / 运行摘要版本', `${opsLabel(run.collection_state)} / ${run.revision}`],
         ['摘要更新', opsTime(run.updated_at)],
       ]} /></div>
       <div className="mt-3 space-y-2">
@@ -337,6 +345,7 @@ export function DependenciesPanel({ client, onOpenRuns }: {
   const [source, setSource] = useState('')
   const load = useCallback((next: OpsQuery, signal: AbortSignal) => client.listDependencies(next, signal), [client])
   const result = useCursorPage(load, query, dependencyIdentity)
+  const now = useOpsClock(result.data?.generated_at ?? '')
   const visible = result.data?.items.filter(item => !source || item.source === source) ?? []
   return <div className="space-y-4">
     <PanelHeading title="依赖状态" description="当前快照，不接收历史时间窗口；查询不会主动调用模型。个人凭据故障按账号隔离，不能据此推断平台共享服务故障。" />
@@ -352,16 +361,16 @@ export function DependenciesPanel({ client, onOpenRuns }: {
     <OpsFeedback {...result} hasData={!!result.data} empty={!!result.data && visible.length === 0}
       emptyText={source ? '已加载记录中没有此来源；可加载更多或清除来源筛选。' : undefined} onRetry={result.refresh} />
     <div className="grid gap-3 xl:grid-cols-2">{visible.map(dependency => <DependencyCard key={dependencyIdentity(dependency)}
-      dependency={dependency} generatedAt={result.data?.generated_at ?? ''} onOpenRuns={onOpenRuns} />)}</div>
+      dependency={dependency} now={now} generatedAt={result.data?.generated_at ?? ''} onOpenRuns={onOpenRuns} />)}</div>
     <PageFooter {...result} page={result.data} count={result.data?.items.length ?? 0} />
   </div>
 }
 
-function DependencyCard({ dependency, generatedAt, onOpenRuns }: {
-  dependency: OpsDependency; generatedAt: string; onOpenRuns: (query?: OpsQuery) => void
+function DependencyCard({ dependency, now, generatedAt, onOpenRuns }: {
+  dependency: OpsDependency; now: number; generatedAt: string; onOpenRuns: (query?: OpsQuery) => void
 }) {
   const fresh = dependency.fresh_until != null && dependency.checked_at != null
-    && new Date(dependency.fresh_until).getTime() > new Date(generatedAt).getTime()
+    && Date.parse(dependency.checked_at) <= Date.parse(generatedAt) && Date.parse(dependency.fresh_until) > now
   const status = fresh ? dependency.status : 'unknown'
   return <OpsCard title={`${opsLabel(dependency.kind)} · ${dependency.dependency_id}`} action={<OpsBadge value={status} />}>
     <OpsFacts items={[
@@ -371,7 +380,7 @@ function DependencyCard({ dependency, generatedAt, onOpenRuns }: {
       ['证据来源', opsLabel(dependency.source)],
       ['最近观测', opsTime(dependency.checked_at)],
       ['新鲜度有效至', opsTime(dependency.fresh_until)],
-      ['新鲜度', dependency.checked_at == null ? '从未观察／未知' : fresh ? '响应生成时有效' : '观测已过期／未知'],
+      ['新鲜度', dependency.checked_at == null ? '从未观察／未知' : fresh ? '当前观测有效' : '观测已过期／未知'],
       ['采集状态', opsLabel(dependency.collection_state)],
       ['最近成功', opsTime(dependency.last_success_at)],
       ['最近失败', opsTime(dependency.last_failure_at)],
@@ -381,7 +390,7 @@ function DependencyCard({ dependency, generatedAt, onOpenRuns }: {
     {dependency.error_code && <p className="mt-3 text-sm text-ink">{opsLabel(dependency.error_code)}（{dependency.error_code}）</p>}
     {dependency.owner_user_id && <button type="button" className={`${opsButtonClass} mt-3`}
       onClick={() => onOpenRuns({ owner_user_id: dependency.owner_user_id ?? undefined })}>查看该账号运行</button>}
-    <p className="mt-3 text-xs text-ink-2">状态基于响应生成时的证据；连续失败与恢复按独立观测累计，不按页面刷新次数累计。</p>
+    <p className="mt-3 text-xs text-ink-2">状态依据服务端快照时间和页面经过时间复核；连续失败与恢复按独立观测累计，不按页面刷新次数累计。</p>
   </OpsCard>
 }
 
@@ -419,7 +428,7 @@ function AlertCard({ alert, onOpenRun }: { alert: OpsAlert; onOpenRun: (id: stri
   const evidence = alert.evidence
   return <article className="min-w-0 rounded-xl border border-line bg-white p-4 shadow-sm sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h3 className="font-semibold text-ink">{opsLabel(alert.rule_id)} · 第 {alert.episode_no} 轮</h3>
+      <div><h3 className="break-words font-semibold text-ink [overflow-wrap:anywhere]">{opsAlertRuleLabel(alert.rule_id)} · 第 {alert.episode_no} 轮</h3>
         <p className="mt-1 break-all text-xs text-ink-2">{alert.alert_id}</p></div>
       <div className="flex flex-wrap gap-2"><OpsBadge value={alert.severity} /><OpsBadge value={alert.status} /><OpsBadge value={alert.condition_state} /></div>
     </div>
@@ -463,6 +472,7 @@ function AlertCard({ alert, onOpenRun }: { alert: OpsAlert; onOpenRun: (id: stri
         <p className="text-xs text-ink-2">持续提醒需要新异常证据及冷却间隔，不按轮询次数增加发生次数。样本运行不是完整影响列表。</p>
       </div>
     </details>
+    <AlertGuidance alert={alert} />
     <div className="mt-3 flex flex-wrap gap-2">
       {alert.sample_run_ids.map(runId => <button key={runId} type="button" className={opsButtonClass}
         onClick={() => onOpenRun(runId)}>样本运行：<span className="ml-1 break-all">{runId}</span></button>)}

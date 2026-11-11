@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import type { KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useToast } from '../../../store/ToastContext'
 import type { OpsAlert, OpsClient, OpsPage, OpsQuery, OpsRun, OpsRunDetail } from '../../../types/ops'
 import {
   OpsBadge, OpsCard, OpsFacts, OpsFeedback, OpsMetaNotice, OpsReasons, OpsRunStates,
-  opsButtonClass, opsDuration, opsLabel, opsNumber, opsPercent, opsPrimaryClass, opsTime,
+  opsButtonClass, opsDuration, opsLabel, opsNumber, opsPercent, opsPrimaryClass, opsTime, opsAlertRuleLabel, trapOpsDialogFocus,
 } from './OpsShared'
 import { useOpsQuery } from './useOpsQuery'
+import { EffectiveConfig, ReviewVersions } from './OpsExtensions'
 
 interface RunDrawerProps {
   client: OpsClient
@@ -29,11 +29,15 @@ function RunDrawerContent({ client, runId, onClose, onOpenAlerts, demo }: RunDra
   const descriptionId = useId()
   const { showToast } = useToast()
   const [traceNotice, setTraceNotice] = useState('')
+  const [traceBusy, setTraceBusy] = useState(false)
+  const tracePending = useRef(false)
+  const mounted = useRef(false)
   const load = useCallback((signal: AbortSignal) => client.getRun(runId, signal), [client, runId])
   const result = useOpsQuery<OpsRunDetail>(load)
   const run = result.data?.run
 
   useEffect(() => {
+    mounted.current = true
     const element = dialog.current
     if (!element) return
     const previousFocus = document.activeElement
@@ -42,6 +46,7 @@ function RunDrawerContent({ client, runId, onClose, onOpenAlerts, demo }: RunDra
     element.showModal()
     closeButton.current?.focus({ preventScroll: true })
     return () => {
+      mounted.current = false
       element.close()
       document.body.style.overflow = previousOverflow
       if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
@@ -50,59 +55,31 @@ function RunDrawerContent({ client, runId, onClose, onOpenAlerts, demo }: RunDra
     }
   }, [])
 
-  function trapFocus(event: KeyboardEvent<HTMLDialogElement>) {
-    if (event.key !== 'Tab') return
-    const element = dialog.current
-    if (!element) return
-    const focusable = Array.from(element.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
-    )).filter(item => item.getClientRects().length > 0 && item.tabIndex >= 0)
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    if (!first || !last) {
-      event.preventDefault()
-      element.focus()
-    } else if (event.shiftKey && (document.activeElement === first || document.activeElement === element)) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === element)) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
-  function openTrace() {
-    if (!run) return
-    if (demo) {
-      const message = '演示模式：已模拟打开详细追踪，未跳转至 Phoenix。'
-      setTraceNotice(message)
-      showToast(message, 'info')
-      return
-    }
-    const now = Date.now()
-    const trace = run.trace
-    const expires = trace.expires_at ? new Date(trace.expires_at).getTime() : Number.NaN
-    const verified = trace.verified_at ? new Date(trace.verified_at).getTime() : Number.NaN
-    if (trace.availability !== 'available' || !trace.viewer_path || !Number.isFinite(expires)
-      || expires <= now || !Number.isFinite(verified) || now - verified > 60_000) {
-      const message = '该追踪的可读证据已失效或未确认，请刷新运行详情后重试。'
-      setTraceNotice(message)
-      showToast(message, 'info')
-      result.refresh()
-      return
-    }
+  async function openTrace() {
+    if (!run || tracePending.current) return
+    tracePending.current = true
+    setTraceBusy(true)
     try {
       setTraceNotice('')
-      client.openTrace(trace.viewer_path)
+      const access = await client.openTrace(run.trace.viewer_path ?? '')
+      if (mounted.current) {
+        setTraceNotice(access.message)
+        showToast(access.message, 'info')
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '无法打开追踪，请刷新后重试。'
-      setTraceNotice(message)
-      showToast(message, 'error')
+      if (mounted.current) {
+        setTraceNotice(message)
+        showToast(message, 'error')
+      }
+    } finally {
+      tracePending.current = false
+      if (mounted.current) setTraceBusy(false)
     }
   }
 
   return createPortal(<dialog ref={dialog} aria-labelledby={titleId} aria-describedby={descriptionId}
-    aria-modal="true" tabIndex={-1} onKeyDown={trapFocus}
+    aria-modal="true" tabIndex={-1} onKeyDown={trapOpsDialogFocus}
     onCancel={event => { event.preventDefault(); onClose() }}
     className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-2xl border-l border-line bg-page p-0 text-ink shadow-xl backdrop:bg-ink/40">
     <div className="flex h-full min-h-0 flex-col">
@@ -122,7 +99,7 @@ function RunDrawerContent({ client, runId, onClose, onOpenAlerts, demo }: RunDra
           <p className="text-xs text-ink-2">每 15 秒刷新；页面隐藏时暂停。</p>
           <button type="button" className={opsButtonClass} onClick={result.refresh} disabled={result.loading}>刷新详情</button>
         </div>
-        <OpsFeedback loading={result.loading} error={result.error} hasData={!!result.data} onRetry={result.refresh} />
+        <OpsFeedback loading={result.loading} error={result.error} hasData={!!result.data} onRetry={result.refresh} retryLabel="重新加载运行详情" />
         <OpsMetaNotice meta={result.data} lastSuccess={result.lastSuccess} />
         {run && <>
           <OpsCard title="执行、交付质量与追踪">
@@ -137,6 +114,7 @@ function RunDrawerContent({ client, runId, onClose, onOpenAlerts, demo }: RunDra
           <RunIdentity run={run} />
           <RunObservation run={run} />
           <RunQuality run={run} />
+          {result.data && <ReviewVersions detail={result.data} />}
           <OpsCard title="重出与降级">
             <OpsFacts items={[
               ['已启动逻辑重出尝试', opsNumber(run.regeneration.attempt_count)],
@@ -145,12 +123,12 @@ function RunDrawerContent({ client, runId, onClose, onOpenAlerts, demo }: RunDra
               ['尝试尚未结束', opsNumber(run.regeneration.in_flight_count)],
               ['已结束尝试耗时之和', opsDuration(run.regeneration.total_attempt_ms)],
               ['是否发生降级', run.degradation.occurred == null ? '未知／未采集' : run.degradation.occurred ? '是（有明确降级证据）' : '否（采集完整且无降级）'],
-              ['频繁重出阈值', '未配置（unconfigured）'],
             ]} />
+            <div className="mt-3"><p className="mb-2 text-sm font-medium">频繁重出阈值</p><EffectiveConfig config={result.data?.regeneration_config} /></div>
             <div className="mt-3"><OpsReasons codes={run.degradation.reason_codes} /></div>
             <p className="mt-3 text-xs text-ink-2">传输重试不算逻辑重出；重出成功不等于最终交付保留。并行尝试耗时可重叠，不能相加当作运行墙钟耗时。</p>
           </OpsCard>
-          <TraceSummary run={run} onOpen={openTrace} demo={demo} />
+          <TraceSummary run={run} onOpen={() => void openTrace()} demo={demo} busy={traceBusy} />
           <OpsCard title="执行阶段（可重复、可并行）">
             <p className="mb-3 text-xs text-ink-2">按服务端提供的阶段展示；父阶段与子阶段、并行阶段耗时可能重叠，不相加推算运行总耗时。</p>
             {result.data?.stages == null ? <p className="text-sm text-ink-2">阶段时间线未采集，不能补造链路。</p>
@@ -180,7 +158,7 @@ function RunIdentity({ run }: { run: OpsRun }) {
     <OpsFacts items={[
       ['归属账号', run.owner_user_id], ['入口', opsLabel(run.entrypoint)],
       ['会话', run.session_id ?? '不适用／尚未绑定'], ['成果批次', run.batch_id ?? '尚未绑定／未产生'],
-      ['记录版本', opsNumber(run.revision)], ['当前阶段', opsLabel(run.current_stage)],
+      ['运行摘要版本', opsNumber(run.revision)], ['当前阶段', opsLabel(run.current_stage)],
       ['受理', opsTime(run.accepted_at)], ['执行开始', opsTime(run.started_at)],
       ['执行结束', opsTime(run.finished_at)], ['摘要更新', opsTime(run.updated_at)],
       ['受理至开始等待', opsDuration(run.wait_ms)], ['最终运行墙钟耗时', opsDuration(run.elapsed_ms)],
@@ -224,14 +202,8 @@ function RunQuality({ run }: { run: OpsRun }) {
   </OpsCard>
 }
 
-function TraceSummary({ run, onOpen, demo }: { run: OpsRun; onOpen: () => void; demo: boolean }) {
+function TraceSummary({ run, onOpen, demo, busy }: { run: OpsRun; onOpen: () => void; demo: boolean; busy: boolean }) {
   const trace = run.trace
-  const now = Date.now()
-  const expires = trace.expires_at ? new Date(trace.expires_at).getTime() : Number.NaN
-  const verified = trace.verified_at ? new Date(trace.verified_at).getTime() : Number.NaN
-  const canOpen = trace.availability === 'available' && !!trace.viewer_path
-    && Number.isFinite(expires) && expires > now
-    && Number.isFinite(verified) && now - verified <= 60_000
   return <OpsCard title="详细追踪（独立于执行与质量）" action={<OpsBadge value={trace.availability} />}>
     <OpsFacts items={[
       ['SDK 根 Trace ID', trace.sdk_trace_id ?? '未知／尚未产生'],
@@ -242,11 +214,14 @@ function TraceSummary({ run, onOpen, demo }: { run: OpsRun; onOpen: () => void; 
     ]} />
     {trace.reason_code && <div className="mt-3"><OpsReasons codes={[trace.reason_code]} /></div>}
     <p className="mt-3 text-xs text-ink-2">submitted 仅表示导出端点受理。Phoenix 在线不证明本条追踪可查看；过期、无权、未采集与查询故障分别保留其状态。</p>
-    <button type="button" className={`${opsPrimaryClass} mt-3`} onClick={onOpen}
-      disabled={!canOpen}>
-      {demo ? '演示：打开详细追踪' : '打开详细追踪'}
-    </button>
-    {!canOpen && <p className="mt-2 text-sm text-ink-2">暂无已确认可安全打开的正文入口；可读证据过旧或正文到期时须刷新重新确认。</p>}
+    <details className="mt-3 rounded-lg border border-line p-3">
+      <summary className="min-h-11 cursor-pointer py-3 text-sm font-medium text-primary">查看正文访问说明</summary>
+      <p className="mt-2 text-sm text-ink">授权与审计尚未接入。用户对话、题目正文、模型输入输出和工具参数保持关闭，当前追踪摘要不授予正文查看权限。</p>
+      <p className="mt-2 text-sm text-ink-2">后续接入须核对管理员权限、单条目标、到期状态和审计写入结果。此说明不是审计记录；本轮不提供正文或真实 Phoenix 跳转。</p>
+      <button type="button" className={`${opsPrimaryClass} mt-3`} onClick={onOpen} disabled={busy}>
+        {busy ? '正在检查…' : demo ? '演示正文访问检查' : '检查正文访问条件'}
+      </button>
+    </details>
   </OpsCard>
 }
 
@@ -271,12 +246,13 @@ function RelatedAlerts({ client, runId, onOpenAlerts }: {
   return <OpsCard title="关联异常轮次" action={<button type="button" className={opsButtonClass} onClick={openAll}>在异常中心查看</button>}>
     <p className="mb-3 text-xs text-ink-2">按 run_id 查询完整轮次关联；展示最近 14 天内首次发现的轮次，首屏最多 20 条。更早仍活动的轮次可能不在此窗口内。</p>
     <OpsFeedback loading={result.loading} error={result.error} hasData={!!result.data}
+      retryLabel="重新加载关联异常"
       empty={result.data?.items.length === 0} emptyText="此窗口内无关联轮次；不代表本次运行成功或没有质量问题。" onRetry={result.refresh} />
     <OpsMetaNotice meta={result.data} lastSuccess={result.lastSuccess} />
     <ul className="mt-3 space-y-2">{result.data?.items.map(alert => <li key={alert.alert_id} className="rounded-lg border border-line bg-page p-3">
       <button type="button" className={`${opsButtonClass} w-full flex-wrap justify-start gap-2 text-left`}
         onClick={() => onOpenAlerts({ alert_id: alert.alert_id })}>
-        <span>{opsLabel(alert.rule_id)} · 第 {alert.episode_no} 轮</span>
+        <span>{opsAlertRuleLabel(alert.rule_id)} · 第 {alert.episode_no} 轮</span>
         <OpsBadge value={alert.status} /><OpsBadge value={alert.condition_state} />
         <span className="w-full break-all text-xs text-ink-2">{alert.alert_id}</span>
       </button>
