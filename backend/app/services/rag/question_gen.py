@@ -4,6 +4,7 @@
 - existing_stems 用于跨请求全局去重：prompt 约束 + 生成后按归一化题干过滤
 - progress_cb 用于向调用方上报真实生成进度（百分比 + 阶段文案）
 - api_key 为当前用户的 DeepSeek 密钥；retrieve_fn 可注入检索实现（测试用）
+- 解题在评审链路的最后一步独立进行（question_review._solve_all），命题侧不产答案
 """
 import re
 import uuid
