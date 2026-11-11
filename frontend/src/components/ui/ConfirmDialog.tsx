@@ -1,5 +1,6 @@
 /** 通用确认弹窗：删除题库、退出题库、题库转让等操作确认 */
 import { AlertTriangle } from 'lucide-react'
+import { createPortal } from 'react-dom'
 
 export default function ConfirmDialog({
   title,
@@ -16,8 +17,9 @@ export default function ConfirmDialog({
   onConfirm: () => void
   onClose: () => void
 }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45" onClick={onClose}>
+  // portal 挂到 body：脱离 main（z-10）的堆叠上下文，保证遮罩盖住右侧参数栏
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/60 backdrop-blur-[2px]" onClick={onClose}>
       <div
         className="w-[380px] rounded-2xl bg-white p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -57,6 +59,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
