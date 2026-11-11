@@ -150,6 +150,41 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   text: string
+  /** 随消息发送的图片（data URL），仅在当前会话内存中保留 */
+  images?: string[]
+}
+
+export type ChatMode = 'generate' | 'creative' | 'qa' | 'data'
+
+export const CHAT_MODE_LABELS: Record<ChatMode, string> = {
+  generate: '快速出题',
+  creative: '创新命题',
+  qa: '知识答疑',
+  data: '数据管理',
+}
+
+/** 数据管理高危操作的确认载荷 */
+export interface ChatConfirm {
+  id: string
+  action: 'delete' | 'update'
+  entity: string
+  entity_label: string
+  affected: number
+  samples: string[]
+  explanation: string
+}
+
+export interface ChatReply {
+  reply: string
+  questions: unknown[]
+  done: boolean
+  batch_id: string | null
+  slot_state: Record<string, unknown>
+  kind: 'reply' | 'mode_mismatch' | 'mode_confirm'
+  mode: ChatMode
+  mode_changed: boolean
+  suggested_template: ChatMode | 'none' | null
+  confirm: ChatConfirm | null
 }
 
 /** 题目收藏分组（default 组固定存在，不可删除） */

@@ -56,8 +56,13 @@ export default function RecordsTab() {
   // 发布时未勾选「保存到组卷记录」的记录仅用于学习空间展示，不进本页列表
   const records = useMemo(() => allRecords.filter((r) => r.savedToRecords !== false), [allRecords])
   // 第一个标签为组卷记录列表，固定不可关闭
-  const [tabs, setTabs] = useState<OpenTab[]>([])
-  const [activeTab, setActiveTab] = useState('list')
+  const [openedTabs, setTabs] = useState<OpenTab[]>([])
+  const tabs = useMemo(() => openedTabs.flatMap(tab => {
+    const record = records.find(row => row.id === tab.recordId)
+    return record ? [{ ...tab, name: record.name }] : []
+  }), [openedTabs, records])
+  const [selectedTab, setActiveTab] = useState('list')
+  const activeTab = selectedTab === 'list' || tabs.some(tab => tab.id === selectedTab) ? selectedTab : 'list'
   const [checked, setChecked] = useState<string[]>([])
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [batchConfirm, setBatchConfirm] = useState(false)
@@ -162,7 +167,7 @@ export default function RecordsTab() {
         )
       ) : null}
 
-      {editingRecord && (
+      {editingRecord && records.some(record => record.id === editingRecord.id) && (
         <AssembleModal
           editingRecord={editingRecord}
           onClose={() => setEditingRecord(null)}

@@ -25,6 +25,7 @@ from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
 from app.services.rag import embeddings, llm, question_gen
+from app.services.rag.prompts import SOLVE_SYSTEM
 from app.services.rag_runtime import with_snapshot
 
 logger = logging.getLogger("app.review")
@@ -94,15 +95,6 @@ REPAIR_PROMPT = """下面这道题没有通过难度与质量审查。请只做�
 
 原题：
 __QUESTION__
-"""
-
-SOLVE_PROMPT = """你是数学老师。请独立解出下面这道题，再写一段简短解析。
-要求：
-1 不要重复题目，直接给答案与思路。
-2 选择题只输出选项字母（多选连写，如 AB）；判断题答「正确」或「错误」；填空与计算题给最终结果，多个结果用分号隔开。
-3 解析控制在 2 到 4 句，说明关键步骤与依据，公式用 $...$ 包裹，不要使用 markdown 表格。
-4 先单独一行输出 ANSWER: 答案，再单独一行输出 ANALYSIS: 解析。
-题目：
 """
 
 # 评估与解析的并发数
@@ -521,24 +513,33 @@ def _normalize_answer(question: Question, raw: str) -> str:
     return text or question.answer
 
 
+_TYPE_CN = {"single": "单选题", "multiple": "多选题", "judge": "判断题",
+            "blank": "填空题", "compute": "计算题", "essay": "简答题"}
+
+
 def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | None:
-    """独立解题并生成简短解析；返回 (答案, 解析)。"""
-    prompt = SOLVE_PROMPT + question.stem
-    if question.options:
-        options = "\n".join(f"{o.label}. {o.text}" for o in question.options)
-        prompt += "\n\n选项：\n" + options
-    text = _chat_text_with_fallback([{"role": "user", "content": prompt}], api_key, 3200)
-    if not text:
+    """独立解题（JSON 输出）：answer 与 analysis 来自同一次求解，保证两者一致。"""
+    options = "\n".join(f"{o.label}. {o.text}" for o in question.options) if question.options else "（无选项）"
+    user = f"【题干】\n{question.stem}\n\n【选项】\n{options}\n\n【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
+    data = _chat_json_low(
+        [
+            {"role": "system", "content": SOLVE_SYSTEM},
+            {"role": "user", "content": user},
+        ],
+        api_key, 3200,
+    )
+    raw_answer, raw_analysis = data.get("answer"), data.get("analysis")
+    if (not isinstance(raw_answer, str) or not raw_answer.strip()
+            or not isinstance(raw_analysis, str) or not raw_analysis.strip()):
         return None
-    answer_match = re.search(r"ANSWER\s*[:：]\s*(.+)", text, flags=re.I)
-    analysis_match = re.search(r"ANALYSIS\s*[:：]\s*([\s\S]+)", text, flags=re.I)
-    if not answer_match:
-        return None
-    answer = _normalize_math(_normalize_answer(question, answer_match.group(1)))
-    analysis = _normalize_math((analysis_match.group(1).strip() if analysis_match else "").strip())
+    answer = _normalize_math(_normalize_answer(question, raw_answer))
+    analysis = _normalize_math(raw_analysis.strip())
     analysis = re.sub(r"\n{3,}", "\n\n", analysis)
-    if not analysis:
+    if not answer or not analysis:
         return None
+    if data.get("confidence") == "low":
+        note = str((question.selfCheck or {}).get("note", ""))
+        question.selfCheck = {**(question.selfCheck or {}), "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"}
     return answer, analysis
 
 

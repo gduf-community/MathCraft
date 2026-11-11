@@ -5,7 +5,9 @@ import * as banksApi from '../api/banks'
 import { getSessionGeneration } from '../api/session'
 import type {
   AssembleRecord,
+  ChatConfirm,
   ChatMessage,
+  ChatMode,
   Difficulty,
   ExamWindow,
   FavoriteGroup,
@@ -178,7 +180,24 @@ interface AppState {
   botThinking: boolean
   inputDraft: string
   setInputDraft: (v: string) => void
-  sendChat: (text: string) => Promise<void>
+  /** 分段控制器当前模式：用户显式选择，优先级最高 */
+  mode: ChatMode
+  setMode: (m: ChatMode) => void
+  /** 后端已确认生效的会话模式 */
+  sessionMode: ChatMode
+  /** 分段控制器是否显示：新会话、模式不一致、切换中显示，AI 确认后隐藏 */
+  modeVisible: boolean
+  /** 最近一次意图识别建议的模式（仅提示，不自动切换） */
+  modeSuggested: ChatMode | null
+  /** 数据管理高危操作待确认载荷 */
+  pendingConfirm: ChatConfirm | null
+  confirmBusy: boolean
+  confirmOperation: (accepted: boolean) => Promise<void>
+  /** 待发送的图片（data URL），随下一条消息一起发出 */
+  chatImages: string[]
+  addChatImages: (files: File[]) => void
+  removeChatImage: (index: number) => void
+  sendChat: (text: string, images?: string[], opts?: { switchOnly?: boolean; mode?: ChatMode }) => Promise<void>
   /** 中止当前对话请求（服务端仍会跑完，前端不再等结果） */
   pauseChat: () => void
   /** 回退到这条消息重新发送 */
@@ -231,6 +250,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
+  const [chatImages, setChatImages] = useState<string[]>([])
+  const [mode, setModeState] = useState<ChatMode>('generate')
+  const [sessionMode, setSessionMode] = useState<ChatMode>('generate')
+  const [modeVisible, setModeVisible] = useState(true)
+  const [modeSuggested, setModeSuggested] = useState<ChatMode | null>(null)
+  const [pendingConfirm, setPendingConfirmState] = useState<ChatConfirm | null>(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
   const [openPaperId, setOpenPaperId] = useState<string | null>(null)
   const [urgeUnread, setUrgeUnread] = useState(0)
   const [urgeItems, setUrgeItems] = useState<api.ApiUrge[]>([])
@@ -254,11 +280,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
   const chatAbortRef = useRef<AbortController | null>(null)
   const chatBusyRef = useRef(false)
+  const chatVersionRef = useRef(0)
+  const messageIdRef = useRef(0)
+  const imageVersionRef = useRef(0)
+  const chatImagesRef = useRef<string[]>([])
+  const pendingConfirmRef = useRef<ChatConfirm | null>(null)
+  const confirmRequestRef = useRef<AbortController | null>(null)
+  const selectedDocRef = useRef('')
+  const setPendingConfirm = useCallback((confirm: ChatConfirm | null) => {
+    pendingConfirmRef.current = confirm
+    setPendingConfirmState(confirm)
+  }, [])
   const chatPollRef = useRef<number | null>(null)
   const providerSession = useRef(getSessionGeneration())
   const bankRequestVersion = useRef(0)
   const documentRequestVersion = useRef(0)
-  const pendingDocumentSelection = useRef<{ bankId: string; documentId: string } | null>(null)
+  const favoritesRequestVersion = useRef(0)
+  const recordsRequestVersion = useRef(0)
+  const pendingDocumentSelection = useRef<{
+    bankId: string
+    documentId: string
+    chatVersion: number
+  } | null>(null)
   const mounted = useRef(true)
   const sessionIsCurrent = useCallback(
     () => mounted.current && providerSession.current === getSessionGeneration(),
@@ -271,6 +314,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       mounted.current = false
       if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
       chatAbortRef.current?.abort()
+      confirmRequestRef.current?.abort()
     }
   }, [])
 
@@ -291,18 +335,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return true
   }, [showToast])
 
-  const loadFavorites = useCallback(async () => {
-    if (!sessionIsCurrent()) return
+  // 同步失效会话回调，防止清空、切库或切文档后的旧结果回填。
+  const resetChat = useCallback(() => {
+    chatVersionRef.current += 1
+    pendingDocumentSelection.current = null
+    imageVersionRef.current += 1
+    chatAbortRef.current?.abort()
+    confirmRequestRef.current?.abort()
+    chatAbortRef.current = null
+    confirmRequestRef.current = null
+    chatSessionRef.current = null
+    chatBusyRef.current = false
+    if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
+    chatPollRef.current = null
+    setBotThinking(false)
+    setGenerating(false)
+    setGenProgress(null)
+    setConfirmBusy(false)
+    setChatProgress(null)
+    setChatStartedAt(null)
+    setMessages([])
+    setInputDraft('')
+    chatImagesRef.current = []
+    setChatImages([])
+    setModeState('generate')
+    setSessionMode('generate')
+    setModeVisible(true)
+    setModeSuggested(null)
+    setPendingConfirm(null)
+  }, [setPendingConfirm])
+
+  const loadFavorites = useCallback(async (isActive = sessionIsCurrent) => {
+    if (!sessionIsCurrent() || !isActive()) return
+    const version = ++favoritesRequestVersion.current
     const [apiFavs, apiGroups] = await Promise.all([api.listFavorites(), api.listFavoriteGroups()])
-    if (!sessionIsCurrent()) return
+    if (!sessionIsCurrent() || !isActive() || version !== favoritesRequestVersion.current) return
     setFavorites(apiFavs.map(api.mapQuestion))
     setFavGroups(apiGroups.map((g) => ({ id: g.id, name: g.name, isDefault: g.is_default })))
   }, [sessionIsCurrent])
 
-  const loadRecords = useCallback(async () => {
-    if (!sessionIsCurrent()) return
+  const loadRecords = useCallback(async (isActive = sessionIsCurrent) => {
+    if (!sessionIsCurrent() || !isActive()) return
+    const version = ++recordsRequestVersion.current
     const rows = await api.listPapers()
-    if (!sessionIsCurrent()) return
+    if (!sessionIsCurrent() || !isActive() || version !== recordsRequestVersion.current) return
     const details = await Promise.all(
       rows.map(async (p) => {
         try {
@@ -312,8 +388,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }),
     )
-    if (!sessionIsCurrent()) return
+    if (!sessionIsCurrent() || !isActive() || version !== recordsRequestVersion.current) return
     setRecords(details.map(api.mapPaper))
+    setOpenPaperId(current => current && !rows.some(paper => paper.id === current) ? null : current)
   }, [sessionIsCurrent])
 
   const refreshSpaces = useCallback(async () => {
@@ -325,13 +402,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const applyDocumentRows = useCallback((bankId: string, rows: api.ApiDocument[]) => {
     const pending = pendingDocumentSelection.current
-    const uploadedId = pending?.bankId === bankId
+    if (pending && pending.chatVersion !== chatVersionRef.current) {
+      pendingDocumentSelection.current = null
+    }
+    const uploadedId = pending?.bankId === bankId && pending.chatVersion === chatVersionRef.current
       && rows.some(document => document.id === pending.documentId) ? pending.documentId : ''
     if (uploadedId) pendingDocumentSelection.current = null
+    const nextId = uploadedId
+      || (rows.some(document => document.id === selectedDocRef.current) ? selectedDocRef.current : '')
+    if (selectedDocRef.current !== nextId) resetChat()
+    selectedDocRef.current = nextId
     setDocs(rows.map(api.mapDocument))
-    setSelectedDocId(current => uploadedId
-      || (rows.some(document => document.id === current) ? current : ''))
-  }, [])
+    setSelectedDocId(nextId)
+  }, [resetChat])
 
   // 全局题库与当前文档分别计数，切库不会丢弃仍有效的题库列表。
   const refreshKbs = useCallback(async () => {
@@ -347,6 +430,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!target) return
       version = ++documentRequestVersion.current
       if (!bankRows.some(bank => bank.id === target)) {
+        resetChat()
+        selectedDocRef.current = ''
         pendingDocumentSelection.current = null
         selectedKbRef.current = ''
         setSelectedKbId('')
@@ -365,15 +450,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(error instanceof Error ? error.message : '刷新题库或文档失败，请重试', 'error')
       }
     }
-  }, [applyDocumentRows, sessionIsCurrent, showToast])
+  }, [applyDocumentRows, resetChat, sessionIsCurrent, showToast])
 
   const invalidateDocument = useCallback((bankId: string, documentId: string) => {
     if (!sessionIsCurrent() || selectedKbRef.current !== bankId) return
     documentRequestVersion.current += 1
     if (pendingDocumentSelection.current?.documentId === documentId) pendingDocumentSelection.current = null
     setDocs(current => current.filter(document => document.id !== documentId))
-    setSelectedDocId(current => current === documentId ? '' : current)
-  }, [sessionIsCurrent])
+    if (selectedDocRef.current === documentId) {
+      resetChat()
+      selectedDocRef.current = ''
+      setSelectedDocId('')
+    }
+  }, [resetChat, sessionIsCurrent])
 
   // 催交：学生每 30 秒轮询角标与通知列表
   const loadUrges = useCallback(async () => {
@@ -521,6 +610,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const selectKb = useCallback(
     (id: string) => {
+      if (!sessionIsCurrent()) return
+      if (selectedKbRef.current !== id || selectedDocRef.current) resetChat()
+      selectedDocRef.current = ''
       const version = ++documentRequestVersion.current
       pendingDocumentSelection.current = null
       selectedKbRef.current = id
@@ -536,26 +628,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
         })
         .catch((err) => showToast(err instanceof Error ? err.message : '加载文档失败'))
     },
-    [applyDocumentRows, sessionIsCurrent, showToast],
+    [applyDocumentRows, resetChat, sessionIsCurrent, showToast],
   )
 
   const selectDoc = useCallback(
     (id: string) => {
+      if (!sessionIsCurrent()) return
+      if (selectedDocRef.current !== id) resetChat()
+      selectedDocRef.current = id
       pendingDocumentSelection.current = null
       setSelectedDocId(id)
       if (!id) return
-      void api
-        .latestBatch(selectedKbId || undefined, id)
-        .then((latest) => {
-          if (latest.batch_id) {
-            activeBatchRef.current = latest.batch_id
-            setQuestions(latest.questions.map(api.mapQuestion))
-            setSelectedIds([])
-          }
-        })
-        .catch(() => undefined)
+      const version = chatVersionRef.current
+      const bankId = selectedKbRef.current
+      void api.latestBatch(bankId || undefined, id).then((latest) => {
+        if (!sessionIsCurrent() || version !== chatVersionRef.current
+          || selectedKbRef.current !== bankId || selectedDocRef.current !== id) return
+        if (latest.batch_id) {
+          activeBatchRef.current = latest.batch_id
+          setQuestions(latest.questions.map(api.mapQuestion))
+          setSelectedIds([])
+        }
+      }).catch((error: unknown) => {
+        if (sessionIsCurrent() && version === chatVersionRef.current) {
+          showToast(error instanceof Error ? error.message : '加载历史题目失败', 'error')
+        }
+      })
     },
-    [selectedKbId],
+    [resetChat, sessionIsCurrent, showToast],
   )
 
   const setTypeConfig = useCallback((type: QuestionType, patch: Partial<TypeConfig>) => {
@@ -564,7 +664,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const runGenerate = useCallback(
     async (opts?: { silent?: boolean }) => {
-      if (!sessionIsCurrent()) return false
+      const version = chatVersionRef.current
+      const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
+      if (!isActive()) return false
       const doc = docs.find((d) => d.id === selectedDocId)
       if (!doc) {
         showToast('请先选择知识库文档')
@@ -589,16 +691,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           source_mode: 'variant_data',
           existing_stems: questions.map((q) => q.stem),
         })
-        if (!sessionIsCurrent()) return false
+        if (!isActive()) return false
         let state = await api.getGenerationProgress(started.task_id)
         while (!state.done) {
-          if (!sessionIsCurrent()) return false
+          if (!isActive()) return false
           setGenProgress({ percent: state.progress, stage: state.stage })
           await new Promise((r) => setTimeout(r, 500))
-          if (!sessionIsCurrent()) return false
+          if (!isActive()) return false
           state = await api.getGenerationProgress(started.task_id)
         }
-        if (!sessionIsCurrent()) return false
+        if (!isActive()) return false
         if (state.error?.message) throw new Error(state.error.message)
         const incoming = state.questions.map(api.mapQuestion)
         setQuestions((prev) => dedupeQuestions(prev, incoming))
@@ -618,36 +720,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setActiveTab('preview')
         return true
       } catch (err) {
+        if (!isActive()) return false
         showToast(err instanceof Error ? err.message : '生成失败，请检查后端服务')
         return false
       } finally {
-        setGenerating(false)
-        setGenProgress(null)
+        if (isActive()) {
+          setGenerating(false)
+          setGenProgress(null)
+        }
       }
     },
     [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, sessionIsCurrent, setActiveTab, showToast],
   )
 
+  const setMode = useCallback((next: ChatMode) => {
+    if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
+      || pendingConfirmRef.current) return
+    setModeState(next)
+    setModeVisible(true)
+    setModeSuggested(null)
+  }, [sessionIsCurrent])
+
   const sendChat = useCallback(
-    async (text: string) => {
+    async (text: string, images: string[] = [], opts?: { switchOnly?: boolean; mode?: ChatMode }) => {
       const trimmed = text.trim()
-      if (!trimmed || chatBusyRef.current || !sessionIsCurrent()) return
+      if ((!trimmed && !images.length) || chatBusyRef.current || confirmRequestRef.current
+        || pendingConfirmRef.current || !sessionIsCurrent()) return
+      if (selectedKbRef.current !== selectedKbId || selectedDocRef.current !== selectedDocId) return
       if (!selectedDocId || !selectedKbId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
+      const effectiveMode = opts?.mode ?? mode
+      const version = chatVersionRef.current
       chatBusyRef.current = true
       const controller = new AbortController()
       chatAbortRef.current = controller
-      const isActive = () => sessionIsCurrent() && chatAbortRef.current === controller && !controller.signal.aborted
+      const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
+        && chatAbortRef.current === controller && !controller.signal.aborted
       let poll: number | undefined
-      setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
+      setMessages((prev) => [...prev, {
+        id: `m-${++messageIdRef.current}`, role: 'user', text: trimmed,
+        images: images.length ? [...images] : undefined,
+      }])
+      if (!opts?.switchOnly) {
+        imageVersionRef.current += 1
+        chatImagesRef.current = []
+        setChatImages([])
+        setInputDraft('')
+      }
+      setChatProgress(null)
       setChatStartedAt(Date.now())
       setBotThinking(true)
       try {
         let session = chatSessionRef.current
         if (!session || session.bankId !== selectedKbId || session.docId !== selectedDocId) {
-          const created = await api.createChatSession(selectedKbId, selectedDocId)
+          const created = await api.createChatSession(selectedKbId, selectedDocId, controller.signal)
           if (!isActive()) return
           session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
           chatSessionRef.current = session
@@ -656,40 +784,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!isActive()) return
         poll = window.setInterval(() => {
           if (!isActive()) return
-          void api.getChatProgress(sessionId).then((p) => {
-            if (isActive() && p.active) setChatProgress({ percent: p.percent, stage: p.stage })
-          }).catch((err) => {
-            if (isActive()) showToast(err instanceof Error ? err.message : '读取出题进度失败')
+          void api.getChatProgress(sessionId, controller.signal).then((progress) => {
+            if (isActive() && progress.active) {
+              setChatProgress({ percent: progress.percent, stage: progress.stage })
+            }
+          }).catch((error: unknown) => {
+            if (isActive()) showToast(error instanceof Error ? error.message : '读取出题进度失败')
           })
         }, 1500)
         chatPollRef.current = poll
         const res = await api.sendChatMessage(
           sessionId, trimmed, questions.map((q) => q.stem), controller.signal,
+          images, effectiveMode, opts?.switchOnly ?? false,
         )
         if (!isActive()) return
-        setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
+        setSessionMode(res.mode)
+        setModeVisible(res.kind !== 'reply')
+        setModeSuggested(
+          res.kind === 'mode_mismatch' && res.suggested_template && res.suggested_template !== 'none'
+            ? res.suggested_template : null,
+        )
+        setPendingConfirm(res.confirm)
+        setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
         if (res.questions.length) {
           const incoming = res.questions.map(api.mapQuestion)
-          // 对话出题与快速出题合并保留，互不覆盖
           setQuestions((prev) => dedupeQuestions(prev, incoming))
           activeBatchRef.current = res.batch_id
           setSelectedIds([])
           showToast(`已生成 ${incoming.length} 道题目，已合并到「题目预览」`)
         }
-      } catch (err) {
-        if (!sessionIsCurrent() || chatAbortRef.current !== controller) return
-        const aborted = err instanceof DOMException && err.name === 'AbortError'
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `m-${Date.now()}-a`,
-            role: 'assistant',
-            text: aborted ? '已暂停本次生成。' : err instanceof Error ? err.message : '服务异常，请稍后再试',
-          },
-        ])
+      } catch (error: unknown) {
+        if (!isActive()) return
+        setMessages((prev) => [...prev, {
+          id: `m-${++messageIdRef.current}`, role: 'assistant',
+          text: error instanceof Error ? error.message : '服务异常，请稍后再试',
+        }])
       } finally {
         if (poll !== undefined) window.clearInterval(poll)
-        if (chatAbortRef.current === controller) {
+        if (isActive()) {
           chatPollRef.current = null
           chatAbortRef.current = null
           chatBusyRef.current = false
@@ -699,14 +831,91 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [selectedDocId, selectedKbId, questions, sessionIsCurrent, showToast],
+    [mode, selectedDocId, selectedKbId, questions, sessionIsCurrent, setPendingConfirm, showToast],
   )
+
+  const addChatImages = useCallback((files: File[]) => {
+    if (!sessionIsCurrent()) return
+    const candidates = files.filter((file) => file.type.startsWith('image/') && file.size <= 5 * 1024 * 1024)
+    const oversized = files.filter((file) => file.type.startsWith('image/')).length - candidates.length
+    if (oversized > 0) showToast(`有 ${oversized} 张图片超过 5MB，已跳过`)
+    if (!candidates.length) return
+    const version = chatVersionRef.current
+    const imageVersion = imageVersionRef.current
+    const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
+      && imageVersion === imageVersionRef.current
+    void (async () => {
+      try {
+        const urls = await Promise.all(candidates.map((file) => new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => typeof reader.result === 'string'
+            ? resolve(reader.result) : reject(new Error('图片读取结果无效'))
+          reader.onerror = () => reject(new Error('图片读取失败'))
+          reader.onabort = () => reject(new Error('图片读取已取消'))
+          reader.readAsDataURL(file)
+        })))
+        if (!isActive()) return
+        const merged = [...chatImagesRef.current, ...urls]
+        if (merged.length > 4) showToast('最多携带 4 张图片')
+        chatImagesRef.current = merged.slice(0, 4)
+        setChatImages(chatImagesRef.current)
+      } catch (error: unknown) {
+        if (isActive()) showToast(error instanceof Error ? error.message : '图片读取失败', 'error')
+      }
+    })()
+  }, [sessionIsCurrent, showToast])
+
+  const removeChatImage = useCallback((index: number) => {
+    if (!sessionIsCurrent()) return
+    chatImagesRef.current = chatImagesRef.current.filter((_, current) => current !== index)
+    setChatImages(chatImagesRef.current)
+  }, [sessionIsCurrent])
+
+  const confirmOperation = useCallback(async (accepted: boolean) => {
+    const target = pendingConfirmRef.current
+    const sessionId = chatSessionRef.current?.id
+    if (!sessionIsCurrent() || !target || !sessionId || confirmRequestRef.current
+      || chatBusyRef.current) return
+    const version = chatVersionRef.current
+    const controller = new AbortController()
+    confirmRequestRef.current = controller
+    const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
+      && confirmRequestRef.current === controller && !controller.signal.aborted
+      && chatSessionRef.current?.id === sessionId
+    let consumed = false
+    setConfirmBusy(true)
+    try {
+      const res = await api.confirmChat(sessionId, target.id, accepted, controller.signal)
+      if (!isActive() || pendingConfirmRef.current?.id !== target.id) return
+      consumed = true
+      setPendingConfirm(null)
+      setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
+      if (accepted && target.entity === 'favorites' && target.action === 'delete') {
+        await loadFavorites(isActive)
+      } else if (accepted && target.entity === 'papers'
+        && (target.action === 'delete' || target.action === 'update')) {
+        await loadRecords(isActive)
+      }
+    } catch (error: unknown) {
+      if (isActive()) {
+        const message = consumed
+          ? '操作已完成，但最新列表加载失败，请刷新页面查看；请勿重复执行该操作'
+          : error instanceof Error ? error.message : '确认失败，请重试'
+        showToast(message, 'error')
+      }
+    } finally {
+      if (sessionIsCurrent() && version === chatVersionRef.current
+        && confirmRequestRef.current === controller) {
+        confirmRequestRef.current = null
+        setConfirmBusy(false)
+      }
+    }
+  }, [loadFavorites, loadRecords, sessionIsCurrent, setPendingConfirm, showToast])
 
   const pauseChat = useCallback(() => {
     if (!sessionIsCurrent() || !chatBusyRef.current) return
     const sessionId = chatSessionRef.current?.id
-    if (sessionId) void api.cancelChat(sessionId)
-      .catch((err) => showToast(err instanceof Error ? err.message : '服务端暂停未确认'))
+    const version = chatVersionRef.current
     chatAbortRef.current?.abort()
     if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
     chatPollRef.current = null
@@ -715,31 +924,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setBotThinking(false)
     setChatProgress(null)
     setChatStartedAt(null)
-    setMessages((prev) => [...prev, { id: `m-${Date.now()}-paused`, role: 'assistant', text: '已暂停本次生成。' }])
+    setMessages((prev) => [...prev, {
+      id: `m-${++messageIdRef.current}`, role: 'assistant', text: '已暂停本次生成。',
+    }])
+    if (sessionId) void api.cancelChat(sessionId).catch((error: unknown) => {
+      if (sessionIsCurrent() && version === chatVersionRef.current && !chatBusyRef.current) {
+        showToast(error instanceof Error ? error.message : '服务端暂停未确认')
+      }
+    })
   }, [sessionIsCurrent, showToast])
 
-  const retryChat = useCallback(
-    (messageId: string) => {
-      if (chatBusyRef.current) return
-      const index = messages.findIndex((m) => m.id === messageId)
-      if (index < 0) return
-      const text = messages[index].text
-      setMessages((prev) => prev.slice(0, index))
-      void sendChat(text)
-    },
-    [messages, sendChat],
-  )
+  const retryChat = useCallback((messageId: string) => {
+    if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
+      || pendingConfirmRef.current || !selectedDocId || !selectedKbId) return
+    const index = messages.findIndex((message) => message.id === messageId && message.role === 'user')
+    if (index < 0) return
+    const { text, images } = messages[index]
+    setMessages((prev) => prev.slice(0, index))
+    void sendChat(text, images ?? [])
+  }, [messages, selectedDocId, selectedKbId, sendChat, sessionIsCurrent])
 
-  const editChat = useCallback(
-    (messageId: string) => {
-      if (chatBusyRef.current) return
-      const index = messages.findIndex((m) => m.id === messageId)
-      if (index < 0) return
-      setInputDraft(messages[index].text)
-      setMessages((prev) => prev.slice(0, index))
-    },
-    [messages],
-  )
+  const editChat = useCallback((messageId: string) => {
+    if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
+      || pendingConfirmRef.current) return
+    const index = messages.findIndex((message) => message.id === messageId && message.role === 'user')
+    if (index < 0) return
+    imageVersionRef.current += 1
+    setInputDraft(messages[index].text)
+    chatImagesRef.current = [...(messages[index].images ?? [])]
+    setChatImages(chatImagesRef.current)
+    setMessages((prev) => prev.slice(0, index))
+  }, [messages, sessionIsCurrent])
 
   const updateQuestion = useCallback(
     async (q: Question) => {
@@ -1025,21 +1240,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const clearAll = useCallback(() => {
-    if (!setActiveTab('generate')) return
+    if (!sessionIsCurrent() || !setActiveTab('generate')) return
+    const sessionId = chatSessionRef.current?.id
+    resetChat()
+    const version = chatVersionRef.current
+    const reportFailure = (error: unknown) => {
+      if (sessionIsCurrent() && version === chatVersionRef.current) {
+        showToast(error instanceof Error ? error.message : '清理服务端记录失败，请重试', 'error')
+      }
+    }
     if (questions.length) {
-      void api.batchDeleteQuestions(questions.map((q) => q.id)).catch(() => undefined)
+      void api.batchDeleteQuestions(questions.map((question) => question.id)).catch(reportFailure)
     }
-    if (chatSessionRef.current) {
-      void api.deleteChatSession(chatSessionRef.current.id).catch(() => undefined)
-      chatSessionRef.current = null
-    }
+    if (sessionId) void api.deleteChatSession(sessionId).catch(reportFailure)
     setQuestions([])
     setSelectedIds([])
-    setMessages([])
-    setInputDraft('')
     activeBatchRef.current = null
-    showToast('已清空全部题目与对话记录')
-  }, [questions, setActiveTab, showToast])
+    showToast('已清空当前题目与对话，正在清理服务端记录')
+  }, [questions, resetChat, sessionIsCurrent, setActiveTab, showToast])
 
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
@@ -1063,12 +1281,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return
       }
       showToast(`正在上传「${file.name}」…`)
+      const chatVersion = chatVersionRef.current
       let ingested = false
       try {
         const uploaded = await banksApi.uploadAndWait(selectedKbId, file)
         if (!sessionIsCurrent() || selectedKbRef.current !== selectedKbId) return
         ingested = true
-        pendingDocumentSelection.current = { bankId: selectedKbId, documentId: uploaded.id }
+        if (chatVersion === chatVersionRef.current) {
+          pendingDocumentSelection.current = { bankId: selectedKbId, documentId: uploaded.id, chatVersion }
+        }
         showToast(`「${file.name}」已上传并入库`, 'success')
         const version = ++documentRequestVersion.current
         const rows = await api.listDocuments(selectedKbId)
@@ -1261,6 +1482,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     botThinking,
     inputDraft,
     setInputDraft,
+    mode,
+    setMode,
+    sessionMode,
+    modeVisible,
+    modeSuggested,
+    pendingConfirm,
+    confirmBusy,
+    confirmOperation,
+    chatImages,
+    addChatImages,
+    removeChatImage,
     sendChat,
     pauseChat,
     chatProgress,

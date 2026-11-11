@@ -13,6 +13,7 @@ backend/
 │   ├── models/          # 数据库模型
 │   ├── schemas/         # 请求与响应契约
 │   └── services/        # 认证、文档、RAG 与教学业务
+│       └── rag/         # 检索与四模式对话；intent、modes、qa、data_agent
 ├── alembic/             # 数据库迁移
 ├── scripts/             # 认证密钥、管理员及迁移审计工具
 ├── tests/               # 后端测试与外部服务替身
@@ -138,5 +139,6 @@ uv run ruff check app tests
 
 - [根 README](../README.md)、[前端说明](../frontend/README.md)：项目介绍与前后端启动。
 - [API 文档](../docs/api.md)、[OpenAPI 契约](../openapi.json)：完整接口。
+- [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
 - 待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[运维后台](../docs/design/运维后台升级方案.md)、[接口与联调契约](../docs/design/运维后台接口与联调契约.md)、[模块说明](../docs/design/运维后台模块说明.md)。

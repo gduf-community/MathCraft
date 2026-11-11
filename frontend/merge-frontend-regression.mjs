@@ -46,6 +46,7 @@ const bundle = await build({
     import BankViewModal from './src/components/tabs/BankTab/BankViewModal';
     import TopBar from './src/components/layout/TopBar';
     import ChatInput from './src/components/tabs/GenerateTab/ChatInput';
+    import RecordsTab from './src/components/tabs/RecordsTab';
     function Harness() {
       const app = useApp(), h = window.mergeHarness;
       useEffect(() => { window.mergeApp = app; }, [app]);
@@ -66,6 +67,7 @@ const bundle = await build({
         {h.mode === 'create' && <BankCreateModal {...callbacks}/>}
         {h.mode === 'edit' && <BankEditModal bank={h.bank} {...callbacks}/>}
         {h.mode === 'view' && <BankViewModal bank={h.bank} {...callbacks}/>}
+        {h.mode === 'records' && <RecordsTab/>}
         <ChatInput/>
         <output data-testid="kbs">{JSON.stringify(app.kbs)}</output>
         <output data-testid="selection">{JSON.stringify({bank:app.selectedKbId, document:app.selectedDocId})}</output>
@@ -97,7 +99,7 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
   const page = await browser.newPage()
   page.setDefaultTimeout(15000)
   await page.route('**/*', route => route.abort())
-  page.on('pageerror', error => errors.push(error.message))
+  page.on('pageerror', error => { errors.push(error.message); console.error('BROWSER:', error.message) })
   await page.setContent('<div id="root"></div>')
   await page.evaluate(({ mode, role, memberRole, format }) => {
     const h = window.mergeHarness = { mode, generation: 0, closed: 0, changed: 0,
@@ -118,6 +120,15 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
         headers:{'Content-Type':h.pdfType ?? 'application/pdf'}})
     }
     h.invalidate = () => { h.generation++; for (const listener of [...h.listeners]) listener() }
+    h.chatReply = (patch = {}) => ({
+      reply:'当前对话结果', questions:[], done:false, batch_id:null, slot_state:{},
+      kind:'reply', mode:'generate', mode_changed:false, suggested_template:null, confirm:null,
+      ...patch,
+    })
+    h.favoriteRows = mode === 'records' ? [{id:'fav-old', stem:'旧收藏'}] : []
+    h.paperRows = mode === 'records' ? [{id:'paper-old', name:'旧试卷', createdAt:'2026-11-11',
+      questionCount:0, totalScore:0, spaces:[], published:false, questions:[], modulesOrder:[],
+      savedToRecords:true, answered:false}] : []
     h.apiBank = {id:'bank-A', name:'合成题库', code:'fake-code', creator:{id:'A', display_name:'合成用户'},
       member_count:1, capacity:100, source:'owned', quitted:false, my_role:memberRole,
       can_upload_document:memberRole !== 'readonly', can_download_document:true,
@@ -135,7 +146,9 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
         deepseek_key_masked:null, mineru_token_configured:false, mineru_token_masked:null,
         mineru_limits:{max_file_mb:100, max_pages:200}, embedding_model:'fake-embedding', rerank_model:'fake-rerank'}),
       saveModelSettings: () => {},
-      listFavoriteGroups: () => [], listFavorites: () => [], listPapers: () => [], listSpaces: () => [],
+      listFavoriteGroups: () => [], listFavorites: () => h.favoriteRows,
+      listPapers: () => h.paperRows, listSpaces: () => [],
+      getPaperApi: id => h.paperRows.find(paper => paper.id === id), mapPaper: paper => paper,
       listNotifications: () => ({items:h.notifications, unread_count:h.notifications.length}),
       listDocuments: id => h.documents[id] ?? [h.doc(id)], listBankMembers: () => [],
       getDocument: (bankId, docId) => ({...h.doc(bankId), id:docId, name:h.uploadName ?? 'same.txt'}),
@@ -152,7 +165,9 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
       uploadDocument: () => ({document_id:'doc-new', status:'uploaded', stage:'queued', progress:0}),
       getBank: () => h.apiBank, createBank: () => h.apiBank,
       createChatSession: () => ({session_id:'session-A'}),
-      sendChatMessage: () => ({reply:'当前对话结果', questions:[]}),
+      sendChatMessage: (...args) => h.chatReply({mode:args[5]}),
+      confirmChat: () => ({reply:'操作已确认', done:true}),
+      deleteChatSession: () => {}, batchDeleteQuestions: () => {},
       getChatProgress: () => ({active:true, percent:20, stage:'合成进度'}), cancelChat: () => {},
       startGeneration: () => ({task_id:'fake-task'}),
       getGenerationProgress: () => ({done:false, progress:10, stage:'生成中'}),
@@ -182,8 +197,8 @@ async function attachFiles(page) {
   // 原组件一次选择一个文件，使用两次选择验证后台队列。
   await page.locator('input[type=file]').setInputFiles({name:'two.txt', mimeType:'text/plain', buffer:Buffer.from('synthetic document')})
 }
-async function providerCase(name, run) {
-  const page = await mount('context')
+async function providerCase(name, run, mode = 'context') {
+  const page = await mount(mode)
   try { await run(page); pass(name) }
   catch (error) { failures.push({name, message:error.message}); console.error('FAIL:', name, '\n ', error.message) }
   finally { await page.close() }
@@ -195,6 +210,20 @@ async function selectBank(page, id = 'bank-A') {
 async function settleRender(page) {
   // 等 React 提交已完成请求的状态，避免在旧状态尚未提交时误判隔离成功。
   await page.evaluate(() => new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))))
+}
+async function prepareConfirmation(page, entity, action = 'delete') {
+  await selectBank(page)
+  await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+  await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+  await page.evaluate(async ({entity, action}) => {
+    const h = window.mergeHarness
+    h.backend.sendChatMessage = () => h.chatReply({mode:'data', confirm:{
+      id:'cache-confirm', action, entity, entity_label:entity === 'papers' ? '试卷' : '收藏',
+      affected:1, samples:['合成记录'], explanation:'合成确认',
+    }})
+    await window.mergeApp.sendChat('管理个人记录', [], {mode:'data'})
+  }, {entity, action})
+  await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'cache-confirm')
 }
 try {
   const settings = await mount('settings')
@@ -777,6 +806,372 @@ try {
   await notifications.close()
   pass('notifications preserve selected bank, reject late document refresh and stop polling after identity change')
 
+  for (const phase of ['getDocument', 'listDocuments']) {
+    for (const action of ['selectDoc', 'clearAll']) {
+      await providerCase(`upload auto-selection expires after ${action} while ${phase} is held, preserving the new chat`, async page => {
+        await page.evaluate(() => {
+          const h = window.mergeHarness
+          h.documents['bank-A'] = [h.doc('bank-A'), {...h.doc('bank-A'), id:'doc-other'}]
+        })
+        await selectBank(page)
+        await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+        await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+        await page.evaluate(phase => {
+          const h = window.mergeHarness
+          h.held[phase] = true
+          h.uploadDone = false
+          void window.mergeApp.uploadDocument(new File(['synthetic'], 'late.txt', {type:'text/plain'}))
+            .then(() => { h.uploadDone = true })
+        }, phase)
+        await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
+        await page.evaluate(action => {
+          if (action === 'selectDoc') window.mergeApp.selectDoc('doc-other')
+          else window.mergeApp.clearAll()
+        }, action)
+        await settleRender(page)
+        await page.evaluate(() => {
+          window.mergeHarness.held.sendChatMessage = true
+          void window.mergeApp.sendChat('上传期间的新对话')
+        })
+        await page.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
+        await page.evaluate(phase => {
+          const h = window.mergeHarness
+          h.documents['bank-A'].push({...h.doc('bank-A'), id:'doc-new', name:'late.txt'})
+          h.finish(phase, phase === 'getDocument'
+            ? {...h.doc('bank-A'), id:'doc-new', name:'late.txt'} : h.documents['bank-A'])
+        }, phase)
+        await page.waitForFunction(() => window.mergeHarness.uploadDone)
+        await settleRender(page)
+        assert.equal(await page.evaluate(() => window.mergeApp.selectedDocId), action === 'selectDoc' ? 'doc-other' : 'doc-bank-A')
+        assert.equal(await page.evaluate(() => window.mergeApp.docs.some(doc => doc.id === 'doc-new')), true,
+          '过期的自动选择意图仍允许刷新文档列表')
+        assert.equal(await page.evaluate(() => window.mergeApp.botThinking), true)
+        assert.deepEqual(await page.evaluate(() => window.mergeApp.messages.map(message => message.text)), ['上传期间的新对话'])
+        await page.evaluate(() => {
+          const h = window.mergeHarness
+          h.finish('sendChatMessage', h.chatReply({reply:'新会话仍然有效'}))
+        })
+        await page.waitForFunction(() => !window.mergeApp.botThinking)
+        assert.equal(await page.evaluate(() => window.mergeApp.messages.at(-1).text), '新会话仍然有效')
+      })
+    }
+  }
+
+  await providerCase('accepted favorites deletion refreshes only favorite caches', async page => {
+    await page.waitForFunction(() => window.mergeApp.favorites.length === 1 && window.mergeApp.records.length === 1)
+    await prepareConfirmation(page, 'favorites')
+    const papersBefore = await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'listPapers').length)
+    await page.evaluate(async () => {
+      window.mergeHarness.favoriteRows = []
+      await window.mergeApp.confirmOperation(true)
+    })
+    await page.waitForFunction(() => !window.mergeApp.confirmBusy && window.mergeApp.pendingConfirm === null)
+    assert.deepEqual(await page.evaluate(() => window.mergeApp.favorites), [])
+    assert.equal(await page.evaluate(() => window.mergeApp.records.length), 1)
+    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'listPapers').length), papersBefore)
+  }, 'records')
+
+  for (const action of ['delete', 'update']) {
+    await providerCase(`accepted papers ${action} refreshes records and synchronizes the open paper tab`, async page => {
+      await page.waitForFunction(() => window.mergeApp.records.length === 1)
+      await page.getByRole('button', {name:'查看', exact:true}).click()
+      await page.getByRole('button', {name:'旧试卷', exact:true}).waitFor()
+      await prepareConfirmation(page, 'papers', action)
+      await page.evaluate(async action => {
+        const h = window.mergeHarness
+        h.paperRows = action === 'delete' ? [] : [{...h.paperRows[0], name:'确认后的新名称'}]
+        await window.mergeApp.confirmOperation(true)
+      }, action)
+      await page.waitForFunction(() => !window.mergeApp.confirmBusy && window.mergeApp.pendingConfirm === null)
+      assert.equal(await page.getByRole('button', {name:'旧试卷', exact:true}).count(), 0)
+      if (action === 'delete') {
+        assert.deepEqual(await page.evaluate(() => window.mergeApp.records), [])
+        await page.getByText('暂无组卷记录，去「Agent出题」生成题目并组卷发布吧', {exact:true}).waitFor()
+      } else {
+        assert.equal(await page.evaluate(() => window.mergeApp.records[0].name), '确认后的新名称')
+        await page.getByRole('button', {name:'确认后的新名称', exact:true}).waitFor()
+      }
+    }, 'records')
+  }
+
+  await providerCase('papers deletion clears a pending request to open the deleted paper', async page => {
+    await prepareConfirmation(page, 'papers')
+    await page.evaluate(() => window.mergeApp.requestOpenPaper('paper-deleted'))
+    await page.waitForFunction(() => window.mergeApp.openPaperId === 'paper-deleted')
+    await page.evaluate(() => window.mergeApp.confirmOperation(true))
+    await page.waitForFunction(() => !window.mergeApp.confirmBusy)
+    assert.equal(await page.evaluate(() => window.mergeApp.openPaperId), null)
+  })
+
+  await providerCase('rejecting confirmation consumes the card without refreshing unchanged resources', async page => {
+    await page.waitForFunction(() => window.mergeApp.records.length === 1)
+    await prepareConfirmation(page, 'papers')
+    const before = await page.evaluate(() => window.mergeHarness.calls.filter(call => ['listPapers', 'listFavorites'].includes(call.name)).length)
+    await page.evaluate(() => window.mergeApp.confirmOperation(false))
+    await page.waitForFunction(() => window.mergeApp.pendingConfirm === null && !window.mergeApp.confirmBusy)
+    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => ['listPapers', 'listFavorites'].includes(call.name)).length), before)
+    assert.equal(await page.evaluate(() => window.mergeApp.records.length), 1)
+  }, 'records')
+
+  for (const entity of ['favorites', 'papers']) {
+    await providerCase(`${entity} refresh failure after successful consumption cannot offer a second confirmation`, async page => {
+      await prepareConfirmation(page, entity)
+      await page.evaluate(entity => {
+        const h = window.mergeHarness
+        h.held[entity === 'favorites' ? 'listFavorites' : 'listPapers'] = true
+        void window.mergeApp.confirmOperation(true)
+      }, entity)
+      const phase = entity === 'favorites' ? 'listFavorites' : 'listPapers'
+      await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
+      assert.equal(await page.evaluate(() => window.mergeApp.pendingConfirm), null)
+      assert.equal(await page.evaluate(() => window.mergeApp.confirmBusy), true)
+      await page.evaluate(phase => {
+        void window.mergeApp.confirmOperation(true)
+        window.mergeHarness.pending[phase].shift().reject(new Error('synthetic refresh failure'))
+      }, phase)
+      await page.waitForFunction(() => !window.mergeApp.confirmBusy)
+      await page.getByRole('alert').filter({hasText:'操作已完成，但最新列表加载失败'}).waitFor()
+      await page.evaluate(() => { void window.mergeApp.confirmOperation(true) })
+      assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'confirmChat').length), 1)
+      assert.equal(await page.evaluate(() => window.mergeApp.pendingConfirm), null)
+    }, 'records')
+  }
+
+  for (const phase of ['listFavorites', 'listPapers', 'getPaperApi']) {
+    for (const action of ['clearAll', 'selectDoc', 'endSession']) {
+      await providerCase(`confirmation cache refresh ${phase} completed after ${action} cannot overwrite current resources`, async page => {
+        await page.waitForFunction(() => window.mergeApp.records.length === 1 && window.mergeApp.favorites.length === 1)
+        await prepareConfirmation(page, phase === 'listFavorites' ? 'favorites' : 'papers')
+        await page.evaluate(phase => {
+          const h = window.mergeHarness
+          h.held[phase] = true
+          h.favoriteRows = []
+          h.paperRows = [{...h.paperRows[0], name:'过期的新试卷名称'}]
+          void window.mergeApp.confirmOperation(true)
+        }, phase)
+        await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
+        assert.equal(await page.evaluate(() => window.mergeApp.pendingConfirm), null)
+        await page.evaluate(action => {
+          if (action === 'clearAll') window.mergeApp.clearAll()
+          if (action === 'selectDoc') window.mergeApp.selectDoc('doc-other')
+          if (action === 'endSession') window.mergeHarness.invalidate()
+        }, action)
+        await settleRender(page)
+        const before = await page.evaluate(() => ({favorites:window.mergeApp.favorites,
+          records:window.mergeApp.records, busy:window.mergeApp.confirmBusy}))
+        await page.evaluate(phase => {
+          const h = window.mergeHarness
+          h.finish(phase, phase === 'listFavorites' ? [] : phase === 'listPapers' ? h.paperRows : h.paperRows[0])
+        }, phase)
+        await settleRender(page)
+        assert.deepEqual(await page.evaluate(() => ({favorites:window.mergeApp.favorites,
+          records:window.mergeApp.records, busy:window.mergeApp.confirmBusy})), before)
+      }, 'records')
+    }
+  }
+
+  await providerCase('an older records read cannot restore a paper removed by the confirmation refresh', async page => {
+    await page.waitForFunction(() => window.mergeApp.records.length === 1)
+    await page.evaluate(() => {
+      window.mergeHarness.held.listPapers = true
+      window.mergeApp.setActiveTab('records')
+    })
+    await page.waitForFunction(() => window.mergeHarness.pending.listPapers?.length === 1)
+    await prepareConfirmation(page, 'papers')
+    await page.evaluate(async () => {
+      const h = window.mergeHarness
+      h.oldPaper = h.paperRows[0]
+      h.held.listPapers = false
+      h.paperRows = []
+      await window.mergeApp.confirmOperation(true)
+    })
+    await page.waitForFunction(() => window.mergeApp.records.length === 0 && !window.mergeApp.confirmBusy)
+    await page.evaluate(() => window.mergeHarness.finish('listPapers', [window.mergeHarness.oldPaper]))
+    await settleRender(page)
+    assert.deepEqual(await page.evaluate(() => window.mergeApp.records), [])
+  }, 'records')
+
+  for (const action of ['clearAll', 'selectDoc', 'selectKb', 'endSession']) {
+    await providerCase(`late confirmation after ${action} cannot restore messages or change a newer confirmation`, async page => {
+      await selectBank(page)
+      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+      await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+      await page.evaluate(async () => {
+        const h = window.mergeHarness
+        h.backend.sendChatMessage = () => h.chatReply({mode:'data', confirm:{
+          id:'confirm-old', action:'delete', entity:'favorites', entity_label:'收藏',
+          affected:1, samples:['合成题目'], explanation:'合成确认',
+        }})
+        await window.mergeApp.sendChat('删除题目', [], {mode:'data'})
+      })
+      await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'confirm-old')
+      await page.evaluate(() => {
+        const h = window.mergeHarness
+        h.held.confirmChat = true
+        void window.mergeApp.confirmOperation(true)
+        // 同一渲染周期内连点，不能依靠 React 下一次提交才阻止重复请求。
+        void window.mergeApp.confirmOperation(true)
+        void window.mergeApp.confirmOperation(false)
+      })
+      await page.waitForFunction(() => window.mergeHarness.pending.confirmChat?.length === 1)
+      assert.equal(await page.evaluate(() => window.mergeApp.confirmBusy), true)
+      assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'confirmChat').length), 1)
+      assert.equal(await page.getByRole('button', {name:'发送', exact:true}).isDisabled(), true)
+      await page.evaluate(action => {
+        const app = window.mergeApp, h = window.mergeHarness
+        if (action === 'clearAll') app.clearAll()
+        if (action === 'selectDoc') app.selectDoc('doc-other')
+        if (action === 'selectKb') app.selectKb('bank-B')
+        if (action === 'endSession') h.invalidate()
+      }, action)
+      await settleRender(page)
+      const before = await page.evaluate(() => ({messages:window.mergeApp.messages,
+        pending:window.mergeApp.pendingConfirm, busy:window.mergeApp.confirmBusy,
+        mode:window.mergeApp.mode, sessionMode:window.mergeApp.sessionMode}))
+      if (action !== 'endSession') {
+        assert.deepEqual(before.messages, [])
+        assert.equal(before.pending, null)
+        assert.equal(before.busy, false)
+        assert.equal(before.mode, 'generate')
+      }
+      await page.evaluate(() => window.mergeHarness.finish('confirmChat', {reply:'过期删除结果', done:true}))
+      await settleRender(page)
+      assert.deepEqual(await page.evaluate(() => ({messages:window.mergeApp.messages,
+        pending:window.mergeApp.pendingConfirm, busy:window.mergeApp.confirmBusy,
+        mode:window.mergeApp.mode, sessionMode:window.mergeApp.sessionMode})), before)
+    })
+  }
+
+  await providerCase('successful confirmation is consumed once and an older finally cannot unlock a newer confirmation', async page => {
+    await selectBank(page)
+    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+    await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+    await page.evaluate(async () => {
+      const h = window.mergeHarness
+      h.nextConfirm = 'first'
+      h.backend.sendChatMessage = () => h.chatReply({mode:'data', confirm:{
+        id:h.nextConfirm, action:'delete', entity:'favorites', entity_label:'收藏',
+        affected:1, samples:[], explanation:'',
+      }})
+      await window.mergeApp.sendChat('删除', [], {mode:'data'})
+    })
+    await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'first')
+    await page.evaluate(() => {
+      window.mergeHarness.held.confirmChat = true
+      void window.mergeApp.confirmOperation(true)
+    })
+    await page.waitForFunction(() => window.mergeApp.confirmBusy)
+    await page.evaluate(() => window.mergeApp.clearAll())
+    await settleRender(page)
+    await page.evaluate(async () => {
+      window.mergeHarness.nextConfirm = 'second'
+      await window.mergeApp.sendChat('新的删除', [], {mode:'data'})
+    })
+    await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'second')
+    await page.evaluate(() => { void window.mergeApp.confirmOperation(true) })
+    await page.waitForFunction(() => window.mergeHarness.pending.confirmChat.length === 2)
+    await page.evaluate(() => window.mergeHarness.finish('confirmChat', {reply:'旧删除已完成', done:true}))
+    await settleRender(page)
+    assert.equal(await page.evaluate(() => window.mergeApp.confirmBusy), true)
+    assert.equal(await page.evaluate(() => window.mergeApp.pendingConfirm.id), 'second')
+    await page.evaluate(() => window.mergeHarness.finish('confirmChat', {reply:'新删除已完成', done:true}))
+    await page.waitForFunction(() => !window.mergeApp.confirmBusy && window.mergeApp.pendingConfirm === null)
+    await page.evaluate(() => { void window.mergeApp.confirmOperation(true) })
+    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'confirmChat').length), 2)
+    assert.equal(await page.evaluate(() => window.mergeApp.messages.some(message => message.text === '旧删除已完成')), false)
+    assert.equal(await page.evaluate(() => window.mergeApp.messages.filter(message => message.text === '新删除已完成').length), 1)
+  })
+
+  for (const action of ['clearAll', 'selectDoc', 'selectKb', 'sendChat', 'endSession']) {
+    await providerCase(`image reading completed after ${action} cannot append stale attachments`, async page => {
+      await selectBank(page)
+      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+      await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+      await page.evaluate(() => {
+        const h = window.mergeHarness
+        h.imageReads = []
+        window.FileReader = class {
+          readAsDataURL() { h.imageReads.push(this) }
+        }
+        window.mergeApp.addChatImages([new File(['fake image'], 'old.png', {type:'image/png'})])
+      })
+      await page.evaluate(action => {
+        const app = window.mergeApp
+        if (action === 'clearAll') app.clearAll()
+        if (action === 'selectDoc') app.selectDoc('doc-other')
+        if (action === 'selectKb') app.selectKb('bank-B')
+        if (action === 'sendChat') void app.sendChat('发送时还未读完图片')
+        if (action === 'endSession') window.mergeHarness.invalidate()
+      }, action)
+      await settleRender(page)
+      await page.evaluate(() => {
+        const reader = window.mergeHarness.imageReads[0]
+        reader.result = 'data:image/png;base64,b2xk'
+        reader.onload()
+      })
+      await settleRender(page)
+      assert.deepEqual(await page.evaluate(() => window.mergeApp.chatImages), [])
+    })
+  }
+
+  await providerCase('concurrent image reads preserve both batches and editing restores message attachments', async page => {
+    await selectBank(page)
+    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+    await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+    await page.evaluate(() => {
+      const h = window.mergeHarness
+      h.imageReads = []
+      window.FileReader = class { readAsDataURL() { h.imageReads.push(this) } }
+      const app = window.mergeApp
+      app.addChatImages([new File(['a'], 'a.png', {type:'image/png'})])
+      app.addChatImages([new File(['b'], 'b.png', {type:'image/png'})])
+      for (const [index, reader] of h.imageReads.entries()) {
+        reader.result = `data:image/png;base64,${index === 0 ? 'YQ==' : 'Yg=='}`
+        reader.onload()
+      }
+    })
+    await page.waitForFunction(() => window.mergeApp.chatImages.length === 2)
+    const images = await page.evaluate(() => window.mergeApp.chatImages)
+    await page.evaluate(() => window.mergeApp.sendChat('编辑图片消息', window.mergeApp.chatImages))
+    await page.waitForFunction(() => window.mergeApp.messages.length === 2)
+    await page.evaluate(() => window.mergeApp.editChat(window.mergeApp.messages[0].id))
+    await settleRender(page)
+    assert.deepEqual(await page.evaluate(() => window.mergeApp.chatImages), images)
+    assert.equal(await page.evaluate(() => window.mergeApp.inputDraft), '编辑图片消息')
+  })
+
+  for (const action of ['clearAll', 'selectDoc', 'selectKb']) {
+    await providerCase(`chat response after ${action} cannot restore mode, confirmation, questions or polling state`, async page => {
+      await selectBank(page)
+      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
+      await page.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
+      await page.evaluate(() => {
+        window.mergeHarness.held.sendChatMessage = true
+        void window.mergeApp.sendChat('旧请求')
+      })
+      await page.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
+      await page.evaluate(action => {
+        const app = window.mergeApp
+        if (action === 'clearAll') app.clearAll()
+        if (action === 'selectDoc') app.selectDoc('doc-other')
+        if (action === 'selectKb') app.selectKb('bank-B')
+      }, action)
+      await settleRender(page)
+      await page.evaluate(() => {
+        const h = window.mergeHarness
+        h.finish('sendChatMessage', h.chatReply({reply:'过期回复', mode:'data', kind:'mode_confirm',
+          questions:[{id:'stale-question'}], confirm:{id:'stale-confirm'}}))
+      })
+      await settleRender(page)
+      assert.deepEqual(await page.evaluate(() => ({messages:window.mergeApp.messages,
+        questions:window.mergeApp.questions, mode:window.mergeApp.mode,
+        sessionMode:window.mergeApp.sessionMode, pending:window.mergeApp.pendingConfirm,
+        thinking:window.mergeApp.botThinking, progress:window.mergeApp.chatProgress})),
+      {messages:[], questions:[], mode:'generate', sessionMode:'generate', pending:null, thinking:false, progress:null})
+      assert.equal(await page.evaluate(() => [...window.mergeHarness.timers.values()].filter(timer => timer.delay === 1500).length), 0)
+    })
+  }
+
   const chat = await mount('context')
   await chat.evaluate(() => { window.mergeApp.selectKb('bank-A'); window.mergeApp.selectDoc('doc-bank-A') })
   await chat.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
@@ -784,13 +1179,14 @@ try {
   await chat.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
   await chat.evaluate(() => { window.mergeApp.pauseChat(); void window.mergeApp.sendChat('第二次') })
   await chat.waitForFunction(() => window.mergeHarness.pending.sendChatMessage.length === 2)
-  await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', {reply:'旧结果', questions:[]}))
+  await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', window.mergeHarness.chatReply({reply:'旧结果', mode:'data'})))
   await chat.waitForFunction(() => window.mergeHarness.pending.sendChatMessage.length === 1)
   await settleRender(chat)
   assert.equal(await chat.evaluate(() => window.mergeApp.botThinking), true)
   assert.equal(await chat.evaluate(() => window.mergeApp.messages.some(message => message.text === '旧结果')), false)
+  assert.equal(await chat.evaluate(() => window.mergeApp.sessionMode), 'generate')
   assert.equal(await chat.evaluate(() => [...window.mergeHarness.timers.values()].filter(timer => timer.delay === 1500).length), 1)
-  await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', {reply:'新结果', questions:[]}))
+  await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', window.mergeHarness.chatReply({reply:'新结果'})))
   await chat.waitForFunction(() => !window.mergeApp.botThinking && window.mergeApp.messages.some(message => message.text === '新结果'))
   await chat.evaluate(() => { void window.mergeApp.generate().then(() => { window.mergeHarness.generationFinished = true }) })
   await chat.waitForFunction(() => window.mergeHarness.calls.some(call => call.name === 'getGenerationProgress'))

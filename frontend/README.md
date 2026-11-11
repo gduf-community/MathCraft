@@ -10,10 +10,12 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | `src/api/adminOps.ts`、`src/api/adminOpsDemo.ts` | 运维真实请求适配与仅 DEV 显式启用的合成演示；五个 ops 后端接口仍待实现 |
 | `src/components/auth/` | 登录、邮箱验证码与 Turnstile |
 | `src/components/layout/`、`src/components/tabs/` | 工作台布局与出题、预览、题库、收藏等页面 |
+| `src/components/tabs/GenerateTab/` | 四模式对话、图片附件、消息操作和生成进度；旧 QuickPrompts 已移除 |
 | `src/components/settings/`、`src/components/admin/` | 个人模型设置与管理员面板 |
 | `src/components/admin/LegacyOverview.tsx` | 原平台资源与历史批次统计，独立读取真实接口 |
 | `src/components/admin/ops/` | 运维概览、运行／依赖／异常页面、运行抽屉、管理员通知及共用查询与展示 |
 | `src/components/ui/` | 提示、确认框等共用控件 |
+| `src/components/ui/ConfirmCard.tsx`、`src/components/ui/SegmentedControl.tsx` | 数据操作预览确认与四模式选择 |
 | `src/store/`、`src/types/` | 认证与业务状态、共用类型 |
 | `src/types/ops.ts` | 运维 v1 前端类型与客户端边界，不代表后端 schema 或 OpenAPI 已新增 |
 | `src/styles/`、`src/assets/`、`src/lib/` | 样式、静态资源与工具函数 |
@@ -82,6 +84,7 @@ node merge-frontend-regression.mjs
 - 个人凭据在“模型与服务”保存：留空保留，明确勾选后清除；连接测试使用已保存配置。管理员在“模型与检索”维护平台模型与索引重建，嵌入模型变更需重建后生效。
 - 题库支持 PDF、DOCX、XLSX、MD／markdown、TXT 批量上传；校验格式、空文件及名称／大小／修改时间重复项，部分失败可只重试未受理文件。上传受理后仍需等待后台处理完成，列表可查看失败详情。
 - MD／TXT 提供分页文本预览，文本读取上限为 2 MiB；PDF 通过认证请求获取 Blob 后打开窗口，DOCX／XLSX 提供下载。关闭或切换文档时取消预览请求。
+- 对话提供快速出题、创新命题、知识答疑和数据管理四种模式；输入框支持动态行数和图片附件。图片用于出题要求抽取，数据删除／改名需先查看影响预览并确认；模式、接口与异步隔离边界见[四模式说明](../docs/design/对话四模式与主线整合.md)。
 
 ### 登录页居中与滚动边界
 

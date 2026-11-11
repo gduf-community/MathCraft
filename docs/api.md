@@ -2,15 +2,13 @@
 
 本文件由根目录 `openapi.json` 自动生成；运行时契约以 `/openapi.json` 和 `/docs` 为准。
 
-运维扩展及本轮前端先行记录见[运维后台方案](design/运维后台升级方案.md)及[接口与联调契约](design/运维后台接口与联调契约.md)。用户授权在 G0 前依照 v1 契约实现七入口与管理员通知前端，前端已有运维 API 适配与 `frontend/src/types/ops.ts` 类型；这不代表后端 schema、通知关联字段或根 OpenAPI 已新增。五个拟新增 `GET /api/admin/ops/overview`、`GET /api/admin/ops/runs`、`GET /api/admin/ops/runs/{run_id}`、`GET /api/admin/ops/dependencies`、`GET /api/admin/ops/alerts` 仍待后端实现，不属于下文当前接口正文。通知读写沿用现有 `/api/notifications` 能力，不新增第六个 ops 接口。
-
-本轮默认请求真实 API，真实错误不自动回退 mock；管理员登录后仅 DEV 可显式启用运维统计／运行／依赖／异常／通知的合成演示，旧平台资源统计与账号／模型／安全仍真实，生产无演示入口与 demo 模块。G0 真实追踪、G1 后端契约冻结、G3 贯通均未通过，前端检查与离线浏览器回归已通过，详见[验收记录](design/运维后台升级方案.md#102-本轮前端验收记录)。本次仅更新文档入口说明，不重新生成 `openapi.json` 或本文接口正文；后端落地时仍须同步 schema、生成契约、本文及前端映射，并核对生成器覆盖范围。
-
 后端入口为 `app.main:app`，示例地址 `http://127.0.0.1:8000`。除健康检查及公开认证流程外，受保护 HTTP 接口使用 `Authorization: Bearer <access_token>`；刷新要求 HttpOnly Cookie、可信 Origin 和 `X-CSRF-Token`；退出另外要求本标签的 `Authorization`，仅撤销该访问令牌绑定的会话，不清除其他会话的共享 Cookie。
 
 认证、资料字段、错误响应以 OpenAPI schema 为准，不再使用历史单用户设置接口。完整认证与迁移约定见 [用户系统实施规格](design/用户系统实施规格.md) 和[认证设计](design/用户系统功能规格.md)。
 
 模型凭据使用 `/api/users/me/model-settings`，知识库资料使用 `/api/banks`；旧 `/api/settings` 与 `/api/knowledge-bases` 不属于当前后端契约。平台模型与检索通过管理员专用 `/api/admin/rag-settings` 维护；嵌入模型或地址变更先保存待应用值，另行提交重建后才切换，使用方法见 [设置拆分与保存反馈设计](design/设置拆分与保存反馈设计.md)。配置优先级、保存与测试规则见 [模型配置与入库流程](design/模型配置来源与普通知识库流程.md)，权限、完成情况及验收边界见 [知识库模块说明](design/知识库模块说明.md) 和[扫描 PDF 策略](design/扫描PDF云端OCR策略.md)。
+
+对话支持快速出题、创新命题、知识答疑和数据管理四种模式；图片与数据操作确认的契约和边界见[四模式对话与主线整合](design/对话四模式与主线整合.md)。
 
 ## admin
 
@@ -89,6 +87,7 @@
 | `DELETE` | `/api/chat/sessions/{session_id}` | Delete Session |
 | `GET` | `/api/chat/sessions/{session_id}` | Get Session |
 | `POST` | `/api/chat/sessions/{session_id}/cancel` | Cancel Generation |
+| `POST` | `/api/chat/sessions/{session_id}/confirm` | Confirm Operation |
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
 | `GET` | `/api/chat/sessions/{session_id}/progress` | Read Generation Progress |
 
@@ -195,4 +194,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 108 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 109 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
