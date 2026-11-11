@@ -1,6 +1,8 @@
 /** 真实后端 API 层：统一封装 fetch、token、字段映射。 */
 import type {
   AssembleRecord,
+  ChatMode,
+  ChatReply,
   Difficulty,
   ExamWindow,
   FavoriteGroup,
@@ -941,11 +943,30 @@ export async function sendChatMessage(
   message: string,
   existingStems: string[],
   signal?: AbortSignal,
-): Promise<{ reply: string; questions: ApiQuestion[]; done: boolean; batch_id: string | null; slot_state: Record<string, unknown> }> {
-  return request(`/api/chat/sessions/${sessionId}/messages`, {
+  images: string[] = [],
+  mode: ChatMode = 'generate',
+  switchOnly = false,
+): Promise<Omit<ChatReply, 'questions'> & { questions: ApiQuestion[] }> {  return request(`/api/chat/sessions/${sessionId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ message, existing_stems: existingStems }),
+    body: JSON.stringify({
+      message,
+      existing_stems: existingStems,
+      mode,
+      switch_only: switchOnly,
+      ...(images.length ? { images } : {}),
+    }),
     signal,
+  })
+}
+
+export async function confirmChat(
+  sessionId: string,
+  confirmId: string,
+  accepted: boolean,
+): Promise<{ reply: string; done: boolean }> {
+  return request(`/api/chat/sessions/${sessionId}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ confirm_id: confirmId, accepted }),
   })
 }
 

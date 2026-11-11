@@ -4,7 +4,9 @@ import * as api from '../api/backend'
 import * as banksApi from '../api/banks'
 import type {
   AssembleRecord,
+  ChatConfirm,
   ChatMessage,
+  ChatMode,
   Difficulty,
   ExamWindow,
   FavoriteGroup,
@@ -175,7 +177,23 @@ interface AppState {
   botThinking: boolean
   inputDraft: string
   setInputDraft: (v: string) => void
-  sendChat: (text: string) => Promise<void>
+  /** 分段控制器当前模式：用户显式选择，优先级最高 */
+  mode: ChatMode
+  setMode: (m: ChatMode) => void
+  /** 后端已确认生效的会话模式 */
+  sessionMode: ChatMode
+  /** 分段控制器是否显示：新会话、模式不一致、切换中显示，AI 确认后隐藏 */
+  modeVisible: boolean
+  /** 最近一次意图识别建议的模式（仅提示，不自动切换） */
+  modeSuggested: ChatMode | null
+  /** 数据管理高危操作待确认载荷 */
+  pendingConfirm: ChatConfirm | null
+  confirmOperation: (accepted: boolean) => Promise<void>
+  /** 待发送的图片（data URL），随下一条消息一起发出 */
+  chatImages: string[]
+  addChatImages: (files: File[]) => void
+  removeChatImage: (index: number) => void
+  sendChat: (text: string, images?: string[], opts?: { switchOnly?: boolean; mode?: ChatMode }) => Promise<void>
   /** 中止当前对话请求（服务端仍会跑完，前端不再等结果） */
   pauseChat: () => void
   /** 回退到这条消息重新发送 */
@@ -225,6 +243,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
+  const [chatImages, setChatImages] = useState<string[]>([])
+  const [mode, setModeState] = useState<ChatMode>('generate')
+  const [sessionMode, setSessionMode] = useState<ChatMode>('generate')
+  const [modeVisible, setModeVisible] = useState(true)
+  const [modeSuggested, setModeSuggested] = useState<ChatMode | null>(null)
+  const [pendingConfirm, setPendingConfirm] = useState<ChatConfirm | null>(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null)
   const [openPaperId, setOpenPaperId] = useState<string | null>(null)
   const [urgeUnread, setUrgeUnread] = useState(0)
@@ -530,18 +555,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, showToast],
   )
 
+  const setMode = useCallback((m: ChatMode) => {
+    setModeState(m)
+    setModeSuggested(null)
+  }, [])
+
   const sendChat = useCallback(
-    async (text: string) => {
+    async (text: string, images: string[] = [], opts?: { switchOnly?: boolean; mode?: ChatMode }) => {
       const trimmed = text.trim()
-      if (!trimmed || chatBusyRef.current) return
-      if (!selectedDocId || !selectedKbId) {
+      if ((!trimmed && !images.length) || chatBusyRef.current) return
+      if (!opts?.switchOnly && !selectedDocId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
+      if (!selectedDocId || !selectedKbId) {
+        showToast('请先在右侧选择知识库文档')
+        return
+      }
+      // 分段控制器切换时同步传入新模式，避免 setState 后闭包读到旧值
+      const effectiveMode = opts?.mode ?? mode
       chatBusyRef.current = true
       const controller = new AbortController()
       chatAbortRef.current = controller
-      setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed }])
+      setMessages((prev) => [...prev, { id: `m-${Date.now()}`, role: 'user', text: trimmed, images: images.length ? images : undefined }])
+      setChatImages([])
       setChatStartedAt(Date.now())
       setBotThinking(true)
       try {
@@ -558,8 +595,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }).catch(() => undefined)
         }, 1500)
         const res = await api.sendChatMessage(
-          sessionId, trimmed, questions.map((q) => q.stem), controller.signal,
+          sessionId, trimmed, questions.map((q) => q.stem), controller.signal, images, effectiveMode, opts?.switchOnly ?? false,
         )
+        setSessionMode(res.mode)
+        if (res.kind === 'reply') {
+          // 正常回复：模式已按用户选择激活，控制器隐藏；清空会话后重现
+          setModeVisible(false)
+        } else {
+          // 模式不匹配或需确认：保持控制器可见，等待用户显式切换
+          setModeVisible(true)
+          setModeSuggested(
+            res.kind === 'mode_mismatch' && res.suggested_template && res.suggested_template !== 'none'
+              ? res.suggested_template
+              : null,
+          )
+        }
+        if (res.confirm) setPendingConfirm(res.confirm)
         setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
         if (res.questions.length) {
           const incoming = res.questions.map(api.mapQuestion)
@@ -591,7 +642,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setBotThinking(false)
       }
     },
-    [selectedDocId, selectedKbId, questions, showToast],
+    [mode, selectedDocId, selectedKbId, questions, showToast],
+  )
+
+  const addChatImages = useCallback(
+    (files: File[]) => {
+      const candidates = files.filter((f) => f.type.startsWith('image/') && f.size <= 5 * 1024 * 1024)
+      const oversized = files.filter((f) => f.type.startsWith('image/')).length - candidates.length
+      if (oversized > 0) showToast(`有 ${oversized} 张图片超过 5MB，已跳过`)
+      if (!candidates.length) return
+      const readers = candidates.map(
+        (file) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(String(reader.result))
+            reader.onerror = () => reject(reader.error)
+            reader.readAsDataURL(file)
+          }),
+      )
+      void Promise.all(readers)
+        .then((urls) => {
+          const merged = [...chatImages, ...urls]
+          if (merged.length > 4) showToast('最多携带 4 张图片')
+          setChatImages(merged.slice(0, 4))
+        })
+        .catch(() => showToast('图片读取失败'))
+    },
+    [chatImages, showToast],
+  )
+
+  const removeChatImage = useCallback((index: number) => {
+    setChatImages((prev) => prev.filter((_, i) => i !== index))
+  }, [])
+
+  const confirmOperation = useCallback(
+    async (accepted: boolean) => {
+      const target = pendingConfirm
+      if (!target || confirmBusy) return
+      const sessionId = chatSessionRef.current?.id
+      if (!sessionId) return
+      setConfirmBusy(true)
+      try {
+        const res = await api.confirmChat(sessionId, target.id, accepted)
+        setPendingConfirm(null)
+        setMessages((prev) => [...prev, { id: `m-${Date.now()}-a`, role: 'assistant', text: res.reply }])
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '确认失败，请重试')
+      } finally {
+        setConfirmBusy(false)
+      }
+    },
+    [pendingConfirm, confirmBusy, showToast],
   )
 
   const pauseChat = useCallback(() => {
@@ -607,9 +708,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (messageId: string) => {
       const index = messages.findIndex((m) => m.id === messageId)
       if (index < 0) return
-      const text = messages[index].text
+      const { text, images } = messages[index]
       setMessages((prev) => prev.slice(0, index))
-      void sendChat(text)
+      void sendChat(text, images ?? [])
     },
     [messages, sendChat],
   )
@@ -920,8 +1021,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInputDraft('')
     activeBatchRef.current = null
     setActiveTab('generate')
+    setMode('generate')
+    setSessionMode('generate')
+    setModeVisible(true)
+    setModeSuggested(null)
+    setPendingConfirm(null)
     showToast('已清空全部题目与对话记录')
-  }, [questions, showToast])
+  }, [questions, setMode, showToast])
 
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
@@ -1136,6 +1242,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     botThinking,
     inputDraft,
     setInputDraft,
+    mode,
+    setMode,
+    sessionMode,
+    modeVisible,
+    modeSuggested,
+    pendingConfirm,
+    confirmOperation,
+    chatImages,
+    addChatImages,
+    removeChatImage,
     sendChat,
     pauseChat,
     chatProgress,
