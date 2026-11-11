@@ -1,5 +1,7 @@
 """出题、题目、收藏、对话的请求模型。"""
-from pydantic import BaseModel, Field
+import base64
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class TypeCountBody(BaseModel):
@@ -62,3 +64,41 @@ class ChatSessionCreateBody(BaseModel):
 class ChatMessageBody(BaseModel):
     message: str = Field(min_length=1, max_length=2048)
     existing_stems: list[str] = Field(default=[], max_length=200)
+    # base64 data URL 图片，随消息一起传给多模态模型
+    images: list[str] = Field(default=[], max_length=4)
+    # 分段控制器当前模式：generate/creative/qa/data
+    mode: str = Field(default="generate")
+    # 前端切换模式后的告知消息：只更新会话模式，不执行任何业务流程
+    switch_only: bool = False
+
+    @field_validator("mode")
+    @classmethod
+    def normalize_mode(cls, value: str) -> str:
+        return value if value in ("generate", "creative", "qa", "data") else "generate"
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, value: list[str]) -> list[str]:
+        """只接受常见图片格式的 data URL，单张解码后不超过 5MB。"""
+        allowed = ("image/png", "image/jpeg", "image/webp")
+        for item in value:
+            header, _, payload = item.partition(",")
+            if not header.startswith("data:") or ";" not in header or not payload:
+                raise ValueError("图片必须是 data URL 格式")
+            mime = header.removeprefix("data:").split(";", 1)[0]
+            if mime not in allowed:
+                raise ValueError(f"不支持的图片格式 {mime}，只接受 PNG/JPEG/WebP")
+            try:
+                size = len(base64.b64decode(payload, validate=True))
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError("图片 base64 编码无效") from exc
+            if size > 5 * 1024 * 1024:
+                raise ValueError("单张图片不能超过 5MB")
+        return value
+
+
+class ChatConfirmBody(BaseModel):
+    """数据管理高危操作的确认：接受执行 / 拒绝取消。"""
+
+    confirm_id: str = Field(min_length=1, max_length=40)
+    accepted: bool
