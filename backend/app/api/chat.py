@@ -10,13 +10,17 @@ from app.deps import get_current_user
 from app.errors import AppError
 from app.models import ChatMessage, ChatSession, Document, User
 from app.models.base import new_id, utcnow
-from app.schemas.api import ChatMessageBody, ChatSessionCreateBody
+from app.schemas.api import ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody
 from app.schemas.question import Question
 from app.services import cache
 from app.services.generation import persist_batch
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.rag import chat_flow, hyde
-from app.services.rag.chat_flow import ChatCanceled, build_result_reply, handle_chat
+from app.services.rag.chat_flow import ChatCanceled, build_result_reply, handle_chat, handle_creative
+from app.services.rag.data_agent import execute_confirmed, run_data_request
+from app.services.rag.intent import detect_intent
+from app.services.rag.modes import DEFAULT_MODE, MODES, mode_label
+from app.services.rag.qa import answer_question
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -142,6 +146,85 @@ def send_message(
     if not slot_state and s.slot_state_json:
         slot_state = json.loads(s.slot_state_json)  # Redis 丢失时用数据库快照恢复
 
+    # ---- 模式状态：分段控制器的显式选择优先 ----
+    session_mode_raw = r.hget(_slot_key(s.id), "mode")
+    has_mode = session_mode_raw in MODES
+    session_mode = session_mode_raw if has_mode else DEFAULT_MODE
+    # 先读待续需求：切换消息要在清理之前消费它
+    pending_message = r.hget(_slot_key(s.id), "pending_message")
+    switch_continues = bool(body.switch_only and pending_message)
+    mode_changed = body.mode != session_mode
+    # 中途显式切换才免守卫；新会话的首条消息仍要做意图校验
+    guard_skip = mode_changed and has_mode and not switch_continues
+    if mode_changed:
+        # 切换模式时旧槽位作废；带待续需求的切换不清理，交给下方接续分支消费
+        session_mode = body.mode
+        slot_state = {}
+        r.hset(_slot_key(s.id), "mode", session_mode)
+        if not switch_continues:
+            r.hdel(_slot_key(s.id), "pending_message", "pending_images")
+
+    def _base_result(**overrides) -> dict:
+        out = {"reply": "", "questions": [], "done": False, "slot_state": slot_state,
+               "kind": "reply", "mode": session_mode, "mode_changed": mode_changed}
+        out.update(overrides)
+        return out
+
+    # 切换确认时若带着被拦下的需求，替换消息内容，在新模式下直接接续执行
+    switch_prefix = ""
+    if body.switch_only and switch_continues:
+        pending_images = json.loads(r.hget(_slot_key(s.id), "pending_images") or "[]")
+        body = body.model_copy(update={
+            "message": pending_message,
+            "images": pending_images if isinstance(pending_images, list) else [],
+            "switch_only": False,
+        })
+        r.hdel(_slot_key(s.id), "pending_message", "pending_images")
+        switch_prefix = f"已切换到「{mode_label(session_mode)}」模式，接着处理你刚才的需求。\n\n"
+    elif body.switch_only:
+        reply = f"已切换到「{mode_label(session_mode)}」模式，请继续。"
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
+        s.slot_state_json = "{}"
+        s.last_message_at = utcnow()
+        db.commit()
+        r.hset(_slot_key(s.id), mapping={"slot_state": "{}"})
+        r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
+        return _base_result(reply=reply, done=True, mode_changed=True)
+
+    # 意图识别：分段控制器负责显式选择，这里只产出建议，不抢控制权
+    detected = detect_intent(body.message, session_mode, api_key=api_key)
+    if not guard_skip and detected["intent"] != session_mode and detected["confidence"] == "high":
+        suggested = detected["intent"]
+        # 记下被拦的需求，用户切换模式后自动接续执行
+        r.hset(_slot_key(s.id), mapping={
+            "pending_message": body.message,
+            "pending_images": json.dumps(body.images, ensure_ascii=False),
+        })
+        r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
+        reply = (
+            f"当前处于「{mode_label(session_mode)}」模式，而你的需求看起来是「{mode_label(suggested)}」"
+            f"（{detected.get('reason', '')}）。"
+            f"请点击输入框上方的分段控制器切换到「{mode_label(suggested)}」，切换后我会自动接续处理。"
+        )
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
+        s.last_message_at = utcnow()
+        db.commit()
+        return _base_result(reply=reply, kind="mode_mismatch", suggested_template=suggested)
+    if (not guard_skip and detected["intent"] != session_mode
+            and detected["intent"] in MODES and detected.get("need_confirm")):
+        reply = (
+            f"你的需求不太确定，可能属于「{mode_label(detected['intent'])}」（{detected.get('reason', '')}）。"
+            f"如果是，请点上方分段控制器切换到「{mode_label(detected['intent'])}」；"
+            f"否则请补充说明，我会继续按「{mode_label(session_mode)}」模式处理。"
+        )
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
+        s.last_message_at = utcnow()
+        db.commit()
+        return _base_result(reply=reply, kind="mode_confirm", suggested_template=detected["intent"])
+
     history = [
         {"role": m.role, "text": m.content}
         for m in (
@@ -162,41 +245,72 @@ def send_message(
 
     r.delete(_cancel_key(s.id))
     _write_progress(r, s.id, 1, "正在准备")
-    try:
-        result = handle_chat(
-            s.bank_id,
-            s.document_id,
-            doc.name,
-            body.message,
-            history,
-            slot_state,
-            existing_stems=body.existing_stems,
-            api_key=api_key,
-            hyde_text=hyde_text,
-            progress_cb=lambda p, stage: _write_progress(r, s.id, p, stage),
-            cancel_check=lambda: _is_canceled(r, s.id),
-        )
-    except ChatCanceled:
-        result = {"reply": chat_flow.PAUSED_REPLY, "slot_state": slot_state, "questions": [], "done": False}
-    except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
-        result = {
-            "reply": f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
-            "slot_state": slot_state,
-            "questions": [],
-            "done": False,
-        }
-    except Exception as exc:  # noqa: BLE001
-        # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
-        from app.services.rag.llm import LLMError, friendly_error
 
-        if not isinstance(exc, LLMError):
-            raise
-        result = {
-            "reply": friendly_error(exc),
-            "slot_state": slot_state,
-            "questions": [],
-            "done": False,
-        }
+    def _progress(percent: int, stage: str) -> None:
+        _write_progress(r, s.id, percent, stage)
+
+    if session_mode == "qa":
+        try:
+            reply = answer_question(s.bank_id, s.document_id, body.message, history,
+                                    api_key=api_key, progress_cb=_progress)
+        except chat_flow.ChatCanceled:
+            reply = chat_flow.PAUSED_REPLY
+        except Exception as exc:  # noqa: BLE001
+            from app.services.rag.llm import LLMError, friendly_error
+
+            reply = friendly_error(exc) if isinstance(exc, LLMError) else "答疑服务异常，请稍后再试。"
+        result = _base_result(reply=reply, done=True)
+    elif session_mode == "data":
+        result = _base_result(**run_data_request(db, user, body.message, api_key))
+    elif session_mode == "creative":
+        try:
+            result = _base_result(**handle_creative(
+                s.bank_id, s.document_id, doc.name, body.message, history, slot_state,
+                existing_stems=body.existing_stems, api_key=api_key, hyde_text=hyde_text,
+                images=body.images,
+                progress_cb=lambda p, stage: _progress(p, stage),
+                cancel_check=lambda: _is_canceled(r, s.id),
+            ))
+        except ChatCanceled:
+            result = _base_result(reply=chat_flow.PAUSED_REPLY)
+        except Exception as exc:  # noqa: BLE001
+            from app.services.rag.llm import LLMError, friendly_error
+
+            if not isinstance(exc, LLMError):
+                raise
+            result = _base_result(reply=friendly_error(exc))
+    else:
+        try:
+            result = _base_result(**handle_chat(
+                s.bank_id,
+                s.document_id,
+                doc.name,
+                body.message,
+                history,
+                slot_state,
+                existing_stems=body.existing_stems,
+                api_key=api_key,
+                hyde_text=hyde_text,
+                images=body.images,
+                progress_cb=lambda p, stage: _progress(p, stage),
+                cancel_check=lambda: _is_canceled(r, s.id),
+            ))
+        except ChatCanceled:
+            result = _base_result(reply=chat_flow.PAUSED_REPLY)
+        except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
+            result = _base_result(
+                reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
+            from app.services.rag.llm import LLMError, friendly_error
+
+            if not isinstance(exc, LLMError):
+                raise
+            result = _base_result(reply=friendly_error(exc))
+
+    if switch_prefix:
+        result["reply"] = switch_prefix + (result["reply"] or "")
 
     # 持久化消息
     db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
@@ -250,7 +364,30 @@ def send_message(
         "questions": result["questions"],
         "done": result["done"],
         "batch_id": batch_id,
+        "kind": result.get("kind", "reply"),
+        "mode": result.get("mode", session_mode),
+        "mode_changed": result.get("mode_changed", mode_changed),
+        "suggested_template": result.get("suggested_template"),
+        "confirm": result.get("confirm"),
     }
+
+
+@router.post("/sessions/{session_id}/confirm")
+def confirm_operation(
+    session_id: str,
+    body: ChatConfirmBody,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """数据管理高危操作确认：接受执行，拒绝取消。"""
+    s = _get_session(session_id, user, db)
+    reply = execute_confirmed(db, user, body.confirm_id, body.accepted)
+    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user",
+                       content="接受操作" if body.accepted else "拒绝操作"))
+    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
+    s.last_message_at = utcnow()
+    db.commit()
+    return {"reply": reply, "done": True}
 
 
 @router.get("/sessions/{session_id}/progress")

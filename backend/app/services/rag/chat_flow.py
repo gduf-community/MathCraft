@@ -1,6 +1,7 @@
 """对话出题编排：槽位抽取 → 缺失追问 → 齐备生成（含 HyDE + 混合检索）。"""
 from typing import Callable
 
+from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
 from app.services.rag.question_gen import NeedConfirmError, generate_questions
 from app.services.rag.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
 
@@ -63,6 +64,7 @@ def handle_chat(
     existing_stems: list[str] | None = None,
     api_key: str | None = None,
     hyde_text: str | None = None,
+    images: list[str] | None = None,
     retrieve_fn=None,
     progress_cb: ProgressCB | None = None,
     cancel_check: CancelCheck | None = None,
@@ -72,10 +74,11 @@ def handle_chat(
             progress_cb(percent, stage)
 
     report(3, "正在理解你的要求")
-    state = merge_slots(slot_state or {}, extract_slots(message, history, api_key=api_key))
+    state = merge_slots(slot_state or {}, extract_slots(message, history, api_key=api_key, images=images))
     missing = missing_keys(state)
     if missing:
-        return {"reply": build_followup(missing), "slot_state": state, "questions": [], "done": False}
+        return {"reply": build_followup(missing, state), "slot_state": state,
+                "questions": [], "done": False}
 
     _guard(cancel_check)
     params, scope = build_params(state, bank_id, document_id)
@@ -119,3 +122,76 @@ def handle_chat(
         "questions": [q.model_dump() for q in questions],
         "done": True,
     }
+
+
+# ---------------- 创新命题：一次一道，支持图片题型模仿 ----------------
+
+def _creative_missing(state: dict) -> list[str]:
+    missing = []
+    if not state.get("scope"):
+        missing.append("scope")
+    types = state.get("types") or []
+    if not types or not types[0].get("type"):
+        missing.append("types")
+    if not state.get("difficulty"):
+        missing.append("difficulty")
+    return missing
+
+
+def build_creative_followup(missing: list[str]) -> str:
+    from app.services.rag.prompts import CREATIVE_FOLLOWUP_LINES
+
+    lines = [CREATIVE_FOLLOWUP_LINES[k] for k in ("scope", "types", "difficulty") if k in missing]
+    numbered = [f"{i}. {line}" for i, line in enumerate(lines, 1)]
+    return "\n".join(["生成创新题还需要了解以下信息哦", *numbered, "您可以一次性告诉我"])
+
+
+def handle_creative(
+    bank_id: str,
+    document_id: str,
+    doc_name: str,
+    message: str,
+    history: list[dict],
+    slot_state: dict,
+    existing_stems: list[str] | None = None,
+    api_key: str | None = None,
+    hyde_text: str | None = None,
+    images: list[str] | None = None,
+    progress_cb: ProgressCB | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> dict:
+    """创新命题：固定单题，题干追求新颖；查重与难度评估复用快速出题中间件。"""
+
+    def report(percent: int, stage: str) -> None:
+        if progress_cb:
+            progress_cb(percent, stage)
+
+    report(3, "正在理解你的要求")
+    state = merge_slots(slot_state or {}, extract_slots(message, history, api_key=api_key, images=images))
+    types = state.get("types") or []
+    state["types"] = [{"type": types[0]["type"], "count": 1}] if types and types[0].get("type") else []
+    missing = _creative_missing(state)
+    if missing:
+        return {"reply": build_creative_followup(missing), "slot_state": state,
+                "questions": [], "done": False}
+
+    params, scope = build_params(state, bank_id, document_id)
+    params = params.model_copy(update={"source_mode": "new"})
+    directive = CREATIVE_SYSTEM_EXTRA
+    if state.get("image_note"):
+        directive += f"\n参考图片的题型说明：{state['image_note']}"
+    report(8, "正在构思创新题")
+
+    def gen_progress(percent: int, stage: str) -> None:
+        _guard(cancel_check)
+        report(10 + int(percent * 0.65), stage)
+
+    questions = generate_questions(
+        params, doc_name, scope=scope, existing_stems=existing_stems,
+        api_key=api_key, hyde_text=hyde_text, directive=directive,
+        progress_cb=gen_progress,
+    )
+    _guard(cancel_check)
+    report(78, "正在查重与评估难度")
+    return {"reply": DONE_REPLY.format(n=len(questions)), "slot_state": state,
+            "questions": [q.model_dump() for q in questions], "done": True}
