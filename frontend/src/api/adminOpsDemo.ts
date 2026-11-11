@@ -1,11 +1,13 @@
 /** 仅供 DEV 动态导入：独立、可取消、无网络和持久化副作用的合成数据源。 */
 import type {
-  OpsAlert, OpsClient, OpsDependency, OpsExecutionStatus, OpsMeta, OpsNotification,
-  OpsOverview, OpsPage, OpsQuery, OpsRate, OpsRun, OpsRunDetail, OpsStage, OpsWindow,
+  OpsAlert, OpsClient, OpsDependency, OpsEffectiveConfig, OpsExecutionStatus, OpsMeta,
+  OpsMonitoringMetric, OpsNotification, OpsOverview, OpsPage, OpsQuery, OpsRate,
+  OpsReviewVersions, OpsRun, OpsRunDetail, OpsSelfMonitoring, OpsStage, OpsTraceAccessResult, OpsWindow,
 } from '../types/ops'
 import { ApiError } from './session'
 
 export type DemoScenario = 'normal' | 'loading' | 'empty' | 'partial' | 'error'
+  | 'trace_denied' | 'trace_audit_failed' | 'trace_expired' | 'trace_simulated_success'
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
@@ -89,7 +91,8 @@ function checkQuery(endpoint: Endpoint, query: OpsQuery): void {
     checkEnum(query, 'scope', ['platform', 'account', 'run'])
     checkEnum(query, 'status', ['firing', 'resolved'])
     checkEnum(query, 'severity', ['warning', 'critical'])
-    checkEnum(query, 'rule_id', ['dependency_failure', 'waiting_suspected', 'long_running_suspected', 'heartbeat_stale', 'run_failure', 'quality_attention'])
+    if (query.rule_id !== undefined && (typeof query.rule_id !== 'string'
+      || !/^[a-z][a-z0-9_]{0,99}$/.test(query.rule_id))) invalidQuery()
   }
 }
 
@@ -259,6 +262,86 @@ function makeStages(run: OpsRun): OpsStage[] | null {
   return stages
 }
 
+function regenerationConfig(partial: boolean): OpsEffectiveConfig {
+  return {
+    warning: partial ? null : 2, critical: partial ? null : 4, unit: 'attempts',
+    window_seconds: null, source: partial ? null : 'environment',
+  }
+}
+
+/** 九类链路观测独立于业务运行状态；部分采集不伪造零值或健康状态。 */
+function makeSelfMonitoring(now: number, partial: boolean, empty: boolean): OpsSelfMonitoring {
+  const metrics: OpsMonitoringMetric[] = [
+    { metric_id: 'ingestion_delay', status: 'healthy', value: 120, unit: 'ms',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 1000, critical: 5000, unit: 'ms', window_seconds: 300, source: 'environment' } },
+    { metric_id: 'write_failures', status: 'degraded', value: 2, unit: 'events',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 1, critical: 5, unit: 'events', window_seconds: 300, source: 'config_file' } },
+    { metric_id: 'dropped_events', status: 'degraded', value: 12, unit: 'events',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 1, critical: 20, unit: 'events', window_seconds: 300, source: 'environment' } },
+    { metric_id: 'phoenix_export_backlog', status: 'degraded', value: 24, unit: 'spans',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 20, critical: 100, unit: 'spans', window_seconds: 300, source: 'config_file' } },
+    { metric_id: 'alert_evaluation', status: 'healthy', value: 15, unit: 'seconds',
+      observed_at: iso(now - 15 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 60, critical: 180, unit: 'seconds', window_seconds: 300, source: 'environment' } },
+    { metric_id: 'cleanup', status: 'healthy', value: 3600, unit: 'seconds',
+      observed_at: iso(now - HOUR), fresh_until: iso(now + DAY), unknown_reason: null,
+      effective_config: { warning: 86400, critical: 172800, unit: 'seconds', window_seconds: 86400, source: 'config_file' } },
+    { metric_id: 'notification_failures', status: 'unavailable', value: 5, unit: 'notifications',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 1, critical: 5, unit: 'notifications', window_seconds: 300, source: 'environment' } },
+    { metric_id: 'mapping_missing', status: 'degraded', value: 2, unit: 'runs',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 1, critical: 10, unit: 'runs', window_seconds: 300, source: 'config_file' } },
+    { metric_id: 'storage_capacity', status: 'degraded', value: 88, unit: 'percent',
+      observed_at: iso(now - 5 * SECOND), fresh_until: iso(now + MINUTE), unknown_reason: null,
+      effective_config: { warning: 80, critical: 95, unit: 'percent', window_seconds: 300, source: 'environment' } },
+  ]
+  return {
+    metrics: empty ? [] : partial ? metrics.map((metric, index): OpsMonitoringMetric => ({
+      ...metric, value: null, status: index % 3 === 1 ? 'monitoring_unavailable' : 'unknown',
+      observed_at: index % 3 === 1 ? iso(now - 5 * SECOND) : iso(now - 10 * MINUTE),
+      fresh_until: index % 3 === 1 ? iso(now + MINUTE) : iso(now - 5 * MINUTE),
+      unknown_reason: index % 3 === 1 ? 'MONITORING_UNAVAILABLE' : 'OBSERVATION_STALE',
+      effective_config: index % 3 === 1 ? null : metric.effective_config,
+    })) : metrics,
+    regeneration_config: regenerationConfig(partial),
+  }
+}
+
+/** 最终题目各有自己的版本；集合版本不能用来判定任何单题审核有效。 */
+function makeReviewVersions(run: OpsRun, partial: boolean): OpsReviewVersions | null {
+  if (run.collection_state === 'not_collected') return null
+  const requiredScopes = ['correctness', 'curriculum']
+  if (partial || run.counts.actual_count === null) return {
+    final_content_revision: null, final_questions: null, required_scopes: requiredScopes, evidence: null,
+  }
+  const finalQuestions = Array.from({ length: run.counts.actual_count }, (_, index) => ({
+    question_id: `${run.run_id}_q${index + 1}`, content_revision: `question_revision_${index + 2}`,
+  }))
+  const evidence: NonNullable<OpsReviewVersions['evidence']> = []
+  for (const [index, question] of finalQuestions.entries()) {
+    const missingCoverage = (run.review.skipped_count ?? 0) > 0 && index === finalQuestions.length - 1
+    for (const scope of requiredScopes) evidence.push({
+      ...question, scope,
+      // 修改后未重审的题目只保留旧版本证据，旧通过记录不覆盖最终版本。
+      content_revision: missingCoverage ? 'question_revision_1' : question.content_revision,
+      status: run.quality.reason_codes?.includes('REVIEW_FAILED') && index === 0 && scope === 'correctness'
+        ? 'failed' : 'passed',
+    })
+    // 同时保留历史失败，验证 UI 不以旧证据覆盖最新通过。
+    if (index === 0) evidence.push({ ...question, content_revision: 'question_revision_1',
+      scope: 'correctness', status: 'failed' })
+  }
+  return {
+    final_content_revision: `batch_revision_${run.revision}`, final_questions: finalQuestions,
+    required_scopes: requiredScopes, evidence,
+  }
+}
+
 function makeDependencies(now: number): OpsDependency[] {
   const kinds: OpsDependency['kind'][] = ['model', 'embedding', 'reranker', 'redis', 'vector_store', 'database', 'phoenix']
   const platform = kinds.map((kind): OpsDependency => {
@@ -326,6 +409,43 @@ function makeAlert(
   }
 }
 
+/** 三条新规则提供可展示的证据、配置与人工排查指引。 */
+function makeMonitoringAlerts(now: number, partial: boolean): OpsAlert[] {
+  const specifications = [
+    { rule: 'monitoring_pipeline_failure', metric: 'phoenix_export_backlog', value: 24,
+      warning: 20, critical: 100, unit: 'spans', reason: 'EXPORT_RETRY_EXHAUSTED', owner: 'M2/M3',
+      impact: 'Phoenix 导出失败并积压，trace 可用性滞后，业务运行终态保持独立。',
+      next: '查看采集与导出链路的失败计数和队列水位，确认导出服务恢复后再核对新观测。' },
+    { rule: 'capacity_warning', metric: 'storage_capacity', value: 88,
+      warning: 80, critical: 95, unit: 'percent', reason: 'STORAGE_HIGH_WATERMARK', owner: 'M9',
+      impact: 'SQL 与 Phoenix 存储使用率达到 warning 水位，继续增长可能影响写入。',
+      next: '核对存储空间和清理作业最近成功时间，按运行手册扩容并验证新水位。' },
+    { rule: 'notification_failure', metric: 'notification_failures', value: 5,
+      warning: 1, critical: 5, unit: 'notifications', reason: 'NOTIFICATION_RETRY_EXHAUSTED', owner: 'M8',
+      impact: '运维通知投递重试耗尽，管理员可能无法及时收到异常提醒。',
+      next: '查看通知写入与投递失败摘要，排查通知依赖并确认后续轮次能正常投递。' },
+  ]
+  const alerts = specifications.map((specification): OpsAlert => {
+    const alert = makeAlert(`demo_alert_${specification.rule}`, specification.rule, 'platform',
+      specification.metric, now, { unknown: partial })
+    return {
+      ...alert, severity: specification.value >= specification.critical ? 'critical' : 'warning',
+      evidence: { ...alert.evidence, metric: specification.metric, value: partial ? null : specification.value,
+        threshold: specification.warning, window_from: iso(now - 5 * MINUTE), window_to: iso(now),
+        sample_count: partial ? null : 30, reason_code: partial ? 'COLLECTION_GAP' : specification.reason },
+      effective_config: { warning: specification.warning, critical: specification.critical,
+        unit: specification.unit, window_seconds: 300, source: 'environment' },
+      guidance: { impact: specification.impact, owner_module: specification.owner,
+        manual_action_required: true, next_step: specification.next },
+    }
+  })
+  if (partial) alerts.push({
+    ...makeAlert('demo_alert_unknown_rule', 'future_monitoring_rule', 'platform', 'demo_future_monitor', now,
+      { unknown: true }), guidance: null, effective_config: null,
+  })
+  return alerts
+}
+
 /** 每个实例持有独立的通知和 cursor；场景切换不会污染其他实例。 */
 export function createDemoOpsClient(scenario: DemoScenario): OpsClient {
   const seedTime = Date.now()
@@ -346,6 +466,7 @@ export function createDemoOpsClient(scenario: DemoScenario): OpsClient {
   const ownerOf = (index: number): string => runs[index]?.owner_user_id ?? 'demo_user_a'
   const associatedRuns = [0, 1, 2, 3, 4, 7, 8, 9].map(runId)
   const alerts: OpsAlert[] = empty ? [] : [
+    ...makeMonitoringAlerts(seedTime, partial),
     makeAlert('demo_alert_redis_1', 'dependency_failure', 'platform', 'demo_redis', seedTime,
       { resolved: true, first: seedTime - 4 * HOUR, runs: associatedRuns }),
     makeAlert('demo_alert_redis_2', 'dependency_failure', 'platform', 'demo_redis', seedTime,
@@ -513,6 +634,7 @@ export function createDemoOpsClient(scenario: DemoScenario): OpsClient {
     const missing = cohort.some(run => run.collection_state !== 'complete')
     return {
       ...meta(now, missing), scope: 'sdk_agent_runs_v1', window: selected.window,
+      self_monitoring: makeSelfMonitoring(now, partial, empty),
       collection: {
         started_at: iso(seedTime - 16 * DAY), coverage_state: partial || missing ? 'partial' : 'complete',
         observed_runs: cohort.length, partial_runs: cohort.filter(run => run.collection_state === 'partial').length,
@@ -574,7 +696,10 @@ export function createDemoOpsClient(scenario: DemoScenario): OpsClient {
       const run = runs.find(item => item.run_id === runId)
       if (!run) throw new ApiError('运行摘要不存在或已过保留期', 'OPS_RUN_NOT_FOUND', 404)
       const current = currentRun(run, now)
-      return { ...meta(now, current.collection_state !== 'complete'), run: current, stages: makeStages(current) }
+      return {
+        ...meta(now, current.collection_state !== 'complete'), run: current, stages: makeStages(current),
+        review_versions: makeReviewVersions(current, partial), regeneration_config: regenerationConfig(partial),
+      }
     },
     async listDependencies(query, signal) {
       const now = await ready(signal)
@@ -615,8 +740,14 @@ export function createDemoOpsClient(scenario: DemoScenario): OpsClient {
       if (!notifications.some(item => item.id === id)) throw new ApiError('通知不存在', 'NOTIFICATION_NOT_FOUND', 404)
       notifications = notifications.filter(item => item.id !== id)
     },
-    openTrace(_path) {
-      // 父层 UI 提供演示反馈；此实现不打开新窗口或发出请求。
+    async openTrace(_path): Promise<OpsTraceAccessResult> {
+      // 仅模拟访问决策；即使模拟成功也不打开正文或发出网络请求。
+      switch (scenario) {
+        case 'trace_denied': return { status: 'denied', message: '演示：追踪正文的独立授权被拒绝。' }
+        case 'trace_audit_failed': return { status: 'audit_failed', message: '演示：访问审计写入失败，正文访问已阻止。' }
+        case 'trace_expired': return { status: 'expired', message: '演示：打开前重新校验发现追踪正文已过期。' }
+        default: return { status: 'simulated_success', message: '演示：独立授权与审计模拟成功，仅展示合成反馈，不打开正文。' }
+      }
     },
   }
 }

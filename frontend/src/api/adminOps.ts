@@ -1,7 +1,8 @@
 /** 运维只读 API：认证复用 session，响应以 unknown 在边界逐项收窄。 */
 import type {
-  OpsAlert, OpsClient, OpsDependency, OpsMeta, OpsNotification, OpsNotifications,
-  OpsOverview, OpsPage, OpsQuery, OpsRate, OpsRun, OpsRunDetail, OpsStage, OpsWindow,
+  OpsAlert, OpsAlertGuidance, OpsClient, OpsDependency, OpsEffectiveConfig, OpsMeta,
+  OpsMonitoringMetric, OpsNotification, OpsNotifications, OpsOverview, OpsPage, OpsQuery,
+  OpsRate, OpsReviewVersions, OpsRun, OpsRunDetail, OpsSelfMonitoring, OpsStage, OpsWindow,
 } from '../types/ops'
 import { ApiError, request } from './session'
 
@@ -71,6 +72,11 @@ function nullable<T>(value: unknown, parse: (input: unknown) => T): T | null {
   return value === null ? null : parse(value)
 }
 
+/** v1 扩展缺省与显式未知不同；提供扩展时仍严格校验全部必需字段。 */
+function optionalNullable<T>(value: unknown, parse: (input: unknown) => T): T | null | undefined {
+  return value === undefined ? undefined : nullable(value, parse)
+}
+
 function array<T>(value: unknown, parse: (input: unknown) => T): T[] {
   return Array.isArray(value) ? value.map(parse) : invalid()
 }
@@ -94,6 +100,89 @@ function qualityReason(value: unknown) {
 
 function stageName(value: unknown) {
   return oneOf(value, 'preparing', 'retrieval', 'generation', 'review', 'repair', 'persisting', 'finalizing', 'unknown')
+}
+
+/** 新规则允许前向兼容，仅保留安全的小写原始标识。 */
+function alertRule(value: unknown): string {
+  const result = text(value)
+  return /^[a-z][a-z0-9_]{0,99}$/.test(result) ? result : invalid()
+}
+
+function effectiveConfig(value: unknown): OpsEffectiveConfig {
+  const item = record(value)
+  return {
+    warning: nullable(item.warning, number), critical: nullable(item.critical, number),
+    unit: nullable(item.unit, text), window_seconds: nullable(item.window_seconds, integer),
+    source: nullable(item.source, text),
+  }
+}
+
+function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>()
+  for (const item of items) {
+    const value = key(item)
+    if (seen.has(value)) return invalid()
+    seen.add(value)
+  }
+  return items
+}
+
+function monitoringMetric(value: unknown): OpsMonitoringMetric {
+  const item = record(value)
+  const observedAt = nullable(item.observed_at, timestamp)
+  const freshUntil = nullable(item.fresh_until, timestamp)
+  const status = oneOf(item.status, 'healthy', 'degraded', 'unavailable', 'unknown', 'monitoring_unavailable')
+  const unknownReason = nullable(item.unknown_reason, code)
+  if (observedAt !== null && freshUntil !== null
+    && Date.parse(freshUntil) <= Date.parse(observedAt)) return invalid()
+  return {
+    metric_id: alertRule(item.metric_id),
+    status,
+    value: nullable(item.value, number), unit: nullable(item.unit, text),
+    observed_at: observedAt, fresh_until: freshUntil,
+    unknown_reason: unknownReason,
+    effective_config: optionalNullable(item.effective_config, effectiveConfig),
+  }
+}
+
+function selfMonitoring(value: unknown): OpsSelfMonitoring {
+  const item = record(value)
+  const metrics = nullable(item.metrics, input => uniqueBy(array(input, monitoringMetric), metric => metric.metric_id))
+  return {
+    metrics,
+    regeneration_config: optionalNullable(item.regeneration_config, effectiveConfig),
+  }
+}
+
+function reviewVersions(value: unknown): OpsReviewVersions {
+  const item = record(value)
+  const finalQuestions = nullable(item.final_questions, input => uniqueBy(array(input, question => {
+    const finalQuestion = record(question)
+    return {
+      question_id: id(finalQuestion.question_id),
+      content_revision: nullable(finalQuestion.content_revision, id),
+    }
+  }), question => question.question_id))
+  return {
+    final_content_revision: nullable(item.final_content_revision, id),
+    final_questions: finalQuestions,
+    required_scopes: nullable(item.required_scopes, input => array(input, id)),
+    evidence: nullable(item.evidence, input => array(input, evidence => {
+      const review = record(evidence)
+      return {
+        question_id: id(review.question_id), content_revision: nullable(review.content_revision, id),
+        scope: id(review.scope), status: oneOf(review.status, 'passed', 'failed', 'skipped', 'unknown'),
+      }
+    })),
+  }
+}
+
+function alertGuidance(value: unknown): OpsAlertGuidance {
+  const item = record(value)
+  return {
+    impact: nullable(item.impact, text), owner_module: nullable(item.owner_module, text),
+    manual_action_required: nullable(item.manual_action_required, bool), next_step: nullable(item.next_step, text),
+  }
 }
 
 function meta(value: Record<string, unknown>): OpsMeta {
@@ -263,7 +352,11 @@ function parseStage(value: unknown): OpsStage {
 
 export function parseOpsRunDetail(value: unknown): OpsRunDetail {
   const item = record(value)
-  return { ...meta(item), run: parseOpsRun(item.run), stages: nullable(item.stages, input => array(input, parseStage)) }
+  return {
+    ...meta(item), run: parseOpsRun(item.run), stages: nullable(item.stages, input => array(input, parseStage)),
+    review_versions: optionalNullable(item.review_versions, reviewVersions),
+    regeneration_config: optionalNullable(item.regeneration_config, effectiveConfig),
+  }
 }
 
 export function parseOpsDependency(value: unknown): OpsDependency {
@@ -300,7 +393,9 @@ export function parseOpsAlert(value: unknown): OpsAlert {
   }
   const result: OpsAlert = {
     alert_id: id(item.alert_id), dedupe_key: text(item.dedupe_key), episode_no: positive(item.episode_no),
-    rule_id: oneOf(item.rule_id, 'dependency_failure', 'waiting_suspected', 'long_running_suspected', 'heartbeat_stale', 'run_failure', 'quality_attention'),
+    rule_id: alertRule(item.rule_id),
+    guidance: optionalNullable(item.guidance, alertGuidance),
+    effective_config: optionalNullable(item.effective_config, effectiveConfig),
     severity: oneOf(item.severity, 'warning', 'critical'), scope: oneOf(item.scope, 'platform', 'account', 'run'),
     scope_id: id(item.scope_id), subject_id: id(item.subject_id), owner_user_id: nullable(item.owner_user_id, id),
     status: oneOf(item.status, 'firing', 'resolved'), condition_state: oneOf(item.condition_state, 'active', 'clear', 'unknown'),
@@ -359,6 +454,7 @@ export function parseOpsOverview(value: unknown): OpsOverview {
   const retention = record(item.retention)
   return {
     ...meta(item), scope: oneOf(item.scope, 'sdk_agent_runs_v1'), window: parseWindow(item.window),
+    self_monitoring: optionalNullable(item.self_monitoring, selfMonitoring),
     collection: {
       started_at: nullable(collection.started_at, timestamp),
       coverage_state: oneOf(collection.coverage_state, 'complete', 'partial', 'unknown'),
@@ -484,8 +580,10 @@ export const realOpsClient: OpsClient = {
   async deleteNotification(notificationId, signal) {
     await safeRequest(`/api/notifications/${encodeURIComponent(notificationId)}`, signal, { method: 'DELETE' })
   },
-  openTrace(path) {
-    if (!isSafeOpsTracePath(path)) throw new ApiError('追踪路径无效或包含不安全信息', 'INVALID_TRACE_PATH')
-    window.open(path, '_blank', 'noopener,noreferrer')
+  async openTrace(_path) {
+    return {
+      status: 'not_integrated',
+      message: '追踪正文的独立授权与访问审计尚未接入，暂不能打开。',
+    }
   },
 }

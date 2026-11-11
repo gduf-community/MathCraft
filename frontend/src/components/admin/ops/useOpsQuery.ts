@@ -3,9 +3,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 interface QueryState<T> {
   data: T | null
   loading: boolean
+  mutating: boolean
   error: string
   lastSuccess: string | null
 }
+
+type QueryMutation<T> = (
+  action: (signal: AbortSignal) => Promise<void>,
+  update: (data: T) => T,
+) => Promise<boolean>
 
 /** 可取消的单飞查询；后台刷新保留结果，页面隐藏时停止定时查询。 */
 export function useOpsQuery<T>(
@@ -14,36 +20,41 @@ export function useOpsQuery<T>(
   intervalMs = 15000,
 ) {
   const [state, setState] = useState<QueryState<T>>({
-    data: null, loading: enabled, error: '', lastSuccess: null,
+    data: null, loading: enabled, mutating: false, error: '', lastSuccess: null,
   })
   const runCurrent = useRef<() => void>(() => {})
   const refresh = useCallback(() => runCurrent.current(), [])
+  const mutateCurrent = useRef<QueryMutation<T> | null>(null)
+  const mutate = useCallback<QueryMutation<T>>(async (action, update) => {
+    const current = mutateCurrent.current
+    return current ? current(action, update) : false
+  }, [])
 
   useEffect(() => {
     let active = true
-    let inFlight = false
     let refreshQueued = false
     let timer: number | undefined
     let controller: AbortController | undefined
-    setState({ data: null, loading: enabled, error: '', lastSuccess: null })
+    let writeController: AbortController | undefined
+    setState({ data: null, loading: enabled, mutating: false, error: '', lastSuccess: null })
 
     const schedule = () => {
       window.clearTimeout(timer)
-      if (active && enabled && intervalMs > 0 && !document.hidden) {
+      if (active && enabled && !writeController && intervalMs > 0 && !document.hidden) {
         timer = window.setTimeout(() => void run(), intervalMs)
       }
     }
     async function run() {
-      if (!active || !enabled || inFlight) return
+      if (!active || !enabled || controller || writeController) return
       window.clearTimeout(timer)
-      controller = new AbortController()
-      const signal = controller.signal
-      inFlight = true
+      const request = new AbortController()
+      controller = request
+      const signal = request.signal
       setState(previous => ({ ...previous, loading: true, error: '' }))
       try {
         const data = await load(signal)
         if (active && !signal.aborted) {
-          setState({ data, loading: false, error: '', lastSuccess: new Date().toISOString() })
+          setState({ data, loading: false, mutating: false, error: '', lastSuccess: new Date().toISOString() })
         }
       } catch (error: unknown) {
         if (active && !signal.aborted) {
@@ -51,11 +62,42 @@ export function useOpsQuery<T>(
             error: error instanceof Error ? error.message : '数据暂不可用，请重试' }))
         }
       } finally {
-        inFlight = false
-        if (active && refreshQueued) {
-          refreshQueued = false
-          void run()
-        } else schedule()
+        // 写操作可撤销并替换当前查询；旧请求即使忽略 abort 也不能干扰新请求。
+        if (controller === request) {
+          controller = undefined
+          if (active && refreshQueued) {
+            refreshQueued = false
+            void run()
+          } else schedule()
+        }
+      }
+    }
+    mutateCurrent.current = async (action, update) => {
+      if (!active || !enabled || writeController) return false
+      const request = new AbortController()
+      writeController = request
+      controller?.abort()
+      controller = undefined
+      window.clearTimeout(timer)
+      setState(previous => ({ ...previous, loading: false, mutating: true }))
+      try {
+        await action(request.signal)
+        if (!active || request.signal.aborted) return false
+        setState(previous => ({ ...previous,
+          data: previous.data === null ? null : update(previous.data) }))
+        return true
+      } catch (error: unknown) {
+        if (!active || request.signal.aborted) return false
+        throw error
+      } finally {
+        if (writeController === request) {
+          writeController = undefined
+          if (active) {
+            setState(previous => ({ ...previous, mutating: false }))
+            refreshQueued = false
+            void run()
+          }
+        }
       }
     }
     const visibilityChanged = () => {
@@ -63,7 +105,7 @@ export function useOpsQuery<T>(
       if (!document.hidden) void run()
     }
     runCurrent.current = () => {
-      if (inFlight) refreshQueued = true
+      if (controller || writeController) refreshQueued = true
       else void run()
     }
     if (enabled) {
@@ -73,11 +115,13 @@ export function useOpsQuery<T>(
     return () => {
       active = false
       controller?.abort()
+      writeController?.abort()
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', visibilityChanged)
       runCurrent.current = () => {}
+      mutateCurrent.current = null
     }
   }, [load, enabled, intervalMs])
 
-  return { ...state, refresh }
+  return { ...state, refresh, mutate }
 }

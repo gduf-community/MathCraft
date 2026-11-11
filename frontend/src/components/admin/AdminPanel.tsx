@@ -288,13 +288,19 @@ export default function AdminPanel() {
                 onChange={event => {
                   const value = event.target.value
                   if (value === 'normal' || value === 'loading' || value === 'empty'
-                    || value === 'partial' || value === 'error') void changeOpsSource(true, value)
+                    || value === 'partial' || value === 'error' || value === 'trace_denied'
+                    || value === 'trace_audit_failed' || value === 'trace_expired'
+                    || value === 'trace_simulated_success') void changeOpsSource(true, value)
                 }}>
                 <option value="normal">典型运行与异常</option>
                 <option value="loading">缓慢加载</option>
                 <option value="empty">空数据</option>
                 <option value="partial">部分可用</option>
                 <option value="error">服务不可用</option>
+                <option value="trace_denied">正文独立授权拒绝</option>
+                <option value="trace_audit_failed">正文访问审计失败</option>
+                <option value="trace_expired">正文打开前过期</option>
+                <option value="trace_simulated_success">正文授权与审计模拟成功</option>
               </select>
             </label>}
           </div>

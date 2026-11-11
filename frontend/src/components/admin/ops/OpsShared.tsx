@@ -1,11 +1,33 @@
 /* eslint-disable react-refresh/only-export-components -- 运维页面共用的纯格式化函数与展示组件。 */
-import { useId, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import { useId, useRef, useState } from 'react'
+import type { FormEvent, KeyboardEvent, ReactNode } from 'react'
 import type { OpsMeta, OpsQuery, OpsRun } from '../../../types/ops'
+import { opsKnownAlertRules } from '../../../types/ops'
 
 export const opsInputClass = 'min-h-11 min-w-0 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink transition-colors focus-visible:outline-2 focus-visible:outline-primary'
 export const opsButtonClass = 'inline-flex min-h-11 items-center justify-center rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink transition-colors hover:bg-page focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50'
 export const opsPrimaryClass = 'inline-flex min-h-11 items-center justify-center rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
+
+/** 阻止完整 Tab 周期移到浏览器工具栏；原生 dialog 仍负责背景 inert。 */
+export function trapOpsDialogFocus(event: KeyboardEvent<HTMLDialogElement>) {
+  if (event.key !== 'Tab') return
+  const element = event.currentTarget
+  const focusable = Array.from(element.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+  )).filter(item => item.getClientRects().length > 0 && item.tabIndex >= 0)
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (!first || !last) {
+    event.preventDefault()
+    element.focus()
+  } else if (event.shiftKey && (document.activeElement === first || document.activeElement === element)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === element)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 
 const labels: Record<string, string> = {
   accepted: '已受理', running: '运行中', completed: '正常结束', failed: '失败',
@@ -46,11 +68,19 @@ const labels: Record<string, string> = {
   TRACE_INCOMPLETE: '追踪记录不完整', ACCESS_DENIED: '查看权限被拒绝',
   EVIDENCE_STALE: '单条证据已陈旧', COLLECTOR_UNAVAILABLE: '采集器不可用',
   VALIDATION_ERROR: '查询参数无效，请检查时间范围或刷新第一页',
+  monitoring_pipeline_failure: '监控链路异常', capacity_warning: '容量异常',
+  notification_failure: '通知失败', monitoring_unavailable: '监控不可用',
+  difficulty: '题干难度', answer: '答案', analysis: '解析',
+  correctness: '数学正确性', curriculum: '课程适配',
 }
 
 export function opsLabel(value: string | null | undefined): string {
   if (value == null || value === '') return '未知'
   return labels[value] ?? `未识别状态（${value}）`
+}
+
+export function opsAlertRuleLabel(rule: string): string {
+  return opsKnownAlertRules.some(known => known === rule) ? opsLabel(rule) : `未识别规则（${rule}）`
 }
 
 export function opsNumber(value: number | null | undefined): string {
@@ -116,9 +146,10 @@ export function OpsFacts({ items }: { items: [string, ReactNode][] }) {
   </dl>
 }
 
-export function OpsFeedback({ loading, error, hasData, empty, emptyText, onRetry }: {
+export function OpsFeedback({ loading, error, hasData, empty, emptyText, onRetry,
+  retryLabel = '重新加载第一页' }: {
   loading: boolean; error: string; hasData: boolean; empty?: boolean;
-  emptyText?: string; onRetry: () => void
+  emptyText?: string; onRetry: () => void; retryLabel?: string
 }) {
   return <div aria-live="polite" className="space-y-2 text-sm">
     {loading && <p role="status" className="rounded-lg bg-primary-light p-3 text-ink-2">
@@ -126,7 +157,8 @@ export function OpsFeedback({ loading, error, hasData, empty, emptyText, onRetry
     </p>}
     {error && <div role="alert" className="rounded-lg border border-danger/20 bg-danger/5 p-3 text-ink">
       <p>{hasData ? '刷新失败；以下为已加载的旧数据。' : '无法加载运维数据。'}{error}</p>
-      <button type="button" className={`${opsButtonClass} mt-2`} onClick={onRetry}>重新加载第一页</button>
+      <button type="button" className={`${opsButtonClass} mt-2`} disabled={loading}
+        onClick={onRetry}>{retryLabel}</button>
     </div>}
     {!loading && !error && empty && <p className="rounded-lg border border-line bg-white p-6 text-center text-ink-2">
       {emptyText ?? '当前筛选下没有匹配记录；空列表不代表采集完整或没有故障。'}
@@ -182,6 +214,8 @@ export function OpsFilters({ fields, query, onApply, timeWindow = true, children
   const id = useId()
   const [draft, setDraft] = useState<OpsQuery>(query)
   const [range, setRange] = useState(query.from || query.to ? 'custom' : query.alert_id ? 'retained' : '24h')
+  const rangeChosen = useRef(!!(query.from || query.to))
+  const lastTimeRange = useRef(query.from || query.to ? 'custom' : '24h')
   const [from, setFrom] = useState(localInput(query.from))
   const [to, setTo] = useState(localInput(query.to))
   const [error, setError] = useState('')
@@ -230,7 +264,12 @@ export function OpsFilters({ fields, query, onApply, timeWindow = true, children
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {timeWindow && <label className="space-y-1 text-sm text-ink" htmlFor={`${id}-range`}>
         <span>时间窗口</span>
-        <select id={`${id}-range`} className={opsInputClass} value={range} onChange={event => setRange(event.target.value)}>
+        <select id={`${id}-range`} className={opsInputClass} value={range} onChange={event => {
+          const value = event.target.value
+          rangeChosen.current = true
+          if (value !== 'retained') lastTimeRange.current = value
+          setRange(value)
+        }}>
           <option value="1h">近 1 小时</option><option value="24h">近 24 小时</option>
           <option value="7d">近 7 天</option><option value="custom">自定义（最多 14 天）</option>
           {fields.some(field => field.name === 'alert_id') && <option value="retained">告警 ID：整个保留期</option>}
@@ -258,7 +297,10 @@ export function OpsFilters({ fields, query, onApply, timeWindow = true, children
           onChange={event => {
             const value = event.target.value
             setDraft(previous => ({ ...previous, [field.name]: value }))
-            if (field.name === 'alert_id' && value.trim() && range !== 'custom') setRange('retained')
+            if (field.name === 'alert_id') {
+              if (value.trim() && !rangeChosen.current) setRange('retained')
+              else if (!value.trim() && range === 'retained') setRange(lastTimeRange.current)
+            }
           }} />}
       </label>)}
     </div>
@@ -266,6 +308,8 @@ export function OpsFilters({ fields, query, onApply, timeWindow = true, children
     <div className="flex flex-wrap items-center gap-3">
       <button type="submit" className={opsPrimaryClass}>应用筛选</button>
       <button type="button" className={opsButtonClass} onClick={() => {
+        rangeChosen.current = false
+        lastTimeRange.current = '24h'
         setDraft({}); setRange('24h'); setFrom(''); setTo(''); setError(''); onApply({})
       }}>重置查询</button>
       <span className="text-xs text-ink-2">筛选项精确匹配并取交集；应用后返回第一页。</span>
