@@ -20,6 +20,8 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/auth/config` | Auth Config |
+| `GET` | `/api/auth/development-account` | Development Account |
+| `POST` | `/api/auth/development-account` | Development Account |
 | `POST` | `/api/auth/email-code` | Email Code |
 | `POST` | `/api/auth/login/email` | Login Email |
 | `POST` | `/api/auth/login/password` | Login Password |
@@ -67,6 +69,7 @@
 | `DELETE` | `/api/chat/sessions/{session_id}` | Delete Session |
 | `GET` | `/api/chat/sessions/{session_id}` | Get Session |
 | `POST` | `/api/chat/sessions/{session_id}/cancel` | Cancel Generation |
+| `POST` | `/api/chat/sessions/{session_id}/confirm` | Confirm Operation |
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
 | `GET` | `/api/chat/sessions/{session_id}/progress` | Read Generation Progress |
 
@@ -171,4 +174,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 95 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 98 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
