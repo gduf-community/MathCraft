@@ -2,7 +2,9 @@
 
 本文件由根目录 `openapi.json` 自动生成；运行时契约以 `/openapi.json` 和 `/docs` 为准。
 
-已确认但尚未实现的运维扩展见[运维后台方案](design/运维后台升级方案.md)及[接口与联调契约](design/运维后台接口与联调契约.md)。其中拟新增端点不属于当前 OpenAPI；实施时需同步 schema、生成契约、本文及前端映射，并核对生成器覆盖范围。
+运维扩展及本轮前端先行记录见[运维后台方案](design/运维后台升级方案.md)及[接口与联调契约](design/运维后台接口与联调契约.md)。用户授权在 G0 前依照 v1 契约实现七入口与管理员通知前端，前端已有运维 API 适配与 `frontend/src/types/ops.ts` 类型；这不代表后端 schema、通知关联字段或根 OpenAPI 已新增。五个拟新增 `GET /api/admin/ops/overview`、`GET /api/admin/ops/runs`、`GET /api/admin/ops/runs/{run_id}`、`GET /api/admin/ops/dependencies`、`GET /api/admin/ops/alerts` 仍待后端实现，不属于下文当前接口正文。通知读写沿用现有 `/api/notifications` 能力，不新增第六个 ops 接口。
+
+本轮默认请求真实 API，真实错误不自动回退 mock；管理员登录后仅 DEV 可显式启用运维统计／运行／依赖／异常／通知的合成演示，旧平台资源统计与账号／模型／安全仍真实，生产无演示入口与 demo 模块。G0 真实追踪、G1 后端契约冻结、G3 贯通均未通过，前端检查与离线浏览器回归已通过，详见[验收记录](design/运维后台升级方案.md#102-本轮前端验收记录)。本次仅更新文档入口说明，不重新生成 `openapi.json` 或本文接口正文；后端落地时仍须同步 schema、生成契约、本文及前端映射，并核对生成器覆盖范围。
 
 后端入口为 `app.main:app`，示例地址 `http://127.0.0.1:8000`。除健康检查及公开认证流程外，受保护 HTTP 接口使用 `Authorization: Bearer <access_token>`；刷新要求 HttpOnly Cookie、可信 Origin 和 `X-CSRF-Token`；退出另外要求本标签的 `Authorization`，仅撤销该访问令牌绑定的会话，不清除其他会话的共享 Cookie。
 

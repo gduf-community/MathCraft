@@ -110,12 +110,14 @@ export interface PlatformOverview {
   tasks: Array<{ id: string; type: string; status: string; created_at: string; completed_at: string | null }>
 }
 
-export function listAdminAccounts(query = '', role?: AuthRole, status?: 'active' | 'disabled') {
+export function listAdminAccounts(
+  query = '', role?: AuthRole, status?: 'active' | 'disabled', signal?: AbortSignal,
+) {
   const params = new URLSearchParams()
   if (query) params.set('query', query)
   if (role) params.set('role', role)
   if (status) params.set('status', status)
-  return request<AdminAccount[]>('/api/admin/accounts?' + params.toString())
+  return request<AdminAccount[]>('/api/admin/accounts?' + params.toString(), { signal })
 }
 
 export function createAdminAccount(body: { account: string; display_name: string; role: AuthRole; password: string }) {
@@ -134,8 +136,8 @@ export function setAdminAccountStatus(userId: string, action: 'disable' | 'resto
   return request<void>('/api/admin/accounts/' + userId + '/' + action, { method: 'POST' })
 }
 
-export function fetchPlatformOverview() {
-  return request<PlatformOverview>('/api/admin/overview')
+export function fetchPlatformOverview(signal?: AbortSignal) {
+  return request<PlatformOverview>('/api/admin/overview', { signal })
 }
 
 /* ---------------- 题库 ---------------- */
@@ -1030,11 +1032,13 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export interface ApiNotification {
   id: string
-  kind: 'bank_ready' | 'bank_failed'
+  kind: 'bank_ready' | 'bank_failed' | 'ops_alert_trigger' | 'ops_alert_reminder' | 'ops_alert_recovery'
   title: string
   body: string
   bank_id?: string | null
   document_name?: string | null
+  ops_alert_id?: string | null
+  ops_episode_no?: number | null
   read: boolean
   created_at: string
 }

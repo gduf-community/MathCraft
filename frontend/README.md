@@ -7,11 +7,15 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | 路径 | 用途 |
 | --- | --- |
 | `src/api/` | 认证会话、业务请求、题库、文档预览与模型配置接口 |
+| `src/api/adminOps.ts`、`src/api/adminOpsDemo.ts` | 运维真实请求适配与仅 DEV 显式启用的合成演示；五个 ops 后端接口仍待实现 |
 | `src/components/auth/` | 登录、邮箱验证码与 Turnstile |
 | `src/components/layout/`、`src/components/tabs/` | 工作台布局与出题、预览、题库、收藏等页面 |
 | `src/components/settings/`、`src/components/admin/` | 个人模型设置与管理员面板 |
+| `src/components/admin/LegacyOverview.tsx` | 原平台资源与历史批次统计，独立读取真实接口 |
+| `src/components/admin/ops/` | 运维概览、运行／依赖／异常页面、运行抽屉、管理员通知及共用查询与展示 |
 | `src/components/ui/` | 提示、确认框等共用控件 |
 | `src/store/`、`src/types/` | 认证与业务状态、共用类型 |
+| `src/types/ops.ts` | 运维 v1 前端类型与客户端边界，不代表后端 schema 或 OpenAPI 已新增 |
 | `src/styles/`、`src/assets/`、`src/lib/` | 样式、静态资源与工具函数 |
 | `vite.config.ts` | 开发代理、环境文件隔离与构建配置 |
 | `*-regression.mjs`、`e2e-auth.mjs` | 会话、组件与浏览器回归脚本 |
@@ -60,6 +64,12 @@ node admin-panel-regression.mjs
 node merge-frontend-regression.mjs
 ```
 
+### 运维后台离线回归
+
+运行 `ops-panel-regression.mjs`，在 `frontend/` 执行 `node ops-panel-regression.mjs`。使用离线浏览器与合成请求验证七入口、通知、DEV 五种场景及 375／768／1024／1440px 布局，不依赖真实模型或生产服务。离线浏览器对旧接口的测试拦截不等于应用演示模式可替换旧平台数据。
+
+`npm run typecheck`、`npm run lint`、`npm run build`、离线回归 9 组与四种宽度检查已通过；生产产物已核验无演示入口且不包含 demo 模块。lint 保留 3 条原有警告，构建保留大分包提示。统一记录见[升级方案验收记录](../docs/design/运维后台升级方案.md#10-验收与文档状态)，前端检查不能替代 G0／G1／G3。
+
 ## 代理和认证配置注意
 
 - 登录支持账号密码和已验证邮箱验证码；角色由服务端识别，管理员进入管理面板。认证可用状态与配置来自 `GET /api/auth/config`，后端配置入口见[根 README](../README.md)。
@@ -77,10 +87,18 @@ node merge-frontend-regression.mjs
 
 小于 768px 时导航改为四列，主内容与快速出题面板纵向排列，账号操作允许换行；参数栏可展开或折叠。
 
+### 运维后台前端先行
+
+本轮按用户授权在 G0 前依照 v1 契约先行实现前端，保留“平台概览、账号管理、模型与检索、账号安全”，新增“出题运行、依赖状态、异常中心”，共七个入口，并增加管理员通知。平台概览内将运维统计与原平台资源／历史批次统计分别展示；运行列表与详情、依赖观测、异常轮次和通知使用独立的运维客户端。实现与文件职责见[模块说明](../docs/design/运维后台模块说明.md#m7-运维后台界面)。
+
+只有以管理员身份登录后，Vite DEV 页面才显示“使用演示数据”勾选项；默认不勾选并请求真实接口。主动勾选后，合成数据仅覆盖运维统计、运行、依赖、异常和通知，场景为 `normal`、`loading`、`empty`、`partial`、`error`。旧平台资源统计、账号管理、模型与检索、账号安全始终请求真实接口，演示开关不改变这些数据或操作；演示通知的已读、删除只影响内存。生产没有演示入口，demo 模块不进入生产产物，构建验证已通过，详见升级方案验收记录。
+
+真实 API 返回错误时显示真实错误和重试入口，不能自动回退到 mock 或把未知数据填成零／正常。通知已读与告警恢复分别表达，追踪不可用不改写执行结果。前端 API 适配与 `src/types/ops.ts` 仅对应 v1 联调设计；五个 `/api/admin/ops/*` 后端接口及运维通知生成／关联字段仍待实现。G0 真实追踪、G1 后端契约冻结、G3 真实链路贯通均未通过，本轮不代表整套运维后台已经上线。
+
 ## 相关文档
 
 - [API 文档](../docs/api.md)：请求与响应契约。
 - [管理员与账号开通设计](../docs/design/管理员与账号开通设计.md)、[账号系统整合与审查修复](../docs/design/账号系统整合与审查修复.md)：账号、认证与安全设置。
 - [设置拆分与保存反馈设计](../docs/design/设置拆分与保存反馈设计.md)、[模型配置功能规格](../docs/design/模型直接配置功能规格.md)、[配置来源与知识库流程](../docs/design/模型配置来源与普通知识库流程.md)：个人及平台模型配置。
 - [知识库模块说明](../docs/design/知识库模块说明.md)、[题目收藏页面设计](../docs/design/题目收藏页面设计.md)：题库、上传预览与收藏。
-- 待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[运维后台升级方案](../docs/design/运维后台升级方案.md)、[接口与联调契约](../docs/design/运维后台接口与联调契约.md)、[模块说明](../docs/design/运维后台模块说明.md)。
+- 运维方案与前端先行记录：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[运维后台升级方案](../docs/design/运维后台升级方案.md)、[接口与联调契约](../docs/design/运维后台接口与联调契约.md)、[模块说明](../docs/design/运维后台模块说明.md)；DEV 演示与历史替身的边界见 [STUBS](../STUBS.md)。
