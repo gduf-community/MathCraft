@@ -1,5 +1,5 @@
 /** 管理员开通账号，默认密码登录；绑定邮箱后可使用验证码登录。 */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ApiError, developmentAccount, getAuthConfig, loginAccount, loginEmail, resetPassword, validateNewPassword } from '../../api/auth'
 import type { AuthRole } from '../../api/auth'
@@ -12,6 +12,7 @@ type Mode = 'password' | 'email' | 'reset'
 const titles: Record<Mode, string> = { password: '账号登录', email: '账号登录', reset: '找回密码' }
 
 export default function LoginPage() {
+  const stageRef = useRef<HTMLDivElement>(null)
   const { signIn, restoreError, logoutError, authNotice, restore, logout } = useAuth()
   const [mode, setMode] = useState<Mode>('password')
   const [email, setEmail] = useState('')
@@ -30,6 +31,27 @@ export default function LoginPage() {
   const [devEnabled, setDevEnabled] = useState(false)
   const [adminContact, setAdminContact] = useState('请联系本校或平台管理员')
   const passwordMode = mode === 'password'
+
+  useEffect(() => {
+    const viewport = window.visualViewport
+    const stage = stageRef.current
+    if (!viewport || !stage) return
+    // 软键盘和页面放大可能只改变视觉视口，不改变 100dvh。
+    function syncViewport() {
+      if (!viewport || !stage) return
+      stage.style.setProperty('--login-viewport-height', `${viewport.height}px`)
+      stage.style.setProperty('--login-viewport-width', `${viewport.width}px`)
+      stage.style.setProperty('--login-viewport-top', `${viewport.offsetTop}px`)
+      stage.style.setProperty('--login-viewport-left', `${viewport.offsetLeft}px`)
+    }
+    syncViewport()
+    viewport.addEventListener('resize', syncViewport)
+    viewport.addEventListener('scroll', syncViewport)
+    return () => {
+      viewport.removeEventListener('resize', syncViewport)
+      viewport.removeEventListener('scroll', syncViewport)
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -124,12 +146,11 @@ export default function LoginPage() {
     } finally { setBusy(false) }
   }
 
-  return <div className="stage auth-stage">
-    <div className="login-bg" aria-hidden="true" /><div className="login-grain" aria-hidden="true" /><div className="login-vignette" aria-hidden="true" />
+  return <div ref={stageRef} className="stage auth-stage">
+    <div className="login-decoration" aria-hidden="true"><div className="login-bg" /><div className="login-grain" /><div className="login-vignette" /></div>
     <header className="login-brand"><span><span className="login-brand__name">MathCraft</span><span className="login-brand__sub">智能出题平台</span></span></header>
     <div className="login-layout">
-      <section className="login-intro"><div className="login-intro__rule" aria-hidden="true" /><h2>从知识库<br />到成套题目</h2><p>上传课件与教材，按章节、难度和题型生成题干与解析，再一键成卷发布。</p></section>
-      <section className="login-panel" aria-labelledby="login-title"><div className="login-halo" aria-hidden="true" /><div className="login-card">
+      <section className="login-panel" aria-labelledby="login-title"><div className="login-halo" aria-hidden="true" /><div className="login-card"><div className="login-card__body" tabIndex={0} role="region" aria-labelledby="login-title">
         <div className="login-card__head"><h1 id="login-title">{titles[mode]}</h1><p className="login-lede">{mode === 'reset' ? '验证绑定邮箱后重置密码' : '使用管理员开通的账号进入工作空间'}</p></div>
         {authNotice && <p role="status" className="auth-notice">{authNotice}</p>}
         {logoutError && <div role="alert" className="auth-notice">{logoutError}<button type="button" disabled={busy} onClick={() => void retryLogout()}>重试退出</button></div>}
@@ -160,7 +181,7 @@ export default function LoginPage() {
         </form>
         <p className="auth-help">账号由管理员创建；未绑定邮箱或无法找回密码：{adminContact}</p>
         {import.meta.env.DEV && devEnabled && window.location.hostname === '127.0.0.1' && <div className="auth-dev">{(['student', 'teacher'] as const).map(item => <button key={item} type="button" disabled={busy} onClick={() => void fillDevelopment(item)}>填充{item === 'student' ? '学生' : '教师'}开发账号</button>)}</div>}
-      </div></section>
+      </div></div></section>
     </div>
   </div>
 }
