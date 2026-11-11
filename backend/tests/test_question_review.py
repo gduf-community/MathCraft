@@ -47,7 +47,7 @@ LOW_SCORES = {"knowledge": 3, "steps": 2, "abstraction": 2, "computation": 2, "t
 
 
 class FakeLLM:
-    """按 prompt 类型分派：盲评返回 JSON，修补返回题目，解题返回 ANSWER/ANALYSIS。"""
+    """按 prompt 类型分派：盲评、修补与独立解题均返回对应的 JSON 契约。"""
 
     def __init__(self, reviews: list[str], repair_items: list[dict] | None = None):
         self.reviews = reviews
@@ -69,7 +69,8 @@ class FakeLLM:
                 item = self.repair_items[min(self.repair_calls - 1, len(self.repair_items) - 1)]
                 return json.dumps(item, ensure_ascii=False)
             self.solve_calls += 1
-            return "ANSWER: B\nANALYSIS: 由定义可得 $y'=3x^2$。"
+            return json.dumps({"answer": "B", "analysis": "由定义可得 $y'=3x^2$。",
+                               "confidence": "high"}, ensure_ascii=False)
 
 
 @pytest.fixture
@@ -176,6 +177,8 @@ def test_repair_then_accept(db, monkeypatch):
     assert result[0].difficultyScore > 3
     assert result[0].answer == "B"  # 解析环节覆盖答案
     assert "3x^2" in result[0].analysis
+    assert stats.solved == 1
+    assert fake.solve_calls == 1
 
 
 def test_duplicate_shortfall_is_refilled(db, monkeypatch):
@@ -228,6 +231,49 @@ def test_math_delimiters_are_normalized():
     text = question_review._normalize_math(r"由 \(f(0)=0\) 可得 \[M=\max|f|\]")
     assert r"\(" not in text and r"\[" not in text
     assert "$f(0)=0$" in text
+
+
+def test_independent_solver_uses_answer_and_analysis_from_same_json(monkeypatch):
+    """避免旧用例仅凭修补题自带答案误判独立解题成功。"""
+    calls = []
+
+    def solve(messages, **kwargs):
+        calls.append(messages)
+        return json.dumps({"answer": "B", "analysis": r"由 \(x=2\) 可得答案 B。",
+                           "confidence": "low"}, ensure_ascii=False)
+
+    monkeypatch.setattr(question_review.llm, "chat_text", solve)
+    question = _q("独立求解 JSON 回归题目")
+    result = question_review._solve_one(question, "fake-model-key")
+    assert result == ("B", "由 $x=2$ 可得答案 B。")
+    assert len(calls) == 1
+    assert calls[0][0]["content"] == question_review.SOLVE_SYSTEM
+    assert "置信度低" in question.selfCheck["note"]
+
+
+@pytest.mark.parametrize("field", ["answer", "analysis"])
+@pytest.mark.parametrize("invalid", [None, "", "  \n", False, 7, {}, []])
+def test_solver_invalid_json_fields_preserve_entire_original_pair(monkeypatch, field, invalid):
+    payload = {"answer": "B", "analysis": "新的独立解析", "confidence": "high"}
+    payload[field] = invalid
+    monkeypatch.setattr(question_review, "_chat_json_low", lambda *a, **kw: payload)
+    question = _q("无效解题输出回归")
+    stats = question_review.ReviewStats()
+    question_review._solve_all([question], "fake-key", stats)
+    assert (question.answer, question.analysis) == ("A", "旧解析")
+    assert stats.solved == 0
+
+
+@pytest.mark.parametrize("field", ["answer", "analysis"])
+def test_solver_missing_json_fields_preserve_entire_original_pair(monkeypatch, field):
+    payload = {"answer": "B", "analysis": "新的独立解析", "confidence": "high"}
+    payload.pop(field)
+    monkeypatch.setattr(question_review, "_chat_json_low", lambda *a, **kw: payload)
+    question = _q("缺失解题字段回归")
+    stats = question_review.ReviewStats()
+    question_review._solve_all([question], "fake-key", stats)
+    assert (question.answer, question.analysis) == ("A", "旧解析")
+    assert stats.solved == 0
 
 
 def test_answer_normalization():
