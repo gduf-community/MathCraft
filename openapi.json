@@ -523,6 +523,96 @@
         }
       }
     },
+    "/api/auth/development-account": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Development Account",
+        "operationId": "development_account_api_auth_development_account_post",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "teacher",
+                "student"
+              ],
+              "type": "string",
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentAccount"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Development Account",
+        "operationId": "development_account_api_auth_development_account_get",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "teacher",
+                "student"
+              ],
+              "type": "string",
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevelopmentAccount"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/me": {
       "put": {
         "tags": [
@@ -3385,6 +3475,73 @@
         }
       }
     },
+    "/api/chat/sessions/{session_id}/confirm": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Confirm Operation",
+        "description": "数据管理高危操作确认：接受执行，拒绝取消。",
+        "operationId": "confirm_operation_api_chat_sessions__session_id__confirm_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatConfirmBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat/sessions/{session_id}/progress": {
       "get": {
         "tags": [
@@ -5690,6 +5847,27 @@
         ],
         "title": "Body_upload_document_api_banks__bank_id__documents_post"
       },
+      "ChatConfirmBody": {
+        "properties": {
+          "confirm_id": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Confirm Id"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "confirm_id",
+          "accepted"
+        ],
+        "title": "ChatConfirmBody",
+        "description": "数据管理高危操作的确认：接受执行 / 拒绝取消。"
+      },
       "ChatMessageBody": {
         "properties": {
           "message": {
@@ -5706,6 +5884,25 @@
             "maxItems": 200,
             "title": "Existing Stems",
             "default": []
+          },
+          "images": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Images",
+            "default": []
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "generate"
+          },
+          "switch_only": {
+            "type": "boolean",
+            "title": "Switch Only",
+            "default": false
           }
         },
         "type": "object",
@@ -5746,6 +5943,34 @@
         ],
         "title": "CurrentUserResult",
         "description": "当前登录用户，保持既有 user 外层对象。"
+      },
+      "DevelopmentAccount": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "teacher",
+              "student"
+            ],
+            "title": "Role"
+          },
+          "user_no": {
+            "type": "string",
+            "title": "User No"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "user_no",
+          "password"
+        ],
+        "title": "DevelopmentAccount",
+        "description": "仅受控开发环境提供的示例账号。"
       },
       "EmailChangeBody": {
         "properties": {
