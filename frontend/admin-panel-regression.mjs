@@ -67,6 +67,7 @@ const bundle = await build({
     createRoot(document.getElementById('root')).render(<ToastProvider><AdminPanel/><Toast/></ToastProvider>);`,
   resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'jsx' },
   bundle: true, write: false, format: 'iife', jsx: 'automatic',
+  define: { 'import.meta.env.DEV': 'false' },
   plugins: [{ name: 'isolated-admin-dependencies', setup(builder) {
     builder.onResolve({ filter: /\/(backend|auth|session|AuthContext)$/ }, args => ({
       path: args.path.split('/').at(-1), namespace: 'admin-fakes',
@@ -132,6 +133,7 @@ try {
   assert.equal(await page.getByText('stale-result', {exact:true}).count(), 0)
   assert.equal(await page.getByText('new-result', {exact:true}).count(), 1)
   await page.getByRole('navigation', {name:'管理员后台导航'}).getByRole('button', {name:'平台概览', exact:true}).click()
+  await page.getByText('持久化生成批次总数：51', {exact:true}).waitFor()
   assert.ok((await page.locator('body').innerText()).includes('持久化生成批次总数：51'))
   await page.close()
 

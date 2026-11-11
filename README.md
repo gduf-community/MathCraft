@@ -29,12 +29,28 @@ MathCraft/
 │   └── README.md             # 后端配置、迁移与故障处理
 ├── frontend/                 # React 前端
 │   ├── src/                  # 页面、组件、API 与状态管理
+│   │   ├── api/              # 认证及业务 API 请求
+│   │   │   ├── adminOps.ts   # 运维 v1 真实请求适配；五个后端接口待实现
+│   │   │   └── adminOpsDemo.ts # 仅 DEV 显式启用的合成演示
+│   │   ├── components/
+│   │   │   └── admin/        # 七入口管理面板与既有管理操作
+│   │   │       ├── AdminPanel.tsx
+│   │   │       ├── LegacyOverview.tsx # 原平台资源与历史批次真实统计
+│   │   │       └── ops/      # 运维页面、通知及共用展示／查询
+│   │   │           ├── OpsPages.tsx
+│   │   │           ├── RunDrawer.tsx
+│   │   │           ├── AdminNotifications.tsx
+│   │   │           ├── OpsShared.tsx
+│   │   │           └── useOpsQuery.ts
+│   │   └── types/
+│   │       └── ops.ts        # 运维 v1 前端类型，不代表新增 OpenAPI
+│   ├── ops-panel-regression.mjs # 运维面板离线浏览器回归
 │   ├── package.json          # 前端依赖与命令
 │   └── README.md             # 前端开发说明
 ├── docs/
 │   ├── api.md                # API 文档
 │   └── design/               # 功能设计、实施记录与待实现方案
-│       ├── 运维后台升级方案.md # 已确认的待实施运维方案
+│       ├── 运维后台升级方案.md # 运维方案、前端先行例外与验收记录
 │       ├── 运维后台接口与联调契约.md   # 拟新增接口、状态和联调样例
 │       ├── 运维后台模块说明.md     # 模块职责、依赖与验收要点
 │       └── 运维后台系统方案说明.md # 面向方案评审的系统说明
@@ -46,7 +62,7 @@ MathCraft/
 ├── openapi.json              # 当前接口契约
 ├── AGENTS.md                 # 协作约定
 ├── GLOSSARY.md               # 领域术语
-└── STUBS.md                  # 历史替身说明
+└── STUBS.md                  # 当前 DEV 演示边界与历史替身说明
 ```
 
 ## 启动方法
@@ -201,7 +217,7 @@ npm run build
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
 - [账号与权限设计](docs/design/账号系统整合与审查修复.md)、[模型配置说明](docs/design/模型配置来源与普通知识库流程.md)、[知识库说明](docs/design/知识库模块说明.md)：业务规则与能力边界。
 - [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)：面向方案评审与协作沟通，介绍系统目标、使用场景、功能模块和建设边界；文末列明代码实施必须参考的三份约定文档。
-- [运维后台扩展方案](docs/design/运维后台升级方案.md)：已确认、待实现；OpenAI Agents SDK 原生追踪导出到本地 Phoenix，正文默认 3 天、摘要 14 天、每日清理；先接入验收，再扩展运行、依赖与异常告警。配套[接口与联调契约](docs/design/运维后台接口与联调契约.md)和[模块说明](docs/design/运维后台模块说明.md)说明模块职责、依赖和验收边界，拟新增接口尚未实现。
+- [运维后台扩展方案](docs/design/运维后台升级方案.md)：用户授权按 v1 契约在 G0 前先行实现七入口与管理员通知前端，前端与合成交互已验收；五个 ops 后端接口仍待实现，G0 真实追踪、G1 后端契约冻结、G3 贯通均未通过。DEV 中管理员登录后可显式勾选合成演示，默认真实；旧平台资源统计、账号、模型与安全仍使用真实接口，真实请求失败不自动切换演示，生产无演示入口与 demo 模块。配套[接口与联调契约](docs/design/运维后台接口与联调契约.md)、[模块说明](docs/design/运维后台模块说明.md)和[演示边界](STUBS.md)说明实现范围；追踪、本地 Phoenix 及告警后端仍按方案建设。
 - [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)：开发约定与术语定义。
 
 当前实现以 `backend/app/`、`frontend/src/` 与根 `openapi.json` 为准；设计文档中的历史记录仅供参考。

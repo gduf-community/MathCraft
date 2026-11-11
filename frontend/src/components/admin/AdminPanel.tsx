@@ -1,25 +1,34 @@
-import { ChartNoAxesCombined, Database, ShieldCheck, Users } from 'lucide-react'
+import { Activity, ChartNoAxesCombined, Database, HeartPulse, ShieldCheck, TriangleAlert, Users } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { changePasswordCurrent, validateNewPassword } from '../../api/auth'
 import {
   createAdminAccount,
-  fetchPlatformOverview,
   listAdminAccounts,
   resetAdminPassword,
   setAdminAccountStatus,
   updateAdminAccount,
 } from '../../api/backend'
-import type { AdminAccount, PlatformOverview } from '../../api/backend'
+import type { AdminAccount } from '../../api/backend'
 import { clearSession, getSessionGeneration } from '../../api/session'
 import { useAuth } from '../../store/AuthContext'
 import { useToast } from '../../store/ToastContext'
 import { SecuritySettings } from '../tabs/ProfileTab/SecuritySettings'
 import { RagSettingsPanel } from './RagSettingsPanel'
+import { LegacyOverview } from './LegacyOverview'
+import { realOpsClient } from '../../api/adminOps'
+import type { DemoScenario } from '../../api/adminOpsDemo'
+import type { OpsClient, OpsQuery } from '../../types/ops'
+import { AdminNotifications } from './ops/AdminNotifications'
+import { AlertsPanel, DependenciesPanel, OpsOverviewPanel, RunsPanel } from './ops/OpsPages'
+import { RunDrawer } from './ops/RunDrawer'
 
 const ROLE_LABELS = { admin: '管理员', teacher: '教师', student: '学生' } as const
 const NAV_ITEMS = [
   { id: 'overview', label: '平台概览', icon: ChartNoAxesCombined },
+  { id: 'runs', label: '出题运行', icon: Activity },
+  { id: 'dependencies', label: '依赖状态', icon: HeartPulse },
+  { id: 'alerts', label: '异常中心', icon: TriangleAlert },
   { id: 'accounts', label: '账号管理', icon: Users },
   { id: 'rag', label: '模型与检索', icon: Database },
   { id: 'security', label: '账号安全', icon: ShieldCheck },
@@ -38,10 +47,19 @@ export default function AdminPanel() {
   const { user, logout, setAuthNotice } = useAuth()
   const { showToast } = useToast()
   const [section, setSection] = useState<AdminSection>('overview')
+  const [opsClient, setOpsClient] = useState<OpsClient>(realOpsClient)
+  const [demo, setDemo] = useState(false)
+  const [scenario, setScenario] = useState<DemoScenario>('normal')
+  const [opsSwitching, setOpsSwitching] = useState(false)
+  const [sourceVersion, setSourceVersion] = useState(0)
+  const [runQuery, setRunQuery] = useState<OpsQuery>()
+  const [alertQuery, setAlertQuery] = useState<OpsQuery>()
+  const [navigationVersion, setNavigationVersion] = useState(0)
+  const [selectedRun, setSelectedRun] = useState<string | null>(null)
+  const sourceGeneration = useRef(0)
   const [ragDirty, setRagDirty] = useState(false)
   const [ragBusy, setRagBusy] = useState(false)
   const [accounts, setAccounts] = useState<AdminAccount[]>([])
-  const [overview, setOverview] = useState<PlatformOverview | null>(null)
   const [query, setQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState<AdminAccount['role'] | ''>('')
   const [statusFilter, setStatusFilter] = useState<AdminAccount['status'] | ''>('')
@@ -67,24 +85,27 @@ export default function AdminPanel() {
 
   useEffect(() => {
     mounted.current = true
-    return () => { mounted.current = false; loadGeneration.current += 1 }
+    return () => {
+      mounted.current = false
+      loadGeneration.current += 1
+      sourceGeneration.current += 1
+    }
   }, [])
 
   useEffect(() => {
-    if (revoked.current) return
+    if (revoked.current || section !== 'accounts') return
     const generation = ++loadGeneration.current
+    const controller = new AbortController()
     let active = true
     const load = async () => {
       setLoading(true)
       setLoadError('')
       try {
-        const [nextAccounts, nextOverview] = await Promise.all([
-          listAdminAccounts(query, roleFilter || undefined, statusFilter || undefined),
-          fetchPlatformOverview(),
-        ])
+        const nextAccounts = await listAdminAccounts(
+          query, roleFilter || undefined, statusFilter || undefined, controller.signal,
+        )
         if (!active || generation !== loadGeneration.current || revoked.current) return
         setAccounts(nextAccounts)
-        setOverview(nextOverview)
       } catch (error: unknown) {
         if (active && generation === loadGeneration.current && !revoked.current) {
           setLoadError(error instanceof Error ? error.message : '加载失败')
@@ -94,8 +115,8 @@ export default function AdminPanel() {
       }
     }
     void load()
-    return () => { active = false }
-  }, [query, roleFilter, statusFilter, refresh])
+    return () => { active = false; controller.abort() }
+  }, [query, roleFilter, statusFilter, refresh, section])
 
   const run: RunAction = async (action, success, revokesSelf = false) => {
     if (mutationBusy.current || revoked.current) return false
@@ -172,7 +193,53 @@ export default function AdminPanel() {
   }
 
   function selectSection(next: AdminSection) {
-    if (next !== section && canLeaveRag()) setSection(next)
+    if (next !== section && canLeaveRag()) {
+      setSelectedRun(null)
+      if (next === 'runs') setRunQuery(undefined)
+      if (next === 'alerts') setAlertQuery(undefined)
+      setSection(next)
+    }
+  }
+
+  function openRuns(nextQuery?: OpsQuery) {
+    if (!canLeaveRag()) return
+    setSelectedRun(null)
+    setRunQuery(nextQuery)
+    setNavigationVersion(value => value + 1)
+    setSection('runs')
+  }
+
+  function openAlerts(nextQuery?: OpsQuery) {
+    if (!canLeaveRag()) return
+    setSelectedRun(null)
+    setAlertQuery(nextQuery)
+    setNavigationVersion(value => value + 1)
+    setSection('alerts')
+  }
+
+  async function changeOpsSource(nextDemo: boolean, nextScenario: DemoScenario = scenario) {
+    if (!import.meta.env.DEV) return
+    const generation = ++sourceGeneration.current
+    setOpsSwitching(true)
+    setSelectedRun(null)
+    try {
+      const nextClient = nextDemo
+        ? (await import('../../api/adminOpsDemo')).createDemoOpsClient(nextScenario)
+        : realOpsClient
+      if (!mounted.current || generation !== sourceGeneration.current) return
+      setOpsClient(nextClient)
+      setDemo(nextDemo)
+      setScenario(nextScenario)
+      setRunQuery(undefined)
+      setAlertQuery(undefined)
+      setSourceVersion(value => value + 1)
+    } catch (error: unknown) {
+      if (mounted.current && generation === sourceGeneration.current) {
+        showToast(error instanceof Error ? error.message : '演示模块加载失败', 'error')
+      }
+    } finally {
+      if (mounted.current && generation === sourceGeneration.current) setOpsSwitching(false)
+    }
   }
 
   if (sessionRevoked) return (
@@ -191,13 +258,47 @@ export default function AdminPanel() {
         <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-line bg-white px-5 py-5 shadow-sm">
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-primary">MathCraft 运维</p>
-            <h1 className="mt-1 text-2xl font-bold">管理员面板</h1>
+            <h1 className="mt-1 text-2xl font-bold">运维后台</h1>
             <p className="mt-1 break-all text-sm text-ink-2">当前账号：{user?.displayName}</p>
           </div>
+          <div className="flex items-center gap-2">
+          {!opsSwitching && <AdminNotifications key={sourceVersion} client={opsClient}
+            demo={demo} disabled={ragBusy} onOpenAlert={id => openAlerts({ alert_id: id })} />}
           <button type="button" disabled={ragBusy} onClick={() => { if (canLeaveRag()) void logout().catch((error: unknown) => showToast(error instanceof Error ? error.message : '退出未确认，请重试', 'error')) }} className="min-h-11 rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page disabled:opacity-60">
             退出登录
           </button>
+          </div>
         </header>
+
+        {import.meta.env.DEV && <section aria-label="运维演示设置"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary-weak p-4 text-sm">
+          <div className="min-w-0">
+            <p className="font-semibold text-primary">{demo ? '运维观测 · 合成演示数据' : '运维观测 · 真实接口'}</p>
+            <p className="mt-1 text-ink-2">演示仅覆盖运维统计、运行、依赖、异常和通知；账号、配置、安全及平台资源统计仍为真实操作与数据。</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2">
+              <input type="checkbox" checked={demo} disabled={opsSwitching}
+                onChange={event => void changeOpsSource(event.target.checked)} className="h-4 w-4 accent-primary" />
+              使用演示数据
+            </label>
+            {demo && <label className="flex min-h-11 items-center gap-2">
+              演示场景
+              <select value={scenario} disabled={opsSwitching} className="min-h-11 rounded-lg border border-line bg-white px-3"
+                onChange={event => {
+                  const value = event.target.value
+                  if (value === 'normal' || value === 'loading' || value === 'empty'
+                    || value === 'partial' || value === 'error') void changeOpsSource(true, value)
+                }}>
+                <option value="normal">典型运行与异常</option>
+                <option value="loading">缓慢加载</option>
+                <option value="empty">空数据</option>
+                <option value="partial">部分可用</option>
+                <option value="error">服务不可用</option>
+              </select>
+            </label>}
+          </div>
+        </section>}
 
         <div className="grid min-w-0 gap-5 lg:grid-cols-[208px_minmax(0,1fr)]">
           <aside className="min-w-0 self-start rounded-2xl border border-line bg-white p-3 shadow-sm lg:sticky lg:top-6">
@@ -206,6 +307,14 @@ export default function AdminPanel() {
             </nav>
           </aside>
           <main id="admin-content" className="min-w-0 space-y-5" aria-label={NAV_ITEMS.find(item => item.id === section)?.label}>
+
+            {opsSwitching && <p role="status" className="rounded-xl border border-line bg-white p-5 text-sm text-ink-2">正在切换运维数据源…</p>}
+            {!opsSwitching && section === 'runs' && <RunsPanel key={`${sourceVersion}:${navigationVersion}`}
+              client={opsClient} initialQuery={runQuery} onOpenRun={setSelectedRun} />}
+            {!opsSwitching && section === 'dependencies' && <DependenciesPanel key={sourceVersion}
+              client={opsClient} onOpenRuns={openRuns} />}
+            {!opsSwitching && section === 'alerts' && <AlertsPanel key={`${sourceVersion}:${navigationVersion}`}
+              client={opsClient} initialQuery={alertQuery} onOpenRun={setSelectedRun} />}
 
             <div hidden={section !== 'security'} className="space-y-5">
 
@@ -229,55 +338,13 @@ export default function AdminPanel() {
             </section>
             </div>
 
-            {(section === 'overview' || section === 'accounts') && <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">{section === 'overview' ? '平台概览' : '账号管理'}</h2><button type="button" onClick={() => setRefresh(value => value + 1)} className="min-h-11 rounded-lg border border-line bg-white px-4 py-2 text-sm text-ink-2">{loading ? '刷新中…' : '刷新数据'}</button></div>}
-            {(section === 'overview' || section === 'accounts') && loadError && <div role="alert" className="rounded-lg border border-line bg-white p-4 text-sm">数据刷新失败：{loadError} <button type="button" onClick={() => setRefresh(value => value + 1)} className="underline">重试</button></div>}
+            {section === 'accounts' && <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">账号管理</h2><button type="button" onClick={() => setRefresh(value => value + 1)} className="min-h-11 rounded-lg border border-line bg-white px-4 py-2 text-sm text-ink-2">{loading ? '刷新中…' : '刷新数据'}</button></div>}
+            {section === 'accounts' && loadError && <div role="alert" className="rounded-lg border border-line bg-white p-4 text-sm">数据刷新失败：{loadError} <button type="button" onClick={() => setRefresh(value => value + 1)} className="underline">重试</button></div>}
 
             {section === 'overview' && <>
-
-            <section className="grid gap-4 sm:grid-cols-3">
-              <StatCard label="教师" value={overview ? (overview.accounts.teacher_active ?? 0) + (overview.accounts.teacher_disabled ?? 0) : '—'} />
-              <StatCard label="学生" value={overview ? (overview.accounts.student_active ?? 0) + (overview.accounts.student_disabled ?? 0) : '—'} />
-              <StatCard label="管理员" value={overview ? (overview.accounts.admin_active ?? 0) + (overview.accounts.admin_disabled ?? 0) : '—'} />
-              <StatCard label="题库／知识库" value={overview?.resources.banks ?? '—'} />
-              <StatCard label="文档" value={overview?.resources.documents ?? '—'} />
-              <StatCard label="试卷" value={overview?.resources.papers ?? '—'} />
-            </section>
-
-            <section className="rounded-2xl border border-line bg-white p-5 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold">平台信息</h2>
-                  <p className="mt-1 text-sm text-ink-3">联系管理员：{overview?.admin_contact || '未配置'}</p>
-                </div>
-                <div className="text-sm text-ink-3">持久化生成批次总数：{overview?.task_total ?? '—'}</div>
-              </div>
-              <p className="mt-2 text-sm text-ink-3">状态统计覆盖全部持久化生成批次；下表仅展示最近 50 条，不包含仅存于任务缓存的运行中或失败任务。完成时间未记录。</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {overview && Object.entries(overview.task_status_counts).map(([status, count]) => (
-                  <span key={status} className="rounded-full bg-page px-3 py-1 text-xs text-ink-2">{status}：{count}</span>
-                ))}
-              </div>
-              {overview && overview.tasks.length > 0 && (
-                <div className="mt-4 overflow-x-auto">
-                  <table className="w-full min-w-[640px] text-left text-sm">
-                    <thead className="border-b border-line text-ink-3">
-                      <tr><th className="px-3 py-2">任务类型</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">创建时间</th><th className="px-3 py-2">完成时间</th></tr>
-                    </thead>
-                    <tbody>
-                      {overview.tasks.map((task) => (
-                        <tr key={task.id} className="border-b border-line/70 last:border-0">
-                          <td className="px-3 py-2">{task.type}</td>
-                          <td className="px-3 py-2">{task.status}</td>
-                          <td className="px-3 py-2 text-ink-3">{task.created_at}</td>
-                          <td className="px-3 py-2 text-ink-3">{task.completed_at ?? '未记录'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-
+              {!opsSwitching && <OpsOverviewPanel key={sourceVersion} client={opsClient}
+                onOpenRuns={openRuns} onOpenAlerts={openAlerts} />}
+              <LegacyOverview />
             </>}
             <div hidden={section !== 'accounts'} className="min-w-0 space-y-5">
             <section className="rounded-2xl border border-line bg-white p-5 shadow-sm">
@@ -321,12 +388,10 @@ export default function AdminPanel() {
           </main>
         </div>
       </div>
+      {!opsSwitching && selectedRun && <RunDrawer client={opsClient} runId={selectedRun}
+        onClose={() => setSelectedRun(null)} onOpenAlerts={openAlerts} demo={demo} />}
     </div>
   )
-}
-
-function StatCard({ label, value }: { label: string; value: number | string }) {
-  return <div className="rounded-xl border border-line bg-white p-4 shadow-sm"><p className="text-sm text-ink-3">{label}</p><p className="mt-2 text-2xl font-semibold text-primary">{value}</p></div>
 }
 
 function AccountRow({ account, currentUserId, busy, onRun }: { account: AdminAccount; currentUserId: string | undefined; busy: boolean; onRun: RunAction }) {
