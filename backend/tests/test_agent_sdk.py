@@ -495,6 +495,19 @@ def test_unprepared_sdk_provider_rejects_without_model_request(wire, monkeypatch
     assert wire.requests == []
 
 
+def test_question_stream_accepts_plain_string_iterator(monkeypatch):
+    """同步字符串迭代器无需具备 generator.close，仍遵守原流式边界。"""
+    from app.services.rag import question_gen
+
+    payload = json.dumps({"questions": [{
+        "type": "compute", "stem": "求导", "answer": "2x", "analysis": "幂函数法则",
+    }]}, ensure_ascii=False)
+    monkeypatch.setattr(llm, "chat_stream", lambda *args, **kwargs: iter([payload]))
+    questions = question_gen._stream_questions([], budget=100, api_key=None)
+    assert len(questions) == 1
+    assert questions[0].answer == "2x"
+
+
 @pytest.mark.parametrize("method", ["chat_json", "chat_text", "chat_stream"])
 def test_missing_key_keeps_existing_llm_error_without_http_request(wire, monkeypatch, method):
     monkeypatch.setattr(llm.settings, "deepseek_api_key", "")

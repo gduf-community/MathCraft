@@ -87,3 +87,5 @@ Spec 追加发现 SDK 默认 provider 首次准备会构造云端 HTTPX 客户�
 该修复后重新执行完整实际 HTTP/Phoenix 矩阵，项目 `ops-g0-business-provider-final` 再次 PASSED：13 场景、432 span、563 安全事件、62 假请求、0 真实模型、0 失败/丢弃。最新安全报告 `.scratch/sdk-g0-tmp/business-evidence/ops-g0-business-provider-final.safe.json` 的 SHA-256 为 `6b61e7bbccc0a9c71ebdfa5f52872e24c09199cece8b629394df8cd7d628d314`；前述首次矩阵及故障/授权/清理报告保留作补充，不覆盖失败的历史尝试。
 
 最后 provider 修复由全新 Avicenna 复核 Standards，由 Beauvoir 独立验证 Spec：无效 CA 的实际 lifespan 连续启动/关闭两次；provider 构造或安装失败不逃出启动且受理前 503、无 accepted 事件，legacy 可用；OTLP 初始化或导出客户端失败仍各执行一次原生 SDK 假模型请求；正常路径仍有非根 Agent/LLM 且不导出正文。默认处理器构造次数均为零，两轴无剩余阻塞。修复后五模块 118 passed、21 subtests passed，随后新增的受理前 provider 不可用测试 1 passed；Pyright 仍为同布局基线 42 项，无新增。
+
+主线集成还发现 11 项普通字符串迭代器兼容失败：资源关闭逻辑原先直接要求 `.close()`，与 `Iterator[str]` 边界不符。修复先在 agent 开发：对提供 close 的 SDK/legacy generator 注册退出回调，普通迭代器保持原解析行为。新增边界回归，保留原 SDK 提前解析失败/取消/流关闭的清理测试；复核后重新集成，结果在 G1 交接记录登记。

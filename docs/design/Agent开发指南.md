@@ -187,7 +187,7 @@ sequenceDiagram
 
 新增线程任务必须为每次 `submit` 新建 `copy_context()`，或使用 `map_in_context()`。不能让多个线程同时进入同一个复制上下文，也不能直接换回普通 `pool.map()` 后假定上下文自动传播。当前按题型、单题批次、盲评、修补、复评和求解线程均有相应传播接点。结果仍按原顺序合并，不能把并发完成顺序变成题目顺序。
 
-`agent_sdk.complete/stream` 为每次执行创建私有 `asyncio.Runner` 和 `AsyncOpenAI`，客户端只属于本次事件循环，不放入 legacy 的跨线程缓存。现有入口为同步函数，由框架/工作线程调用；新增 async 调用方应在线程中运行同步桥接并核对上下文，不能直接在已运行的事件循环里嵌套此桥接。流提前结束时先取消 SDK 执行，再关闭事件迭代器并等待其任务，最后释放 HTTP 客户端和私有循环；`_stream_questions` 使用 `closing()` 保证 Schema 失败也关闭流。
+`agent_sdk.complete/stream` 为每次执行创建私有 `asyncio.Runner` 和 `AsyncOpenAI`，客户端只属于本次事件循环，不放入 legacy 的跨线程缓存。现有入口为同步函数，由框架/工作线程调用；新增 async 调用方应在线程中运行同步桥接并核对上下文，不能直接在已运行的事件循环里嵌套此桥接。流提前结束时先取消 SDK 执行，再关闭事件迭代器并等待其任务，最后释放 HTTP 客户端和私有循环；`_stream_questions` 用 `ExitStack` 为提供 close 的流注册关闭回调，保证 Schema 失败也关闭 SDK generator，同时兼容普通字符串迭代器。
 
 对话 `POST /api/chat/sessions/{session_id}/cancel` 返回 202 只表示取消请求已写 Redis。执行体在进度回调、阶段检查点和审核后检查到标记，才确认取消。它不是抢占式中断所有正在运行的模型请求；线程池退出仍可能等待已提交任务。当前没有参数化任务的对应取消接口，也没有新增管理员强停接口。
 

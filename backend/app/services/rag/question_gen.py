@@ -12,7 +12,7 @@
 import json
 import re
 import uuid
-from contextlib import closing, nullcontext
+from contextlib import ExitStack, nullcontext
 from contextvars import copy_context
 from typing import Callable
 
@@ -191,9 +191,13 @@ def _stream_questions(messages: list[dict], budget: int, api_key: str | None) ->
     raw: list[str] = []
     collected: list[Question] = []
     try:
-        with closing(llm.chat_stream(
+        stream = llm.chat_stream(
             messages, api_key=api_key, max_tokens=budget, thinking_off=True,
-        )) as stream:
+        )
+        with ExitStack() as stack:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                stack.callback(close_stream)
             for delta in stream:
                 raw.append(delta)
                 parser.feed(delta)
