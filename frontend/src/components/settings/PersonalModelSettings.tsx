@@ -124,7 +124,9 @@ export function PersonalModelSettings({ onDirtyChange, onSavingChange }: Persona
     try {
       if (service === 'deepseek') await testDeepSeek()
       else await testMinerU()
-      reportSuccess(`${service === 'deepseek' ? 'DeepSeek' : 'MinerU'} 已保存配置连接测试通过（含服务端默认配置）。`)
+      reportSuccess(service === 'mineru'
+        ? 'MinerU 已保存配置鉴权通过，实际解析仍受额度和任务结果影响（含服务端默认配置）。'
+        : 'DeepSeek 已保存配置连接测试通过（含服务端默认配置）。')
     } catch {
       reportError('已保存配置测试失败，请检查凭据或服务可用性。')
     } finally {
@@ -168,7 +170,7 @@ export function PersonalModelSettings({ onDirtyChange, onSavingChange }: Persona
       </fieldset>
       <fieldset disabled={disabled} className="space-y-2 rounded-xl border border-line p-3">
         <legend className="px-1 text-sm font-semibold">MinerU OCR</legend>
-        <p className="text-xs text-ink-3">{model ? model.mineru_token_configured ? `已配置个人 Token ${model.mineru_token_masked ?? ''}` : '使用系统默认 Token（可用性以测试为准）' : '配置尚未读取'}</p>
+        <p className="text-xs text-ink-3">{model ? model.mineru_token_configured ? `已配置个人 Token ${model.mineru_token_masked ?? ''}` : '使用系统默认 Token（测试仅验证连接和鉴权）' : '配置尚未读取'}</p>
         <label htmlFor={`${id}-mineru`} className="block text-sm">新的 MinerU Token</label>
         <input id={`${id}-mineru`} type="password" autoComplete="new-password" value={mineruToken} disabled={disabled || clearMineru}
           onChange={(event) => edit(() => setMineruToken(event.target.value))} className={inputClass} />
@@ -177,6 +179,7 @@ export function PersonalModelSettings({ onDirtyChange, onSavingChange }: Persona
           清除个人 MinerU Token，使用系统默认 Token
         </label>
         {model && <p className="text-xs text-ink-3">单文件 ≤ {model.mineru_limits.max_file_mb} MB，页数 ≤ {model.mineru_limits.max_pages} 页</p>}
+        <p className="text-xs text-ink-3">测试仅验证已保存配置的连接和鉴权，不保证任务解析成功、额度充足或内容可用。</p>
         <button type="button" className={buttonClass} disabled={disabled || dirty} onClick={() => void test('mineru')}>
           {busy === 'mineru' ? '测试中…' : '测试已保存配置'}
         </button>
