@@ -59,7 +59,7 @@ MathCraft/
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
 ├── tools/                    # API 文档生成等维护脚本
-│   └── ops_g0/               # 独立 SDK/Phoenix 合成验证与单独锁定依赖
+│   └── ops_g0/               # 独立 SDK/Phoenix 验证；显式授权后可做限额真实模型验收
 ├── compose.yaml              # 本地 Redis 容器
 ├── pyproject.toml            # 仓库级依赖与检查配置
 ├── openapi.json              # 当前接口契约
@@ -199,7 +199,7 @@ docker compose down             # 移除容器，保留数据卷
 
 ## 开发检查
 
-运维 A0/G0 独立准备使用单独环境与本机 Phoenix 6016 端口，不随应用启动、不调用真实模型；安装、认证配置生成和合成复现见 [工具说明](tools/ops_g0/README.md)。独立验证通过不代表实际业务 G0 通过。
+运维 A0/G0 独立准备使用单独环境与本机 Phoenix 6016 端口，不随应用启动，默认只用假模型；安装、认证配置生成、合成复现及显式授权的限额真实模型验收见 [工具说明](tools/ops_g0/README.md)。独立验证通过不代表实际业务 G0 通过。
 
 后端在 `backend/` 执行；测试使用临时 SQLite、进程内 fakeredis 和外部服务替身：
 

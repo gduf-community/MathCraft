@@ -6,6 +6,7 @@ Optional OTLP tests skip cleanly outside the separately locked preparation envir
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
 import json
@@ -57,6 +58,55 @@ class RedactionTests(unittest.TestCase):
         )
         self.assertNotIn("url-canary", clean_text("token%3Durl-canary"))
 
+    def test_truncated_json_and_quoted_values_do_not_leak_credentials(self) -> None:
+        samples = (
+            json.dumps({"password": "long-json-canary", "padding": "x" * 5000}),
+            '{"password":"partial-json-canary',
+            "request failed password='quoted secret canary'",
+            "-----BEGIN PRIVATE KEY-----\nprivate-key-canary\n"
+            + "x" * 5000
+            + "\n-----END PRIVATE KEY-----",
+        )
+        for sample in samples:
+            result = clean_text(sample)
+            for marker in (
+                "long-json-canary",
+                "partial-json-canary",
+                "quoted secret canary",
+                "private-key-canary",
+            ):
+                self.assertNotIn(marker, result)
+
+    def test_every_sensitive_field_is_redacted_even_in_truncated_json(self) -> None:
+        fields = (
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "secret",
+            "Authorization",
+            "Cookie",
+            "Set-Cookie",
+            "access_token",
+            "refresh_token",
+            "token",
+            "bearer",
+            "private_key",
+            "client_secret",
+            "api_token",
+        )
+        for field in fields:
+            marker = "long-field-canary-" + field
+            result = clean_text(json.dumps({field: marker, "padding": "x" * 5000}))
+            self.assertNotIn(marker, result, msg=field)
+
+    def test_truncated_escaped_nested_json_is_redacted_as_a_whole(self) -> None:
+        marker = "nested-escaped-canary"
+        nested = json.dumps({"api_key": marker})
+        sample = json.dumps([{"role": "user", "content": nested + "x" * 5000}])
+        self.assertNotIn(marker, clean_text(sample))
+        self.assertEqual(clean_text(sample), REDACTED)
+
     def test_auth_and_model_settings_bodies_are_excluded(self) -> None:
         for route in ("/api/auth/login/account", "/api/users/me/model-settings"):
             result = clean_value(
@@ -91,6 +141,7 @@ class BufferTests(unittest.TestCase):
         self.started = threading.Event()
         self.release = threading.Event()
         self.status = 200
+        self.response_body = b""
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -102,6 +153,8 @@ class BufferTests(unittest.TestCase):
                 owner.release.wait(2)
                 self.send_response(owner.status)
                 self.end_headers()
+                if owner.response_body:
+                    self.wfile.write(owner.response_body)
 
             def log_message(self, _format: str, *_args: object) -> None:
                 return
@@ -151,6 +204,41 @@ class BufferTests(unittest.TestCase):
         self.assertNotIn(b"buffer-canary", captured[0])
         self.assertIn(b"continuous", captured[0])
         self.assertEqual(buffer.snapshot()["exported"], 1)
+
+    def test_sensitive_http_body_attributes_are_excluded(self) -> None:
+        captured = []
+        buffer = self.buffer(capture=captured.append)
+        request = self.request()
+        span = request.resource_spans[0].scope_spans[0].spans[0]
+        route = span.attributes.add()
+        route.key, route.value.string_value = "http.route", "/api/auth/login/account"
+        for key in ("http.request.body", "http.response.body", "request", "response", "body"):
+            attr = span.attributes.add()
+            attr.key, attr.value.string_value = key, "arbitrary-sensitive-body-canary"
+        self.release.set()
+        buffer.submit(request)
+        self.assertTrue(buffer.flush(2))
+        self.assertTrue(buffer.close(1))
+        self.assertNotIn(b"arbitrary-sensitive-body-canary", captured[0])
+
+    def test_partial_otlp_rejection_is_failed_without_replaying_batch(self) -> None:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceResponse,
+        )
+
+        receipt = ExportTraceServiceResponse()
+        receipt.partial_success.rejected_spans = 1
+        receipt.partial_success.error_message = "synthetic response body canary"
+        self.response_body = receipt.SerializeToString()
+        self.release.set()
+        buffer = self.buffer(max_attempts=2)
+        buffer.submit(self.request())
+        self.assertTrue(buffer.flush(2))
+        self.assertTrue(buffer.close(1))
+        self.assertEqual(buffer.snapshot()["exported"], 0)
+        self.assertEqual(buffer.snapshot()["failed"], 1)
+        self.assertEqual(buffer.snapshot()["rejected_responses"], 1)
+        self.assertEqual(buffer.snapshot()["attempts"], 1)
 
     def test_full_buffer_drops_without_blocking_caller(self) -> None:
         buffer = self.buffer(capacity=1, timeout_seconds=1)
@@ -204,6 +292,17 @@ class BufferTests(unittest.TestCase):
         self.assertEqual(buffer.snapshot()["failed"], 1)
         self.assertLessEqual(buffer.snapshot()["attempts"], 2)
 
+    def test_repeated_close_preserves_first_deadline_and_reports_pending(self) -> None:
+        buffer = self.buffer(timeout_seconds=1)
+        buffer.submit(self.request())
+        self.assertTrue(self.started.wait(2))
+        self.assertFalse(buffer.close(0.01))
+        self.assertEqual(buffer.snapshot()["pending"], 1)
+        started = time.monotonic()
+        self.assertFalse(buffer.close(1))
+        self.assertLess(time.monotonic() - started, 0.3)
+        self.release.set()
+
     def test_disconnection_exhausts_finite_attempts(self) -> None:
         from tools.ops_g0.transport import LocalExportBuffer
 
@@ -249,6 +348,53 @@ class CleanupBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             delete_windows(client, "business-project", now - timedelta(days=4), now)
         client.request.assert_not_called()
+
+
+@unittest.skipUnless(OTLP_AVAILABLE, "Use the isolated tools/ops_g0 dependency environment")
+class ExportGuardTests(unittest.TestCase):
+    """Intercept both sync and async HTTP before transport or DNS, on Windows too."""
+
+    def test_sync_and_async_nonlocal_http_are_rejected(self) -> None:
+        import httpx
+        from tools.ops_g0.harness import local_connections_only
+
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200))
+        evidence = {"local_connections": 0, "nonlocal_attempts": 0}
+
+        async def async_attempt() -> None:
+            async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
+                with self.assertRaises(PermissionError):
+                    await client.get("https://api.openai.com/v1/traces")
+
+        with local_connections_only(evidence):
+            with httpx.Client(transport=transport, trust_env=False) as client:
+                with self.assertRaises(PermissionError):
+                    client.get("https://api.openai.com/v1/traces")
+            asyncio.run(async_attempt())
+        self.assertEqual(evidence["nonlocal_attempts"], 2)
+
+    def test_async_redirect_cannot_escape_loopback_guard(self) -> None:
+        import httpx
+        from tools.ops_g0.harness import local_connections_only
+
+        reached = []
+        evidence = {"local_connections": 0, "nonlocal_attempts": 0}
+
+        def redirect(request: httpx.Request) -> httpx.Response:
+            reached.append(request.url.host)
+            return httpx.Response(302, headers={"Location": "https://fixture.invalid/escape"})
+
+        async def attempt() -> None:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(redirect), trust_env=False, follow_redirects=True
+            ) as client:
+                with self.assertRaises(PermissionError):
+                    await client.get("http://127.0.0.1/start")
+
+        with local_connections_only(evidence):
+            asyncio.run(attempt())
+        self.assertEqual(reached, ["127.0.0.1"])
+        self.assertEqual(evidence["nonlocal_attempts"], 1)
 
     def test_cleanup_bounds_work_and_excludes_unexpired_window(self) -> None:
         from tools.ops_g0.phoenix import Phoenix

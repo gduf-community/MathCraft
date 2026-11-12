@@ -15,6 +15,8 @@ import socket
 import time
 from uuid import uuid4
 
+import httpx
+
 from agents import Agent, Runner, function_tool, trace
 from agents.exceptions import AgentsException
 from agents.items import ModelResponse, TResponseStreamEvent
@@ -58,8 +60,27 @@ class Case:
 
 @contextmanager
 def local_connections_only(evidence: dict[str, int]) -> Iterator[None]:
-    """Fail closed for every Python socket connection during the SDK exercise."""
+    """Guard sync sockets plus SDK HTTPX sync/async requests, including Windows Proactor."""
     original = socket.socket.connect
+    # The locked HTTPX 0.28.1 dispatch runs once per redirect hop. Public send()
+    # only sees the first URL, which is insufficient for async Windows sockets.
+    original_sync = httpx.Client._send_single_request
+    original_async = httpx.AsyncClient._send_single_request
+
+    def check_http(request: httpx.Request) -> None:
+        if request.url.scheme != "http" or request.url.host not in {"127.0.0.1", "::1"}:
+            evidence["nonlocal_attempts"] += 1
+            raise PermissionError("Synthetic harness prohibits nonlocal HTTP requests")
+
+    def send_sync(client: httpx.Client, request: httpx.Request, **kwargs: object) -> httpx.Response:
+        check_http(request)
+        return original_sync(client, request, **kwargs)
+
+    async def send_async(
+        client: httpx.AsyncClient, request: httpx.Request, **kwargs: object
+    ) -> httpx.Response:
+        check_http(request)
+        return await original_async(client, request, **kwargs)
 
     def guarded(connection: socket.socket, address: tuple) -> object:
         if not isinstance(address, tuple) or address[0] not in {"127.0.0.1", "::1"}:
@@ -69,10 +90,14 @@ def local_connections_only(evidence: dict[str, int]) -> Iterator[None]:
         return original(connection, address)
 
     socket.socket.connect = guarded
+    httpx.Client._send_single_request = send_sync
+    httpx.AsyncClient._send_single_request = send_async
     try:
         yield
     finally:
         socket.socket.connect = original
+        httpx.Client._send_single_request = original_sync
+        httpx.AsyncClient._send_single_request = original_async
 
 
 class SyntheticModel(Model):
@@ -187,7 +212,9 @@ async def exercise(case: Case) -> Case:
     return case
 
 
-def inspect_payloads(payloads: list[bytes], cases: list[Case]) -> list[dict]:
+def inspect_payloads(
+    payloads: list[bytes], cases: list[Case], *, require_thread_spans: bool = True
+) -> list[dict]:
     """Verify all roots, descendants and thread spans use the expected correlation."""
     records = []
     expected = {case.run_id: case for case in cases}
@@ -215,6 +242,7 @@ def inspect_payloads(payloads: list[bytes], cases: list[Case]) -> list[dict]:
                             "status_code": span.status.code,
                         }
                     )
+    trace_owners: dict[str, str] = {}
     for case in cases:
         spans = [item for item in records if item["run_id"] == case.run_id]
         roots = [item for item in spans if not item["parent_id"]]
@@ -223,8 +251,26 @@ def inspect_payloads(payloads: list[bytes], cases: list[Case]) -> list[dict]:
             item["parent_id"] not in ids for item in spans if item["parent_id"]
         ):
             raise AssertionError("Incomplete synthetic root/child relationship")
-        if case.outcome == "succeeded" and not any(
-            item["name"] == "synthetic_thread" for item in spans
+        root = roots[0]
+        trace_id = root["trace_id"]
+        if {span["trace_id"] for span in spans} != {trace_id}:
+            raise AssertionError("A run's child span belongs to a different trace")
+        if trace_id in trace_owners:
+            raise AssertionError("Different runs reused the same OTel trace")
+        trace_owners[trace_id] = case.run_id
+        parents = {span["span_id"]: span["parent_id"] for span in spans}
+        for span in spans:
+            identifier = span["span_id"]
+            visited: set[str] = set()
+            while identifier != root["span_id"]:
+                if identifier in visited or not parents.get(identifier):
+                    raise AssertionError("Span ancestry is cyclic or disconnected from the root")
+                visited.add(identifier)
+                identifier = parents[identifier]
+        if (
+            require_thread_spans
+            and case.outcome == "succeeded"
+            and not any(item["name"] == "synthetic_thread" for item in spans)
         ):
             raise AssertionError("Worker-thread span was not correlated")
     return records

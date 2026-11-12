@@ -22,9 +22,10 @@ _SECRET_KEYS = {
     "client_secret",
     "api_token",
 }
+_FIELD_PATTERN = "|".join(re.escape(key).replace("_", r"[_-]?") for key in sorted(_SECRET_KEYS))
 _ASSIGNMENT = re.compile(
-    r"(?i)\b(api[_-]?key|password|passwd|secret|access[_-]?token|refresh[_-]?token|"
-    r"client[_-]?secret|token)\s*([=:])\s*[^\s&;,\"'<>]+"
+    r"""(?i)(["']?(?:""" + _FIELD_PATTERN + r""")["']?)\s*([=:])\s*"""
+    r"""(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s&;,"'<>]+)"""
 )
 
 
@@ -43,12 +44,18 @@ def clean_text(value: str, limit: int = 4096) -> str:
         text = decoded
     try:
         parsed = json.loads(text)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
+        # OTel may already have truncated an attribute. Partial structured content
+        # (including escaped nested JSON) cannot be safely parsed field by field.
+        if text.lstrip().startswith(("{", "[", '"')) or r"\"" in text:
+            return REDACTED
         parsed = None
     if isinstance(parsed, (dict, list)):
         return json.dumps(clean_value(parsed), ensure_ascii=False, separators=(",", ":"))[:limit]
+    if isinstance(parsed, str) and parsed != text:
+        return clean_text(parsed, limit)
     text = re.sub(
-        r"-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----",
+        r"-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\n]*PRIVATE KEY-----|$)",
         REDACTED,
         text,
     )
