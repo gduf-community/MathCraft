@@ -40,7 +40,7 @@ G0 必须由真实 HTTP 入口、实际 SDK/业务事务和真实本地 Phoenix 
 | Pyright | 相同工作区布局下干净 agent 基线 42、当前 42，未新增诊断；不把原 main 目录的 15 项与隔离 agent 环境直接相减 |
 | 完整后端 | 769 passed、115 subtests passed，1176.10 秒；随后 close/submit 修复的受影响 tracing/transport/verifier 三模块 38 passed、21 subtests passed |
 | 实际业务 Phoenix | 最终矩阵 13/13 场景、432 个持久 span、563 条安全事件、62 次假模型 HTTP 请求，0 真实模型及未授权网络 |
-| 独立审查 | Standards / Spec 两个无编写上下文的审查者正在执行，待结果回填 |
+| 独立审查 | Standards / Spec 原范围及追加启动边界均通过；具体整改与独立复现见下节 |
 
 完整后端命令为 `.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider`，静态检查为 `ruff check --no-cache backend/app backend/tests tools/ops_g0` 及前端 Pyright。首轮全量曾有 9 项失败（8 项独立工具回环端口被统一禁网拒绝、1 项事件版本字段切换时的旧收集函数），定位后定向通过，最终完整重跑取得上述结果。最后停机竞态变更只复核受影响范围，不无理由重复整套。独立工具另用 unittest discovery；实际业务运行器不执行 pytest 自动模型替换。
 
@@ -69,7 +69,7 @@ Phoenix 授权实测无凭据 401、无效假 key 401、独立授权 200，没�
 
 ## 门禁与集成状态
 
-当前 G0 及分支集成待本轮最终证据；不得以测试数、ACK、Phoenix 在线或历史独立 harness 代替实际业务验收。G1 仍待 G0 和 agent 独立审查；G2/G3 未实现、未验收。
+**G0 与 agent 独立审查通过。** 实际 SDK HTTP 业务、Phoenix 持久读取、上下文/版本/两次事务、脱敏、本地单出口、导出故障恢复、独立授权及公开清理能力证据齐全；原业务与前端无新增回归。agent 通过后集成到本地 main；具体合并 SHA 及 G1 状态由后续冻结交接记录登记。G2/G3 未实现、未验收。
 
 ## 独立审查整改
 
@@ -80,4 +80,10 @@ Phoenix 授权实测无凭据 401、无效假 key 401、独立授权 200，没�
 | Standards | lifespan 的 finally 覆盖启动恢复失败；端口在线程创建前校验，意外发送错误结清队列；工具测试只放行自行绑定的数值回环端口；客户端构造/enter/exit 失败关闭准入并报告 unavailable；正常 close 与 submit 共用锁，防止空队列 worker 退出后接受孤立项目 |
 | Spec | OI 2.7 不转发 custom_span.data，改用上下文 metadata 继承 stage/attempt；审核异常放行保持业务原行为，但事实标 unknown 且不计 passed；G0 要求非根执行 AGENT 及所有 LLM 父链；并发与同会话多 run 改由真实 HTTP 登录和出题驱动 |
 
-最后 close/submit 修复在候选后新增，传输文件 SHA-256 为 `fbc78c42e1cbf75bc513177dc4238585bf77d7f1d4e1fc60e8fe4de29260e106`。Standards 的五项问题均已独立关闭；审查者在旧竞态暂停点重复 10 轮，放行后均 accepted=exported=1、pending=0，反向先关闭顺序也拒绝入队且无遗留线程。Spec 最终结论待回填。没有通过修改测试 Redis、添加真实模型调用或放宽外部网络来取得通过。
+最后 close/submit 修复在候选后新增，传输文件 SHA-256 为 `fbc78c42e1cbf75bc513177dc4238585bf77d7f1d4e1fc60e8fe4de29260e106`。Standards 的五项问题均已独立关闭；审查者在旧竞态暂停点重复 10 轮，放行后均 accepted=exported=1、pending=0，反向先关闭顺序也拒绝入队且无遗留线程。Spec 原四项均独立关闭。没有通过修改测试 Redis、添加真实模型调用或放宽外部网络来取得通过。
+
+Spec 追加发现 SDK 默认 provider 首次准备会构造云端 HTTPX 客户端，无效 `SSL_CERT_FILE` 会令追踪关闭时也启动失败。应用改为先直接安装空 `DefaultTraceProvider`，避免该惰性默认客户端；异常及退出清理只操作已保存引用。新进程实际 lifespan 在无效 CA 且禁止默认导出器构造的条件下验证启动/退出；provider 准备失败也不逃出 lifespan，SDK 受理前安全 unavailable。本地 exporter 故障仍不影响已可执行 SDK 的业务。
+
+该修复后重新执行完整实际 HTTP/Phoenix 矩阵，项目 `ops-g0-business-provider-final` 再次 PASSED：13 场景、432 span、563 安全事件、62 假请求、0 真实模型、0 失败/丢弃。最新安全报告 `.scratch/sdk-g0-tmp/business-evidence/ops-g0-business-provider-final.safe.json` 的 SHA-256 为 `6b61e7bbccc0a9c71ebdfa5f52872e24c09199cece8b629394df8cd7d628d314`；前述首次矩阵及故障/授权/清理报告保留作补充，不覆盖失败的历史尝试。
+
+最后 provider 修复由全新 Avicenna 复核 Standards，由 Beauvoir 独立验证 Spec：无效 CA 的实际 lifespan 连续启动/关闭两次；provider 构造或安装失败不逃出启动且受理前 503、无 accepted 事件，legacy 可用；OTLP 初始化或导出客户端失败仍各执行一次原生 SDK 假模型请求；正常路径仍有非根 Agent/LLM 且不导出正文。默认处理器构造次数均为零，两轴无剩余阻塞。修复后五模块 118 passed、21 subtests passed，随后新增的受理前 provider 不可用测试 1 passed；Pyright 仍为同布局基线 42 项，无新增。

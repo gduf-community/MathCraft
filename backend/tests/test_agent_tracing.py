@@ -1,6 +1,10 @@
 """真实 SDK/OI span 经生产白名单进入内存假传输，不连接服务。"""
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 from app.config import settings
 from app.services import agent_tracing
@@ -157,3 +161,64 @@ def test_startup_recovery_failure_still_closes_tracing(monkeypatch):
         with TestClient(app):
             pytest.fail("Startup failure must remain visible")
     assert lifecycle == ["opened", "closed"]
+
+
+def test_fresh_process_invalid_ca_never_constructs_default_exporter():
+    """首次初始化在无效 CA 环境下也不创建 SDK 默认导出器或阻止启动。"""
+    root = Path(__file__).resolve().parents[2]
+    code = '''
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("isolated_config", "backend/tests/conftest.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+from app.db import Base, engine
+Base.metadata.create_all(engine)
+from app.config import settings
+settings.agent_trace_enabled = False
+os.environ["SSL_CERT_FILE"] = str(Path(os.environ["TEMP"]) / "missing-sdk-ca" / "ca.pem")
+from agents.tracing import processors
+def forbidden():
+    raise AssertionError("default exporter must never be constructed")
+processors.default_processor = forbidden
+from app.main import app
+from app.services import agent_tracing
+from fastapi.testclient import TestClient
+with TestClient(app):
+    assert agent_tracing.snapshot()["status"] == "disabled"
+    assert agent_tracing.execution_provider_available()
+assert agent_tracing.snapshot()["status"] == "not_initialized"
+print("fresh_startup_and_shutdown_passed")
+'''
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code], cwd=root, env=os.environ.copy(),
+        capture_output=True, text=True, timeout=60,
+    )
+    # Do not echo subprocess output: it is an observation boundary as well.
+    assert result.returncode == 0
+    assert "fresh_startup_and_shutdown_passed" in result.stdout
+
+
+def test_sdk_provider_preparation_failure_does_not_escape_lifespan(monkeypatch, db):
+    """准备失败安全降级为不可用，退出不再次触发同一准备动作。"""
+    import agents.tracing
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.db import Base
+
+    Base.metadata.create_all(bind=db.get_bind())
+    agent_tracing.shutdown()
+    calls = []
+
+    def fail(_provider):
+        calls.append(1)
+        raise OSError("synthetic-provider-preparation-failure")
+
+    monkeypatch.setattr(agents.tracing, "set_trace_provider", fail)
+    with TestClient(app):
+        assert agent_tracing.snapshot()["status"] == "unavailable"
+        assert not agent_tracing.execution_provider_available()
+        assert agent_tracing.snapshot()["initialization_errors"] == 1
+    assert calls == [1]

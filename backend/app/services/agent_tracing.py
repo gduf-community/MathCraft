@@ -10,6 +10,7 @@ import threading
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from agents.tracing import TraceProvider
     from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
     from opentelemetry.sdk.trace import TracerProvider
 
@@ -39,6 +40,7 @@ class _TracingState:
     provider: "TracerProvider | None" = None
     instrumentor: "OpenAIAgentsInstrumentor | None" = None
     boundary_errors: int = 0
+    sdk_provider: "TraceProvider | None" = None
 
 
 _state = _TracingState()
@@ -76,24 +78,44 @@ def initialize() -> None:
         if not _has_module("agents"):
             _state.status = "unavailable"
             return
-        from agents.tracing import set_trace_processors
-
-        set_trace_processors([])
-        if not settings.agent_trace_enabled:
-            _state.status = "disabled"
-            return
-        if not settings.agent_trace_api_key:
-            _state.status = "unconfigured"
-            return
         try:
+            from agents.tracing import set_trace_provider
+            from agents.tracing.provider import DefaultTraceProvider
+
+            # SDK 0.20 lazily creates a cloud exporter inside get_trace_provider.
+            # Install an empty provider directly, before any tracing utility can
+            # request it. No default HTTP client or cloud processor is created.
+            provider = DefaultTraceProvider()
+            set_trace_provider(provider)
+            _state.sdk_provider = provider
+            if not settings.agent_trace_enabled:
+                _state.status = "disabled"
+                return
+            if not settings.agent_trace_api_key:
+                _state.status = "unconfigured"
+                return
             _initialize_exporter()
         except Exception:
             # 观测边界只记录安全分类；不打印配置、异常或响应正文。
             _state.status = "unavailable"
             _state.boundary_errors += 1
-            set_trace_processors([])
             _release_exporter()
+            _clear_sdk_processors()
             logger.warning("Agent tracing unavailable; business execution remains enabled")
+
+
+def execution_provider_available() -> bool:
+    """Confirm SDK execution cannot lazily restore the default cloud exporter."""
+    return _state.sdk_provider is not None
+
+
+def _clear_sdk_processors() -> None:
+    """Clear only our prepared provider, never instantiate a default one at exit."""
+    if _state.sdk_provider is not None:
+        try:
+            _state.sdk_provider.set_processors([])
+        except Exception:
+            _state.boundary_errors += 1
 
 
 def _initialize_exporter() -> None:
@@ -183,10 +205,7 @@ def shutdown() -> None:
     global _state
     with _lock:
         _release_exporter()
-        if _has_module("agents"):
-            from agents.tracing import set_trace_processors
-
-            set_trace_processors([])
+        _clear_sdk_processors()
         _state = _TracingState()
 
 

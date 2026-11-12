@@ -479,7 +479,20 @@ def test_standalone_sdk_initializes_tracing_before_model_execution(wire):
     wire.replies = [completion("ok")]
     assert llm.chat_text(MESSAGES) == "ok"
     assert agent_tracing.snapshot()["status"] == "disabled"
-    assert not processors._processors
+    assert get_trace_provider()._multi_processor is not processors
+    assert not get_trace_provider()._multi_processor._processors
+
+
+def test_unprepared_sdk_provider_rejects_without_model_request(wire, monkeypatch):
+    """执行 provider 无法准备时，拒绝受理而非恢复 SDK 默认云端出口。"""
+    from app.services import agent_tracing
+
+    monkeypatch.setattr(agent_tracing, "initialize", lambda: None)
+    with pytest.raises(AppError) as error:
+        llm.chat_text(MESSAGES)
+    assert error.value.status_code == 503
+    assert error.value.code == "AGENT_RUNTIME_UNAVAILABLE"
+    assert wire.requests == []
 
 
 @pytest.mark.parametrize("method", ["chat_json", "chat_text", "chat_stream"])

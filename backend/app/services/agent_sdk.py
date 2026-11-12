@@ -31,6 +31,8 @@ def prepare_runtime() -> None:
         from app.services import agent_tracing
 
         agent_tracing.initialize()
+        if not agent_tracing.execution_provider_available():
+            raise ImportError("SDK execution provider unavailable")
     except (ImportError, AttributeError) as exc:
         raise AppError(
             "AGENT_RUNTIME_UNAVAILABLE", "智能出题运行环境暂不可用，请稍后重试", 503,
