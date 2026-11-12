@@ -217,6 +217,8 @@ docker compose down             # 移除容器，保留数据卷
 - 登录按钮显示“认证配置不可用”：确认认证密钥已初始化，开发配置为 `APP_ENV=development`、`TURNSTILE_ENABLED=false`，按上述回环地址与 `--no-proxy-headers` 启动，然后重启后端、刷新页面。检查启动环境变量是否覆盖 `.env`。
 - 前端请求失败：确认后端 8000 端口和 Redis 均已启动；邮件、向量、OCR 等依赖的状态可从健康检查查看。
 - Chroma 在 Windows 报 `code 14`：核对启动进程的 `TEMP/TMP` 是否可写，处理步骤见 [后端说明](backend/README.md)。
+- 删除资料提示 `DATABASE_BUSY`：短暂写锁会自动有限重试；持续占锁时保留资料与原件，请稍后重试并检查其他写入进程。不要根据失败状态或零切片计数跳过索引清理，见 [删除与锁竞争说明](docs/design/知识库模块说明.md#删除写锁竞争修复2026-11-12)。
+- 删除资料的全文索引清理出现 `SQLITE_CANTOPEN / 14`：更新后重启后端以应用 SQLite 内存临时存储配置；数据库与 WAL 仍保存在磁盘。该错误与写锁竞争分别处理，见 [后端排错说明](backend/README.md#常见问题)。
 
 生产部署需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true` 并配置 Cloudflare 站点信息，关闭开发账号能力，配置持久化路径与备份。服务器通过 SSH 连接，部署前按 [后端迁移说明](backend/README.md#迁移与验证) 完成备份、迁移与审计。
 

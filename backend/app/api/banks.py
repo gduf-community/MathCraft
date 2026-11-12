@@ -103,13 +103,16 @@ def update_bank(
 
 
 @router.delete("/{bank_id}", status_code=204, responses={
-    503: {"model": ErrorResponse, "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试"},
+    503: {
+        "model": ErrorResponse,
+        "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
+    },
 })
 def delete_bank(
     access: BankAccess = Depends(require_bank_owner),
     db: Session = Depends(get_db),
 ):
-    bank_service.purge_bank(db, access.bank)
+    bank_service.purge_bank(db, access.bank, actor=access.user)
     return None
 
 

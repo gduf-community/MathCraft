@@ -171,7 +171,10 @@ def download_document(
 
 
 @router.delete("/documents/{document_id}", status_code=204, responses={
-    503: {"model": ErrorResponse, "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试"},
+    503: {
+        "model": ErrorResponse,
+        "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
+    },
 })
 def delete_document(
     document_id: str,
@@ -180,7 +183,7 @@ def delete_document(
 ):
     doc = _get_document(access.bank.id, document_id, db)
     try:
-        bank_service.purge_document(db, doc)
+        bank_service.purge_document(db, doc, actor=access.user)
     except vectorstore.VectorStoreError as exc:
         raise AppError("VECTOR_STORE_UNAVAILABLE", str(exc), status_code=503) from exc
     return None

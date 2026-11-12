@@ -2,6 +2,10 @@
 
 from types import SimpleNamespace
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
 
 import chromadb
 import httpx
@@ -12,13 +16,20 @@ from chromadb.errors import InternalError, NotFoundError
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 from redis.exceptions import ConnectionError as RedisConnectionError
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
+from app.db import Base, FTS_CREATE_SQL
+from app.deps import resolve_bank_access
+from app.errors import AppError
 from app.main import app as fastapi_app
-from app.models import Bank, BankMember, Document, DocumentChunk, RagSetting
+from app.models import Bank, BankMember, Document, DocumentChunk, RagSetting, User
 from app.services import banks, cache, documents, knowledge_simplify, mineru, rag_settings
 from app.services.rag import embeddings, vectorstore
 from app.services.rag.chunking import Chunk
 from app.services.rag_runtime import RuntimeConfig, RuntimeSnapshot, use_snapshot
+from app.services import rag_runtime
 from conftest import create_bank, upload_markdown
 
 _REAL_EMBED_TEXTS = embeddings.embed_texts
@@ -759,3 +770,311 @@ def test_download_contract_declares_binary_media_and_safe_errors():
         assert response[status]["content"]["application/json"]["schema"] == {
             "$ref": "#/components/schemas/ErrorResponse",
         }
+
+
+@pytest.fixture()
+def wal_delete_store(tmp_path, monkeypatch, document_store):
+    """独立真实 WAL，显式读事务复现快照升级竞争；向量边界保持离线。"""
+    engine = create_engine(f"sqlite:///{(tmp_path / 'delete.db').as_posix()}",
+                           connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def configure(connection, record):
+        connection.isolation_level = None
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=10")
+
+    @event.listens_for(engine, "begin")
+    def begin(connection):
+        connection.exec_driver_sql("BEGIN")
+
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    path = tmp_path / "failed.md"
+    path.write_bytes(b"fake document with stale chunks")
+    with sessions() as db:
+        db.add(User(id="wal_user", account="wal_teacher", password_hash="fake-hash",
+                    role="teacher", identity="教师", display_name="假教师"))
+        db.flush()
+        db.add(Bank(id="wal_bank", name="假题库", code="TK_WAL", creator_id="wal_user"))
+        db.flush()
+        db.add(BankMember(id="wal_member", bank_id="wal_bank", user_id="wal_user",
+                          role="creator"))
+        db.add(Document(id="wal_doc", bank_id="wal_bank", name="failed.md", format="MD",
+                        size_bytes=path.stat().st_size, storage_path=str(path),
+                        uploader_id="wal_user", status="failed", chunk_count=0))
+        db.flush()
+        db.add(DocumentChunk(id="wal_chunk", bank_id="wal_bank", document_id="wal_doc",
+                             chunk_index=0, text="导数", tokens="导数", char_count=2))
+        db.add(RagSetting(id=1, generation="before_warmup"))
+        db.execute(text(FTS_CREATE_SQL))
+        db.execute(text("INSERT INTO document_chunks_fts VALUES "
+                        "('wal_chunk', 'wal_bank', 'wal_doc', '导数')"))
+        db.commit()
+    monkeypatch.setattr(rag_runtime, "SessionLocal", sessions)
+    monkeypatch.setattr(vectorstore._client, "delete_collection", lambda **kwargs: None,
+                        raising=False)
+    try:
+        yield sessions, path
+    finally:
+        engine.dispose()
+
+
+def _wal_purge(sessions, scope):
+    with sessions() as db:
+        if scope == "document":
+            banks.purge_document(db, db.get(Document, "wal_doc"))
+        else:
+            banks.purge_bank(db, db.get(Bank, "wal_bank"))
+
+
+def _assert_wal_materials(sessions, path, *, deleted):
+    with sessions() as db:
+        assert (db.get(Document, "wal_doc") is None) is deleted
+        assert db.query(DocumentChunk).count() == (0 if deleted else 1)
+        assert db.execute(text("SELECT count(*) FROM document_chunks_fts")).scalar_one() == (
+            0 if deleted else 1
+        )
+    assert path.exists() is not deleted
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+def test_wal_delete_slow_initialization_allows_other_writer(
+    wal_delete_store, monkeypatch, scope,
+):
+    sessions, path = wal_delete_store
+    initializing, release = Event(), Event()
+    names = []
+    original_get = vectorstore.get_client
+    native = original_get()
+
+    def initialize(**kwargs):
+        initializing.set()
+        assert release.wait(5), "测试未释放慢初始化"
+        return native
+
+    def unexpected_session():
+        pytest.fail("删除必须使用写锁内配置快照，禁止新 SQLSession")
+
+    def record_collection(**kwargs):
+        names.append(kwargs["name"])
+        return SimpleNamespace(delete=lambda **kwargs: None)
+
+    monkeypatch.setattr(vectorstore, "_client", None)
+    monkeypatch.setattr(chromadb, "PersistentClient", initialize)
+    monkeypatch.setattr(native, "get_collection", record_collection)
+    monkeypatch.setattr(native, "delete_collection", record_collection)
+    monkeypatch.setattr(rag_runtime, "SessionLocal", unexpected_session)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        deletion = executor.submit(_wal_purge, sessions, scope)
+        try:
+            assert initializing.wait(5)
+            with sessions() as writer:
+                assert writer.execute(text("PRAGMA journal_mode")).scalar_one() == "wal"
+                writer.execute(text("UPDATE rag_settings SET generation='after_warmup'"))
+                writer.commit()
+        finally:
+            release.set()
+        deletion.result(timeout=5)
+    assert names == ["kb_wal_bank_after_warmup"]
+    _assert_wal_materials(sessions, path, deleted=True)
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+def test_wal_delete_retries_whole_transaction_after_short_write_lock(
+    wal_delete_store, scope,
+):
+    sessions, path = wal_delete_store
+    contended = Event()
+    engine = sessions.kw["bind"]
+
+    def locked(context):
+        if getattr(context.original_exception, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+            contended.set()
+
+    event.listen(engine, "handle_error", locked)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with sessions() as writer:
+                writer.execute(text("UPDATE rag_settings SET generation='after_lock'"))
+                deletion = executor.submit(_wal_purge, sessions, scope)
+                assert contended.wait(5), "未触发真实 SQLite 写锁竞争"
+                # 改掉旧读事务已读过的文件路径，重试必须重新加载对象。
+                replacement = path.with_name("replacement.md")
+                replacement.write_bytes(b"new current artifact")
+                writer.execute(text("UPDATE documents SET storage_path=:path"),
+                               {"path": str(replacement)})
+                writer.commit()
+            deletion.result(timeout=5)
+        assert path.exists()
+        _assert_wal_materials(sessions, replacement, deleted=True)
+    finally:
+        event.remove(engine, "handle_error", locked)
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+def test_wal_delete_busy_exhaustion_is_retryable_and_logs_safe_code(
+    wal_delete_store, caplog, scope,
+):
+    sessions, path = wal_delete_store
+    with sessions() as writer:
+        writer.execute(text("UPDATE rag_settings SET generation=:value"),
+                       {"value": "fake-private-sql-parameter"})
+        with pytest.raises(AppError) as error:
+            _wal_purge(sessions, scope)
+    assert error.value.code == "DATABASE_BUSY"
+    assert error.value.status_code == 503
+    assert "重试" in error.value.message
+    assert "stage=gate" in caplog.text
+    assert "type=OperationalError" in caplog.text
+    assert "code=5" in caplog.text
+    assert "INSERT INTO" not in caplog.text
+    assert "fake-private-sql-parameter" not in caplog.text
+    _assert_wal_materials(sessions, path, deleted=False)
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+def test_wal_delete_vector_failure_never_retries_sqlite_like_errors(
+    wal_delete_store, monkeypatch, scope,
+):
+    sessions, path = wal_delete_store
+    calls = []
+
+    def fail(**kwargs):
+        calls.append(scope)
+        raise InternalError("database (code: 5) fake-private-vector-error")
+
+    native = vectorstore.get_client()
+    target = native.get_collection() if scope == "document" else native
+    monkeypatch.setattr(target, "delete" if scope == "document" else "delete_collection", fail)
+    with pytest.raises(vectorstore.VectorStoreError):
+        _wal_purge(sessions, scope)
+    assert calls == [scope]
+    _assert_wal_materials(sessions, path, deleted=False)
+    with sessions() as db:
+        assert db.get(RagSetting, 1).mutation_epoch == 0
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+def test_wal_delete_failed_document_with_zero_count_cleans_real_chunks(
+    wal_delete_store, scope,
+):
+    sessions, path = wal_delete_store
+    _wal_purge(sessions, scope)
+    _assert_wal_materials(sessions, path, deleted=True)
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+@pytest.mark.parametrize("native_code", [sqlite3.SQLITE_IOERR, None])
+def test_wal_delete_nonbusy_commit_failure_does_not_retry(
+    wal_delete_store, monkeypatch, scope, native_code,
+):
+    sessions, path = wal_delete_store
+    calls = []
+    native = vectorstore.get_client()
+    target = native.get_collection() if scope == "document" else native
+    monkeypatch.setattr(target, "delete" if scope == "document" else "delete_collection",
+                        lambda **kwargs: calls.append(scope))
+    with sessions() as db:
+        def fail(session):
+            original = sqlite3.OperationalError("database is locked fake-private-sql")
+            if native_code is not None:
+                original.sqlite_errorcode = native_code
+            raise OperationalError("fake SQL", {"private": "fake-parameter"}, original)
+
+        event.listen(db, "before_commit", fail)
+        with pytest.raises(OperationalError):
+            if scope == "document":
+                banks.purge_document(db, db.get(Document, "wal_doc"))
+            else:
+                banks.purge_bank(db, db.get(Bank, "wal_bank"))
+    assert calls == [scope]
+    _assert_wal_materials(sessions, path, deleted=False)
+
+
+@pytest.mark.parametrize("scope", ["document", "bank"])
+def test_wal_delete_rebuild_busy_takes_priority_over_unavailable_chroma(
+    wal_delete_store, monkeypatch, scope,
+):
+    sessions, path = wal_delete_store
+    with sessions() as db:
+        db.get(RagSetting, 1).rebuild_status = "running"
+        db.commit()
+
+    def fail():
+        raise vectorstore.VectorStoreError("init", "InternalError", 14)
+
+    monkeypatch.setattr(vectorstore, "get_client", fail)
+    with pytest.raises(AppError) as error:
+        _wal_purge(sessions, scope)
+    assert error.value.code == "RAG_REBUILD_BUSY"
+    assert error.value.status_code == 409
+    _assert_wal_materials(sessions, path, deleted=False)
+
+
+@pytest.mark.parametrize(("scope", "revocation", "status", "code"), [
+    ("document", "removed", 404, "BANK_NOT_FOUND"),
+    ("document", "readonly", 403, "FORBIDDEN"),
+    ("bank", "transfer", 403, "FORBIDDEN"),
+    ("document", "auth_version", 401, "SESSION_REVOKED"),
+    ("bank", "auth_version", 401, "SESSION_REVOKED"),
+    ("document", "disabled", 401, "SESSION_REVOKED"),
+    ("bank", "disabled", 401, "SESSION_REVOKED"),
+])
+def test_wal_delete_rechecks_actor_after_write_lock_revocation(
+    wal_delete_store, monkeypatch, scope, revocation, status, code,
+):
+    """HTTP 已缓存的账号、题库和成员权限不能跨整事务重试沿用。"""
+    sessions, path = wal_delete_store
+    engine = sessions.kw["bind"]
+    contended = Event()
+    deleted = []
+    native = vectorstore.get_client()
+    monkeypatch.setattr(native.get_collection(), "delete", lambda **kwargs: deleted.append(scope))
+    monkeypatch.setattr(native, "delete_collection", lambda **kwargs: deleted.append(scope))
+
+    def locked(context):
+        if getattr(context.original_exception, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+            contended.set()
+
+    def delete_with_stale_access():
+        with sessions() as db:
+            actor = db.get(User, "wal_user")
+            access = resolve_bank_access(db, actor, "wal_bank")
+            if scope == "document":
+                banks.purge_document(db, db.get(Document, "wal_doc"), actor=actor)
+            else:
+                banks.purge_bank(db, access.bank, actor=actor)
+
+    event.listen(engine, "handle_error", locked)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with sessions() as writer:
+                writer.execute(text("UPDATE rag_settings SET mutation_epoch=mutation_epoch"))
+                deletion = executor.submit(delete_with_stale_access)
+                assert contended.wait(5), "未触发真实 SQLite 写锁竞争"
+                if revocation == "removed":
+                    writer.execute(text("DELETE FROM bank_members WHERE id='wal_member'"))
+                elif revocation == "readonly":
+                    writer.execute(text("UPDATE bank_members SET role='readonly'"))
+                elif revocation == "transfer":
+                    writer.add(User(id="wal_new_owner", account="wal_new_teacher",
+                                    password_hash="fake-hash", role="teacher", identity="教师",
+                                    display_name="新创建者"))
+                    writer.flush()
+                    writer.execute(text("UPDATE banks SET creator_id='wal_new_owner'"))
+                    writer.execute(text("UPDATE bank_members SET role='editor'"))
+                elif revocation == "auth_version":
+                    writer.execute(text("UPDATE users SET auth_version=auth_version+1"))
+                else:
+                    writer.execute(text("UPDATE users SET status='disabled'"))
+                writer.commit()
+            with pytest.raises(AppError) as error:
+                deletion.result(timeout=5)
+        assert error.value.status_code == status
+        assert error.value.code == code
+        assert deleted == []
+        _assert_wal_materials(sessions, path, deleted=False)
+    finally:
+        event.remove(engine, "handle_error", locked)

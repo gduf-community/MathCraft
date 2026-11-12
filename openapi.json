@@ -2102,7 +2102,7 @@
             "description": "Successful Response"
           },
           "503": {
-            "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试",
+            "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
             "content": {
               "application/json": {
                 "schema": {
@@ -2718,7 +2718,7 @@
             "description": "Successful Response"
           },
           "503": {
-            "description": "向量存储暂不可用；SQL 与原件保留，可稍后重试",
+            "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
             "content": {
               "application/json": {
                 "schema": {

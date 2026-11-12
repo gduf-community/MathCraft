@@ -43,10 +43,21 @@ def _lock_settings(db: Session) -> RagSetting:
     return row
 
 
-def assert_mutations_allowed(db: Session) -> None:
-    """在资料变更事务开始时调用；重建期间禁止上传、删除和重解析。"""
-    if _lock_settings(db).rebuild_status in BUSY_STATUSES:
+def _check_mutation_status(row: RagSetting | None) -> None:
+    if row is not None and row.rebuild_status in BUSY_STATUSES:
         raise AppError("RAG_REBUILD_BUSY", "系统正在重建索引，请稍后再修改题库资料", 409)
+
+
+def precheck_mutations_allowed(db: Session) -> None:
+    """只读预检保留重建忙碌错误的优先级；不代替后续写锁内门禁。"""
+    _check_mutation_status(db.get(RagSetting, 1, populate_existing=True))
+
+
+def assert_mutations_allowed(db: Session) -> RuntimeSnapshot:
+    """锁定资料变更门禁并返回锁内活动快照；重建期间拒绝资料变更。"""
+    row = _lock_settings(db)
+    _check_mutation_status(row)
+    return RuntimeSnapshot(decode_config(row.active_json), row.generation)
 
 
 def _assert_editable(row: RagSetting, revision: int) -> None:
