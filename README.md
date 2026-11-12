@@ -8,6 +8,8 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 文档支持 PDF、DOCX、XLSX、Markdown 和 TXT；扫描件通过 MinerU OCR 解析，检索采用向量与全文混合召回、重排，出题与批卷使用 DeepSeek。
 
+对话提供快速出题、创新命题、知识答疑和数据管理四模式。生成阶段在后端流式解析并校验题目，界面通过进度轮询等待审核后的结果；题目预览中勾选题目后可导出 Word，设置题型顺序、答案和解析的位置。
+
 ## 目录结构
 
 以下列出主要源码、配置与文档入口：
@@ -20,10 +22,14 @@ MathCraft/
 │   │   ├── main.py           # 应用入口 app.main:app
 │   │   ├── config.py         # 配置定义，读取 backend/.env
 │   │   ├── api/              # HTTP 与 WebSocket 接口
+│   │   │   └── export.py     # 登录用户提交题目并导出 Word
 │   │   ├── models/           # 数据库模型
 │   │   ├── schemas/          # 请求与响应契约
 │   │   └── services/         # 认证、文档、RAG、出题等业务服务
-│   │       └── rag/          # 检索、出题及四模式对话；intent、modes、qa、data_agent
+│   │       ├── export_docx.py # Word 排版与 LaTeX → MathML → OMML 公式转换
+│   │       └── rag/          # 检索、出题及四模式对话
+│   │           ├── skills.py # 显式模式的技能注册与执行上下文
+│   │           └── question_gen.py # 流式接收、滚动解析与题目校验
 │   ├── alembic/              # 数据库迁移
 │   ├── scripts/              # 认证密钥、管理员与开发账号初始化
 │   ├── tests/                # 后端测试
@@ -33,13 +39,15 @@ MathCraft/
 │   ├── src/                  # 页面、组件、API 与状态管理
 │   │   ├── api/              # 认证及业务 API 请求
 │   │   │   ├── adminOps.ts   # 运维 v1 真实请求适配；五个后端接口待实现
-│   │   │   └── adminOpsDemo.ts # 仅 DEV 显式启用的合成演示
+│   │   │   ├── adminOpsDemo.ts # 仅 DEV 显式启用的合成演示
+│   │   │   └── exportDocx.ts # 认证请求与 Word 文件下载
 │   │   ├── components/
 │   │   │   ├── auth/         # 历史登录视觉、手动身份选择与当前安全认证
 │   │   │   │   ├── AuthDialog.tsx # 邮箱登录与两种密码找回方式的独立弹窗
 │   │   │   │   └── LoginEmailBindingDialog.tsx # 临时认证后绑定邮箱，退出失败可重试
 │   │   │   ├── tabs/GenerateTab/ # 历史视觉恢复，保留四模式、图片与确认
 │   │   │   │   └── QuickPrompts.tsx # 恢复历史快捷提问，点击填入草稿
+│   │   │   ├── tabs/PreviewTab/ExportModal.tsx # 已选题目的 Word 导出设置
 │   │   │   ├── ui/ConfirmCard.tsx # 数据操作影响预览与确认
 │   │   │   ├── ui/SegmentedControl.tsx # 对话模式选择
 │   │   │   ├── ui/Toast.tsx # 全站共享提示；本轮仅恢复历史外观
@@ -69,6 +77,7 @@ MathCraft/
 │       ├── 运维后台三人实施分工方案.md # 三人职责、接口归属与交接顺序
 │       ├── 运维后台运行手册.md # 部署、值守、故障恢复与审计方案
 │       ├── 对话四模式与主线整合.md # 对话流程、确认范围与合并边界
+│       ├── 题目Word导出与公式呈现.md # 导出契约、公式转换与显示边界
 │       └── 登录视觉恢复与历史前端对照.md # 登录、agent 视觉基准与历史对照验收记录
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
@@ -123,6 +132,8 @@ if (-not (Test-Path app/local_secrets.py)) {
     Copy-Item app/local_secrets.example.py app/local_secrets.py
 }
 ```
+
+出题 JSON 修复依赖 `json-repair`，Word 导出依赖 `python-docx`、`latex2mathml` 和 `mathml2omml`，由上述 `uv sync` 安装。升级时需重新同步依赖；仓库根环境与后端独立环境分别由各自的 `pyproject.toml`、`uv.lock` 管理，使用哪个环境就同步哪个环境。导出在本地生成文档，无需模型调用或安装 Microsoft Word。
 
 初始化脚本在缺少 `backend/.env` 时从 `.env.example` 创建，生成两项独立的认证密钥；已有合法密钥会保留，且不会打印。随后用编辑器打开 `backend/.env`，确认以下配置：
 
@@ -228,7 +239,7 @@ docker compose down             # 移除容器，保留数据卷
 
 ## 开发检查
 
-后端在 `backend/` 执行；测试使用临时 SQLite、进程内 fakeredis 和外部服务替身：
+后端在 `backend/` 执行；测试使用临时 SQLite、进程内 fakeredis 和外部服务替身，夹具禁止外部网络，不连接或清空本机 Redis：
 
 ```powershell
 uv sync --group dev
@@ -248,6 +259,8 @@ npm run build
 - [后端说明](backend/README.md)、[前端说明](frontend/README.md)：各端开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
 - [四模式对话](docs/design/对话四模式与主线整合.md)：快速出题、创新命题、知识答疑和数据管理，包含图片及数据操作确认边界。
+- [出题审核](docs/design/出题审核中间件设计与实施记录.md)：后端流式生成、滚动校验、JSON 修复与审核边界。
+- [Word 导出与公式呈现](docs/design/题目Word导出与公式呈现.md)：预览页导出入口、`POST /api/export/docx`、公式转换及样式范围。
 - [登录视觉恢复与历史前端对照](docs/design/登录视觉恢复与历史前端对照.md)：紧凑主卡、独立认证弹窗、登录页绑定邮箱及历史对照；保留四模式／图片／确认，Toast 恢复旧样式。最终 build／typecheck、lint（0 错误／3 条既有警告）、完整认证 e2e、59 组整合及两项会话回归均通过。历史隔离预览独立验收记录保留，5174 对照已于 2026-11-12 结束停服，目录删除受阻；真机安全区与软键盘未验证。
 - [账号与权限设计](docs/design/账号系统整合与审查修复.md)、[模型配置说明](docs/design/模型配置来源与普通知识库流程.md)、[知识库说明](docs/design/知识库模块说明.md)：业务规则与能力边界。
 - [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)：面向方案评审与协作沟通，介绍系统目标、使用场景、功能模块和建设边界；文末列明代码实施必须参考的三份约定文档。

@@ -16,11 +16,12 @@ from app.services import cache
 from app.services.generation import persist_batch
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.rag import chat_flow, hyde
-from app.services.rag.chat_flow import ChatCanceled, build_result_reply, handle_chat, handle_creative
-from app.services.rag.data_agent import execute_confirmed, run_data_request
+from app.services.rag.chat_flow import ChatCanceled, build_result_reply
+from app.services.rag.data_agent import execute_confirmed
 from app.services.rag.intent import detect_intent
+from app.services.rag.llm import LLMError, friendly_error
 from app.services.rag.modes import DEFAULT_MODE, MODES, mode_label
-from app.services.rag.qa import answer_question
+from app.services.rag.skills import ChatContext, get_skill
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -237,67 +238,24 @@ def send_message(
     def _progress(percent: int, stage: str) -> None:
         _write_progress(r, s.id, percent, stage)
 
-    if session_mode == "qa":
-        try:
-            reply = answer_question(s.bank_id, s.document_id, body.message, history,
-                                    api_key=api_key, progress_cb=_progress)
-        except chat_flow.ChatCanceled:
-            reply = chat_flow.PAUSED_REPLY
-        except Exception as exc:  # noqa: BLE001
-            from app.services.rag.llm import LLMError, friendly_error
-
-            reply = friendly_error(exc) if isinstance(exc, LLMError) else "答疑服务异常，请稍后再试。"
-        result = _base_result(reply=reply, done=True)
-    elif session_mode == "data":
-        result = _base_result(**run_data_request(
-            db, user, body.message, api_key, session_id=s.id,
-        ))
-    elif session_mode == "creative":
-        try:
-            result = _base_result(**handle_creative(
-                s.bank_id, s.document_id, doc.name, body.message, history, slot_state,
-                existing_stems=body.existing_stems, api_key=api_key, hyde_text=hyde_text,
-                images=body.images,
-                progress_cb=lambda p, stage: _progress(p, stage),
-                cancel_check=lambda: _is_canceled(r, s.id),
-            ))
-        except ChatCanceled:
-            result = _base_result(reply=chat_flow.PAUSED_REPLY)
-        except Exception as exc:  # noqa: BLE001
-            from app.services.rag.llm import LLMError, friendly_error
-
-            if not isinstance(exc, LLMError):
-                raise
-            result = _base_result(reply=friendly_error(exc))
-    else:
-        try:
-            result = _base_result(**handle_chat(
-                s.bank_id,
-                s.document_id,
-                doc.name,
-                body.message,
-                history,
-                slot_state,
-                existing_stems=body.existing_stems,
-                api_key=api_key,
-                hyde_text=hyde_text,
-                images=body.images,
-                progress_cb=lambda p, stage: _progress(p, stage),
-                cancel_check=lambda: _is_canceled(r, s.id),
-            ))
-        except ChatCanceled:
-            result = _base_result(reply=chat_flow.PAUSED_REPLY)
-        except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
-            result = _base_result(
-                reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
-            )
-        except Exception as exc:  # noqa: BLE001
-            # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
-            from app.services.rag.llm import LLMError, friendly_error
-
-            if not isinstance(exc, LLMError):
-                raise
-            result = _base_result(reply=friendly_error(exc))
+    # Router+Skill 分发：显式模式直接查表进入对应技能，Router 统一兜底可恢复异常
+    skill = get_skill(session_mode)
+    ctx = ChatContext(
+        db=db, user=user, session=s, doc_name=doc.name, message=body.message,
+        history=history, slot_state=slot_state, existing_stems=body.existing_stems,
+        api_key=api_key, hyde_text=hyde_text, images=body.images,
+        progress_cb=_progress, cancel_check=lambda: _is_canceled(r, s.id),
+    )
+    try:
+        result = _base_result(**skill.run(ctx))
+    except ChatCanceled:
+        result = _base_result(reply=chat_flow.PAUSED_REPLY)
+    except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
+        result = _base_result(
+            reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
+        )
+    except LLMError as exc:  # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
+        result = _base_result(reply=friendly_error(exc))
 
     if switch_prefix:
         result["reply"] = switch_prefix + (result["reply"] or "")

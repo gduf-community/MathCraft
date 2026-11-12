@@ -29,6 +29,7 @@ from app.api import (
     banks,
     chat,
     documents,
+    export,
     favorites,
     generate,
     health,
@@ -94,6 +95,7 @@ app.include_router(documents.router)
 app.include_router(generate.router)
 app.include_router(questions.router)
 app.include_router(favorites.router)
+app.include_router(export.router)
 app.include_router(chat.router)
 app.include_router(spaces.router)
 app.include_router(papers.router)

@@ -2942,11 +2942,11 @@ wheels = [
 
 [[package]]
 name = "json-repair"
-version = "0.64.5"
+version = "0.64.9"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c5/f4/e0aa506c013f0e1e29682bcc49158d18a8a712b25cd813ea8f5c199023e6/json_repair-0.64.5.tar.gz", hash = "sha256:572e14a470647e6dda03f527ab39c7c12d1861da86f26651324aba925eb963ff", size = 54519, upload-time = "2026-11-05T04:35:43.398Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/2b/537bf1dab1c058bfb2287662bf6c10de0c3907570781ccc0fc56878e39a7/json_repair-0.64.9.tar.gz", hash = "sha256:0e7e02e1c04d14b3677f97d13a8ff6b473cacb07b7111857c4202721b14efdc2", size = 56686, upload-time = "2026-11-10T04:29:13.966Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/ce/8a38b162fec75a2cf39c58a627c8311ac8f5e223d40e02555c6d223868db/json_repair-0.64.5-py3-none-any.whl", hash = "sha256:877dced415865e088ac5f08c5a3a09f598b63108d988b2f5c13c002b31bae0de", size = 52691, upload-time = "2026-11-05T04:35:41.916Z" },
+    { url = "https://files.pythonhosted.org/packages/40/1c/b38f71c1b4e859e10568336d8fbb271170150033c3a9d02b3e126b500828/json_repair-0.64.9-py3-none-any.whl", hash = "sha256:531c7d429db82731f3c9811157c025599a2ef620823c56d9143bab0b5ad97930", size = 54891, upload-time = "2026-11-10T04:29:12.575Z" },
 ]
 
 [[package]]
@@ -3880,10 +3880,12 @@ dependencies = [
     { name = "jinja2" },
     { name = "json-repair" },
     { name = "jsonschema" },
+    { name = "latex2mathml" },
     { name = "llama-index" },
     { name = "llama-index-retrievers-bm25", marker = "python_full_version < '3.14'" },
     { name = "llama-index-vector-stores-faiss" },
     { name = "loguru" },
+    { name = "mathml2omml" },
     { name = "nest-asyncio" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -3991,8 +3993,9 @@ requires-dist = [
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1.0,<3.0.0" },
     { name = "jieba", specifier = ">=0.42" },
     { name = "jinja2", specifier = ">=3.1.0" },
-    { name = "json-repair", specifier = ">=0.57.0,<1.0.0" },
+    { name = "json-repair", specifier = ">=0.64.9,<1.0.0" },
     { name = "jsonschema", specifier = ">=4.20.0,<5.0.0" },
+    { name = "latex2mathml", specifier = ">=3.81.1" },
     { name = "lightrag-hku", marker = "extra == 'rag-lightrag'", specifier = "==1.5.7" },
     { name = "liteparse", marker = "extra == 'parse-liteparse'", specifier = ">=2.14.2" },
     { name = "llama-index", specifier = ">=0.14.12" },
@@ -4007,6 +4010,7 @@ requires-dist = [
     { name = "mathcraft", extras = ["parse-pymupdf4llm"], marker = "extra == 'parse'" },
     { name = "mathcraft", extras = ["rag-lightrag"], marker = "extra == 'engines'" },
     { name = "mathcraft", extras = ["rag-rerank"], marker = "extra == 'engines'" },
+    { name = "mathml2omml", specifier = ">=0.0.2" },
     { name = "nest-asyncio", specifier = ">=1.5.8" },
     { name = "numpy", specifier = ">=1.24.0,<3.0.0" },
     { name = "oauth-cli-kit", specifier = ">=0.1.1" },
@@ -4047,6 +4051,15 @@ requires-dist = [
     { name = "websockets", specifier = ">=12.0" },
 ]
 provides-extras = ["codebuddy", "parse-markitdown", "parse-docling", "parse-pymupdf4llm", "parse-liteparse", "parse", "graphrag", "rag-lightrag", "rag-rerank", "engines", "dev"]
+
+[[package]]
+name = "mathml2omml"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/0c/8ce3a89839fb263fb9b66e291c9419adcdb57f214c7ca7c9a5d1b28ac4ba/mathml2omml-0.0.2.tar.gz", hash = "sha256:c67b289cd09208c4b6f3c4f74653f6d86edfd8fff4c18e6c95a7afa9994e7323", size = 23280, upload-time = "2019-11-24T07:30:53.556Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/c9/0359d7975900d26e30c39d0058828cc1f787ae75171866112aa7e4ce4c76/mathml2omml-0.0.2-py3-none-any.whl", hash = "sha256:6a2a1a10e90d7d8a672a1b37b6b49a6187e6720439aeb922949d254bb4656f25", size = 23853, upload-time = "2019-11-24T07:30:51.486Z" },
+]
 
 [[package]]
 name = "mcp"
