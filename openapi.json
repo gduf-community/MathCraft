@@ -1425,7 +1425,8 @@
         "tags": [
           "users"
         ],
-        "summary": "Test Mineru",
+        "summary": "测试 MinerU 连接与鉴权（不验证文件解析）",
+        "description": "只读验证已保存 MinerU 配置的连接与鉴权，不验证额度或实际文件解析。\n\n严格校验 HTTP、JSON 与业务状态，仅将明确成功或官方找不到探测任务视为通过。",
         "operationId": "test_mineru_api_users_me_model_settings_test_mineru_post",
         "parameters": [
           {

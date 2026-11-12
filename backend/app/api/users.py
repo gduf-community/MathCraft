@@ -143,8 +143,12 @@ def test_deepseek(user: User = Depends(get_current_user), db: Session = Depends(
     return {"ok": True, "model": settings.deepseek_display_name, "reply": (reply or "")[:32]}
 
 
-@router.post("/model-settings/test-mineru")
+@router.post("/model-settings/test-mineru", summary="测试 MinerU 连接与鉴权（不验证文件解析）")
 def test_mineru(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """只读验证已保存 MinerU 配置的连接与鉴权，不验证额度或实际文件解析。
+
+    严格校验 HTTP、JSON 与业务状态，仅将明确成功或官方找不到探测任务视为通过。
+    """
     from app.services import mineru
 
     token = get_effective_mineru_token(db, user.id)
@@ -152,7 +156,7 @@ def test_mineru(user: User = Depends(get_current_user), db: Session = Depends(ge
         raise AppError("MINERU_TOKEN_MISSING", "请先填写 MinerU Token", status_code=400)
     ok, detail = mineru.ping_token(token)
     if not ok:
-        raise AppError("LLM_ERROR", f"MinerU Token 无效：{detail}", status_code=400)
+        raise AppError("LLM_ERROR", f"MinerU 连接测试失败：{detail}", status_code=400)
     return {"ok": True, "limits": MINERU_LIMITS}
 
 

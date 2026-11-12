@@ -173,6 +173,20 @@ def _ocr_failure(exc: Exception) -> tuple[str, str]:
     seen: set[int] = set()
     while cause is not None and id(cause) not in seen:
         seen.add(id(cause))
+        if isinstance(cause, mineru.MinerUError) and (
+            cause.operation != "request" or cause.provider_code is not None
+            or cause.http_status is not None or cause.reason != "response"
+        ):
+            code = "OCR_RESPONSE"
+            if cause.http_status in (401, 403) or cause.provider_code in ("A0202", "A0211"):
+                code = "OCR_AUTHENTICATION"
+            elif cause.http_status == 429 or cause.provider_code in ("-60009", "-60018"):
+                code = "OCR_RATE_LIMIT"
+            elif cause.reason == "timeout" or cause.http_status in (408, 504):
+                code = "OCR_TIMEOUT"
+            elif cause.reason == "connection":
+                code = "OCR_CONNECTION"
+            return code, cause.diagnostic()
         if isinstance(cause, PermissionError):
             return "OCR_PERMISSION", "OCR 解析失败：访问权限不足，请联系管理员检查文件与服务权限"
         if isinstance(cause, httpx.HTTPStatusError):
@@ -284,7 +298,8 @@ def run_ingestion(
                         _set_stage(db, doc, "chunking", "OCR 完成，正在生成简化知识点文档", 45, ocr_status="done", text_source="ocr")
                     except mineru.MinerUError as exc:
                         code, message = _ocr_failure(exc)
-                        logger.warning("Ingestion failure type=%s code=%s", type(exc).__name__, code)
+                        logger.warning("Ingestion failure document=%s type=%s code=%s detail=%s",
+                                       doc.id, type(exc).__name__, code, message)
                         _fail(db, doc, message, ocr_error=message)
                         return
 
@@ -424,7 +439,8 @@ def run_ingestion(
                 else:
                     code = "INGEST_FAILED"
                     message = "文档处理失败，请检查文件格式与内容后重新解析；仍失败请联系管理员"
-                logger.warning("Ingestion failure type=%s code=%s", type(exc).__name__, code)
+                logger.warning("Ingestion failure document=%s type=%s code=%s detail=%s",
+                               document_id, type(exc).__name__, code, message)
                 _fail(db, failed_doc, message)
         except Exception as failure:
             logger.warning("Ingestion failure type=%s code=INGEST_FAILURE_PERSIST_FAILED",

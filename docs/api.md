@@ -197,7 +197,7 @@
 | `GET` | `/api/users/me/model-settings` | Read Model Settings |
 | `PUT` | `/api/users/me/model-settings` | Save Model Settings |
 | `POST` | `/api/users/me/model-settings/test-deepseek` | Test Deepseek |
-| `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
+| `POST` | `/api/users/me/model-settings/test-mineru` | 测试 MinerU 连接与鉴权（不验证文件解析） |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
 共 109 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
