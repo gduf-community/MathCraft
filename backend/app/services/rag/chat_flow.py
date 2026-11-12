@@ -1,6 +1,7 @@
 """对话出题编排：槽位抽取 → 缺失追问 → 齐备生成（含 HyDE + 混合检索）。"""
 from typing import Callable
 
+from app.services import generation_observation as observation
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
 from app.services.rag.question_gen import NeedConfirmError, generate_questions
 from app.services.rag.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
@@ -51,6 +52,7 @@ def build_result_reply(actual: int, requested: int, stats=None) -> str:
 
 def _guard(cancel_check: CancelCheck | None) -> None:
     if cancel_check and cancel_check():
+        observation.mark_outcome("cancelled")
         raise ChatCanceled
 
 
@@ -83,6 +85,7 @@ def handle_chat(
     _guard(cancel_check)
     params, scope = build_params(state, bank_id, document_id)
     requested = sum(t.count for t in params.types)
+    observation.start_conversation_run(hyde_available=bool(hyde_text))
     report(8, f"已确定 {requested} 道题，开始检索知识点")
 
     def gen_progress(percent: int, stage: str) -> None:
@@ -103,6 +106,7 @@ def handle_chat(
             progress_cb=gen_progress,
         )
     except NeedConfirmError as exc:
+        observation.mark_outcome("needs_confirmation")
         # 询问后清掉来源模式槽位，引导用户重新选择；题型数量保留
         state.pop("source_mode", None)
         return {
@@ -180,6 +184,7 @@ def handle_creative(
     directive = CREATIVE_SYSTEM_EXTRA
     if state.get("image_note"):
         directive += f"\n参考图片的题型说明：{state['image_note']}"
+    observation.start_conversation_run(hyde_available=bool(hyde_text))
     report(8, "正在构思创新题")
 
     def gen_progress(percent: int, stage: str) -> None:

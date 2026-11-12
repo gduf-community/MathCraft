@@ -23,6 +23,10 @@ MathCraft/
 │   │   ├── models/           # 数据库模型
 │   │   ├── schemas/          # 请求与响应契约
 │   │   └── services/         # 认证、文档、RAG、出题等业务服务
+│   │       ├── agent_sdk.py # 出题的单次 SDK 模型执行与同步流适配
+│   │       ├── generation_observation.py # 请求内业务事实与线程上下文
+│   │       ├── agent_tracing.py # 追踪生命周期与安全字段白名单
+│   │       └── agent_telemetry/ # 应用与 G0 工具共用的本地有界脱敏导出
 │   │       └── rag/          # 检索、出题及四模式对话；intent、modes、qa、data_agent
 │   ├── alembic/              # 数据库迁移
 │   ├── scripts/              # 认证密钥、管理员与开发账号初始化
@@ -73,6 +77,7 @@ MathCraft/
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
 ├── tools/                    # API 文档生成等维护脚本
+│   └── ops_g0/               # 假模型、真实本地 Phoenix 的独立 G0 验收工具
 ├── compose.yaml              # 本地 Redis 容器
 ├── pyproject.toml            # 仓库级依赖与检查配置
 ├── openapi.json              # 当前接口契约
@@ -117,7 +122,7 @@ docker compose exec redis redis-cli ping
 
 ```powershell
 cd backend
-uv sync
+uv sync --extra sdk-agent
 uv run python scripts/init_auth_secrets.py
 if (-not (Test-Path app/local_secrets.py)) {
     Copy-Item app/local_secrets.example.py app/local_secrets.py
@@ -238,6 +243,9 @@ npm run build
 ```
 
 ## 文档入口
+
+- [Agent 开发指南](docs/design/Agent开发指南.md)：固定业务编排、SDK 单次模型执行、线程上下文、提交边界、回退与本地验收；实际门禁状态见配套 G0 记录。
+- [SDK 接入与 G0 验收](docs/design/SDKAgent接入与G0验收.md)：记录 `agent` 开发基线、独立审查、假模型与真实本地 Phoenix 的业务验收、安全证据及集成状态。
 
 - [后端说明](backend/README.md)、[前端说明](frontend/README.md)：各端开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。

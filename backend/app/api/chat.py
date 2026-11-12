@@ -11,8 +11,10 @@ from app.errors import AppError
 from app.models import ChatMessage, ChatSession, Document, User
 from app.models.base import new_id, utcnow
 from app.schemas.api import ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody
+from app.schemas.auth import ErrorResponse
 from app.schemas.question import Question
 from app.services import cache
+from app.services import generation_observation as observation
 from app.services.generation import persist_batch
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.rag import chat_flow, hyde
@@ -104,7 +106,9 @@ def get_session(
     }
 
 
-@router.post("/sessions/{session_id}/messages")
+@router.post("/sessions/{session_id}/messages", responses={
+    503: {"model": ErrorResponse, "description": "实际出题所需的 SDK 执行环境暂不可用"},
+})
 def send_message(
     session_id: str,
     body: ChatMessageBody,
@@ -246,78 +250,88 @@ def send_message(
         api_key=api_key, hyde_text=hyde_text, images=body.images,
         progress_cb=_progress, cancel_check=lambda: _is_canceled(r, s.id),
     )
-    try:
-        result = _base_result(**skill.run(ctx))
-    except ChatCanceled:
-        result = _base_result(reply=chat_flow.PAUSED_REPLY)
-    except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
-        result = _base_result(
-            reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
-        )
-    except LLMError as exc:  # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
-        result = _base_result(reply=friendly_error(exc))
-
-    if switch_prefix:
-        result["reply"] = switch_prefix + (result["reply"] or "")
-
-    # 持久化消息
-    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
-    batch_id = None
-    if result["questions"]:
-        questions = [Question.model_validate(q) for q in result["questions"]]
-        from app.services.generation import build_params_from_slots
-
-        params = build_params_from_slots(result["slot_state"], s.bank_id, s.document_id)
-        requested = sum(t.count for t in params.types)
-        from app.services import question_review
-
-        def review_progress(percent: int, stage: str) -> None:
-            if _is_canceled(r, s.id):
-                raise ChatCanceled
-            # 审核阶段自报 78~98，直接透传，避免长时间停在同一个数字上像卡死
-            _write_progress(r, s.id, min(99, max(78, percent)), stage)
-
+    with observation.conversation_scope(user.id, s.id):
         try:
-            questions, stats = question_review.review_questions(
-                db, user.id, questions, params, doc.name, api_key, hyde_text,
-                progress=review_progress,
-            )
+            result = _base_result(**skill.run(ctx))
         except ChatCanceled:
-            result["reply"] = chat_flow.PAUSED_REPLY
-            result["questions"] = []
-            questions, stats = [], None
-        if _is_canceled(r, s.id):
-            result["reply"] = chat_flow.PAUSED_REPLY
-            result["questions"] = []
-            questions = []
-        if questions:
-            _write_progress(r, s.id, 98, "正在写入题目")
-            batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions)
-            batch_id = batch.id
-        result["questions"] = [q.model_dump() for q in questions]
-        result["reply"] = build_result_reply(len(questions), requested, stats)
-    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=result["reply"], batch_id=batch_id))
-    s.slot_state_json = json.dumps(result["slot_state"], ensure_ascii=False)
-    s.last_message_at = utcnow()
-    db.commit()
+            observation.mark_outcome("cancelled")
+            result = _base_result(reply=chat_flow.PAUSED_REPLY)
+        except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
+            observation.mark_outcome("needs_confirmation")
+            result = _base_result(
+                reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
+            )
+        except LLMError as exc:  # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
+            observation.mark_outcome("failed")
+            result = _base_result(reply=friendly_error(exc))
 
-    # Redis 保存最新槽位
-    r.hset(_slot_key(s.id), mapping={"slot_state": json.dumps(result["slot_state"], ensure_ascii=False)})
-    r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
-    r.delete(_progress_key(s.id), _cancel_key(s.id))
+        if switch_prefix:
+            result["reply"] = switch_prefix + (result["reply"] or "")
 
-    return {
-        "reply": result["reply"],
-        "slot_state": result["slot_state"],
-        "questions": result["questions"],
-        "done": result["done"],
-        "batch_id": batch_id,
-        "kind": result.get("kind", "reply"),
-        "mode": result.get("mode", session_mode),
-        "mode_changed": result.get("mode_changed", mode_changed),
-        "suggested_template": result.get("suggested_template"),
-        "confirm": result.get("confirm"),
-    }
+        # 持久化消息
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
+        batch_id = None
+        if result["questions"]:
+            questions = [Question.model_validate(q) for q in result["questions"]]
+            from app.services.generation import build_params_from_slots
+
+            params = build_params_from_slots(result["slot_state"], s.bank_id, s.document_id)
+            requested = sum(t.count for t in params.types)
+            from app.services import question_review
+
+            def review_progress(percent: int, stage: str) -> None:
+                if _is_canceled(r, s.id):
+                    observation.mark_outcome("cancelled")
+                    raise ChatCanceled
+                # 审核阶段自报 78~98，直接透传，避免长时间停在同一个数字上像卡死
+                _write_progress(r, s.id, min(99, max(78, percent)), stage)
+
+            try:
+                questions, stats = question_review.review_questions(
+                    db, user.id, questions, params, doc.name, api_key, hyde_text,
+                    progress=review_progress,
+                )
+            except ChatCanceled:
+                observation.mark_outcome("cancelled")
+                result["reply"] = chat_flow.PAUSED_REPLY
+                result["questions"] = []
+                questions, stats = [], None
+            if _is_canceled(r, s.id):
+                observation.mark_outcome("cancelled")
+                result["reply"] = chat_flow.PAUSED_REPLY
+                result["questions"] = []
+                questions = []
+            if questions:
+                _write_progress(r, s.id, 98, "正在写入题目")
+                batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions)
+                batch_id = batch.id
+            result["questions"] = [q.model_dump() for q in questions]
+            result["reply"] = build_result_reply(len(questions), requested, stats)
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=result["reply"], batch_id=batch_id))
+        s.slot_state_json = json.dumps(result["slot_state"], ensure_ascii=False)
+        s.last_message_at = utcnow()
+        with observation.delivery("assistant_reply", question_count=len(result["questions"])):
+            db.commit()
+        if batch_id is not None:
+            observation.emit("conversation.linked")
+
+        # Redis 保存最新槽位
+        r.hset(_slot_key(s.id), mapping={"slot_state": json.dumps(result["slot_state"], ensure_ascii=False)})
+        r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
+        r.delete(_progress_key(s.id), _cancel_key(s.id))
+
+        return {
+            "reply": result["reply"],
+            "slot_state": result["slot_state"],
+            "questions": result["questions"],
+            "done": result["done"],
+            "batch_id": batch_id,
+            "kind": result.get("kind", "reply"),
+            "mode": result.get("mode", session_mode),
+            "mode_changed": result.get("mode_changed", mode_changed),
+            "suggested_template": result.get("suggested_template"),
+            "confirm": result.get("confirm"),
+        }
 
 
 @router.post("/sessions/{session_id}/confirm")

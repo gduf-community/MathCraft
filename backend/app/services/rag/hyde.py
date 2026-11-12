@@ -10,6 +10,7 @@ import hashlib
 import redis
 
 from app.services import cache
+from app.services import generation_observation as observation
 from app.services.rag import llm
 from app.services.rag.prompts import HYDE_SYSTEM, HYDE_USER_TEMPLATE
 
@@ -21,6 +22,7 @@ def _digest(bank_id: str, document_id: str, scope: str, difficulty: str) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+@observation.observed_stage("hyde.generate")
 def generate_hyde(scope: str, api_key: str | None) -> str | None:
     try:
         text = llm.chat_text(
@@ -35,9 +37,11 @@ def generate_hyde(scope: str, api_key: str | None) -> str | None:
         )
         return text.strip() or None
     except Exception:
+        observation.degradation("hyde_unavailable")
         return None
 
 
+@observation.observed_stage("hyde")
 def get_hyde(
     r: redis.Redis,
     bank_id: str,

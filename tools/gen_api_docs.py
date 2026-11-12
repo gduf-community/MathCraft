@@ -45,6 +45,11 @@ def main() -> int:
         "对话支持快速出题、创新命题、知识答疑和数据管理四种模式；",
         "图片与数据操作确认的契约和边界见",
         "[四模式对话与主线整合](design/对话四模式与主线整合.md)。\n\n",
+        "出题默认使用可选 SDK Agent；执行环境缺失在受理前返回 ",
+        "`503 AGENT_RUNTIME_UNAVAILABLE`，配置及兼容约束见 ",
+        "[Agent 开发指南](design/Agent开发指南.md)。",
+        "计划中的五个运维查询接口尚未注册；冻结包与交接状态见 ",
+        "[运维接口与联调契约](design/运维后台接口与联调契约.md)。\n\n",
     ]
     for tag, rows in groups.items():
         parts.append(f"## {tag}\n\n| 方法 | 路径 | 说明 |\n| --- | --- | --- |\n")

@@ -1,0 +1,72 @@
+# SDK Agent 接入与实际业务 G0 验收
+
+日期：2026-11-13。开发目标分支为长期 `agent`，修改前基线为 `05cc44d65d456f12733a0e8a7dccb3b24f3c35ff`；原本地 `main` 为 `4fa87d7490ea359cf1be4dba743f3419db04ebf7`。只有完成独立审查及实际 G0 后才集成到本地 main，不推送。
+
+## 目标、范围和验收标准
+
+保留固定检索、出题、审核、修补、重出及最终求解，只替换已受理出题中的单次模型执行。SDK 执行、业务编排及安全观测分别由 `agent_sdk.py`、原 RAG/审核模块和 `generation_observation.py` / `agent_tracing.py` 承担。接口及扩展方法见 [Agent 开发指南](Agent开发指南.md)。
+
+`GENERATION_LLM_BACKEND=sdk|legacy` 在受理时固定。SDK 使用 Agent → Runner → OpenAIChatCompletionsModel，单轮、无工具/handoff/session，HTTP 和 SDK 重试均为零；原业务允许的 JSON 修复、预算升级及 thinking 参数回退仍由原调用位置决定。缺执行依赖为安全 503；追踪缺配置、导出失败或满队列均不得改变业务结果。
+
+事件只由注入的内存收集器保留，不在应用中积累生产事件列表。每个 run 固定账号、入口、会话/任务和 SDK trace ID；逐工作项传播上下文。异步受理先记录 accepted，后台执行记录 started/ended。题目事务成功后产生 batch 及逐题版本事实，助手回复事务及关联单独记录。取消请求不构造权威终态；审核异常放行仍为 unknown。
+
+本轮不增加五个 ops 路由、运维 SQL、持久事件幂等、周期心跳、告警及清理调度。G1 冻结这些模块的契约，G2 实现，G3 负责贯通验收。
+
+G0 必须由真实 HTTP 入口、实际 SDK/业务事务和真实本地 Phoenix 的独立读取共同支持。模型提供方底层使用 HTTPX MockTransport；检索/嵌入允许合成替身，不请求真实模型。还须核对正文排除、单一本地出口、并发归属、模型失败、审核降级、取消、两次事务、导出故障/恢复、缓冲满和真实公开删除能力。
+
+## 运行环境与安全证据
+
+- SDK `0.20.0`、OpenInference adapter `2.7.0`、OTel `1.45.2`、OpenAI `2.54.0`、HTTPX `0.28.1`；根/后端 `sdk-agent` 可选组及锁文件同步。
+- 独立 Phoenix `21.0.0`，镜像 digest `sha256:b5bcec3455bd5c431f52737fc62046c081752b483e3fff40c63f40783736bcad`。
+- 本轮专用容器 `mathcraft-ops-business-g0-20261113`，仅宿主回环 `127.0.0.1:6026`，限制 2 CPU、2 GiB，运行时抽样约 471.4 MiB / 3.90% CPU；抽样不是峰值承诺。
+- 忽略目录 `D:/vscode project/math_agent/deeptutor_and_mathcraft/MathCraft/.scratch/ops-business-g0-20261113/` 保存独立凭据、数据及安全证据，报告不得复制凭据值。旧 6016 实例和他人数据不参与本轮操作。
+- 生产导出先按安全属性白名单排除任意正文、事件正文和原异常，再复用已审查的脱敏/有界传输。仅允许数值回环 HTTP `/v1/traces`。初始化只执行一次，首 trace 前替换默认处理器链。
+
+正文保留采用已选定的公开 REST 时间窗删除机制，目标 3 天、每日一次、24 小时窗口、每次最多 8 个窗口。隔离 `ops-g0-retention-sdk20261113a` 项目实际删除两条四天前根/子 span，保留两条当前对照，重复删除安全；证据为上述目录的 `retention-sdk20261113a.json`。原生到期设为 maxDays=0，避免双调度。本轮只验证能力，正式调度、持久游标、迟到 span 和活动摘要保护由乙/M8 在 G2/G3 落地。
+
+## 检查记录
+
+测试环境使用临时 SQLite、每测试独立进程内 FakeRedis，禁止外部模型网络并注入假秘密模块。Windows 默认临时目录不可写会造成 Chroma code 14；本轮仅对测试进程设置 TEMP/TMP/SQLITE_TMPDIR 到 D 盘 `.scratch/sdk-g0-tmp`，没有修改机器 ACL、真实配置或业务数据。
+
+| 范围 | 已取得结果 |
+| --- | --- |
+| 原生成/对话/审核/模式/权限基线 | 80 passed；此前 11 项环境失败在可写 TEMP 下全部消失 |
+| SDK 单次执行及资源清理 | 56 passed，实际原生 SDK + 假 HTTP transport |
+| 联合兼容回归 | 158 passed；包含 SDK、tracing、观测及原业务，最后受理字段修正另有 29 passed 覆盖 |
+| 最后受理/事件/原生成接口 | 29 passed，其中观测 21 项、生成 8 项 |
+| 独立 G0 工具 | 40 passed，无跳过；实际 HTTP harness 安全测试另 3 passed |
+| 前端 | typecheck/lint/build 通过；0 错误、3 条原有 lint 警告和原有大分包提示；59 组整合、2 组管理面板、23 组 ops 浏览器回归通过；ops 内含 174 项扩展断言、28 次页面/宽度溢出检查，0 意外请求及未处理异常 |
+| Ruff | 新增/修改范围通过；全库仅既有 `test_banks.py:73 F841` |
+| Pyright | 相同工作区布局下干净 agent 基线 42、当前 42，未新增诊断；不把原 main 目录的 15 项与隔离 agent 环境直接相减 |
+| 完整后端 | 正在执行，待结果回填 |
+| 实际业务 Phoenix | 最终矩阵 13/13 场景、432 个持久 span、563 条安全事件、62 次假模型 HTTP 请求，0 真实模型及未授权网络 |
+| 独立审查 | Standards / Spec 两个无编写上下文的审查者正在执行，待结果回填 |
+
+完整后端命令为 `.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider`，静态检查为 `ruff check --no-cache backend/app backend/tests tools/ops_g0` 及前端 Pyright。独立工具使用 unittest discovery，避免 pytest 自动夹具把 SDK 模型层替换掉。实际业务命令、独立存储结果和审查整改将在完成后写入下一节。
+
+## 实际业务与故障证据索引
+
+实际入口命令为 `.venv/Scripts/python.exe -B -X utf8 -m tools.ops_g0.business --home <隔离目录> --base-url http://127.0.0.1:6026 --label ops-g0-business-final`。在 HTTPX 的模型 transport 层打桩，实际经过 HTTP 登录、生成/对话接口、原生 SDK、审核/修补/重出/求解及 SQLite commit；检索、embedding、rerank 为假服务，就绪文档由夹具预置，不把文档入库纳入本轮声明。
+
+最终项目 `ops-g0-business-final-33173f4b` 有 13 个根、56 个非根执行 AGENT、56 个 LLM，全部 LLM 父链经过非根执行 AGENT。192 个业务阶段、3 次重出尝试的事件配对、持久 span 锚点及继承元数据核对通过。两名教师各自通过 HTTP 登录并发生成，provider barrier 确认重叠，账号、run、root、batch 均分别不同；同一真实会话两条连续消息的 run/root/batch 不同，两次助手回复关联提交均核对通过。
+
+矩阵还覆盖同步/异步、模型失败、审核异常放行、快速/创新命题、修补重出求解、执行确认取消、第一次成果 commit 成功而第二次回复关联 commit 失败，以及恢复后的新样本。accepted=exported=独立读取 span 数=432，failed/dropped/boundary_errors/rejected_responses/pending 均为零。安全 verifier 的 6 项反例测试通过，拒绝把根 AGENT 算成执行 Agent、LLM 绕过执行 Agent，以及 stage/attempt 元数据缺失或错配。
+
+同一生产 buffer 的停机/满队列/恢复另行验收：before/outage/recovery 三次同步 HTTP 均 200 且批次成功；停机样本耗时 0.226 秒（假模型条件）。1024 个合成压力 span 令队列达到上限 64；停机后累计 failed=115、dropped=942、pending=0，恢复后累计 exported 从 37 增至 69，前后 69 个 control span 独立可读。没有重建 buffer，没有增加模型重试；13 次模型请求均为假 transport。
+
+Phoenix 授权实测无凭据 401、无效假 key 401、独立授权 200，没有复用 MathCraft Cookie。公开清理的过期/未过期与重复对照见上节；逐 trace 访问授权审计尚待 G2，真实前端正文入口仍关闭。
+
+安全报告留在被忽略目录，提交中仅保存索引和 SHA-256，不纳入临时账号、配置、SQLite、追踪数据或凭据：
+
+| 证据文件（相对原工作区） | SHA-256 |
+| --- | --- |
+| `.scratch/sdk-g0-tmp/business-evidence/ops-g0-business-final-33173f4b.safe.json` | `65e69494088d17d90083d1c5f2065f83e4a908b76f4836ac5a16c16917d1de68` |
+| `.scratch/ops-business-g0-20261113/export-faults-c.safe.json` | `101de34db0152c5964e05471955e6a0b32d738a72fe39f33f6f5e34df139d8c0` |
+| `.scratch/ops-business-g0-20261113/authorization.safe.json` | `e884a39771fe7cfff1fdd6eeaeb840676dc5fd27847098f5159dde2a0c2059f1` |
+| `.scratch/ops-business-g0-20261113/retention-sdk20261113a.json` | `ed4063be6a7f8c2f677d93f9dd7188d5638168a49903c722b4fb01311f12eea9` |
+
+前端仅修正回归脚本的两个历史登录按钮 locator，产品界面及请求契约保持原结构。runtime OpenAPI 新增三处安全 unavailable 503 声明；完整重新生成同时补齐旧静态契约遗漏、但运行时已经存在的 Word 导出等 schema，没有引入对应新功能。五个 ops 路径仍未注册。
+
+## 门禁与集成状态
+
+当前 G0 及分支集成待本轮最终证据；不得以测试数、ACK、Phoenix 在线或历史独立 harness 代替实际业务验收。G1 仍待 G0 和 agent 独立审查；G2/G3 未实现、未验收。

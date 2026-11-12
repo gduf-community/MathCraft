@@ -10,9 +10,7 @@
 
 对话支持快速出题、创新命题、知识答疑和数据管理四种模式；图片与数据操作确认的契约和边界见[四模式对话与主线整合](design/对话四模式与主线整合.md)。
 
-运维五个 `/api/admin/ops/*` 接口仍待实现，不属于当前 OpenAPI。设计字段、采集接点及题目版本／审核范围见[运维联调契约](design/运维后台接口与联调契约.md)，接口负责人见[三人实施分工方案](design/运维后台三人实施分工方案.md)，部署和值守见[运行手册](design/运维后台运行手册.md)；G0／G1／G3 尚未通过，本轮仅更新说明入口。
-
-2026-11-12 前端已先行补全可选自监控、每题最终版本／审核范围证据、详情重出配置及告警指引／配置，准确字段见[联调契约第 1.2 节](design/运维后台接口与联调契约.md#12-2026-11-12-前端先行扩展待-g1-冻结)。新增前端及合成交互已完成，新增前端检查及独立复审已通过；真实授权审计和后端联调待完成。真实 async openTrace 固定 not_integrated，正文入口关闭；本次未新增后端或审计 API，未修改／重新生成 OpenAPI 或本文件的接口正文。
+出题默认使用可选 SDK Agent；执行环境缺失在受理前返回 `503 AGENT_RUNTIME_UNAVAILABLE`，配置及兼容约束见 [Agent 开发指南](design/Agent开发指南.md)。计划中的五个运维查询接口尚未注册；冻结包与交接状态见 [运维接口与联调契约](design/运维后台接口与联调契约.md)。
 
 ## admin
 
@@ -94,6 +92,12 @@
 | `POST` | `/api/chat/sessions/{session_id}/confirm` | Confirm Operation |
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
 | `GET` | `/api/chat/sessions/{session_id}/progress` | Read Generation Progress |
+
+## export
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/export/docx` | Export Docx |
 
 ## favorites
 
@@ -198,4 +202,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | Test Mineru |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 109 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 110 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。

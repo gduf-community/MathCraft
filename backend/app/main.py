@@ -42,33 +42,40 @@ from app.api import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # 确保 jieba 词典在服务启动时构建完成，避免首个请求卡顿
-    tokenizer.tokenize("预热")
-    # 收尾上次进程退出时中断的入库任务，避免文档永久停在「正在识别」
-    from app.db import SessionLocal
-    from app.models import Document
-    from app.services.rag_settings import recover_interrupted_rebuild
+    from app.services import agent_tracing
 
-    recover_interrupted_rebuild()
-
-    db = SessionLocal()
     try:
-        stuck = (
-            db.query(Document)
-            .filter(Document.status.in_(("uploaded", "parsing", "ocr", "chunking", "embedding")))
-            .all()
-        )
-        for doc in stuck:
-            doc.status = "failed"
-            doc.stage = "服务重启，任务已中断"
-            doc.error_message = "服务重启导致任务中断，请重新解析"
-        if stuck:
-            db.commit()
-    except Exception:
-        db.rollback()
+        agent_tracing.initialize()
+        # 确保 jieba 词典在服务启动时构建完成，避免首个请求卡顿
+        tokenizer.tokenize("预热")
+        # 收尾上次进程退出时中断的入库任务，避免文档永久停在「正在识别」
+        from app.db import SessionLocal
+        from app.models import Document
+        from app.services.rag_settings import recover_interrupted_rebuild
+
+        recover_interrupted_rebuild()
+
+        db = SessionLocal()
+        try:
+            stuck = (
+                db.query(Document)
+                .filter(Document.status.in_(("uploaded", "parsing", "ocr", "chunking", "embedding")))
+                .all()
+            )
+            for doc in stuck:
+                doc.status = "failed"
+                doc.stage = "服务重启，任务已中断"
+                doc.error_message = "服务重启导致任务中断，请重新解析"
+            if stuck:
+                db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        yield
     finally:
-        db.close()
-    yield
+        # 有界等待仅发生在停机；正常出题响应从不等待导出。
+        agent_tracing.shutdown()
 
 
 app = FastAPI(title="MathCraft Backend", version="0.2.0", lifespan=lifespan)

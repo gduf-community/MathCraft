@@ -17,6 +17,7 @@ import logging
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 
 import json_repair
@@ -25,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.services import generation_observation as observation
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import SOLVE_SYSTEM
 from app.services.rag_runtime import with_snapshot
@@ -193,6 +195,7 @@ def load_corpus(db: Session, user_id: str, bank_id: str) -> list[str]:
 
 
 @with_snapshot
+@observation.observed_stage("review.deduplication")
 def _drop_duplicates(
     questions: list[Question], corpus: list[str]
 ) -> tuple[list[Question], list[Question]]:
@@ -204,6 +207,7 @@ def _drop_duplicates(
         try:
             corpus_vecs = embeddings.embed_texts(corpus)
         except Exception as exc:  # 向量服务不可用时跳过查重，不阻断出题
+            observation.degradation("corpus_embeddings_unavailable")
             logger.warning("查重跳过（向量服务不可用）：%s", exc)
             corpus_vecs = []
     else:
@@ -211,6 +215,7 @@ def _drop_duplicates(
     try:
         fresh_vecs = embeddings.embed_texts([q.stem for q in questions])
     except Exception as exc:
+        observation.degradation("question_embeddings_unavailable")
         logger.warning("查重跳过（题目向量化失败）：%s", exc)
         return questions, []
 
@@ -338,6 +343,7 @@ def parse_review(data: dict, target: Difficulty) -> dict:
     }
 
 
+@observation.observed_stage("review.judge")
 def _judge_once(question: Question, target: Difficulty, scope: str, api_key: str | None) -> dict | None:
     prompt = (
         EVAL_PROMPT.replace("__TARGET__", target.value)
@@ -347,10 +353,16 @@ def _judge_once(question: Question, target: Difficulty, scope: str, api_key: str
     try:
         data = _chat_json_low([{"role": "user", "content": prompt}], api_key)
         review = parse_review(data, target)
+        observation.emit(
+            "review.judge", question_id=question.id,
+            question_revision_id=observation.observe_question(question, "review"),
+            scope="stem", review_kind="difficulty", passed=bool(review["passed"]),
+        )
         if target in (Difficulty.high, Difficulty.hell) and len(review["methods"]) < 2:
             logger.info("高难题目评审未给出两种解法，按分数继续判定")
         return review
     except Exception as exc:  # noqa: BLE001
+        observation.degradation("blind_review_unavailable")
         logger.warning("盲评失败：%s", exc)
         return None
 
@@ -385,6 +397,7 @@ def _merge_reviews(reviews: list[dict]) -> dict:
     }
 
 
+@observation.observed_stage("review.evaluate")
 def evaluate(
     question: Question, target: Difficulty, scope: str, api_key: str | None, judges: int = 2
 ) -> dict:
@@ -393,9 +406,11 @@ def evaluate(
     修补后的复评只需要确认修补是否到位，用单评即可，省一半调用。
     """
     judges = max(1, judges)
+    observation.observe_question(question, "review")
     with ThreadPoolExecutor(max_workers=judges, thread_name_prefix="review-judge") as pool:
         futures = [
-            pool.submit(_judge_once, question, target, scope, api_key) for _ in range(judges)
+            pool.submit(copy_context().run, _judge_once, question, target, scope, api_key)
+            for _ in range(judges)
         ]
         first = [f.result() for f in futures]
     valid = [r for r in first if r]
@@ -414,6 +429,9 @@ def evaluate(
 
 
 def _apply_review(question: Question, review: dict) -> None:
+    observation.record_review(
+        question, passed=bool(review.get("passed")), unknown=bool(review.get("unknown")),
+    )
     question.difficultyScore = float(review.get("total") or 0.0)
     question.difficultyReview = {
         key: review.get(key)
@@ -426,10 +444,12 @@ def _apply_review(question: Question, review: dict) -> None:
 # ---------------- 缺陷修复与换模板重出 ----------------
 
 
+@observation.observed_stage("review.repair")
 def _repair(
     question: Question, review: dict, target: Difficulty, api_key: str | None
 ) -> Question | None:
     """按缺陷码做最小修补，保持题型与考点不变。"""
+    observation.observe_question(question, "pre_repair")
     payload = {
         "type": question.type.value,
         "score": question.score,
@@ -454,6 +474,7 @@ def _repair(
         item = data.get("question") if isinstance(data.get("question"), dict) else data
         fixed = Question.model_validate(item)
     except Exception as exc:  # noqa: BLE001
+        observation.degradation("repair_unavailable")
         logger.warning("修补失败：%s", exc)
         return None
     fixed.id = question.id
@@ -462,9 +483,11 @@ def _repair(
     fixed.knowledgePoint = fixed.knowledgePoint or question.knowledgePoint
     if not fixed.options and question.options:
         fixed.options = question.options
+    observation.observe_question(fixed, "repair")
     return fixed
 
 
+@observation.observed_stage("review.regenerate")
 def _regen(
     params: GenerateParams,
     qtype: QuestionType,
@@ -525,6 +548,7 @@ _TYPE_CN = {"single": "单选题", "multiple": "多选题", "judge": "判断题"
             "blank": "填空题", "compute": "计算题", "essay": "简答题"}
 
 
+@observation.observed_stage("solve.question")
 def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | None:
     """独立解题（JSON 输出）：answer 与 analysis 来自同一次求解，保证两者一致。"""
     options = "\n".join(f"{o.label}. {o.text}" for o in question.options) if question.options else "（无选项）"
@@ -551,6 +575,7 @@ def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | Non
     return answer, analysis
 
 
+@observation.observed_stage("solve")
 def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStats) -> None:
     if not questions:
         return
@@ -559,20 +584,25 @@ def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStat
         try:
             return q, _solve_one(q, api_key)
         except Exception as exc:
+            observation.degradation("solve_unavailable")
             logger.warning("解析生成失败：%s", exc)
             return q, None
 
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-solve") as pool:
-        for question, result in pool.map(run, questions):
+        for question, result in observation.map_in_context(pool, run, questions):
             if result is None:
+                observation.degradation("solve_missing_result")
                 continue
             answer, analysis = result
+            observation.observe_question(question, "pre_solve")
             if answer:
                 question.answer = answer
             question.analysis = analysis
+            observation.observe_question(question, "solve")
             stats.solved += 1
 
 
+@observation.observed_stage("review")
 def review_questions(
     db: Session,
     user_id: str,
@@ -622,7 +652,9 @@ def review_questions(
         accepted: list[Question] = []
         rejected: list[tuple[Question, dict]] = []
         with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-eval") as pool:
-            reviewed = list(pool.map(lambda q: (q, evaluate(q, target, scope, api_key)), kept))
+            reviewed = list(observation.map_in_context(
+                pool, lambda q: (q, evaluate(q, target, scope, api_key)), kept,
+            ))
         for question, review in reviewed:
             _apply_review(question, review)
             if review.get("unknown"):
@@ -639,10 +671,13 @@ def review_questions(
             report(86, f"难度不符，正在按缺陷修补（{len(rejected)} 题）")
             batch = rejected[:need]
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-fix") as pool:
-                fixed = list(pool.map(lambda item: _repair(item[0], item[1], target, api_key), batch))
+                fixed = list(observation.map_in_context(
+                    pool, lambda item: _repair(item[0], item[1], target, api_key), batch,
+                ))
             still: list[tuple[Question, dict]] = []
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval") as pool:
-                reeval = list(pool.map(
+                reeval = list(observation.map_in_context(
+                    pool,
                     lambda q: (q, evaluate(q, target, scope, api_key, judges=1)) if q else (None, None),
                     fixed,
                 ))
@@ -673,7 +708,12 @@ def review_questions(
             if rejected and rejected[0][1].get("suggestion"):
                 directive += f"\n- 评审建议：{rejected[0][1]['suggestion']}"
             try:
-                fresh = _regen(params, qtype, need, doc_name, avoid, api_key, hyde_text, directive)
+                with observation.regeneration_attempt(
+                    "review_shortfall", question_type=qtype.value,
+                    requested_count=need, round=attempt + 1,
+                ) as attempt_id:
+                    fresh = _regen(params, qtype, need, doc_name, avoid, api_key, hyde_text, directive)
+                    observation.emit("regen.result", attempt_id=attempt_id, question_count=len(fresh))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("换模板重出失败（%s）：%s", qtype.value, exc)
                 break
@@ -684,7 +724,8 @@ def review_questions(
                 # 整批被判重，换一轮再来
                 continue
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval2") as pool:
-                reviewed_fresh = list(pool.map(
+                reviewed_fresh = list(observation.map_in_context(
+                    pool,
                     lambda q: (q, evaluate(q, target, scope, api_key)), fresh
                 ))
             for question, review in reviewed_fresh:
@@ -697,6 +738,7 @@ def review_questions(
         # 两轮仍未达标：按距离目标档中心最近的补齐，保证题目数量
         need = target_count - len(accepted)
         if need > 0 and rejected:
+            observation.degradation("review_nearest_fallback")
             rejected.sort(key=lambda item: _delta(item[0].difficultyScore or 0.0, target))
             accepted.extend(question for question, _review in rejected[:need])
 

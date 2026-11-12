@@ -13,7 +13,11 @@ backend/
 │   ├── models/          # 数据库模型
 │   ├── schemas/         # 请求与响应契约
 │   └── services/        # 认证、文档、RAG 与教学业务
-│       └── rag/         # 检索与四模式对话；intent、modes、qa、data_agent
+│       ├── rag/         # 检索与四模式对话；intent、modes、qa、data_agent
+│       ├── agent_sdk.py # 出题的单次 SDK 执行与同步流适配
+│       ├── generation_observation.py # 请求内运行、阶段、版本和提交后事实
+│       ├── agent_tracing.py # 可选追踪生命周期与安全字段白名单
+│       └── agent_telemetry/ # 本地单出口、有界缓冲和脱敏
 ├── alembic/             # 数据库迁移
 ├── scripts/             # 认证密钥、管理员及迁移审计工具
 ├── tests/               # 后端测试与外部服务替身
@@ -43,7 +47,7 @@ docker compose exec redis redis-cli ping
 
 ```powershell
 cd backend
-uv sync
+uv sync --extra sdk-agent
 uv run python scripts/init_auth_secrets.py
 if (-not (Test-Path app/local_secrets.py)) {
     Copy-Item app/local_secrets.example.py app/local_secrets.py
@@ -64,6 +68,10 @@ if (-not (Test-Path app/local_secrets.py)) {
 | `CHROMA_DIR`、`UPLOAD_DIR`、`OCR_DIR`、`AVATAR_DIR` | 默认位于 `backend/data/`，可改为持久化绝对路径 |
 
 配置以 [app/config.py](app/config.py) 为准，环境变量优先于固定位置的 `backend/.env`。SQLite 相对路径按启动工作目录解析，其他存储目录相对路径以 `backend/` 为基准。修改配置后重启服务。
+
+实际出题默认 `GENERATION_LLM_BACKEND=sdk`，缺少可选安装组时受理前返回 `503 AGENT_RUNTIME_UNAVAILABLE`。显式设置 `GENERATION_LLM_BACKEND=legacy` 并重启，可恢复原单次模型执行器；普通答疑、未完成槽位和数据管理保持现有执行方式。一次已开始的运行固定其选择，不在失败后自动切换。
+
+追踪默认关闭。受控本地 Phoenix 可配置 `AGENT_TRACE_ENABLED=true`、`AGENT_TRACE_ENDPOINT=http://127.0.0.1:6026/v1/traces`、`AGENT_TRACE_PROJECT=mathcraft-agent` 和独立 `AGENT_TRACE_API_KEY`。密钥通过环境或忽略的配置注入，不写入代码。仅允许 HTTP 回环地址及固定 `/v1/traces` 路径；正文及原始异常不进入应用追踪出口。队列默认 64 项、单批最多 8 项、单项最多 256 KiB、最多 2 次导出尝试、单次超时 0.5 秒；故障和满队列计数后有界丢弃，不增加模型调用或阻塞请求等待 flush。SDK、适配器和 OTLP 版本见锁文件及 [Agent 开发指南](../docs/design/Agent开发指南.md)。
 
 DeepSeek 与 MinerU 个人凭据在应用“设置 → 模型与服务”保存；嵌入、重排模型与凭据由管理员在“模型与检索”维护。部署默认值及优先级见 [模型配置说明](../docs/design/模型配置来源与普通知识库流程.md)。
 
@@ -136,6 +144,8 @@ uv run ruff check app tests
 测试使用临时 SQLite、每测试独立 fakeredis 和假 SMTP、Turnstile、模型服务，不连接或清空本机 Redis。接口变更后同步根 `openapi.json` 和 [API 文档](../docs/api.md)，生成命令见 [协作约定](../AGENTS.md)。
 
 ## 相关文档
+
+- [Agent 开发指南](../docs/design/Agent开发指南.md)：SDK 执行、业务与观测的边界、扩展方法、假模型验证及本地 Phoenix 验收。
 
 - [根 README](../README.md)、[前端说明](../frontend/README.md)：项目介绍与前后端启动。
 - [API 文档](../docs/api.md)、[OpenAPI 契约](../openapi.json)：完整接口。
