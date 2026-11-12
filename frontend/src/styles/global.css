@@ -102,12 +102,32 @@ input[type="number"] {
   appearance: textfield;
 }
 
-/* KaTeX 公式与正文对齐 */
+/* KaTeX 公式与正文对齐：默认字号与正文一致，避免公式在题干选项中视觉突出 */
 .katex {
-  font-size: 1.1em;
+  font-size: 1em;
 }
 .katex-display {
   margin: 0.2em 0;
+}
+
+/* 限宽横滚仅作用于 AI 对话区的助手回复（chat-answer），题目预览等界面保持公式默认渲染 */
+.chat-answer .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+.chat-answer .katex-display > .katex {
+  display: inline-block;
+  white-space: nowrap;
+  max-width: none;
+}
+.chat-answer .katex {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+  vertical-align: baseline;
 }
 
 /* 工作台窄屏：改排版而非裁切，让导航、对话和参数控件均可滚动到达。 */
