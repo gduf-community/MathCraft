@@ -12,6 +12,19 @@
 - `frontend/src/api/adminOps.ts` 负责真实请求；404、403、503、网络失败等如实显示错误及重试，不能自动切换 mock。未知值仍按契约显示未知，不因演示或请求失败填为零／成功。
 - 合成追踪状态或访问反馈不能证明 SDK → Phoenix 已贯通，不把演示数据写作真实运行、探测、告警、清理或审计证据。新增前端及合成交互已完成，真实授权审计和后端联调待完成；G0 真实追踪、G1 后端契约冻结、G3 贯通仍未通过。2026-11-11 [历史验收](docs/design/运维后台升级方案.md#102-本轮前端验收记录)不覆盖本次补全，新增类型／lint／构建、解析／交互／时间与生产隔离检查均在[第 10.3 节](docs/design/运维后台升级方案.md#103-2026-11-12-补全检查)记录本次实际结果。本次不新增后端或审计 API，不改 OpenAPI。
 
+## 本地历史前端隔离预览（2026-11-12）
+
+**状态：5174 临时对照已于 2026-11-12 结束并停服，不再提供可用入口。** `.scratch/frontend-0b5d4b4/`（含 `historical-preview/`、依赖和产物）的递归删除被自动审批审查拒绝，目录尚待清理，仍被 Git 忽略。以下为停服前的历史实现及核验记录，不表示当前仍可访问。
+
+`.scratch/frontend-0b5d4b4/historical-preview/` 曾通过 5174 Vite 提供本地历史界面的合成演示，不接入真实认证或业务。历史路由为 `/historical-preview/`，`role` 支持 teacher／student，`page` 支持 generate、preview、bank、space、fav、records、me、settings；当时可通过参数或原侧栏切换，学生题库位于“我加入的题库”。
+
+- 当时该目录中的附加入口、fixtures、合成 service、页面 isolation 和 guard 与原快照分离；82 个历史受控源文件逐个 Git blob SHA-1 核验零差异，精确对应 `0b5d4b44a9abe356f9a006a4a3edf4206ebe56ef`。根 5174 当时提供原旧登录，旧认证不兼容当前后端；本地预览未改主前端、后端或忽略规则，未新增依赖，快照与附加预览均未提交。
+- 明示的合成数据包含 2 个账号、2 个题库、4 个文档、4 道题、2 个收藏组、3 份试卷、3 个学习空间及成员、统计、设置。收藏与资料更新只在内存生效，刷新重置；生成返回固定合成内容。未实现的上传、真实解析、安装、发布等明确拒绝，不模拟真实成功，也不代表真实权限、模型生成或持久化已验证。
+- 当时页面只允许回环 5174，合成 fetch 无真实网络 fallback；API／media（包括绝对外域业务地址）由合成服务或阻断处理，XHR 同样拦截。guard v2 只匹配业务路径前缀 `/^\/(api|media)(\/|$)/i`，不拦 `/src/api` 源码模块；Service Worker scope 仅 `/historical-preview/`。认证写入页面私有 `MemoryStorage`，不读写真实 `mathcraft-auth`，不向真实后端发送伪造 Token 或演示请求。
+- 独立 preview tsc、ESLint、额外 HTML 入口 Vite bundling 通过；浏览器独立上下文覆盖两角色共 16 个主要页面、16 个深链及 4 个详情，页面异常与业务请求外泄均为 0，两角色收藏变更刷新重置。未知／外网业务请求返回 501，绕过页面 fetch 的原生 API 请求返回 503，media 为占位 SVG，XHR 拦截已验证；根旧登录 controller 为 null、真实 storage sentinel 保留，验证未访问 5173。教师完整欢迎区／快捷提问与学生 3 个空间已实看确认。
+
+历史证据位于 `output/playwright/historical-preview/`：`verification.json`、`details-verification.json` 均 PASS，两份复核脚本及 20 张截图保留在本次清理范围之外。原历史快照 typecheck／build 通过，原全量 lint 的 6 错误／15 警告保留；额外入口构建的大 chunk 警告未通过修改历史源文件消除。历史页面表见[恢复设计](docs/design/登录视觉恢复与历史前端对照.md#历史页面隔离预览)，本次停服与删除受阻情况见其清理状态记录。
+
 ## 历史 DeepTutor 裁剪与替身记录
 
 以下正文（包括旧运行路径、收藏 mock 和恢复建议）全部保留为历史记录，不作为当前架构、当前替身范围或恢复步骤；与上面的当前 DEV 运维演示分开理解。

@@ -863,79 +863,6 @@
   }
 }
 
-/* 认证舞台固定；装饰独立裁切，只有卡片内容区允许滚动。 */
-.auth-stage {
-  --login-edge-block: max(76px, calc(env(safe-area-inset-top) + 64px), calc(env(safe-area-inset-bottom) + 16px));
-  --login-content-height: max(0px, calc(var(--login-viewport-height, 100dvh) - 2 * var(--login-edge-block)));
-  --login-card-padding: 28px;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  inset: auto;
-  top: var(--login-viewport-top, 0px);
-  left: var(--login-viewport-left, 0px);
-  width: var(--login-viewport-width, 100%);
-  height: var(--login-viewport-height, 100dvh);
-  overflow: clip;
-  overscroll-behavior: none;
-}
-
-.login-decoration {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: clip;
-  pointer-events: none;
-}
-
-.auth-stage .login-brand {
-  position: absolute;
-  top: max(16px, env(safe-area-inset-top));
-  left: max(18px, env(safe-area-inset-left));
-  padding: 0;
-}
-
-.auth-stage .login-layout {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  place-items: center;
-  align-content: stretch;
-  gap: 0;
-  min-width: 0;
-  min-height: 0;
-  padding: var(--login-edge-block) max(16px, env(safe-area-inset-left), env(safe-area-inset-right));
-}
-
-.auth-stage .login-panel {
-  justify-self: center;
-  min-width: 0;
-  min-height: 0;
-  max-width: var(--login-panel-w);
-  max-height: var(--login-content-height);
-}
-
-.auth-stage .login-card {
-  max-height: var(--login-content-height);
-  padding: 0;
-}
-
-.login-card__body {
-  max-height: calc(var(--login-content-height) - 2px);
-  padding: var(--login-card-padding);
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  scroll-padding-block: 12px;
-}
-
-.login-card__body:focus-visible {
-  outline: 3px solid #1268e480;
-  outline-offset: -4px;
-}
-
-.auth-stage .auth-form { display: grid; gap: 12px; }
-.auth-stage .auth-challenge { min-height: 0; }
-.auth-stage .auth-dev { flex-wrap: wrap; }
 .auth-modes { display: flex; gap: 4px; background: rgba(225,235,249,.7); border-radius: 12px; padding: 4px; margin: 16px 0; }
 .auth-modes button { flex: 1; min-width: 0; min-height: 44px; border-radius: 9px; padding: 10px 4px; font-size: 14px; cursor: pointer; }
 .auth-modes button[aria-pressed="true"] { background: white; color: var(--login-accent-deep); box-shadow: 0 2px 8px #1268e415; }
@@ -944,8 +871,8 @@
 .auth-role legend { font-size: 12px; color: #465a73; margin-bottom: 8px; }
 .auth-role label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
 .auth-field { display: grid; gap: 7px; font-size: 13px; font-weight: 500; }
-.auth-field input { width: 100%; min-width: 0; min-height: 44px; border: 1px solid #c6d5e8; background: rgba(255,255,255,.9); border-radius: 10px; padding: 10px 12px; font-size: 14px; color: #0f2137; }
-.auth-field input:focus-visible, .auth-stage button:focus-visible { outline: 3px solid #1268e480; outline-offset: 2px; }
+.auth-field > input { width: 100%; min-width: 0; min-height: 44px; border: 1px solid #c6d5e8; background: rgba(255,255,255,.9); border-radius: 10px; padding: 10px 12px; font-size: 14px; color: #0f2137; }
+.auth-field > input:focus-visible, .auth-stage button:focus-visible { outline: 3px solid #1268e480; outline-offset: 2px; }
 .auth-primary, .auth-secondary { min-height: 44px; border-radius: 10px; padding: 10px 14px; font-weight: 600; cursor: pointer; }
 .auth-primary { background: var(--login-accent); color: white; width: 100%; box-shadow: 0 4px 12px #1268e433; }
 .auth-secondary { border: 1px solid #9cb9df; color: #0b4fb8; background: #f1f6ff; }
@@ -964,7 +891,7 @@
 }
 @media (max-width: 600px) {
   .auth-stage { --login-card-padding: 22px 18px; }
-  .auth-stage .auth-field input { font-size: 16px; }
+  .auth-stage .auth-field > input { font-size: 16px; }
 }
 @media (max-height: 720px) {
   .auth-stage { --login-card-padding: 18px; }
@@ -973,3 +900,155 @@
   .auth-stage .auth-modes { margin-block: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { .auth-stage *, .auth-stage *::before, .auth-stage *::after { animation: none !important; transition: none !important; } }
+
+
+/* 旧版双栏视觉与现有认证表单共存；仅卡片内容在短视口内滚动。 */
+.auth-stage {
+  top: var(--login-viewport-top, 0px);
+  left: var(--login-viewport-left, 0px);
+  right: auto;
+  bottom: auto;
+  width: var(--login-viewport-width, 100%);
+  height: var(--login-viewport-height, 100dvh);
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+.login-decoration { position: absolute; inset: 0; overflow: clip; pointer-events: none; }
+.auth-stage .login-layout { min-width: 0; min-height: 0; }
+.auth-stage .login-panel { min-width: 0; min-height: 0; max-height: 100%; }
+.auth-stage .login-card { padding: 0; max-height: 100%; }
+.login-card__body {
+  padding: clamp(26px, 3vw, 36px);
+  max-height: max(120px, calc(var(--login-viewport-height, 100dvh) - 170px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
+}
+.login-card__body:focus-visible { outline: 3px solid #1268e480; outline-offset: -4px; }
+.auth-stage .auth-form { display: grid; gap: 12px; }
+.auth-stage .login-assist { flex-wrap: wrap; align-items: center; gap: 4px 16px; margin: 0; }
+.auth-stage .login-assist .auth-link { min-height: 32px; }
+.auth-stage .auth-challenge { min-height: 0; }
+.auth-stage .auth-dev { flex-wrap: wrap; }
+.login-role-option { position: relative; z-index: 2; min-width: 0; }
+.auth-stage .login-role-option input {
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.login-role-option label { display: block; min-height: 44px; }
+.login-seg input:focus-visible + label { outline: 3px solid #1268e480; outline-offset: -3px; }
+.auth-stage .login-field__box input { min-height: 0; }
+.auth-stage .login-reveal { width: 44px; height: 44px; }
+.auth-stage .auth-link { justify-self: start; }
+.auth-stage .login-seg { margin-bottom: 12px; }
+.auth-stage .auth-modes { margin: 0 0 18px; }
+.auth-stage .auth-help { margin: 0; }
+.auth-stage .auth-form + .auth-help { margin-top: 16px; }
+@media (min-width: 1500px) { .login-card__body { padding: 40px; } }
+@media (max-width: 980px) {
+  .auth-stage .login-layout { align-content: stretch; grid-template-rows: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .login-card__body { padding: 24px 20px; }
+  .auth-stage .login-field__box input { font-size: 16px; }
+  .auth-stage .login-legal__tag { display: none; }
+}
+@media (max-height: 720px) {
+  .login-card__body { padding: 20px 24px; max-height: max(120px, calc(var(--login-viewport-height, 100dvh) - 120px)); }
+  .auth-stage .login-seg { margin-top: 18px; }
+}
+
+/* 认证弹窗挂在 body；复用 Dialog 的滚动、焦点与关闭行为。 */
+dialog.configuration-dialog[open]:has(.auth-dialog) {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #e7ebf2;
+  border-radius: 20px;
+  background: #fff;
+  color: #0f2137;
+  font-family: var(--font-sans);
+  box-shadow: 0 24px 80px rgba(15, 33, 55, .25);
+}
+dialog.configuration-dialog:has(.auth-dialog)::backdrop { background: rgba(15, 27, 51, .45); }
+.configuration-dialog:has(.auth-dialog) .configuration-dialog-header {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px;
+  border-bottom: 1px solid #e7ebf2;
+}
+.configuration-dialog:has(.auth-dialog) .configuration-dialog-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: -8px -8px 0 0;
+  border-radius: 10px;
+  color: #465a73;
+  cursor: pointer;
+}
+.configuration-dialog:has(.auth-dialog) .configuration-dialog-close:hover { background: #edf4ff; }
+.configuration-dialog:has(.auth-dialog) .configuration-dialog-content {
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
+}
+.configuration-dialog:has(.auth-dialog) .configuration-dialog-footer {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  padding: 8px 20px;
+  border-top: 1px solid #e7ebf2;
+}
+.configuration-dialog:has(.auth-dialog) button:focus-visible,
+.configuration-dialog:has(.auth-dialog) a:focus-visible { outline: 3px solid #1268e480; outline-offset: 2px; }
+.configuration-dialog:has(.auth-dialog) button:disabled { opacity: .5; cursor: not-allowed; }
+.auth-dialog { color: #0f2137; }
+.auth-dialog-form,
+.auth-dialog-help,
+.auth-recovery-options { display: grid; gap: 16px; min-width: 0; }
+.auth-dialog-help h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.auth-dialog-help p { margin: 0; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.auth-dialog-help .auth-secondary { display: inline-flex; align-items: center; justify-content: center; justify-self: start; text-decoration: none; }
+.auth-dialog .auth-help { margin: 0; }
+.auth-dialog .auth-link { justify-self: start; }
+.auth-dialog .auth-challenge { min-height: 0; }
+.auth-binding-account { margin: 0; padding: 10px 12px; border-radius: 10px; background: #edf4ff; color: #253f65; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.auth-recovery-option {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 16px;
+  border: 1px solid #c6d5e8;
+  border-radius: 12px;
+  background: #f5f9ff;
+  text-align: left;
+  cursor: pointer;
+}
+.auth-recovery-option > span:first-child { color: var(--login-accent-deep); font-size: 15px; font-weight: 600; }
+.auth-recovery-option > span:last-child { color: #465a73; font-size: 13px; line-height: 1.6; }
+.auth-recovery-option:hover { border-color: var(--login-accent); background: #edf4ff; }
+.auth-dialog input:focus-visible,
+.auth-dialog button:focus-visible,
+.auth-dialog a:focus-visible { outline: 3px solid #1268e480; outline-offset: 2px; }
+.auth-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 600px) {
+  .auth-dialog .auth-field > input { font-size: 16px; }
+}

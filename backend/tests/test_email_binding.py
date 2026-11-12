@@ -3,11 +3,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Barrier
 
+import jwt
 import pytest
 from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.db import SessionLocal
 from app.models import AuthProof, AuthSession, User
 from app.services import auth as service
 from test_auth import PASSWORD, bearer, csrf, delivery, issue, provision_user
@@ -19,8 +22,8 @@ def binding_code(client, delivery, result, email="bound@example.test"):
         "email": email, "purpose": "email_bind", "turnstile_token": "test-challenge",
     })
     assert response.status_code == 202, response.text
-    return {"email": email, "current_password": PASSWORD,
-            "challenge_id": response.json()["challenge_id"], "code": delivery.messages[-1][1]}
+    return {"email": email, "challenge_id": response.json()["challenge_id"],
+            "code": delivery.messages[-1][1]}
 
 
 @pytest.mark.parametrize("role", ["teacher", "student", "admin"])
@@ -76,10 +79,11 @@ def test_email_verified_boolean_matches_current_email_delivery(
     ("legacy@example.test", "legacy@example.test"),
     ("legacy@example.test", "bound@example.test"),
 ])
+@pytest.mark.parametrize("role", ["teacher", "student", "admin"])
 def test_binding_verifies_email_consumes_proof_and_revokes_all_devices(
-    client, delivery, db, original, target,
+    client, delivery, db, original, target, role,
 ):
-    first = provision_user(client, delivery, email=original, verified=False)
+    first = provision_user(client, delivery, email=original, verified=False, role=role)
     second = client.post("/api/auth/login/account", json={
         "account": first["user"]["account"], "password": PASSWORD,
         "turnstile_token": "test-challenge",
@@ -120,7 +124,7 @@ def test_verified_email_cannot_bypass_double_email_change(client, delivery, db, 
     assert response.status_code == 409
     assert delivery.messages == []
     response = client.put("/api/users/me/email-binding", headers=bearer(result), json={
-        "email": "bypass@example.test", "current_password": PASSWORD,
+        "email": "bypass@example.test",
         "challenge_id": "fake-challenge", "code": "012345",
     })
     assert response.status_code == 409
@@ -130,20 +134,93 @@ def test_verified_email_cannot_bypass_double_email_change(client, delivery, db, 
                        json={"new_email": "replacement@example.test"}).status_code == 201
 
 
-def test_email_binding_requires_bearer_and_current_password(client, delivery, db):
+def test_email_binding_requires_bearer_and_rejects_password_field(client, delivery, db):
     result = provision_user(client, delivery, email=None)
     request = {"email": "bound@example.test", "purpose": "email_bind",
                "turnstile_token": "test-challenge"}
     for headers in ({}, {"Authorization": "Bearer fake-token"}):
         assert client.post("/api/auth/email-code", headers=headers, json=request).status_code == 401
     payload = binding_code(client, delivery, result)
-    assert client.put("/api/users/me/email-binding", json=payload).status_code == 401
+    # 即使浏览器已有刷新 Cookie 和正确验证码，缺少有效 Bearer 也不能绑定。
+    for headers in ({}, {"Authorization": "Bearer fake-token"}):
+        assert client.put("/api/users/me/email-binding", headers=headers,
+                          json=payload).status_code == 401
+    assert db.get(AuthProof, payload["challenge_id"]) is None
     response = client.put("/api/users/me/email-binding", headers=bearer(result),
-                          json={**payload, "current_password": "wrong-password"})
-    assert response.status_code == 400
+                          json={**payload, "current_password": "old-password"})
+    assert response.status_code == 422
     assert db.get(AuthProof, payload["challenge_id"]) is None
     assert client.get("/api/auth/me", headers=bearer(result)).status_code == 200
     assert client.put("/api/users/me/email-binding", headers=bearer(result), json=payload).status_code == 204
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_session", "revoked_session", "expired_session", "session_version",
+    "expired_access", "disabled_user", "revoked_version",
+])
+def test_binding_rejects_invalid_login_state_without_consuming_proof(
+    client, delivery, db, mutation,
+):
+    """签名令牌和邮箱码不能绕过 SQL 会话、账号状态、到期或认证版本校验。"""
+    result = provision_user(client, delivery, email=None)
+    payload = binding_code(client, delivery, result)
+    claims = service.decode_access(result["access_token"])
+    user = db.get(User, result["user"]["id"])
+    session = db.get(AuthSession, claims["sid"])
+    headers = bearer(result)
+    if mutation == "missing_session":
+        db.delete(session)
+    elif mutation == "revoked_session":
+        session.status = "revoked"
+    elif mutation == "expired_session":
+        session.expires_at = service.now() - 1
+    elif mutation == "session_version":
+        session.auth_version += 1
+    elif mutation == "expired_access":
+        expired_claims = dict(claims)
+        expired_claims.update(iat=service.now() - 100, exp=service.now() - 1)
+        headers = {"Authorization": "Bearer " + jwt.encode(
+            expired_claims, settings.auth_jwt_secret, algorithm="HS256",
+        )}
+    elif mutation == "disabled_user":
+        user.status = "disabled"
+    else:
+        service.revoke_all(db, user, user.auth_version)
+    db.commit()
+    request = {"email": payload["email"], "purpose": "email_bind",
+               "turnstile_token": "test-challenge"}
+    before = len(delivery.messages)
+    assert client.post("/api/auth/email-code", headers=headers, json=request).status_code == 401
+    assert len(delivery.messages) == before
+    response = client.put("/api/users/me/email-binding", headers=headers, json=payload)
+    assert response.status_code == 401, response.text
+    assert db.get(AuthProof, payload["challenge_id"]) is None
+    db.refresh(user)
+    assert user.email is None and user.email_verified is False
+    assert user.auth_version == (1 if mutation == "revoked_version" else 0)
+
+
+@pytest.mark.parametrize("mutation,error", [
+    ("wrong_code", "CODE_INVALID"), ("expired", "CODE_EXPIRED"),
+])
+def test_binding_rejects_invalid_or_expired_code_without_revoking_session(
+    client, delivery, db, isolated_redis, mutation, error,
+):
+    """合法会话不能代替新邮箱所有权证明，失败不消费 proof 或撤销会话。"""
+    result = provision_user(client, delivery, email=None)
+    payload = binding_code(client, delivery, result)
+    if mutation == "wrong_code":
+        payload["code"] = f"{(int(payload['code']) + 1) % 1000000:06d}"
+    else:
+        isolated_redis.hset(f"auth:otp:challenge:{payload['challenge_id']}",
+                            "expires", service.now() - 1)
+    response = client.put("/api/users/me/email-binding", headers=bearer(result), json=payload)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == error
+    assert db.get(AuthProof, payload["challenge_id"]) is None
+    user = db.get(User, result["user"]["id"])
+    assert user.email is None and user.auth_version == 0
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 200
 
 
 @pytest.mark.parametrize("mutation", ["user", "target", "version", "email", "normalized"])
@@ -173,12 +250,13 @@ def test_binding_challenge_cannot_cross_user_version_or_email_snapshot(
     assert db.get(User, result["user"]["id"]).email != payload["email"]
 
 
-def test_binding_rejects_login_proof(client, delivery, db):
+@pytest.mark.parametrize("purpose", ["login", "reset_password"])
+def test_binding_rejects_public_auth_proof(client, delivery, db, purpose):
     owner = provision_user(client, delivery, email=None)
     provision_user(client, delivery, email="bound@example.test")
-    challenge, code = issue(client, delivery, email="bound@example.test")
+    challenge, code = issue(client, delivery, email="bound@example.test", purpose=purpose)
     response = client.put("/api/users/me/email-binding", headers=bearer(owner), json={
-        "email": "bound@example.test", "current_password": PASSWORD,
+        "email": "bound@example.test",
         "challenge_id": challenge, "code": code,
     })
     assert response.status_code == 400
@@ -341,31 +419,68 @@ def test_old_login_and_reset_codes_cannot_follow_email_to_another_user_at_same_v
     assert response.json()["user"]["email_verified"] is True
 
 
-@pytest.mark.parametrize("operation", ["bind", "unbind"])
-def test_email_change_cannot_use_password_verified_before_reset(client, delivery, monkeypatch, operation):
-    result = provision_user(client, delivery, email="legacy@example.test", verified=operation != "bind")
-    payload = binding_code(client, delivery, result) if operation == "bind" else {"current_password": PASSWORD}
+def test_binding_rejects_concurrent_session_revocation(client, delivery, db, monkeypatch):
+    """Bearer 认证后、取得版本写锁前撤销会话，旧请求不得绑定或消费 proof。"""
+    result = provision_user(client, delivery, email="legacy@example.test", verified=False)
+    payload = binding_code(client, delivery, result)
+    entered, resume = Barrier(2), Barrier(2)
+    original = service.require_email_binding
+
+    def paused_require(user: User) -> None:
+        original(user)
+        entered.wait(timeout=10)
+        resume.wait(timeout=10)
+
+    monkeypatch.setattr(service, "require_email_binding", paused_require)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.put, "/api/users/me/email-binding",
+                             headers=bearer(result), json=payload)
+        entered.wait(timeout=10)
+        try:
+            with SessionLocal() as concurrent_db:
+                user = concurrent_db.get(User, result["user"]["id"])
+                service.revoke_all(concurrent_db, user, user.auth_version)
+                user.password_hash = service.hash_password("replacement-password")
+                concurrent_db.commit()
+        finally:
+            resume.wait(timeout=10)
+        response = future.result(timeout=15)
+        assert response.status_code == 401, response.text
+        assert response.json()["detail"]["code"] == "SESSION_REVOKED"
+    db.expire_all()
+    user = db.get(User, result["user"]["id"])
+    assert user.email == "legacy@example.test"
+    assert user.auth_version == 1
+    assert db.get(AuthProof, payload["challenge_id"]) is None
+    assert client.get("/api/auth/me", headers=bearer(result)).status_code == 401
+
+
+def test_unbind_cannot_use_password_verified_before_reset(client, delivery, db, monkeypatch):
+    """解绑仍验证密码，不能使用并发重置之前已验证的旧密码。"""
+    result = provision_user(client, delivery, email="legacy@example.test")
     entered, resume = Barrier(2), Barrier(2)
     original = service.verify_password
 
-    def paused_verify(password, hashed):
+    def paused_verify(password: str, hashed: str) -> bool:
         valid = original(password, hashed)
         entered.wait(timeout=10)
         resume.wait(timeout=10)
         return valid
 
     monkeypatch.setattr(service, "verify_password", paused_verify)
-    method = "PUT" if operation == "bind" else "DELETE"
-    path = "/api/users/me/email-binding" if operation == "bind" else "/api/users/me/email"
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(client.request, method, path, headers=bearer(result), json=payload)
+        future = pool.submit(client.request, "DELETE", "/api/users/me/email",
+                             headers=bearer(result), json={"current_password": PASSWORD})
         entered.wait(timeout=10)
-        from app.db import SessionLocal
-
-        with SessionLocal() as db:
-            user = db.get(User, result["user"]["id"])
-            service.revoke_all(db, user, user.auth_version)
-            user.password_hash = service.hash_password("replacement-password")
-            db.commit()
-        resume.wait(timeout=10)
+        try:
+            with SessionLocal() as concurrent_db:
+                user = concurrent_db.get(User, result["user"]["id"])
+                service.revoke_all(concurrent_db, user, user.auth_version)
+                user.password_hash = service.hash_password("replacement-password")
+                concurrent_db.commit()
+        finally:
+            resume.wait(timeout=10)
         assert future.result(timeout=15).status_code == 401
+    db.expire_all()
+    user = db.get(User, result["user"]["id"])
+    assert user.email == "legacy@example.test" and user.auth_version == 1

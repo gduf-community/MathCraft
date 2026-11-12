@@ -1,6 +1,6 @@
 /** 账号安全资料：学工号仅作为可选资料，邮箱支持绑定、换绑和解绑。 */
 import { useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { bindEmail, changeEmail, changeUserNo, startEmailChange, unbindEmail } from '../../../api/auth'
 import { useAuth } from '../../../store/AuthContext'
 import { getSessionGeneration } from '../../../api/session'
@@ -10,7 +10,11 @@ import { EmailCodeFields } from '../../auth/EmailCodeFields'
 
 interface Proof { id: string; code: string }
 
-export function SecuritySettings() {
+interface SecuritySettingsProps {
+  children?: ReactNode
+}
+
+export function SecuritySettings({ children }: SecuritySettingsProps) {
   const { user, signIn, setAuthNotice } = useAuth()
   const { showToast } = useToast()
   const session = useRef(getSessionGeneration())
@@ -18,7 +22,7 @@ export function SecuritySettings() {
   const [userNo, setUserNo] = useState(user?.userNo ?? '')
   const [userNoPassword, setUserNoPassword] = useState('')
   const [email, setEmail] = useState('')
-  const [emailPassword, setEmailPassword] = useState('')
+  const [unbindPassword, setUnbindPassword] = useState('')
   const [bindProof, setBindProof] = useState<Proof>({ id: '', code: '' })
   const [transaction, setTransaction] = useState('')
   const [expiresAt, setExpiresAt] = useState(0)
@@ -60,15 +64,15 @@ export function SecuritySettings() {
   async function confirmEmailBinding(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (lock.current) return
-    if (!email.trim() || !emailPassword || !bindProof.id || !/^\d{6}$/.test(bindProof.code)) {
-      notify('请填写邮箱、当前密码并完成邮箱验证码', 'error')
+    if (!email.trim() || !bindProof.id || !/^\d{6}$/.test(bindProof.code)) {
+      notify('请填写邮箱并完成邮箱验证码', 'error')
       return
     }
     lock.current = true
     setBusy(true)
     setStatus('')
     try {
-      await bindEmail({ email: email.trim(), current_password: emailPassword, challenge_id: bindProof.id, code: bindProof.code })
+      await bindEmail({ email: email.trim(), challenge_id: bindProof.id, code: bindProof.code })
       confirmSessionChange('邮箱已更新，所有设备已退出，请使用账号密码重新登录')
     } catch (error: unknown) {
       notify(error instanceof Error ? error.message : '邮箱绑定失败', 'error')
@@ -119,7 +123,7 @@ export function SecuritySettings() {
 
   async function removeEmail() {
     if (lock.current) return
-    if (!emailPassword) {
+    if (!unbindPassword) {
       notify('请先输入当前密码', 'error')
       return
     }
@@ -128,7 +132,7 @@ export function SecuritySettings() {
     setBusy(true)
     setStatus('')
     try {
-      await unbindEmail(emailPassword)
+      await unbindEmail(unbindPassword)
       confirmSessionChange('邮箱已解绑，所有设备已退出，请使用账号密码重新登录')
     } catch (error: unknown) {
       notify(error instanceof Error ? error.message : '解绑失败', 'error')
@@ -137,11 +141,11 @@ export function SecuritySettings() {
 
   const field = 'block min-h-11 w-full min-w-0 rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink focus:border-primary'
   const button = 'min-h-11 rounded-lg bg-primary px-4 py-2 text-sm text-white disabled:opacity-50'
-  const emailLabel = verifiedEmail ? '换绑邮箱' : boundEmail ? '重新验证邮箱' : '绑定邮箱'
+  const emailLabel = verifiedEmail ? '换绑邮箱' : boundEmail ? '重新绑定邮箱' : '绑定邮箱'
 
   return <section className="mb-4 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]" aria-label="账号安全">
     <h3 className="mb-4 text-sm font-bold text-ink">账号安全</h3>
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="max-w-[600px] space-y-6">
       <form onSubmit={event => void saveUserNo(event)} className="space-y-3">
         <fieldset disabled={busy} className="space-y-3">
           <legend className="mb-2 text-sm font-medium">维护学工号资料</legend>
@@ -152,12 +156,11 @@ export function SecuritySettings() {
         </fieldset>
       </form>
 
-      <div className="min-w-0 space-y-3">
+      <div className="min-w-0 space-y-3 border-t border-line pt-6">
         <h4 className="text-sm font-medium">邮箱设置</h4>
         <p className="break-all text-xs text-ink-3">当前邮箱：{boundEmail || '未绑定'}{boundEmail && !verifiedEmail ? '（待验证）' : ''}。邮箱为可选配置。</p>
         {!verifiedEmail && <form onSubmit={event => void confirmEmailBinding(event)} className="space-y-3">
           <label className="block text-sm">{emailLabel}<input className={field} type="email" required disabled={busy} value={email} onChange={event => { setEmail(event.target.value); setBindProof({ id: '', code: '' }) }} /></label>
-          <label className="block text-sm">当前密码<input className={field} type="password" autoComplete="current-password" required disabled={busy} value={emailPassword} onChange={event => setEmailPassword(event.target.value)} /></label>
           <fieldset disabled={busy}><EmailCodeFields key={email.trim()} email={email.trim()} purpose="email_bind" onProof={(id, code) => setBindProof({ id, code })} /></fieldset>
           <button className={button} disabled={busy} type="submit">绑定并重新登录</button>
         </form>}
@@ -166,9 +169,13 @@ export function SecuritySettings() {
             <label className="block text-sm">新邮箱<input className={field} type="email" required disabled={busy} value={email} onChange={event => setEmail(event.target.value)} /></label>
             <button className={button} disabled={busy} type="submit">开始换绑</button>
           </form>
-          <label className="block text-sm">当前密码<input className={field} type="password" autoComplete="current-password" disabled={busy} value={emailPassword} onChange={event => setEmailPassword(event.target.value)} /></label>
         </>}
-        {boundEmail && !transaction && <button className="min-h-11 rounded-lg border border-line px-4 py-2 text-sm text-ink-2 disabled:opacity-50" disabled={busy} type="button" onClick={() => void removeEmail()}>解绑邮箱</button>}
+        {boundEmail && !transaction && <div className="border-t border-line pt-4">
+          <h4 className="text-sm font-medium text-ink">解绑邮箱</h4>
+          <p className="mt-1 text-xs text-ink-3">解绑需要验证当前密码；解绑后邮箱登录和找回密码将不可用。</p>
+          <label className="mt-3 block text-sm">当前密码<input className={field} type="password" autoComplete="current-password" disabled={busy} value={unbindPassword} onChange={event => setUnbindPassword(event.target.value)} /></label>
+          <button className="mt-3 min-h-11 rounded-lg border border-line px-4 py-2 text-sm text-ink-2 disabled:opacity-50" disabled={busy} type="button" onClick={() => void removeEmail()}>解绑邮箱</button>
+        </div>}
         {verifiedEmail && transaction && <form onSubmit={event => void confirmEmailChange(event)}>
           <fieldset className="space-y-4" disabled={busy}>
             <legend className="mb-2 text-sm">新邮箱：{email}</legend>
@@ -178,6 +185,7 @@ export function SecuritySettings() {
           </fieldset>
         </form>}
       </div>
+      {children}
     </div>
     {status && <p className={`mt-4 rounded-lg p-3 text-sm ${statusVariant === 'error' ? 'bg-red-50 text-red-700' : statusVariant === 'success' ? 'bg-emerald-50 text-emerald-800' : 'bg-primary-light text-ink'}`} role={statusVariant === 'error' ? 'alert' : 'status'}>{status}</p>}
   </section>

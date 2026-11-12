@@ -1473,7 +1473,7 @@
           "users"
         ],
         "summary": "Bind Email",
-        "description": "密码及新邮箱 proof 校验后，在同一事务绑定邮箱并撤销全部会话。",
+        "description": "有效登录态及新邮箱 proof 校验后，在同一事务绑定邮箱并撤销全部会话。",
         "operationId": "bind_email_api_users_me_email_binding_put",
         "parameters": [
           {
@@ -6947,12 +6947,6 @@
       },
       "EmailBindingBody": {
         "properties": {
-          "current_password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Current Password"
-          },
           "email": {
             "type": "string",
             "maxLength": 128,
@@ -6973,13 +6967,12 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "current_password",
           "email",
           "challenge_id",
           "code"
         ],
         "title": "EmailBindingBody",
-        "description": "首次绑定或验证历史未验证邮箱，不替代已验证邮箱的换绑流程。"
+        "description": "首次绑定或验证历史未验证邮箱，仅依赖有效登录态和 email_bind proof。"
       },
       "EmailChangeBody": {
         "properties": {

@@ -43,7 +43,7 @@ export async function changeEmail(payload: { change_id: string; old_challenge_id
   await mutateSessionCookie('/api/users/me/email', { method: 'PUT', body: JSON.stringify(payload) }, true,
     () => invalidateUserSessions())
 }
-export async function bindEmail(payload: EmailProof & { current_password: string }) {
+export async function bindEmail(payload: EmailProof) {
   await mutateSessionCookie('/api/users/me/email-binding', { method: 'PUT', body: JSON.stringify(payload) }, true,
     () => invalidateUserSessions())
 }
