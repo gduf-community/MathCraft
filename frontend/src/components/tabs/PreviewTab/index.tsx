@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Bot, ListFilter, Trash2, Users } from 'lucide-react'
+import { Bot, FileDown, ListFilter, Trash2, Users } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { DIFFICULTIES, TYPE_LABELS, TYPE_ORDER } from '../../../constants'
 import type { Difficulty } from '../../../types'
 import QuestionCard from './QuestionCard'
 import AssembleModal from './AssembleModal'
+import ExportModal from './ExportModal'
 import Dropdown from '../../ui/Dropdown'
 import ConfirmDialog from '../../ui/ConfirmDialog'
 
@@ -22,6 +23,7 @@ export default function PreviewTab() {
     deleteSelected,
   } = useApp()
   const [assembling, setAssembling] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const counts = useMemo(() => {
@@ -109,6 +111,18 @@ export default function PreviewTab() {
         </span>
         <button
           type="button"
+          disabled={!selectedIds.length}
+          onClick={() => setExporting(true)}
+          title={selectedIds.length ? '把已选题目导出为 Word 文档' : '先勾选题目再导出'}
+          className={`flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97] ${
+            !selectedIds.length ? 'cursor-not-allowed opacity-45 hover:bg-primary active:scale-100' : ''
+          }`}
+        >
+          <FileDown size={15} />
+          导出
+        </button>
+        <button
+          type="button"
           onClick={() => setAssembling(true)}
           className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
         >
@@ -126,6 +140,7 @@ export default function PreviewTab() {
       </div>
 
       {assembling && <AssembleModal onClose={() => setAssembling(false)} />}
+      {exporting && <ExportModal onClose={() => setExporting(false)} />}
       {confirmDelete && (
         <ConfirmDialog
           title="删除题目"
