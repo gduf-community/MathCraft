@@ -31,6 +31,8 @@ local_secrets.py
 # 测试、静态检查与浏览器验证产物
 mathcraft_test_*/
 /backend/tests/.data-home/
+# Python tempfile 在后端工作目录产生的无扩展名临时文件
+/backend/tmp????????
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
