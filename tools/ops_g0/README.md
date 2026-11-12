@@ -48,6 +48,10 @@ docker compose -f tools/ops_g0/compose.yaml --env-file .scratch/ops-g0-20261112/
 
 `audit` 使用本地 ref，不自动 fetch；记录 SHA 后再解释结果。`harness` 输出 `sdk-evidence.json` 与脱敏 `.otlp`，`verify` 独立输出 `phoenix-verification.json`、`persisted-spans.json`。后者通过才算持久可查；SDK 文件里的 `phoenix_persistence_verified:false` 表示导出脚本本身不作存储判断，以独立 verification 为准。出口、脱敏或正常导出缺失会让 harness 报错并保留已生成证据。
 
+`audit` 需要本地 `main`、`agent` 引用；仅有远端跟踪引用时，先通过 SSH 执行 `git fetch origin`，再用 `git branch --track agent origin/agent` 建立缺失的本地分支，无需切换工作区。已存在的分支不得覆盖。本次审查修复保持盘点脚本不变。
+
+关联验收同时核对预期的 `batch_id`：已知批次错误或缺失均失败；尚未落库的运行允许没有批次，但不得携带另一批次。合成样例使用可区分的批次标识；通过检查仍不代表业务 G0 已通过。
+
 `retention` **只操作新建的 `ops-g0-retention-<label>` 合成项目**：写入四天前及当前的根／子 spans，先读取两组，再禁用原生到期规则，经公开 REST 删除三天前窗口，复读并重复删除。结果在 `retention-<label>.json`。禁止把它改成业务项目名或用它操作 Phoenix 私有表。
 
 唯一清理选择为应用经公开接口调度。`retention.POLICY` 记录正文 3 天、每日一次、24 小时窗口、每次最多 8 窗口；本工具没有注册 scheduler。G0 后乙/M8 负责实际周期调度、持久游标、失败恢复和记录；不能再启用 Phoenix 原生过期规则并行清理。隔离验收样例之外的正文保留尚未接线。
@@ -75,6 +79,8 @@ docker compose -f tools/ops_g0/compose.yaml --env-file .scratch/ops-g0-20261112/
 停止保留数据。不要删除数据目录、快照或以清理工作区为由运行 `git clean`。新凭据、SQLite、运行证据及快照均留在被忽略的独立目录；本轮原 RAG 验收目录未参与上述命令。
 
 ## 限制
+
+敏感路由判断统一识别路径字段和 `url.full`／`http.url` 的 URL 路径；认证、改密及个人模型设置的已知正文属性整体排除。排除状态在嵌套 JSON、编码后的 JSON 字符串、列表及 OTLP array／kvlist 中传递，并应用到关联事件和 links；普通出题请求的正文仍按原脱敏规则保留。此规则覆盖已知属性形态，不替代真实业务接入前的正文白名单。
 
 脱敏器只验证已列出的合成凭据形式，不能当作任意文本的完整 DLP。结构化／转义字段被截断或无法解析时整体排除；真实业务接入前仍须明确正文白名单。导出队列及单 payload 有界，不代表 SDK 自身所有活跃 trace 状态或业务输入均有界。HTTP 2xx 导出回执最多读取 16 KiB 并按 OTLP protobuf 解析，拒收或非法回执计失败、不记录响应文字；部分拒收不重发整批。关闭有截止时间，未完成如实记录，不能宣称故障样本可重放。
 

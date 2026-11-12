@@ -21,7 +21,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 
-from .redaction import REDACTED, clean_text, sensitive_key
+from .redaction import REDACTED, clean_text, has_sensitive_route, is_body_key, sensitive_key
 
 
 @dataclass
@@ -38,39 +38,29 @@ class ExportCounters:
     rejected_responses: int = 0
 
 
-def _clean_any(value: AnyValue) -> None:
+def _clean_any(value: AnyValue, exclude_body: bool = False) -> None:
     """Mutate an OTLP AnyValue using its public protobuf fields."""
     kind = value.WhichOneof("value")
     if kind == "string_value":
-        value.string_value = clean_text(value.string_value)
+        value.string_value = clean_text(value.string_value, exclude_body=exclude_body)
     elif kind == "array_value":
         for item in value.array_value.values:
-            _clean_any(item)
+            _clean_any(item, exclude_body)
     elif kind == "kvlist_value":
-        _clean_attributes(value.kvlist_value.values)
+        _clean_attributes(value.kvlist_value.values, exclude_body)
 
 
 def _clean_attributes(attributes: Iterable[KeyValue], exclude_body: bool = False) -> None:
+    attributes = list(attributes)
+    excluded = exclude_body or has_sensitive_route(
+        (attribute.key, attribute.value.string_value) for attribute in attributes
+    )
     for attribute in attributes:
-        body = attribute.key.lower() in {"request", "response", "body", "input", "output"} or (
-            attribute.key.lower().startswith(
-                (
-                    "input.",
-                    "output.",
-                    "llm.input_",
-                    "llm.output_",
-                    "http.request.body",
-                    "http.response.body",
-                    "request.body",
-                    "response.body",
-                )
-            )
-        )
-        if sensitive_key(attribute.key) or (exclude_body and body):
+        if sensitive_key(attribute.key) or (excluded and is_body_key(attribute.key)):
             attribute.value.Clear()
             attribute.value.string_value = REDACTED
         else:
-            _clean_any(attribute.value)
+            _clean_any(attribute.value, excluded)
 
 
 def sanitize_request(request: ExportTraceServiceRequest) -> bytes:
@@ -82,18 +72,8 @@ def sanitize_request(request: ExportTraceServiceRequest) -> bytes:
             _clean_attributes(scope.scope.attributes)
             for span in scope.spans:
                 span.name = clean_text(span.name)
-                raw = " ".join(
-                    item.value.string_value
-                    for item in span.attributes
-                    if item.key in {"http.route", "url.path", "http.target"}
-                )
-                excluded = any(
-                    path in raw
-                    for path in (
-                        "/api/auth",
-                        "/api/users/me/model-settings",
-                        "/api/users/me/password",
-                    )
+                excluded = has_sensitive_route(
+                    (item.key, item.value.string_value) for item in span.attributes
                 )
                 _clean_attributes(span.attributes, excluded)
                 span.status.message = clean_text(span.status.message)
@@ -101,7 +81,7 @@ def sanitize_request(request: ExportTraceServiceRequest) -> bytes:
                     event.name = clean_text(event.name)
                     _clean_attributes(event.attributes, excluded)
                 for link in span.links:
-                    _clean_attributes(link.attributes)
+                    _clean_attributes(link.attributes, excluded)
     return request.SerializeToString()
 
 

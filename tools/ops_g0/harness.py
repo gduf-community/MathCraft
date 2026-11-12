@@ -49,7 +49,7 @@ class Case:
     sdk_trace_id: str
     user_id: str
     session_id: str
-    batch_id: str
+    batch_id: str | None
     scenario: str
     outcome: str = "accepted"
     degraded: bool = False
@@ -232,6 +232,8 @@ def inspect_payloads(
                         or attrs.get("session.id") != case.session_id
                     ):
                         raise AssertionError("Synthetic account or session context crossed runs")
+                    if metadata.get("batch_id") != case.batch_id:
+                        raise AssertionError("Synthetic batch context differs from the expected run")
                     records.append(
                         {
                             "run_id": case.run_id,
@@ -305,7 +307,14 @@ def main() -> None:
     instrumentor = OpenAIAgentsInstrumentor()
     network = {"local_connections": 0, "nonlocal_attempts": 0}
     cases = [
-        Case(uuid4().hex, gen_trace_id(), user, session, args.label, scenario)
+        Case(
+            uuid4().hex,
+            gen_trace_id(),
+            user,
+            session,
+            uuid4().hex if scenario in {"success", "degraded"} else None,
+            scenario,
+        )
         for user, session, scenario in (
             ("synthetic-a", "session-a", "success"),
             ("synthetic-b", "session-b", "success"),
