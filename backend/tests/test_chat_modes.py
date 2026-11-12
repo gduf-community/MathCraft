@@ -1,5 +1,6 @@
 """四模式 HTTP 回归：图片边界、待续图片、历史会话授权和确认绑定。"""
 import base64
+import importlib
 from unittest.mock import Mock
 
 import pytest
@@ -84,19 +85,20 @@ def test_image_limits():
     assert ChatMessageBody(message="文字消息").message == "文字消息"
 
 
-@pytest.mark.parametrize("mode,target", [("generate", "handle_chat"),
-                                         ("creative", "handle_creative"),
-                                         ("qa", "answer_question"),
-                                         ("data", "run_data_request")])
+@pytest.mark.parametrize("mode,module,target",
+                         [("generate", "chat_flow", "handle_chat"),
+                          ("creative", "chat_flow", "handle_creative"),
+                          ("qa", "qa", "answer_question"),
+                          ("data", "data_agent", "run_data_request")])
 def test_each_mode_dispatches_to_its_own_service(
-    client, teacher, chat_context, monkeypatch, mode, target,
+    client, teacher, chat_context, monkeypatch, mode, module, target,
 ):
     _, _, session_id, _ = chat_context
     result = "假答疑" if mode == "qa" else {
         "reply": "假回复", "questions": [], "done": True, "slot_state": {},
     }
     service = Mock(return_value=result)
-    monkeypatch.setattr(chat, target, service)
+    monkeypatch.setattr(importlib.import_module(f"app.services.rag.{module}"), target, service)
     monkeypatch.setattr(chat, "detect_intent", lambda *a, **kw: {
         "intent": mode, "confidence": "high",
     })
@@ -140,7 +142,7 @@ def test_new_normal_message_discards_old_pending_delete(
     monkeypatch.setattr(chat, "detect_intent", detect)
     monkeypatch.setattr(slots, "chat_json", Mock(return_value={}))
     data_service = Mock(return_value={"reply": "不应执行旧删除", "questions": [], "done": True})
-    monkeypatch.setattr(chat, "run_data_request", data_service)
+    monkeypatch.setattr(data_agent, "run_data_request", data_service)
     endpoint = f"/api/chat/sessions/{session_id}/messages"
     first = client.post(endpoint, headers=teacher,
                         json={"message": "删除我的试卷", "images": [PNG]})
