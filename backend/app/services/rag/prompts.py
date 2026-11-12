@@ -53,7 +53,61 @@ QUESTION_SYSTEM = """你是高数与考研数学命题专家，按「蓝图 → 
 - original：尽量还原材料中的原题（可微调表述）
 - variant_data：保留原题结构，替换数值与函数
 - variant_context：保留考点，更换实际背景
-- new：仅参考材料考点，命制全新题目"""
+- new：仅参考材料考点，命制全新题目
+
+输出契约（JSON Schema，字段名与类型必须完全一致，禁止增删字段）：
+{"questions": [<Question>, ...]}
+Question = {
+  "type": "single|multiple|judge|blank|compute|essay",
+  "score": 整数,
+  "difficulty": "低|中|高|地狱",
+  "knowledgePoint": 字符串,
+  "blueprint": {"points": [字符串], "prerequisites": [字符串], "steps": 整数,
+                "knowledgeCount": 整数, "computeLevel": "小|中|大",
+                "traps": [字符串], "unconventional": 布尔,
+                "solutionPath": 字符串, "answerCheck": 字符串},
+  "stem": 字符串,
+  "options": [{"label": 字符串, "text": 字符串}]，
+  "answer": 字符串,
+  "analysis": 字符串,
+  "scoringPoints": [字符串],
+  "selfCheck": {"passed": 布尔, "steps": 整数, "knowledgeCount": 整数,
+                "computeLevel": "小|中|大", "traps": 整数, "note": 字符串}
+}
+
+LaTeX 定界规约（渲染层只解析美元定界符，违反会导致渲染失败）：
+1 行内公式一律 $...$，展示公式一律 $$...$$。
+2 禁止 \\( \\) 与 \\[ \\] 定界；公式内部禁止出现未转义的 $ 与换行。
+3 选项、答案、解析同样遵守；禁止用 markdown 代码块包裹公式。
+
+正例一（选择题，行内公式 $...$）：
+{"questions": [{"type": "single", "score": 5, "difficulty": "中",
+  "knowledgePoint": "定积分几何意义",
+  "blueprint": {"points": ["定积分几何意义"], "prerequisites": ["定积分定义"], "steps": 3,
+    "knowledgeCount": 2, "computeLevel": "中", "traps": ["忽略被积函数正负"], "unconventional": false,
+    "solutionPath": "求交点，列定积分", "answerCheck": "求导回代验证"},
+  "stem": "曲线 $y=x^2$ 与直线 $y=2x$ 所围成图形的面积为（　　）",
+  "options": [{"label": "A", "text": "$\\frac{2}{3}$"}, {"label": "B", "text": "$\\frac{4}{3}$"},
+              {"label": "C", "text": "$1$"}, {"label": "D", "text": "$\\frac{1}{3}$"}],
+  "answer": "B",
+  "analysis": "交点满足 $x^2=2x$，得 $x=0,2$。面积 $S=\\int_0^2(2x-x^2)\\,dx=\\frac{4}{3}$。",
+  "scoringPoints": ["求交点", "列积分", "计算结果"],
+  "selfCheck": {"passed": true, "steps": 3, "knowledgeCount": 2, "computeLevel": "中",
+                "traps": 1, "note": ""}}]}
+
+正例二（计算题，展示公式 $$...$$，多问分点）：
+{"questions": [{"type": "compute", "score": 12, "difficulty": "高",
+  "knowledgePoint": "定积分应用",
+  "blueprint": {"points": ["分部积分"], "prerequisites": ["求导", "定积分"], "steps": 4,
+    "knowledgeCount": 3, "computeLevel": "大", "traps": ["无穷区间收敛性"], "unconventional": false,
+    "solutionPath": "求导找驻点，分部积分", "answerCheck": "数值近似验证"},
+  "stem": "已知 $f(x)=x\\,e^{-x}$。\\n（1）求 $f(x)$ 在 $[0,+\\infty)$ 上的最大值；\\n（2）求曲线 $y=f(x)$ 与 $x$ 轴、$y$ 轴所围图形的面积。",
+  "options": [],
+  "answer": "（1）$\\frac{1}{e}$\\n（2）$1-\\frac{2}{e}$",
+  "analysis": "（1）$f'(x)=(1-x)e^{-x}$，驻点 $x=1$，最大值 $f(1)=\\frac{1}{e}$。\\n（2）面积 $$S=\\int_0^{+\\infty}x\\,e^{-x}\\,dx=1-\\frac{2}{e}$$ 经分部积分即得。",
+  "scoringPoints": ["求导与驻点", "验证最大值", "分部积分", "收敛判定"],
+  "selfCheck": {"passed": true, "steps": 4, "knowledgeCount": 3, "computeLevel": "大",
+                "traps": 1, "note": ""}}]}"""
 
 QUESTION_USER_TEMPLATE = """【教学材料（可用于命题的参考内容）】
 {context}
@@ -67,7 +121,15 @@ QUESTION_USER_TEMPLATE = """【教学材料（可用于命题的参考内容）�
 {extra}
 
 按目标难度档先把参数定下来（步骤数、综合知识点数、计算量、陷阱数、是否非常规），
-写进 blueprint，再据此命题，最后按 selfCheck 自检。严格输出 JSON。"""
+写进 blueprint，再据此命题，最后按 selfCheck 自检。
+
+【输出硬性要求，这是最后确认，冲突时以本节为准】
+将最终 JSON 放在 <questions> 与 </questions> 标签之间，标签内只允许一个 JSON 对象，
+结构为 <questions>{{"questions": [...]}}</questions>。
+1 每道题字段名与类型必须与 Schema 完全一致，缺失字段、类型错误或混入多余字段都视为废题，必须重写后再输出。
+2 数学公式只能用 $...$ 与 $$...$$ 定界，出现 \\( \\)、\\[ \\]、markdown 代码块包公式即为废题。
+3 XML 标签之外禁止任何解释文字、前后缀或代码栅栏。
+4 不符合以上任一条，你的输出将被整体拒绝，先在内部逐字段检查再输出。"""
 
 SOLVE_SYSTEM = """你是数学解题专家。针对给出的题目独立解题，输出 JSON：
 {"answer": "最终答案，必须与解析的结论完全一致",

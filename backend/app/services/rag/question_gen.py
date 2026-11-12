@@ -1,18 +1,25 @@
-"""出题服务：混合检索参考片段 + DeepSeek JSON 输出 + Pydantic 校验。
+"""出题服务：混合检索参考片段 + DeepSeek 流式 JSON + Pydantic 强校验。
 
+- 提示词注入 Schema 与 Few-Shot，输出要求放在 <questions> XML 标签内（近因效应）
+- 流式生成、滚动解析：每个完整题目对象立即做 Pydantic 校验，有错立刻阻断
+- 校验失败先用 JSON Repair 抢救，再带错误信息重试一次
 - original 模式下先统计材料中该题型的原题数量，不足时抛 NeedConfirmError 询问用户
 - existing_stems 用于跨请求全局去重：prompt 约束 + 生成后按归一化题干过滤
 - progress_cb 用于向调用方上报真实生成进度（百分比 + 阶段文案）
 - api_key 为当前用户的 DeepSeek 密钥；retrieve_fn 可注入检索实现（测试用）
 - 解题在评审链路的最后一步独立进行（question_review._solve_all），命题侧不产答案
 """
+import json
 import re
 import uuid
 from typing import Callable
 
+import json_repair
+from pydantic import ValidationError
+
 from app.schemas.question import GenerateParams, Question, QuestionType
 from app.services.rag import retrieval, vectorstore
-from app.services.rag.llm import chat_json
+from app.services.rag import llm
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 ProgressCB = Callable[[int, str], None]
@@ -63,6 +70,134 @@ class NeedConfirmError(Exception):
         self.available = available
         self.requested = requested
         super().__init__(f"{type_label}原题仅 {available} 道，不足 {requested} 道")
+
+
+class QuestionOutputError(Exception):
+    """生成输出不符合 Schema；summary 供重试回喂，raw_excerpt 供日志与排查。"""
+
+    def __init__(self, summary: str, raw_excerpt: str = ""):
+        self.summary = summary
+        self.raw_excerpt = raw_excerpt
+        super().__init__(summary)
+
+
+_WRAPPER_TAG = re.compile(r"</?\s*questions\s*>")
+_CODE_FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
+_JSON_DECODER = json.JSONDecoder()
+
+
+def strip_output_wrapper(text: str) -> str:
+    """剥掉 <questions> XML 包裹与 markdown 代码栅栏，只留 JSON 文本。"""
+    text = (text or "").strip()
+    text = _WRAPPER_TAG.sub("", text)
+    text = _CODE_FENCE.sub("", text)
+    return text.strip()
+
+
+def _schema_validate(obj: dict) -> Question:
+    """Pydantic 强校验；失败抛出带字段级摘要的 QuestionOutputError。"""
+    try:
+        return Question.model_validate(obj)
+    except ValidationError as exc:
+        parts = []
+        for err in exc.errors()[:4]:
+            loc = ".".join(str(p) for p in err["loc"]) or "root"
+            parts.append(f"{loc} {err['msg']}")
+        raise QuestionOutputError("；".join(parts)) from exc
+
+
+class _RollingParser:
+    """滚动解析 {"questions": [...]}：流式接收，完整对象逐个提取并立即校验。"""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._pos = 0
+        self._array_start: int | None = None
+        self._closed = False
+        self._extracted = 0
+
+    def feed(self, text: str) -> None:
+        self._buf += text
+
+    def extract(self, validate) -> list[Question]:
+        """提取新完成的题目对象；校验失败立刻抛出，阻断后续内容。"""
+        out: list[Question] = []
+        if self._closed:
+            return out
+        if self._array_start is None:
+            match = re.search(r'"questions"\s*:\s*\[', self._buf)
+            if not match:
+                return out
+            self._array_start = match.end()
+            self._pos = self._array_start
+        while not self._closed:
+            while self._pos < len(self._buf) and self._buf[self._pos] in " \t\r\n,":
+                self._pos += 1
+            if self._pos >= len(self._buf):
+                break
+            if self._buf[self._pos] == "]":
+                self._closed = True
+                self._pos += 1
+                break
+            if self._buf[self._pos] != "{":
+                break  # 数组结构异常，交给 finish 的 JSON Repair
+            try:
+                obj, end = _JSON_DECODER.raw_decode(self._buf, self._pos)
+            except json.JSONDecodeError:
+                break  # 对象尚未接收完整，等待下一个增量
+            self._pos = end
+            out.append(validate(obj))
+            self._extracted += 1
+        return out
+
+    def finish(self, validate) -> list[Question]:
+        """流结束后的兜底：剩余未提取内容用 JSON Repair 抢救，抢救出的题同样强校验。"""
+        if self._closed:
+            return []
+        if self._array_start is None:
+            data = json_repair.loads(strip_output_wrapper(self._buf))
+            items = data.get("questions") if isinstance(data, dict) else data
+            out = []
+            for item in items or []:
+                if isinstance(item, dict):
+                    out.append(validate(item))
+            self._closed = True
+            return out
+        seg = self._buf[self._array_start:]
+        last = seg.rfind("}")
+        if last < 0:
+            self._closed = True
+            return []
+        try:
+            fixed = json_repair.loads("[" + seg[: last + 1] + "]")
+        except Exception:  # noqa: BLE001
+            self._closed = True
+            return []
+        out = []
+        for item in fixed[self._extracted:]:
+            if isinstance(item, dict):
+                out.append(validate(item))
+        self._closed = True
+        return out
+
+
+def _stream_questions(messages: list[dict], budget: int, api_key: str | None) -> list[Question]:
+    """流式生成 + 滚动解析：每个完整对象立即校验，有错立刻阻断当前批次。"""
+    parser = _RollingParser()
+    raw: list[str] = []
+    collected: list[Question] = []
+    try:
+        for delta in llm.chat_stream(messages, api_key=api_key, max_tokens=budget, thinking_off=True):
+            raw.append(delta)
+            parser.feed(delta)
+            collected.extend(parser.extract(_schema_validate))
+        collected.extend(parser.finish(_schema_validate))
+    except QuestionOutputError as exc:
+        exc.raw_excerpt = "".join(raw)[-1500:]
+        raise
+    if not collected:
+        raise QuestionOutputError("未解析出任何题目对象", "".join(raw)[-1500:])
+    return collected
 
 
 def _section_matches(section: str, qtype: QuestionType) -> bool:
@@ -131,7 +266,7 @@ def _gen_batch(
     directive: str,
     hint: str = "",
 ) -> list[Question]:
-    """一次模型调用生成 count 道题。不改共享状态，去重交给调用方。"""
+    """一次生成 count 道题：流式输出 + 滚动校验，Schema 失败带错误信息重试一次。"""
     type_label = TYPE_LABELS[tc.type]
     extra = f"- 知识点范围：{scope}" if scope else ""
     if hint:
@@ -162,29 +297,41 @@ def _gen_batch(
         score=DEFAULT_SCORES.get(tc.type, 5),
         extra=extra,
     )
-    data = chat_json(
-        [
-            {"role": "system", "content": QUESTION_SYSTEM},
-            {
-                "role": "user",
-                "content": user_prompt
-                + f"\n\n【重要】本次生成的每一道题 type 字段必须严格为 {tc.type.value}（{type_label}），不得混入其他题型。"
-                + f"\n本次请恰好生成 {count} 道。",
-            },
-        ],
-        api_key=api_key,
-        # 输出预算按题数给，避免默认上限把 JSON 截断成非法结构
-        max_tokens=GEN_TOKENS_OVERHEAD + GEN_TOKENS_PER_QUESTION * count,
-        # 出题只要成品，开着思考时单题能拖三分钟以上，并发后必然撞超时
-        thinking_off=True,
-    )
-    raw = data.get("questions", data if isinstance(data, list) else [])
-    out: list[Question] = []
-    for item in raw:
+    base_messages = [
+        {"role": "system", "content": QUESTION_SYSTEM},
+        {
+            "role": "user",
+            "content": user_prompt
+            + f"\n\n【重要】本次生成的每一道题 type 字段必须严格为 {tc.type.value}（{type_label}），不得混入其他题型。"
+            + f"\n本次请恰好生成 {count} 道。",
+        },
+    ]
+    budget = GEN_TOKENS_OVERHEAD + GEN_TOKENS_PER_QUESTION * count
+
+    last_error: QuestionOutputError | None = None
+    last_raw = ""
+    questions: list[Question] = []
+    for attempt in range(2):
+        msgs = base_messages
+        if attempt and last_error is not None:
+            msgs = base_messages + [
+                {"role": "assistant", "content": last_raw[:1200]},
+                {"role": "user", "content": (
+                    f"上面的输出不符合 Schema：{last_error.summary}。"
+                    "请逐字段修正后重新输出，把完整 JSON 放在 <questions></questions> 之间，"
+                    "字段名与类型严格与 Schema 一致，公式只用 $...$ 与 $$...$$ 定界。"
+                )},
+            ]
         try:
-            q = Question.model_validate(item)
-        except Exception:
-            continue
+            questions = _stream_questions(msgs, budget, api_key)
+            break
+        except QuestionOutputError as exc:
+            last_error = exc
+            last_raw = exc.raw_excerpt
+            questions = []
+
+    out: list[Question] = []
+    for q in questions:
         if q.type != tc.type:
             continue  # 题型不符直接丢弃
         q.id = f"q-{uuid.uuid4().hex[:10]}"
@@ -197,7 +344,12 @@ def _gen_batch(
             q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
             q.answer = "A" if q.answer in ("正确", "对", "T", "true", "√") else "B"
         out.append(q)
-    return out
+    if out:
+        return out
+    summary = last_error.summary if last_error else f"输出中不含任何 {type_label} 对象"
+    raise ValueError(
+        f"{type_label}生成输出不符合 Schema（{summary}），已带错误重试仍未通过"
+    )
 
 
 PLAN_PROMPT = """你是高等数学命题组长。根据下面的教学材料与知识点范围，列出 {count} 个互不相同的细分考点，
@@ -233,7 +385,7 @@ def _plan_points(
         scope=scope or "未限定", context=context,
     )
     try:
-        data = chat_json(
+        data = llm.chat_json(
             [{"role": "user", "content": prompt}],
             api_key=api_key,
             max_tokens=800,

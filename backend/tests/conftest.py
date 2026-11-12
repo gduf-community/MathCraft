@@ -1,6 +1,7 @@
 """pytest 公共夹具：临时 SQLite + 进程内隔离 Redis，外部模型全部打桩。"""
 # ruff: noqa: E402 -- 必须先设置隔离环境与假凭据，再导入应用。
 import itertools
+import json
 import os
 import re
 import sys
@@ -143,6 +144,15 @@ def fake_question_chat_json(messages, api_key=None, retries=1, **kwargs) -> dict
     return {"questions": questions}
 
 
+def fake_question_chat_stream(messages, api_key=None, max_tokens=None,
+                              thinking_off=False, temperature=0.7, **kwargs):
+    """出题走流式滚动解析；假服务按 24 字符分片输出同款 JSON。"""
+    payload = fake_question_chat_json(messages)
+    text = json.dumps(payload, ensure_ascii=False)
+    for i in range(0, len(text), 24):
+        yield text[i:i + 24]
+
+
 def fake_slot_chat_json(messages, api_key=None, retries=1, **kwargs) -> dict:
     return {
         "types": [{"type": "single", "count": 2}],
@@ -188,7 +198,7 @@ def fake_models(monkeypatch):
     monkeypatch.setattr(rerank, "rerank", fake_rerank)
     monkeypatch.setattr(llm, "chat_text", lambda *a, **k: "假设段落：导数的定义与求导法则。")
     monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {})
-    monkeypatch.setattr(question_gen, "chat_json", fake_question_chat_json)
+    monkeypatch.setattr(llm, "chat_stream", fake_question_chat_stream)
     monkeypatch.setattr(slots, "chat_json", fake_slot_chat_json)
     # 出题中间件默认直通：接口用例只验证编排，中间件逻辑由 test_question_review 单独覆盖
     monkeypatch.setattr(

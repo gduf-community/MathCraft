@@ -29,6 +29,23 @@ def _as_str_list(value) -> list[str]:
     return []
 
 
+# 渲染层只解析美元定界符；模型偶发输出 \( \) 与 \[ \]，入库前统一改写
+_INLINE_MATH = re.compile(r"\\\((.+?)\\\)", re.S)
+_DISPLAY_MATH = re.compile(r"\\\[(.+?)\\\]", re.S)
+_CODE_FENCE = re.compile(r"```(?:latex|tex|math)?\s*|\s*```")
+
+
+def normalize_latex(text: str) -> str:
+    """把其他 LaTeX 定界符统一成 $...$ / $$...$$，并剥掉 markdown 代码栅栏。"""
+    if not text:
+        return text
+    if "```" in text:
+        text = _CODE_FENCE.sub("", text)
+    text = _DISPLAY_MATH.sub(lambda m: "$$" + m.group(1) + "$$", text)
+    text = _INLINE_MATH.sub(lambda m: "$" + m.group(1) + "$", text)
+    return text
+
+
 class QuestionType(str, Enum):
     single = "single"      # 选择题
     multiple = "multiple"  # 多选题
@@ -75,10 +92,19 @@ class Question(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce(cls, data):
-        """兼容模型输出的常见偏差：蓝图/自检写成字符串、选项写成字符串数组。"""
+        """兼容模型输出的常见偏差：蓝图/自检写成字符串、选项写成字符串数组、定界符不统一。"""
         if not isinstance(data, dict):
             return data
         out = dict(data)
+        for key in ("stem", "answer", "analysis"):
+            if isinstance(out.get(key), str):
+                out[key] = normalize_latex(out[key])
+        if isinstance(out.get("options"), list):
+            out["options"] = [
+                {**item, "text": normalize_latex(item["text"])}
+                for item in out["options"]
+                if isinstance(item, dict) and isinstance(item.get("text"), str)
+            ] if all(isinstance(item, dict) for item in out["options"]) else out["options"]
         for key in ("blueprint", "selfCheck", "difficultyReview"):
             if key in out:
                 out[key] = _as_dict(out[key])
@@ -90,7 +116,7 @@ class Question(BaseModel):
             for index, item in enumerate(options):
                 if isinstance(item, str):
                     label = "ABCDEFGH"[index] if index < 8 else str(index + 1)
-                    text = item.strip()
+                    text = normalize_latex(item.strip())
                     matched = _OPTION_PREFIX.match(text)
                     if matched:
                         label, text = matched.group(1).upper(), matched.group(2).strip()
