@@ -29,6 +29,8 @@ logs/
 local_secrets.py
 
 # 测试、静态检查与浏览器验证产物
+mathcraft_test_*/
+/backend/tests/.data-home/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -54,6 +56,12 @@ __pycache__/
 *.pyc
 *.pyo
 *.cache
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
