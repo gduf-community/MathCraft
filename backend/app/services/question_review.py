@@ -19,6 +19,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+import json_repair
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -289,6 +290,13 @@ def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 
                 return data
             last = ValueError("返回不是 JSON 对象")
         except Exception as exc:  # noqa: BLE001
+            # JSON Repair 兜底：截断或非法结构先修复再校验，修复失败才进入下一轮
+            try:
+                repaired = json_repair.loads(_strip_json(text))
+                if isinstance(repaired, dict) and repaired:
+                    return repaired
+            except Exception:  # noqa: BLE001
+                pass
             last = exc
     raise ValueError(f"JSON 解析失败：{last}")
 
