@@ -265,8 +265,9 @@ class LocalExportBuffer:
 
     def close(self, timeout_seconds: float = 2) -> bool:
         """Bound process exit; unfinished exports remain observable failures."""
-        self._deadline = min(self._deadline, time.monotonic() + timeout_seconds)
-        self._closing.set()
+        with self._lock:
+            self._deadline = min(self._deadline, time.monotonic() + timeout_seconds)
+            self._closing.set()
         self._worker.join(max(0, min(timeout_seconds, self._deadline - time.monotonic())) + 0.1)
         return not self._worker.is_alive()
 

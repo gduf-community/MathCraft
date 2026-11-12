@@ -499,6 +499,42 @@ class BufferTests(unittest.TestCase):
         self.assertEqual(buffer.snapshot()["accepted"], 1)
         self.assertEqual(buffer.snapshot()["dropped"], 1)
 
+    def test_close_waits_for_an_admitted_submission_before_worker_exit(self) -> None:
+        """停机必须等待已通过准入检查的入队，不能留下无消费者的项目。"""
+        buffer = self.buffer()
+        self.release.set()
+        entered, release, closing_started = (
+            threading.Event(), threading.Event(), threading.Event(),
+        )
+        put_nowait = buffer._queue.put_nowait
+
+        def gated_put(payload):
+            entered.set()
+            release.wait(2)
+            put_nowait(payload)
+
+        closed = []
+
+        def close():
+            closing_started.set()
+            closed.append(buffer.close(1))
+
+        with patch.object(buffer._queue, "put_nowait", gated_put):
+            producer = threading.Thread(target=buffer.submit, args=(self.request(),))
+            producer.start()
+            self.assertTrue(entered.wait(2))
+            closer = threading.Thread(target=close)
+            closer.start()
+            self.assertTrue(closing_started.wait(2))
+            self.assertFalse(buffer._closing.wait(0.05))
+            release.set()
+            producer.join(2)
+            closer.join(2)
+        self.assertEqual(closed, [True])
+        self.assertTrue(buffer.flush(0.1))
+        self.assertEqual(buffer.snapshot()["pending"], 0)
+        self.assertEqual(buffer.snapshot()["exported"], 1)
+
 
 @unittest.skipUnless(OTLP_AVAILABLE, "Use the isolated tools/ops_g0 dependency environment")
 class CleanupBoundaryTests(unittest.TestCase):

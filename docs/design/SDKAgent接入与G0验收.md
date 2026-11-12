@@ -38,11 +38,11 @@ G0 必须由真实 HTTP 入口、实际 SDK/业务事务和真实本地 Phoenix 
 | 前端 | typecheck/lint/build 通过；0 错误、3 条原有 lint 警告和原有大分包提示；59 组整合、2 组管理面板、23 组 ops 浏览器回归通过；ops 内含 174 项扩展断言、28 次页面/宽度溢出检查，0 意外请求及未处理异常 |
 | Ruff | 新增/修改范围通过；全库仅既有 `test_banks.py:73 F841` |
 | Pyright | 相同工作区布局下干净 agent 基线 42、当前 42，未新增诊断；不把原 main 目录的 15 项与隔离 agent 环境直接相减 |
-| 完整后端 | 正在执行，待结果回填 |
+| 完整后端 | 769 passed、115 subtests passed，1176.10 秒；随后 close/submit 修复的受影响 tracing/transport/verifier 三模块 38 passed、21 subtests passed |
 | 实际业务 Phoenix | 最终矩阵 13/13 场景、432 个持久 span、563 条安全事件、62 次假模型 HTTP 请求，0 真实模型及未授权网络 |
 | 独立审查 | Standards / Spec 两个无编写上下文的审查者正在执行，待结果回填 |
 
-完整后端命令为 `.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider`，静态检查为 `ruff check --no-cache backend/app backend/tests tools/ops_g0` 及前端 Pyright。独立工具使用 unittest discovery，避免 pytest 自动夹具把 SDK 模型层替换掉。实际业务命令、独立存储结果和审查整改将在完成后写入下一节。
+完整后端命令为 `.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider`，静态检查为 `ruff check --no-cache backend/app backend/tests tools/ops_g0` 及前端 Pyright。首轮全量曾有 9 项失败（8 项独立工具回环端口被统一禁网拒绝、1 项事件版本字段切换时的旧收集函数），定位后定向通过，最终完整重跑取得上述结果。最后停机竞态变更只复核受影响范围，不无理由重复整套。独立工具另用 unittest discovery；实际业务运行器不执行 pytest 自动模型替换。
 
 ## 实际业务与故障证据索引
 
@@ -70,3 +70,14 @@ Phoenix 授权实测无凭据 401、无效假 key 401、独立授权 200，没�
 ## 门禁与集成状态
 
 当前 G0 及分支集成待本轮最终证据；不得以测试数、ACK、Phoenix 在线或历史独立 harness 代替实际业务验收。G1 仍待 G0 和 agent 独立审查；G2/G3 未实现、未验收。
+
+## 独立审查整改
+
+使用仓库 code-review 技能，由没有附带编写上下文的 Laplace（Standards）和 Beauvoir（Spec）分别审查基线 `05cc44d` 到候选 `069cbd4` 的 53 文件，并独立复核后续修复。两轴结论分别记录，不用一轴通过掩盖另一轴问题。
+
+| 审查轴 | 发现及修复 |
+| --- | --- |
+| Standards | lifespan 的 finally 覆盖启动恢复失败；端口在线程创建前校验，意外发送错误结清队列；工具测试只放行自行绑定的数值回环端口；客户端构造/enter/exit 失败关闭准入并报告 unavailable；正常 close 与 submit 共用锁，防止空队列 worker 退出后接受孤立项目 |
+| Spec | OI 2.7 不转发 custom_span.data，改用上下文 metadata 继承 stage/attempt；审核异常放行保持业务原行为，但事实标 unknown 且不计 passed；G0 要求非根执行 AGENT 及所有 LLM 父链；并发与同会话多 run 改由真实 HTTP 登录和出题驱动 |
+
+最后 close/submit 修复在候选后新增，传输文件 SHA-256 为 `fbc78c42e1cbf75bc513177dc4238585bf77d7f1d4e1fc60e8fe4de29260e106`。Standards 的五项问题均已独立关闭；审查者在旧竞态暂停点重复 10 轮，放行后均 accepted=exported=1、pending=0，反向先关闭顺序也拒绝入队且无遗留线程。Spec 最终结论待回填。没有通过修改测试 Redis、添加真实模型调用或放宽外部网络来取得通过。

@@ -26,7 +26,7 @@ MathCraft/
 │   │       ├── agent_sdk.py # 出题的单次 SDK 模型执行与同步流适配
 │   │       ├── generation_observation.py # 请求内业务事实与线程上下文
 │   │       ├── agent_tracing.py # 追踪生命周期与安全字段白名单
-│   │       └── agent_telemetry/ # 应用与 G0 工具共用的本地有界脱敏导出
+│   │       ├── agent_telemetry/ # 应用与 G0 工具共用的本地有界脱敏导出
 │   │       └── rag/          # 检索、出题及四模式对话；intent、modes、qa、data_agent
 │   ├── alembic/              # 数据库迁移
 │   ├── scripts/              # 认证密钥、管理员与开发账号初始化
@@ -66,6 +66,8 @@ MathCraft/
 ├── docs/
 │   ├── api.md                # API 文档
 │   └── design/               # 功能设计、实施记录与待实现方案
+│       ├── Agent开发指南.md # 固定业务、SDK执行、扩展与协作边界
+│       ├── SDKAgent接入与G0验收.md # 实际业务、安全证据与门禁记录
 │       ├── 运维后台升级方案.md # 运维方案、前端先行例外与验收记录
 │       ├── 运维后台接口与联调契约.md   # 拟新增接口、状态和联调样例
 │       ├── 运维后台模块说明.md     # 模块职责、依赖与验收要点
