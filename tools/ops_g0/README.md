@@ -13,6 +13,7 @@
 | `environment.py`、`compose.yaml` | 新建并保留独立 Phoenix 凭据、数据和固定镜像 |
 | `redaction.py`、`transport.py` | 入缓冲前脱敏、回环出口、有界队列／重试／退出 |
 | `harness.py` | SDK 假模型／假工具、并发与线程关联，内存执行事实 |
+| `live_smoke.py` | 显式授权后的真实 DeepSeek 小样本验收，硬限 3 请求／每次 128 输出 tokens |
 | `phoenix.py`、`verify.py` | 认证管理／读取，逐 span 核对真实存储及权限 |
 | `retention.py` | 新合成项目的公开时间窗删除验证，不启动周期调度 |
 
@@ -42,7 +43,7 @@ docker compose -f tools/ops_g0/compose.yaml --env-file .scratch/ops-g0-20261112/
 & $g0python -X utf8 -m tools.ops_g0.harness --label recheck-01
 & $g0python -X utf8 -m tools.ops_g0.verify evidence-recheck-01
 & $g0python -X utf8 -m tools.ops_g0.retention --label recheck-01
-& $g0python -X utf8 -m unittest discover -s backend/tests -p test_ops_g0_preparation.py -v
+& $g0python -X utf8 -m unittest discover -s backend/tests -p 'test_ops_g0_*.py' -v
 ```
 
 `audit` 使用本地 ref，不自动 fetch；记录 SHA 后再解释结果。`harness` 输出 `sdk-evidence.json` 与脱敏 `.otlp`，`verify` 独立输出 `phoenix-verification.json`、`persisted-spans.json`。后者通过才算持久可查；SDK 文件里的 `phoenix_persistence_verified:false` 表示导出脚本本身不作存储判断，以独立 verification 为准。出口、脱敏或正常导出缺失会让 harness 报错并保留已生成证据。
@@ -50,6 +51,19 @@ docker compose -f tools/ops_g0/compose.yaml --env-file .scratch/ops-g0-20261112/
 `retention` **只操作新建的 `ops-g0-retention-<label>` 合成项目**：写入四天前及当前的根／子 spans，先读取两组，再禁用原生到期规则，经公开 REST 删除三天前窗口，复读并重复删除。结果在 `retention-<label>.json`。禁止把它改成业务项目名或用它操作 Phoenix 私有表。
 
 唯一清理选择为应用经公开接口调度。`retention.POLICY` 记录正文 3 天、每日一次、24 小时窗口、每次最多 8 窗口；本工具没有注册 scheduler。G0 后乙/M8 负责实际周期调度、持久游标、失败恢复和记录；不能再启用 Phoenix 原生过期规则并行清理。隔离验收样例之外的正文保留尚未接线。
+
+## 真实模型验收（显式请求时才运行）
+
+日常测试仍只用假服务。用户明确要求真实模型验收后，在调用进程安全注入 `DEEPSEEK_API_KEY`；`DEEPSEEK_MODEL` 默认 `deepseek-flash`，`DEEPSEEK_BASE_URL` 仅允许 `https://api.deepseek.com` 或其 `/v1`。不在命令行填写凭据，不打印已有配置，也不读取 `local_secrets.py`。本轮凭据由忽略目录内的启动脚本从既有部署配置加载到子进程环境，未复制或归档其值。
+
+```powershell
+# 仅在凭据已经安全注入当前进程，且用户明确授权后执行
+& $g0python -X utf8 -m tools.ops_g0.live_smoke --allow-real-model --label live-recheck-01
+```
+
+脚本只发送合成的 `17+25`：普通返回、真实模型调用本地加法工具、流式返回各一次；工具模式得到工具结果后直接结束，不追加回答请求。最多 3 个模型 POST、每次 `max_tokens<=128`、SDK 客户端不自动重试、总执行时限 120 秒；只允许官方 DeepSeek Chat Completions 端点及本地追踪读取。拒绝未经授权的主机、路径、模型替换和超额调用。错误只归档类型，provider 响应正文与凭据不进报告。
+
+结果保存在 `evidence-<label>/real-model-report.json`，同时保存 SDK／本地 Phoenix 对照证据。真实调用完成后需单独复核存储；本脚本不会把独立模型烟测标为实际业务 G0 通过。本轮已完成的 3 次付费调用不会因重跑离线测试而重复执行。
 
 ## 停止与数据
 
@@ -62,6 +76,8 @@ docker compose -f tools/ops_g0/compose.yaml --env-file .scratch/ops-g0-20261112/
 
 ## 限制
 
-脱敏器只验证已列出的合成凭据形式，不能当作任意文本的完整 DLP。真实业务接入前须明确正文白名单，并补实际 SDK 模型、工具、异常和嵌套字段样例。导出队列及单 payload 有界，不代表 SDK 自身所有活跃 trace 状态或业务输入均有界。HTTP 客户端不读取导出响应正文；关闭有截止时间，未完成如实记录，不能宣称故障样本可重放。
+脱敏器只验证已列出的合成凭据形式，不能当作任意文本的完整 DLP。结构化／转义字段被截断或无法解析时整体排除；真实业务接入前仍须明确正文白名单。导出队列及单 payload 有界，不代表 SDK 自身所有活跃 trace 状态或业务输入均有界。HTTP 2xx 导出回执最多读取 16 KiB 并按 OTLP protobuf 解析，拒收或非法回执计失败、不记录响应文字；部分拒收不重发整批。关闭有截止时间，未完成如实记录，不能宣称故障样本可重放。
+
+合成出口守卫在锁定 HTTPX 0.28.1 的单跳请求分派处检查同步／异步及重定向，并辅以同步 socket 检查；不宣称覆盖任意库直接发起的原始 TCP。真实模型工具仅放行唯一有预算的模型客户端，其他 SDK HTTPX 出口仍限定本地。升级 HTTPX 后须重新核验该测试专用分派接点，不将其接入应用全局。
 
 当前测试通过 unittest 运行，不导入应用 `conftest.py`，不连接或清空 Redis，不使用应用 SQLite。实际入口、取消、最终交付版本及审核证据仍等外部交接，完整 G0 由原方案验收负责人确认。

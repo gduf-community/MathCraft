@@ -12,8 +12,12 @@ import time
 from urllib.parse import urlsplit
 
 import httpx
+from google.protobuf.message import DecodeError
 from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+    ExportTraceServiceResponse,
+)
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 
@@ -31,6 +35,7 @@ class ExportCounters:
     attempts: int = 0
     maximum_depth: int = 0
     boundary_errors: int = 0
+    rejected_responses: int = 0
 
 
 def _clean_any(value: AnyValue) -> None:
@@ -47,7 +52,20 @@ def _clean_any(value: AnyValue) -> None:
 
 def _clean_attributes(attributes: Iterable[KeyValue], exclude_body: bool = False) -> None:
     for attribute in attributes:
-        body = attribute.key.startswith(("input.", "output.", "llm.input_", "llm.output_"))
+        body = attribute.key.lower() in {"request", "response", "body", "input", "output"} or (
+            attribute.key.lower().startswith(
+                (
+                    "input.",
+                    "output.",
+                    "llm.input_",
+                    "llm.output_",
+                    "http.request.body",
+                    "http.response.body",
+                    "request.body",
+                    "response.body",
+                )
+            )
+        )
         if sensitive_key(attribute.key) or (exclude_body and body):
             attribute.value.Clear()
             attribute.value.string_value = REDACTED
@@ -148,7 +166,9 @@ class LocalExportBuffer:
     def snapshot(self) -> dict[str, int]:
         """Expose finite-buffer counters without credentials or raw errors."""
         with self._lock:
-            return asdict(self._counters)
+            result = asdict(self._counters)
+            result["pending"] = max(0, result["accepted"] - result["exported"] - result["failed"])
+            return result
 
     def record_boundary_error(self) -> None:
         """Count a fail-closed encoding/capture error without retaining the raw exception."""
@@ -177,6 +197,20 @@ class LocalExportBuffer:
                     },
                 ) as response:
                     if 200 <= response.status_code < 300:
+                        content = bytearray()
+                        for chunk in response.iter_bytes(chunk_size=4096):
+                            if len(content) + len(chunk) > 16384:
+                                return False
+                            content.extend(chunk)
+                        try:
+                            receipt = ExportTraceServiceResponse.FromString(bytes(content))
+                        except DecodeError:
+                            return False
+                        if receipt.partial_success.rejected_spans:
+                            with self._lock:
+                                self._counters.rejected_responses += 1
+                            # Do not resend partly accepted batches: acceptance is ambiguous.
+                            return False
                         return True
                     if response.status_code not in {408, 429, 500, 502, 503, 504}:
                         return False
@@ -217,9 +251,9 @@ class LocalExportBuffer:
 
     def close(self, timeout_seconds: float = 2) -> bool:
         """Bound process exit; unfinished exports remain observable failures."""
-        self._deadline = time.monotonic() + timeout_seconds
+        self._deadline = min(self._deadline, time.monotonic() + timeout_seconds)
         self._closing.set()
-        self._worker.join(timeout_seconds + 0.1)
+        self._worker.join(max(0, min(timeout_seconds, self._deadline - time.monotonic())) + 0.1)
         return not self._worker.is_alive()
 
 
