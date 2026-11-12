@@ -58,6 +58,7 @@ def verify(directory: str) -> dict:
                 or (span["parent_id"] or "") != sample["parent_id"]
                 or attrs.get("metadata.run_id") != case["run_id"]
                 or attrs.get("metadata.sdk_trace_id") != case["sdk_trace_id"]
+                or attrs.get("metadata.batch_id") != case["batch_id"]
                 or attrs.get("user.id") != case["user_id"]
                 or attrs.get("session.id") != case["session_id"]
             ):

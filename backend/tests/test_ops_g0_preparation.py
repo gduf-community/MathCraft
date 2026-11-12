@@ -119,6 +119,30 @@ class RedactionTests(unittest.TestCase):
             self.assertEqual(result["request"], REDACTED)
             self.assertEqual(result["response"], REDACTED)
 
+    def test_nested_sensitive_body_regression(self) -> None:
+        marker = "synthetic-nested-body-canary"
+        for route in ("/api/auth/login/account", "/api/users/me/model-settings"):
+            for value in (
+                {"http.route": route, "http.request.body": marker},
+                {"url.full": "http://127.0.0.1" + route, "http.response.body": marker},
+                {
+                    "route": route,
+                    "metadata": [{"nested": json.dumps({"request": {"arbitrary": marker}})}],
+                },
+            ):
+                with self.subTest(route=route, value=value):
+                    result = clean_text(json.dumps(value))
+                    self.assertNotIn(marker, result)
+
+    def test_ordinary_nested_body_is_preserved_regression(self) -> None:
+        value = {
+            "url.full": "http://127.0.0.1/api/generate",
+            "metadata": [{"request": {"topic": "continuous", "api_key": "nested-key-canary"}}],
+        }
+        result = clean_text(json.dumps(value))
+        self.assertIn("continuous", result)
+        self.assertNotIn("nested-key-canary", result)
+
 
 try:
     OTLP_AVAILABLE = all(
@@ -131,6 +155,70 @@ try:
     )
 except PackageNotFoundError:
     OTLP_AVAILABLE = False
+
+
+@unittest.skipUnless(OTLP_AVAILABLE, "Use the isolated tools/ops_g0 dependency environment")
+class SanitizationTests(unittest.TestCase):
+    """Reject sensitive bodies at the serialized OTLP boundary without any network."""
+
+    def test_full_url_sensitive_body_regression(self) -> None:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+        from tools.ops_g0.transport import sanitize_request
+
+        for route in (
+            "/api/auth/login/account",
+            "/api/users/me/model-settings",
+            "/api/users/me/password",
+        ):
+            with self.subTest(route=route):
+                request = ExportTraceServiceRequest()
+                span = request.resource_spans.add().scope_spans.add().spans.add()
+                url = span.attributes.add()
+                url.key, url.value.string_value = "url.full", "http://127.0.0.1" + route
+                for key in ("http.request.body", "http.response.body"):
+                    body = span.attributes.add()
+                    body.key, body.value.string_value = key, "synthetic-url-body-canary"
+                self.assertNotIn(b"synthetic-url-body-canary", sanitize_request(request))
+
+    def test_nested_json_sensitive_body_regression(self) -> None:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+        from tools.ops_g0.transport import sanitize_request
+
+        for inherited in (False, True):
+            with self.subTest(inherited=inherited):
+                request = ExportTraceServiceRequest()
+                span = request.resource_spans.add().scope_spans.add().spans.add()
+                metadata = span.attributes.add()
+                metadata.key = "metadata"
+                nested = {"http.request.body": "synthetic-json-body-canary"}
+                if inherited:
+                    route = span.attributes.add()
+                    route.key, route.value.string_value = "http.route", "/api/auth/login/account"
+                else:
+                    nested["http.route"] = "/api/auth/login/account"
+                metadata.value.string_value = json.dumps({"nested": [nested]})
+                self.assertNotIn(b"synthetic-json-body-canary", sanitize_request(request))
+
+    def test_nested_otlp_values_inherit_exclusion_regression(self) -> None:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+        from tools.ops_g0.transport import sanitize_request
+
+        request = ExportTraceServiceRequest()
+        span = request.resource_spans.add().scope_spans.add().spans.add()
+        route = span.attributes.add()
+        route.key, route.value.string_value = "url.full", "http://127.0.0.1/api/users/me/password"
+        for attributes in (span.attributes, span.events.add().attributes, span.links.add().attributes):
+            metadata = attributes.add()
+            metadata.key = "metadata"
+            nested = metadata.value.array_value.values.add().kvlist_value.values.add()
+            nested.key, nested.value.string_value = "http.request.body", "synthetic-otlp-body-canary"
+        self.assertNotIn(b"synthetic-otlp-body-canary", sanitize_request(request))
 
 
 @unittest.skipUnless(OTLP_AVAILABLE, "Use the isolated tools/ops_g0 dependency environment")
