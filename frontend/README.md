@@ -61,7 +61,11 @@ npm run build      # 类型检查并生成 dist/
 node node_modules/vite/bin/vite.js preview --host 127.0.0.1  # 本机预览构建产物
 ```
 
-开发代理仅用于 Vite 开发服务器；构建预览和生产部署需另行配置 API 与媒体文件访问。`vite.config.ts` 使用空临时目录隔离项目 `.env` 文件；公开地址通过启动或构建进程的 `VITE_API_BASE_URL`、`VITE_WS_BASE_URL` 注入，留空使用当前站点来源。`VITE_*` 会进入浏览器代码，不得放入密钥；临时目录权限错误时检查进程 `TEMP`／`TMP` 是否可写。
+`vite.config.ts` 使用空临时目录作为 `envDir`，隔离项目环境文件；仓库根 `.env`、`frontend/.env` 及它们的 `.local`、模式变体均不读取。API 公开地址通过 Vite 开发或构建进程的 `VITE_API_BASE_URL` 注入，留空时使用当前站点的同源路径。构建时的地址会写入浏览器产物；构建完成后，仅改变 `vite preview` 进程的环境变量不会重写产物，需要重新构建才能更新地址。`VITE_*` 会进入浏览器代码，不得放入密钥；临时目录权限错误时检查进程 `TEMP`／`TMP` 是否可写。
+
+`VITE_WS_BASE_URL` 同样通过开发或构建进程注入，目前仅供 `src/api/urls.ts` 的 `wsUrl()` 工具函数使用，当前前端没有调用该函数或建立 WebSocket 连接。工具函数的地址回退顺序为 `VITE_WS_BASE_URL`、`VITE_API_BASE_URL`、当前页面来源。
+
+当前 Vite 开发服务器将 `/api` 和 `/media` 固定代理到 `http://127.0.0.1:8000`；`vite preview` 默认继承 `server.proxy`，因此本机构建预览也使用这两条固定代理。部署到普通静态托管时不包含 Vite 代理，需要另行配置 API 与媒体文件访问。
 
 ### 上传与预览离线回归
 

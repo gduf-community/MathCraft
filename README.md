@@ -138,7 +138,9 @@ if (-not (Test-Path app/local_secrets.py)) {
 
 上述复制命令仅在缺少 `app/local_secrets.py` 时创建占位配置，已有文件保留。首次账号密码登录无需真实模型凭据，使用模型功能前再配置对应服务。
 
-已有 `.env` 不会被模板覆盖，需手动核对开发开关。配置来源以 [backend/app/config.py](backend/app/config.py) 为准，环境变量优先于 `.env`；修改后需重启后端。
+已有 `.env` 不会被模板覆盖，需手动核对开发开关。后端环境配置以 [backend/app/config.py](backend/app/config.py) 为准，进程环境变量优先于固定位置的 `backend/.env`；修改后需重启后端。唯一可复制的后端环境模板为 [backend/.env.example](backend/.env.example)，根 [.env.example](.env.example) 仅作配置入口指引，当前前后端均不读取根 `.env`。
+
+MinerU Token 在“设置 → 模型与服务”保存，个人配置优先；部署默认 Token 使用 `app/local_secrets.py` 的 `MINERU_DEFAULT_TOKEN`。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不生效，已有本机文件不会自动迁移。嵌入和重排模型仍由管理员“模型与检索”维护。
 
 ### 4. 迁移数据库并创建首个管理员
 
@@ -180,6 +182,8 @@ node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort
 ```
 
 打开 `http://127.0.0.1:5173`，使用刚创建的管理员账号选择“密码登录”。前端将 `/api` 和 `/media` 请求代理到后端的 8000 端口；端口占用时退出，不自动换端口。当前环境的 npm wrapper 会错误解析附加启动参数，因此直接用 Node 执行本地 Vite 入口。
+
+前端隔离项目环境文件，根 `.env` 和 `frontend/.env` 均不会被 Vite 加载；自定义公开 API 地址需在开发启动或构建前通过进程环境变量 `VITE_API_BASE_URL` 注入。监听地址与端口使用上述命令行参数，开发代理目标由 `frontend/vite.config.ts` 定义；`VITE_*` 会进入浏览器代码，不得放入凭据。详见[前端配置说明](frontend/README.md#构建与检查)。
 
 主登录页按 `0b5d4b4` 恢复历史视觉，学生、教师可手动选择身份；认证角色以服务端响应为准，不匹配时退出并提示重新选择，管理员可直接进入管理面板。当前密码、邮箱验证码、重置密码、Turnstile 与安全会话流程保留，现有接口不变。
 

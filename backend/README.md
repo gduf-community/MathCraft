@@ -67,6 +67,8 @@ if (-not (Test-Path app/local_secrets.py)) {
 
 DeepSeek 与 MinerU 个人凭据在应用“设置 → 模型与服务”保存；嵌入、重排模型与凭据由管理员在“模型与检索”维护。部署默认值及优先级见 [模型配置说明](../docs/design/模型配置来源与普通知识库流程.md)。
 
+后端环境模板只有本目录的 [.env.example](.env.example)，仓库根模板仅作配置入口指引。MinerU Token 不从 `.env` 读取：个人 Token 优先，没有时使用 `app/local_secrets.py` 中的 `MINERU_DEFAULT_TOKEN`，格式见 [占位样例](app/local_secrets.example.py)。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不属于当前后端配置；已有 `.env` 中这些字段不会自动迁移或覆盖个人设置。OCR 地址和解析模型仍由 `app/services/mineru.py` 固定。
+
 ### 3. 迁移与创建管理员
 
 ```powershell
