@@ -124,3 +124,26 @@ def chat_text(
         kwargs["response_format"] = response_format
     resp = _create(kwargs, api_key, thinking_off)
     return resp.choices[0].message.content or ""
+
+
+def chat_stream(
+    messages: list[dict],
+    api_key: str | None = None,
+    max_tokens: int | None = None,
+    thinking_off: bool = False,
+    temperature: float = 0.7,
+):
+    """流式返回增量文本；参数与 _create 一致，供出题链路边生成边校验。"""
+    kwargs: dict = {
+        "model": settings.deepseek_model, "messages": messages,
+        "temperature": temperature, "stream": True,
+    }
+    if max_tokens:
+        kwargs["max_tokens"] = max_tokens
+    resp = _create(kwargs, api_key, thinking_off)
+    for chunk in resp:
+        choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
+        delta = getattr(choice, "delta", None) if choice else None
+        piece = getattr(delta, "content", None) if delta else None
+        if piece:
+            yield piece

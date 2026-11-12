@@ -97,6 +97,12 @@
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
 | `GET` | `/api/chat/sessions/{session_id}/progress` | Read Generation Progress |
 
+## export
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/export/docx` | Export Docx |
+
 ## favorites
 
 | 方法 | 路径 | 说明 |
@@ -200,4 +206,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | 测试 MinerU 连接与鉴权（不验证文件解析） |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 109 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 110 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。

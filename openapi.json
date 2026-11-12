@@ -4032,6 +4032,101 @@
         }
       }
     },
+    "/api/export/docx": {
+      "post": {
+        "tags": [
+          "export"
+        ],
+        "summary": "Export Docx",
+        "description": "将请求内已校验的题目导出为 Word，不查询或修改题库。",
+        "operationId": "export_docx_api_export_docx_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportDocxBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "按题型分组生成的 Word 文档",
+            "content": {
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "Content-Disposition": {
+                "description": "附件下载及 UTF-8 文件名",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "答案与解析位置不受支持",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或会话已失效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat/sessions": {
       "post": {
         "tags": [
@@ -6946,6 +7041,16 @@
         "title": "CurrentUserResult",
         "description": "当前登录用户，保持既有 user 外层对象。"
       },
+      "Difficulty": {
+        "type": "string",
+        "enum": [
+          "低",
+          "中",
+          "高",
+          "地狱"
+        ],
+        "title": "Difficulty"
+      },
       "EmailBindingBody": {
         "properties": {
           "email": {
@@ -7189,6 +7294,56 @@
         ],
         "title": "ErrorResponse",
         "type": "object"
+      },
+      "ExportDocxBody": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "include_answer": {
+            "type": "boolean",
+            "title": "Include Answer",
+            "default": true
+          },
+          "include_analysis": {
+            "type": "boolean",
+            "title": "Include Analysis",
+            "default": true
+          },
+          "placement": {
+            "type": "string",
+            "title": "Placement",
+            "default": "inline"
+          },
+          "type_order": {
+            "items": {
+              "$ref": "#/components/schemas/QuestionType"
+            },
+            "type": "array",
+            "maxItems": 6,
+            "minItems": 1,
+            "title": "Type Order"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Questions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "type_order",
+          "questions"
+        ],
+        "title": "ExportDocxBody"
       },
       "FavoriteAddBody": {
         "properties": {
@@ -7450,6 +7605,24 @@
         },
         "type": "object",
         "title": "NotificationReadBody"
+      },
+      "OptionItem": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "text"
+        ],
+        "title": "OptionItem"
       },
       "PaperBatchDeleteBody": {
         "properties": {
@@ -7916,6 +8089,115 @@
           "tasks"
         ],
         "title": "PlatformOverview"
+      },
+      "Question": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "default": ""
+          },
+          "type": {
+            "$ref": "#/components/schemas/QuestionType"
+          },
+          "score": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Score",
+            "default": 5
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty",
+            "default": "中"
+          },
+          "stem": {
+            "type": "string",
+            "title": "Stem"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionItem"
+            },
+            "type": "array",
+            "title": "Options",
+            "default": []
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "analysis": {
+            "type": "string",
+            "title": "Analysis"
+          },
+          "knowledgePoint": {
+            "type": "string",
+            "title": "Knowledgepoint",
+            "default": ""
+          },
+          "blueprint": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Blueprint",
+            "default": {}
+          },
+          "scoringPoints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scoringpoints",
+            "default": []
+          },
+          "selfCheck": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selfcheck",
+            "default": {}
+          },
+          "difficultyScore": {
+            "type": "number",
+            "title": "Difficultyscore",
+            "default": 0.0
+          },
+          "difficultyReview": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Difficultyreview",
+            "default": {}
+          },
+          "starred": {
+            "type": "boolean",
+            "title": "Starred",
+            "default": false
+          },
+          "docName": {
+            "type": "string",
+            "title": "Docname",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "stem",
+          "answer",
+          "analysis"
+        ],
+        "title": "Question"
+      },
+      "QuestionType": {
+        "type": "string",
+        "enum": [
+          "single",
+          "multiple",
+          "judge",
+          "blank",
+          "compute",
+          "essay"
+        ],
+        "title": "QuestionType"
       },
       "QuestionUpdateBody": {
         "properties": {

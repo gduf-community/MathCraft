@@ -10,10 +10,14 @@ backend/
 │   ├── main.py          # 应用入口
 │   ├── config.py        # 配置定义与 backend/.env 加载
 │   ├── api/             # HTTP 与 WebSocket 路由
+│   │   └── export.py    # POST /api/export/docx 与导出请求契约
 │   ├── models/          # 数据库模型
 │   ├── schemas/         # 请求与响应契约
 │   └── services/        # 认证、文档、RAG 与教学业务
-│       └── rag/         # 检索与四模式对话；intent、modes、qa、data_agent
+│       ├── export_docx.py # Word 排版及数学公式转换
+│       └── rag/         # 检索与四模式对话
+│           ├── skills.py # 四模式技能注册、执行上下文与延迟导入
+│           └── question_gen.py # 模型流式接收、滚动解析与题目校验
 ├── alembic/             # 数据库迁移
 ├── scripts/             # 认证密钥、管理员及迁移审计工具
 ├── tests/               # 后端测试与外部服务替身
@@ -49,6 +53,8 @@ if (-not (Test-Path app/local_secrets.py)) {
     Copy-Item app/local_secrets.example.py app/local_secrets.py
 }
 ```
+
+`uv sync` 同时安装 `json-repair`（生成及审核 JSON 修复）、`python-docx`、`latex2mathml`、`mathml2omml`（Word 与公式转换）。它们是当前后端运行依赖，升级后需重新同步；仓库根测试环境使用根目录自己的 `pyproject.toml` 和 `uv.lock`。Word 导出无需模型服务或 Microsoft Word。
 
 认证初始化脚本在缺少 `.env` 时从 [.env.example](.env.example) 创建，补齐 `AUTH_JWT_SECRET` 和 `AUTH_CODE_SECRET`，保留已有合法值且不打印。占位模型配置只在文件缺失时复制；账号密码登录无需真实模型凭据。
 
@@ -92,6 +98,12 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 - OpenAPI：`http://127.0.0.1:8000/openapi.json`
 
 平台索引重建依赖进程内任务，当前使用单 worker。重启中断的资料入库或索引重建需由用户重新解析、管理员重新发起。
+
+## 对话、生成与 Word 导出
+
+`POST /api/chat/sessions/{session_id}/messages` 经 `rag/skills.py` 将显式模式分发给快速出题、创新命题、知识答疑或数据管理；路由继续负责会话与资源权限、进度及结果持久化。模型生成通过 `rag/llm.py` 的 `chat_stream` 接收增量文本，`question_gen.py` 逐个提取完整题目并用 `Question` 校验，随后进入既有审核链路。浏览器仍通过普通 HTTP 响应与进度轮询获取结果，不提供题目 token 流接口。
+
+`POST /api/export/docx` 要求登录，接收题目内容、标题、题型顺序及答案／解析开关，返回 DOCX 文件；只转换本次提交内容，不查询题库、保存试卷或调用模型。正文按题型分组、全卷连续编号，公式转 OMML，转换失败保留公式文本。字段限制、异常和验收标准见 [Word 导出说明](../docs/design/题目Word导出与公式呈现.md)，完整接口入口见 [API 文档](../docs/api.md)。
 
 ## 迁移与验证
 
@@ -137,13 +149,14 @@ uv run pytest -q
 uv run ruff check app tests
 ```
 
-测试使用临时 SQLite、每测试独立 fakeredis 和假 SMTP、Turnstile、模型服务，不连接或清空本机 Redis。接口变更后同步根 `openapi.json` 和 [API 文档](../docs/api.md)，生成命令见 [协作约定](../AGENTS.md)。
+测试使用临时 SQLite、每测试独立 fakeredis 和假 SMTP、Turnstile、模型服务，夹具禁止外部网络，不连接或清空本机 Redis。接口变更后同步根 `openapi.json` 和 [API 文档](../docs/api.md)，生成命令见 [协作约定](../AGENTS.md)。
 
 ## 相关文档
 
 - [根 README](../README.md)、[前端说明](../frontend/README.md)：项目介绍与前后端启动。
 - [API 文档](../docs/api.md)、[OpenAPI 契约](../openapi.json)：完整接口。
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
+- [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
 - [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
 - 待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[运维后台](../docs/design/运维后台升级方案.md)、[接口与联调契约](../docs/design/运维后台接口与联调契约.md)、[模块说明](../docs/design/运维后台模块说明.md)。
 - 运维后端协作见[三人实施分工方案](../docs/design/运维后台三人实施分工方案.md)；采集接点、题目版本及审核范围待 G1 冻结，运维 SQL、独立周期心跳、五接口及告警清理在 G0 后实施。

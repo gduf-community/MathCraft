@@ -7,6 +7,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | 路径 | 用途 |
 | --- | --- |
 | `src/api/` | 认证会话、业务请求、题库、文档预览与模型配置接口 |
+| `src/api/exportDocx.ts` | 通过现有认证会话请求 Word 导出并下载 Blob |
 | `src/api/adminOps.ts`、`src/api/adminOpsDemo.ts` | 运维真实请求适配与仅 DEV 显式启用的合成演示；五个 ops 后端接口仍待实现 |
 | `src/components/auth/` | 恢复历史视觉的登录页、学生／教师手动身份选择、邮箱验证码与 Turnstile |
 | `src/components/auth/AuthDialog.tsx` | 复用 `ConfigurationDialog`，提供邮箱登录、绑定引导及两种密码找回方式 |
@@ -15,6 +16,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | `src/components/layout/`、`src/components/tabs/` | 工作台布局与出题、预览、题库、收藏等页面 |
 | `src/components/tabs/GenerateTab/` | 按 `5155f8a` 恢复历史视觉，保留四模式、图片附件、确认、消息操作和生成进度 |
 | `src/components/tabs/GenerateTab/QuickPrompts.tsx` | 恢复历史四个快捷提问，点击仅填入草稿，由用户编辑并发送 |
+| `src/components/tabs/PreviewTab/ExportModal.tsx` | 已选题目的 Word 导出设置、题型顺序与请求反馈 |
 | `src/components/settings/`、`src/components/admin/` | 个人模型设置与管理员面板 |
 | `src/components/admin/LegacyOverview.tsx` | 原平台资源与历史批次统计，独立读取真实接口 |
 | `src/components/admin/ops/` | 运维概览、运行／依赖／异常页面、运行抽屉、管理员通知及共用查询与展示 |
@@ -108,6 +110,12 @@ node merge-frontend-regression.mjs
 
 历史消息回退只裁切前端显示的消息序列，编辑将原消息及附件放回草稿，重发沿用当前会话；现有服务端聊天 API 没有历史截断接口，`AppContext` 和接口均未因本轮恢复而修改。因此不能保证服务端上下文回到该历史节点，也不能把该入口描述为服务端撤销或新建对话分支。
 
+### 题目导出与公式显示
+
+题目预览页勾选题目后启用“导出”，弹窗支持文档名称（前端最多 80 字符）、独立选择答案与解析、每题下方或文末集中、按题型模块上移／下移。导出池取当前预览题目与已选 ID 的交集，成功通过 `POST /api/export/docx` 下载 Word；失败显示后端错误或默认提示，提交中禁用导出按钮。该入口不创建组卷记录，收藏页的历史 Word／CSV 演示按钮不因此变为真实导出。
+
+后端流式生成只改变模型接收与校验方式，前端仍发送普通聊天请求，并每 1.5 秒轮询进度，完成后接收审核后的题目。全局 KaTeX 字号为 `1em`；只有助手消息的 `.chat-answer` 区域为长公式提供限宽横向滚动，题目预览未套用该滚动规则。题目进入 `Question` 契约时统一常见公式定界符；前端 `Latex` 同时兼容 `$...$`、`$$...$$`、`\(...\)`、`\[...\]`。Word 使用独立的 OMML 转换，支持范围和失败保留文本见 [导出与公式说明](../docs/design/题目Word导出与公式呈现.md)。
+
 ### 登录视觉恢复与安全会话
 
 主登录以 `0b5d4b44a9abe356f9a006a4a3edf4206ebe56ef` 为视觉参考，恢复浅蓝背景、左上品牌、桌面左侧宣传与右侧玻璃卡片、粒子和表单视觉。保留动态视觉视口、`auth-stage` 的 `env(safe-area-inset-*)` 安全区留白与卡片内部滚动。375×480 浏览器短视口下重置长表单提交按钮可达检查已通过；手机真机安全区与真实软键盘仍未验证。
@@ -149,6 +157,7 @@ node merge-frontend-regression.mjs
 ## 相关文档
 
 - [API 文档](../docs/api.md)：请求与响应契约。
+- [Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：预览导出入口、请求限制、公式转换与样式边界。
 - [登录视觉恢复与历史前端对照](../docs/design/登录视觉恢复与历史前端对照.md)：历史基准、身份匹配、保留的认证／聊天能力、双端口启动及验收边界。
 - [管理员与账号开通设计](../docs/design/管理员与账号开通设计.md)、[账号系统整合与审查修复](../docs/design/账号系统整合与审查修复.md)：账号、认证与安全设置。
 - [设置拆分与保存反馈设计](../docs/design/设置拆分与保存反馈设计.md)、[模型配置功能规格](../docs/design/模型直接配置功能规格.md)、[配置来源与知识库流程](../docs/design/模型配置来源与普通知识库流程.md)：个人及平台模型配置。
