@@ -111,6 +111,8 @@ uv run python scripts/auth_migration.py audit --operator-confirmed --database 'C
 
 - **认证配置不可用**：确认两项认证密钥已初始化。本机使用 `APP_ENV=development`、`TURNSTILE_ENABLED=false` 并按上述回环地址启动；生产需要完整 Turnstile 配置。环境变量可覆盖 `.env`。
 - **邮箱功能不可用**：配置 SMTP；人机验证开关不替代邮件验证码或邮件服务。
+- **删除资料提示数据库繁忙（`DATABASE_BUSY`）**：删除会先预热 Chroma，并对 SQLite 短暂写锁做有限重试；持续占锁时保留资料和原件，稍后重试。检查并发写入或其他进程是否长期持有数据库事务。失败状态或零切片计数不代表没有残余索引，不能通过跳过向量清理强制删除。
+- **删除资料时全文索引报 `SQLITE_CANTOPEN / 14`**：这不是写锁错误。SQLite 连接已配置 `temp_store=MEMORY`，避免 FTS5 临时结构依赖进程临时目录；数据库及 WAL 仍保存在磁盘。更新后须重启后端，临时结构较大时会增加内存占用。该设置不能修复数据库自身路径不可访问的问题。
 - **Chroma 报 `code 14`**：除数据路径权限外，检查启动进程的 `TEMP/TMP` 是否可写。Windows 可在启动前为当前终端指定可写目录：
 
 ```powershell

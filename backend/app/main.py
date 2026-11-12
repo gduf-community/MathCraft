@@ -3,10 +3,12 @@
 启动：uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 """
 from contextlib import asynccontextmanager
+import logging
+import sqlite3
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError, IntegrityError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -37,6 +39,8 @@ from app.api import (
     urges,
     users,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -141,6 +145,15 @@ async def validation_error_handler(_request: Request, _exc: RequestValidationErr
 
 @app.exception_handler(SQLAlchemyError)
 async def database_error_handler(_request: Request, exc: SQLAlchemyError):
+    """记录受限数据库诊断字段，响应中不暴露底层错误或请求参数。"""
+    original = exc.orig if isinstance(exc, DBAPIError) else None
+    sqlite_error = original if isinstance(original, sqlite3.Error) else None
+    logger.warning(
+        "Database failure type=%s sqlite_code=%s sqlite_name=%s",
+        type(exc).__name__,
+        getattr(sqlite_error, "sqlite_errorcode", None),
+        getattr(sqlite_error, "sqlite_errorname", None),
+    )
     if isinstance(exc, IntegrityError):
         return JSONResponse(status_code=409, content={"detail": {
             "code": "AUTH_FAILED", "message": "请求已处理或存在并发冲突，请重新操作"}})

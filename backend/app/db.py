@@ -1,4 +1,4 @@
-"""SQLAlchemy 引擎与会话。SQLite 开启 WAL / 外键 / busy_timeout。"""
+"""SQLAlchemy 会话；SQLite 使用 WAL、外键、写锁等待和内存临时存储。"""
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
@@ -29,6 +29,9 @@ if _is_sqlite(settings.database_url):
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA busy_timeout=5000")
+        # FTS5 删除可能创建临时结构；避免依赖 Windows 服务进程的临时目录权限。
+        # 仅临时结构使用内存，数据库与 WAL 仍持久化到原有磁盘路径。
+        cur.execute("PRAGMA temp_store=MEMORY")
         cur.close()
 
 
