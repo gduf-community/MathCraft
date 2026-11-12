@@ -2,3 +2,7 @@ node_modules
 dist
 *.local
 .DS_Store
+
+# e2e-grid.mjs 生成的本地浏览器截图
+/v7-success.png
+/v7-grid-bottom.png
