@@ -159,11 +159,9 @@ def test_mineru(user: User = Depends(get_current_user), db: Session = Depends(ge
 @router.put("/email-binding", status_code=204, response_model=None)
 def bind_email(body: EmailBindingBody, request: Request, response: Response,
                user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """密码及新邮箱 proof 校验后，在同一事务绑定邮箱并撤销全部会话。"""
+    """有效登录态及新邮箱 proof 校验后，在同一事务绑定邮箱并撤销全部会话。"""
     version = user.auth_version
     auth_service.require_email_binding(user)
-    if not auth_service.verify_password(body.current_password, user.password_hash):
-        raise AppError("AUTH_FAILED", "当前密码不正确", 400)
     auth_service.assert_version(db, user.id, version)
     clear_cookie = refresh_belongs_to_user(request, db, user.id)
     auth_codes.verify(db, body.email, "email_bind", auth_service.email_binding(user, body.email),

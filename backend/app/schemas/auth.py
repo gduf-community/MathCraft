@@ -81,8 +81,8 @@ class CurrentPasswordBody(AuthBody):
     current_password: str = Field(min_length=1, max_length=128)
 
 
-class EmailBindingBody(CodeBody, CurrentPasswordBody):
-    """首次绑定或验证历史未验证邮箱，不替代已验证邮箱的换绑流程。"""
+class EmailBindingBody(CodeBody):
+    """首次绑定或验证历史未验证邮箱，仅依赖有效登录态和 email_bind proof。"""
 
 
 class EmailChangeBody(AuthBody):

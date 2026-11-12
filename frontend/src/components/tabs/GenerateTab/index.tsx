@@ -4,16 +4,17 @@ import { Bot, Copy, ImagePlus, Pencil, RotateCcw } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { Latex } from '../../../lib/latex'
 import RobotAvatar from './RobotAvatar'
+import QuickPrompts from './QuickPrompts'
 import ChatInput from './ChatInput'
 import ConfirmCard from '../../ui/ConfirmCard'
 
-/** Agent出题标签页：欢迎态与对话态；图片拖入对话区随消息发送，文档拖入自动入库 */
+/** Agent出题标签页：机器人与快捷提问欢迎态、对话及确认操作；支持图片与文档拖入 */
 export default function GenerateTab() {
   const {
     messages, botThinking, uploadDocument, profile, retryChat, editChat,
     showToast, chatProgress, chatStartedAt, addChatImages, pendingConfirm, confirmOperation, confirmBusy,
   } = useApp()
-  const showWelcome = messages.length === 0 && !botThinking
+  const showWelcome = messages.length === 0 && !botThinking && pendingConfirm === null
   const interactionBusy = botThinking || confirmBusy || pendingConfirm !== null
   const [dragOver, setDragOver] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -37,10 +38,10 @@ export default function GenerateTab() {
     if (docs.length) void uploadDocument(docs[0])
   }
 
-  // 只对最新一条用户消息提供编辑，对最新一条 AI 回复提供重新生成；历史消息保持只读
-  const lastUserIndex = messages.reduce((acc, m, i) => (m.role === 'user' ? i : acc), -1)
+  // 用户消息沿用历史编辑、回退重发入口；最新 AI 回复保留重新生成。
   const lastAssistantIndex = messages.reduce((acc, m, i) => (m.role === 'assistant' ? i : acc), -1)
   const regenerateFrom = (assistantIndex: number) => {
+    if (interactionBusy) return
     for (let j = assistantIndex - 1; j >= 0; j--) {
       if (messages[j].role === 'user') {
         retryChat(messages[j].id)
@@ -75,12 +76,15 @@ export default function GenerateTab() {
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
         {showWelcome ? (
-            <div className="flex h-full flex-col items-center justify-center px-8 pb-4 pt-10">
+            <div className="flex min-h-full flex-col items-center justify-center px-8 pb-4">
               <RobotAvatar />
               <h2 className="mt-4 text-[24px] font-bold text-ink">你好，我是AI出题助手</h2>
               <p className="mt-3 max-w-[460px] text-center text-sm leading-6 text-ink-2">
-                请您提供详细的出题需求，让我为您生成高质量的试题。
+                我可以根据你的需求，结合知识库内容，为你生成高质量的试题。
+                <br />
+                你可以直接提出出题要求，或告诉我相关的知识点、难度、题型等信息。
               </p>
+              <QuickPrompts />
             </div>
           ) : (
             <div className="mx-auto flex w-full max-w-[880px] flex-col gap-4 px-8 py-6">
@@ -127,18 +131,30 @@ export default function GenerateTab() {
                           >
                             <Copy size={13} />
                           </button>
-                          {i === lastUserIndex && (
-                            <button
-                              type="button"
-                              title="编辑后重发"
-                              aria-label="编辑后重发"
-                              disabled={interactionBusy}
-                              onClick={() => editChat(m.id)}
-                              className="rounded p-1 text-ink-3 transition-colors hover:bg-page hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
-                            >
-                              <Pencil size={13} />
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            title="回退并重新发送"
+                            aria-label="回退并重新发送"
+                            disabled={interactionBusy}
+                            onClick={() => {
+                              if (!interactionBusy) retryChat(m.id)
+                            }}
+                            className="rounded p-1.5 text-ink-3 transition-colors hover:bg-page hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            <RotateCcw size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title="编辑后重发"
+                            aria-label="编辑后重发"
+                            disabled={interactionBusy}
+                            onClick={() => {
+                              if (!interactionBusy) editChat(m.id)
+                            }}
+                            className="rounded p-1.5 text-ink-3 transition-colors hover:bg-page hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            <Pencil size={13} />
+                          </button>
                         </div>
                       )}
                       {m.role === 'assistant' && (

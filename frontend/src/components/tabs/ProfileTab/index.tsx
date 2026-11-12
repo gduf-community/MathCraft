@@ -3,7 +3,6 @@ import { useRef, useState } from 'react'
 import {
   BadgeCheck,
   Building2,
-  KeyRound,
   Loader2,
   Pencil,
   Save,
@@ -202,47 +201,42 @@ export default function ProfileTab() {
               <span className="text-sm text-ink">{profile.phone || '未填写'}</span>
             )}
           </div>
-          <div className="flex items-center gap-6">
-            <span className="w-16 shrink-0 text-sm text-ink-3">邮箱（可选）</span>
-            <span className="break-all text-sm text-ink">{user?.email ? `${user.email}（${user.emailVerified ? '已验证' : '待验证'}，通过账号安全管理）` : '未绑定，可在下方账号安全中绑定'}</span>
+          <div className="flex min-w-0 items-start gap-6">
+            <span className="w-16 shrink-0 whitespace-nowrap text-sm text-ink-3">邮箱（可选）</span>
+            <span className="min-w-0 break-all text-sm text-ink">{user?.email ? `${user.email}（${user.emailVerified ? '已验证' : '待验证'}，通过账号安全管理）` : '未绑定，可在下方账号安全中绑定'}</span>
           </div>
         </div>
       </div>
 
       <p className="mb-4 text-xs text-ink-3">性别和手机号码为可选资料；选择“未填写”或清空号码后保存可移除对应资料。</p>
 
-      <SecuritySettings />
-
-      {/* 其他设置 */}
-      <div className="rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
-        <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-ink">
-          <span className="h-3.5 w-1 rounded-full bg-primary" />
-          其他设置
-        </h3>
-        <div className="flex items-center justify-between px-2">
-          <div className="flex items-center gap-2.5">
-            <KeyRound size={16} className="text-primary" />
+      <SecuritySettings>
+        <div className="border-t border-line pt-6">
+          <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-ink">
+            <span className="h-3.5 w-1 rounded-full bg-primary" />
+            修改密码
+          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-3 px-2">
             <div>
               <p className="text-sm text-ink">修改密码</p>
               <p className="mt-0.5 text-xs text-ink-3">修改后需要重新登录</p>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPwdError('')
+                setPwdOld('')
+                setPwdNew('')
+                setPwdConfirm('')
+                setPwdOpen(true)
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
+            >
+              修改密码
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setPwdError('')
-              setPwdOld('')
-              setPwdNew('')
-              setPwdConfirm('')
-              setPwdOpen(true)
-            }}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
-          >
-            <KeyRound size={14} />
-            修改密码
-          </button>
         </div>
-      </div>
+      </SecuritySettings>
 
       {/* 修改密码弹窗 */}
       {pwdOpen && (

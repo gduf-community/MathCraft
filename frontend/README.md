@@ -8,9 +8,13 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | --- | --- |
 | `src/api/` | 认证会话、业务请求、题库、文档预览与模型配置接口 |
 | `src/api/adminOps.ts`、`src/api/adminOpsDemo.ts` | 运维真实请求适配与仅 DEV 显式启用的合成演示；五个 ops 后端接口仍待实现 |
-| `src/components/auth/` | 登录、邮箱验证码与 Turnstile |
+| `src/components/auth/` | 恢复历史视觉的登录页、学生／教师手动身份选择、邮箱验证码与 Turnstile |
+| `src/components/auth/AuthDialog.tsx` | 复用 `ConfigurationDialog`，提供邮箱登录、绑定引导及两种密码找回方式 |
+| `src/components/auth/LoginEmailBindingDialog.tsx` | 从邮箱登录切换到临时账号认证与邮箱绑定；可返回邮箱登录，撤销失败可重试 |
+| `src/components/auth/EmailCodeFields.tsx` | 邮箱发码、验证码和 Turnstile；通过 `onBusyChange` 防止弹窗在发码期间关闭 |
 | `src/components/layout/`、`src/components/tabs/` | 工作台布局与出题、预览、题库、收藏等页面 |
-| `src/components/tabs/GenerateTab/` | 四模式对话、图片附件、消息操作和生成进度；旧 QuickPrompts 已移除 |
+| `src/components/tabs/GenerateTab/` | 按 `5155f8a` 恢复历史视觉，保留四模式、图片附件、确认、消息操作和生成进度 |
+| `src/components/tabs/GenerateTab/QuickPrompts.tsx` | 恢复历史四个快捷提问，点击仅填入草稿，由用户编辑并发送 |
 | `src/components/settings/`、`src/components/admin/` | 个人模型设置与管理员面板 |
 | `src/components/admin/LegacyOverview.tsx` | 原平台资源与历史批次统计，独立读取真实接口 |
 | `src/components/admin/ops/` | 运维概览、运行／依赖／异常页面、运行抽屉、管理员通知及共用查询与展示 |
@@ -18,7 +22,9 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | `src/components/admin/ops/useOpsClock.ts` | 使用服务端快照及页面经过时间复核观测有效期 |
 | `src/components/ui/` | 提示、确认框等共用控件 |
 | `src/components/ui/ConfirmCard.tsx`、`src/components/ui/SegmentedControl.tsx` | 数据操作预览确认与四模式选择 |
+| `src/components/ui/Toast.tsx` | 全站共享提示；已恢复 `0b5d4b4` 历史外观，当前内容与触发逻辑保留 |
 | `src/store/`、`src/types/` | 认证与业务状态、共用类型 |
+| `src/store/ToastContext.tsx` | 按 identity 保持 Provider 挂载，避免退出重试弹窗丢失；提示继续按 generation 隔离 |
 | `src/types/ops.ts` | 运维 v1 前端类型与客户端边界，不代表后端 schema 或 OpenAPI 已新增 |
 | `src/styles/`、`src/assets/`、`src/lib/` | 样式、静态资源与工具函数 |
 | `vite.config.ts` | 开发代理、环境文件隔离与构建配置 |
@@ -31,12 +37,20 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 ```powershell
 cd frontend
 npm install
-npm run dev
+node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-访问 `http://127.0.0.1:5173`；端口被占用时以 Vite 输出地址为准。开发服务器仅绑定 `127.0.0.1`，`/api` 和 `/media` 代理到 `http://127.0.0.1:8000`。本机开发时后端也应绑定回环地址，避免通过公共代理或隧道暴露开发账号接口。
+访问 `http://127.0.0.1:5173`；端口被占用时命令退出，不自动切换端口。当前环境的 npm wrapper 会错误解析附加启动参数，统一使用 Node 直接执行本地 Vite 入口，保留现有 package scripts。开发服务器仅绑定 `127.0.0.1`，`/api` 和 `/media` 代理到 `http://127.0.0.1:8000`。本机开发时后端也应绑定回环地址，避免通过公共代理或隧道暴露开发账号接口。
+
+### 历史前端对照已结束（5174）
+
+5174 临时对照已于 **2026-11-12 结束并停服**，旧登录与合成页面预览不再作为可用入口。`.scratch/frontend-0b5d4b4/`（含历史预览、依赖与产物）的删除被自动审批审查拒绝，目录尚待清理，仍被 Git 忽略。
+
+历史记录保留：提交 `0b5d4b44a9abe356f9a006a4a3edf4206ebe56ef` 的 82 个受控源文件曾逐个核验一致；附加合成预览曾通过两角色 16 页、16 个深链、4 个详情及请求隔离检查。这些结果不表示旧认证兼容当前后端。原验收范围与清理状态见[恢复设计](../docs/design/登录视觉恢复与历史前端对照.md)，合成行为边界见 [STUBS](../STUBS.md#本地历史前端隔离预览2026-11-12)。
 
 ## 构建与检查
+
+登录主卡仅提供邮箱登录和忘记密码入口；邮箱登录弹窗固定显示“尚未绑定邮箱？先绑定”。绑定弹窗一次填写账号、当前密码和新邮箱，点击“发送验证码”时自动校验账号密码与角色，再发送邮箱验证码；发送成功才出现验证码框与绑定按钮，并至少等待 60 秒才能重发，修改邮箱也不重置冷却。账号验证成功后清空密码并显示已验证摘要，支持撤销临时会话后返回邮箱登录。个人中心账号安全采用最大约 600px 的纵向表单，依次为学工号、邮箱、修改密码；无已验证邮箱时绑定不再输入密码，解绑独立校验当前密码，修改密码继续使用弹窗。
 
 以下命令均在 `frontend/` 执行：
 
@@ -44,10 +58,10 @@ npm run dev
 npm run typecheck  # TypeScript 检查
 npm run lint       # ESLint 检查
 npm run build      # 类型检查并生成 dist/
-npm run preview -- --host 127.0.0.1  # 本机预览构建产物
+node node_modules/vite/bin/vite.js preview --host 127.0.0.1  # 本机预览构建产物
 ```
 
-开发代理仅用于 `npm run dev`；构建预览和生产部署需另行配置 API 与媒体文件访问。`vite.config.ts` 使用空临时目录隔离项目 `.env` 文件；公开地址通过启动或构建进程的 `VITE_API_BASE_URL`、`VITE_WS_BASE_URL` 注入，留空使用当前站点来源。`VITE_*` 会进入浏览器代码，不得放入密钥；临时目录权限错误时检查进程 `TEMP`／`TMP` 是否可写。
+开发代理仅用于 Vite 开发服务器；构建预览和生产部署需另行配置 API 与媒体文件访问。`vite.config.ts` 使用空临时目录隔离项目 `.env` 文件；公开地址通过启动或构建进程的 `VITE_API_BASE_URL`、`VITE_WS_BASE_URL` 注入，留空使用当前站点来源。`VITE_*` 会进入浏览器代码，不得放入密钥；临时目录权限错误时检查进程 `TEMP`／`TMP` 是否可写。
 
 ### 上传与预览离线回归
 
@@ -76,7 +90,7 @@ node merge-frontend-regression.mjs
 
 ## 代理和认证配置注意
 
-- 登录支持账号密码和已验证邮箱验证码；角色由服务端识别，管理员进入管理面板。认证可用状态与配置来自 `GET /api/auth/config`，后端配置入口见[根 README](../README.md)。
+- 登录支持账号密码和已验证邮箱验证码；用户手动选择学生／教师，登录结果以服务端角色为准，不匹配时退出并提示选择对应身份。管理员可直接进入管理面板。认证可用状态与配置来自 `GET /api/auth/config`，后端配置入口见[根 README](../README.md)。
 - 后端允许的 Origin 须包含实际前端来源（协议、主机和端口）。刷新和退出依赖 Cookie、CSRF 与可信来源；生产使用 HTTPS。访问令牌仅保存在内存，刷新凭据由 HttpOnly Cookie 管理；浏览器需支持 Web Locks。
 - Turnstile 由认证配置的请求级 `turnstile_enabled` 控制，不使用前端环境变量推断。后端 `TURNSTILE_ENABLED=false` 仅允许在 development/test 环境对实际回环请求生效，生产必须启用验证。
 - 开发账号填充仅在 Vite 开发模式、浏览器地址为 `127.0.0.1` 且后端允许时显示；按钮只填充，不自动登录，前端不内置账号或密码。
@@ -86,13 +100,25 @@ node merge-frontend-regression.mjs
 - 个人凭据在“模型与服务”保存：留空保留，明确勾选后清除；连接测试使用已保存配置。管理员在“模型与检索”维护平台模型与索引重建，嵌入模型变更需重建后生效。
 - 题库支持 PDF、DOCX、XLSX、MD／markdown、TXT 批量上传；校验格式、空文件及名称／大小／修改时间重复项，部分失败可只重试未受理文件。上传受理后仍需等待后台处理完成，列表可查看失败详情。
 - MD／TXT 提供分页文本预览，文本读取上限为 2 MiB；PDF 通过认证请求获取 Blob 后打开窗口，DOCX／XLSX 提供下载。关闭或切换文档时取消预览请求。
-- 对话提供快速出题、创新命题、知识答疑和数据管理四种模式；输入框支持动态行数和图片附件。图片用于出题要求抽取，数据删除／改名需先查看影响预览并确认；模式、接口与异步隔离边界见[四模式说明](../docs/design/对话四模式与主线整合.md)。
+- 出题界面以 `5155f8a22ac75d2d67a9647e907dc18fedf5162b`（`bca8fb9^1`，前端树与合并提交相同）为视觉基准。用户已明确确认恢复旧视觉并保留快速出题、创新命题、知识答疑、数据管理四模式及图片、确认能力。已恢复历史欢迎区、四个快捷提问、至少两行输入框与文档拖拽提示；快捷提问只填草稿。所有历史用户消息均可编辑或回退后重发，最新助手回复仍可重新生成；生成中、确认请求中或存在待确认操作时保留忙碌保护。即使消息为空，有待确认操作时也显示确认卡。图片用于出题要求抽取，数据删除／改名需先查看影响预览并确认；接口与异步隔离边界见[四模式说明](../docs/design/对话四模式与主线整合.md)，本轮范围见[恢复设计](../docs/design/登录视觉恢复与历史前端对照.md)。
 
-### 登录页居中与滚动边界
+历史消息回退只裁切前端显示的消息序列，编辑将原消息及附件放回草稿，重发沿用当前会话；现有服务端聊天 API 没有历史截断接口，`AppContext` 和接口均未因本轮恢复而修改。因此不能保证服务端上下文回到该历史节点，也不能把该入口描述为服务端撤销或新建对话分支。
 
-保留历史浅蓝背景、左上品牌与玻璃卡片，已取消左侧介绍及其占位。外层固定动态视口并使用 `overflow: clip`，背景与装饰独立裁切，卡片在桌面和窄屏均相对整个视口居中；常规／大屏／窄屏目标宽度分别为 432／468／400px，受可用宽度约束，手机左右各至少留 16px。超高内容仅在 `login-card__body` 内部滚动，外层与整页均不可滚动；仅在登录页作用域取消 Turnstile 关闭后遗留的 65px 空白。已监听 `visualViewport` 的 `height`、`width`、`offsetTop`、`offsetLeft`，适配软键盘仅改变视觉视口及页面放大的情况；手机输入框字号为 16px，避免聚焦自动放大。
+### 登录视觉恢复与安全会话
 
-沿用当前密码登录、邮箱验证码登录、找回密码及全部认证逻辑，不恢复历史注册身份选择，不改 API。47 组布局、触摸、两倍 pinch 及视觉视口缩短模拟检查通过；手机真机键盘未验证。结构、根因、静态检查与完整认证脚本的验证边界见[账号系统整合与审查修复](../docs/design/账号系统整合与审查修复.md#登录页居中与滚动边界2026-11-11已实现)。
+主登录以 `0b5d4b44a9abe356f9a006a4a3edf4206ebe56ef` 为视觉参考，恢复浅蓝背景、左上品牌、桌面左侧宣传与右侧玻璃卡片、粒子和表单视觉。保留动态视觉视口、`auth-stage` 的 `env(safe-area-inset-*)` 安全区留白与卡片内部滚动。375×480 浏览器短视口下重置长表单提交按钮可达检查已通过；手机真机安全区与真实软键盘仍未验证。
+
+主卡进一步对齐历史快照的紧凑密码登录布局，邮箱验证码登录和忘记密码放入独立弹窗。忘记密码先选择联系管理员或已绑定邮箱验证码重置；公开 `admin_contact` 含有效邮箱时显示邮箱及 `mailto:`，仅打开邮件客户端，无有效邮箱时隐藏邮箱行与发邮件入口，保留一般联系指引。本轮不新增管理员邮箱配置功能。弹窗复用 `ConfigurationDialog`，发码或提交期间禁止关闭、Esc 返回及步骤切换，关闭或切换步骤清除验证码与新密码。
+
+学生／教师为可操作的身份单选项，实际权限取自服务端；密码或邮箱登录成功后先匹配角色，不匹配则退出并提示重新选择，服务端撤销失败保留重试退出入口，admin 可直接进入管理员面板。保留 Cookie／CSRF、内存访问令牌与跨标签隔离；绑定接口请求已同步为 `EmailProof`，不再包含 `current_password`。
+
+“绑定邮箱”从邮箱登录弹窗内进入，切换时只显示一个弹窗。先验证现有账号密码、Turnstile 及服务端角色，不调用 `signIn` 或进入工作台。无已验证邮箱的账号（含历史未验证邮箱）可使用 `email_bind` 验证码及 `bindEmail` 完成绑定；认证后即清除密码，不重复提交。成功返回密码登录，返回邮箱登录或关闭前撤销临时会话，撤销失败保留弹窗和退出重试。绑定失败保留邮箱及验证码输入，发码期间不能关闭；已验证邮箱和错选角色按现有规则撤销会话。`ToastProvider` 仅按 identity 设置挂载 key，退出错误更新不会重挂登录页并丢失弹窗，提示仍按 generation 隔离。
+
+此前视觉恢复阶段的 build、typecheck、lint、59 组整合回归及两项会话回归已通过，旧版完整认证 e2e 为 28 次 refresh、0 次意外请求及浏览器异常。后续账号安全布局与免密码绑定采用更新后的认证回归，结果见[登录视觉恢复与历史前端对照](../docs/design/登录视觉恢复与历史前端对照.md)的后续优化与验证记录；历史预览另行保留独立验收。
+
+### 全站 Toast 样式恢复
+
+全站 Toast 已统一恢复 `0b5d4b44a9abe356f9a006a4a3edf4206ebe56ef` 的顶部居中深色底、白字、圆角、间距、阴影和入场视觉。三个 variant 使用 `bg-ink`（`#1f2937`）、白字和 `px-4 py-2.5 rounded-lg`，移除状态图标，保留关闭按钮与 aria。当前提示文案、业务触发点、成功／错误／信息语义、自动消失时长、手动关闭、无障碍播报及会话隔离保持不变；仍由 `ToastContext` 共享，管理员与教师／学生工作台均可使用。最终检查已通过，详见[恢复设计](../docs/design/登录视觉恢复与历史前端对照.md)。
 
 ### 工作台窄屏布局
 
@@ -119,6 +145,7 @@ node merge-frontend-regression.mjs
 ## 相关文档
 
 - [API 文档](../docs/api.md)：请求与响应契约。
+- [登录视觉恢复与历史前端对照](../docs/design/登录视觉恢复与历史前端对照.md)：历史基准、身份匹配、保留的认证／聊天能力、双端口启动及验收边界。
 - [管理员与账号开通设计](../docs/design/管理员与账号开通设计.md)、[账号系统整合与审查修复](../docs/design/账号系统整合与审查修复.md)：账号、认证与安全设置。
 - [设置拆分与保存反馈设计](../docs/design/设置拆分与保存反馈设计.md)、[模型配置功能规格](../docs/design/模型直接配置功能规格.md)、[配置来源与知识库流程](../docs/design/模型配置来源与普通知识库流程.md)：个人及平台模型配置。
 - [知识库模块说明](../docs/design/知识库模块说明.md)、[题目收藏页面设计](../docs/design/题目收藏页面设计.md)：题库、上传预览与收藏。

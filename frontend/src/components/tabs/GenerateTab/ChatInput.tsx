@@ -62,7 +62,7 @@ export default function ChatInput() {
           </div>
         )}
         <textarea
-          rows={Math.min(6, Math.max(chatImages.length > 0 ? 2 : 1, inputDraft.split("\n").length))}
+          rows={Math.min(6, Math.max(2, inputDraft.split('\n').length))}
           aria-label="出题消息"
           maxLength={2000}
           value={inputDraft}
@@ -76,28 +76,31 @@ export default function ChatInput() {
           placeholder={chatImages.length > 0 ? '补充对图片的说明，或直接发送…' : '请输入你的问题，或粘贴相关文档内容...'}
           className="block w-full resize-none bg-transparent px-1 text-sm leading-6 text-ink outline-none placeholder:text-ink-3"
         />
-        <div className="mt-1 flex items-center justify-end gap-4">
-          <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
-          {botThinking ? (
-            <button
-              type="button"
-              onClick={pauseChat}
-              className="flex items-center gap-1.5 rounded-lg bg-ink px-5 py-2 text-sm font-medium text-white transition-all hover:bg-ink/90 active:scale-[0.97]"
-            >
-              <Square size={12} fill="currentColor" />
-              暂停
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={!canSend}
-              onClick={submit}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white transition-all hover:bg-[#1a5fe6] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <SendHorizontal size={14} />
-              发送
-            </button>
-          )}
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-ink-3">支持将文档直接拖拽到对话区上传</span>
+          <div className="ml-auto flex shrink-0 items-center gap-4">
+            <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
+            {botThinking ? (
+              <button
+                type="button"
+                onClick={pauseChat}
+                className="flex items-center gap-1.5 rounded-lg bg-ink px-5 py-2 text-sm font-medium text-white transition-all hover:bg-ink/90 active:scale-[0.97]"
+              >
+                <Square size={12} fill="currentColor" />
+                暂停
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!canSend}
+                onClick={submit}
+                className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white transition-all hover:bg-[#1a5fe6] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <SendHorizontal size={14} />
+                发送
+              </button>
+            )}
+          </div>
         </div>
         </div>
       </div>
