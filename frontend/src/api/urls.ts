@@ -1,4 +1,4 @@
-/** 根 .env 的公开地址在 Vite 启动或构建时读取；留空时使用同源代理。 */
+/** 公开地址来自 Vite 开发／构建进程的环境变量（项目 .env 已隔离）；API 地址留空时使用同源路径。 */
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').trim().replace(/\/+$/, '')
 const WS_BASE = (import.meta.env.VITE_WS_BASE_URL ?? '').trim().replace(/\/+$/, '')
 
