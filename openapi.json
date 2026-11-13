@@ -8418,7 +8418,8 @@
                 "type": "null"
               }
             ],
-            "title": "Error Code"
+            "title": "Error Code",
+            "description": "已确认的 RunErrorCode 安全分类；未知值为 UNKNOWN，无错误为 null，不返回原始异常"
           },
           "accepted_at": {
             "type": "string",

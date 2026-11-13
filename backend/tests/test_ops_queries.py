@@ -143,7 +143,7 @@ def test_projection_preserves_null_zero_unknown_and_does_not_modify_ledger(ledge
 
 
 @pytest.mark.parametrize("code,expected", [
-    (None, None), ("PERSIST_FAILED", "PERSIST_FAILED"),
+    (None, None), ("PERSIST_FAILED", "UNKNOWN"),
     ("SYNTHETIC_SECRET_VALUE", "UNKNOWN"), ("synthetic password=do-not-return", "UNKNOWN"),
 ])
 def test_error_codes_never_echo_arbitrary_recorded_strings(ledger, code, expected):

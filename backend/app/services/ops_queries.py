@@ -19,10 +19,11 @@ from app.schemas.ops import (
 RUN_FIELDS = tuple(OpsRun.model_fields)
 STATUS_FIELDS = tuple(OpsStatusCounts.model_fields)
 RECENT_LIMIT = 10
-# 原始异常文本即使看起来像标识符也不得透传；未识别分类统一 UNKNOWN。
+# 显式同步甲 RunErrorCode 的安全分类；新增枚举须审查后更新，禁止透传任意字符串。
 SAFE_ERROR_CODES = frozenset({
-    "MODEL_CALL_FAILED", "TOOL_FAILED", "DEPENDENCY_FAILED", "PERSIST_FAILED",
-    "USER_CANCELED", "INTERNAL_ERROR", "UNKNOWN",
+    "NEED_CONFIRM", "MODEL_ERROR", "RETRIEVAL_ERROR", "GENERATION_ERROR",
+    "NO_PERSISTABLE_QUESTIONS", "PERSISTENCE_ERROR", "TASK_SUBMISSION_ERROR",
+    "EXECUTION_ERROR", "USER_CANCELED", "EXECUTION_INTERRUPTED", "OUTCOME_UNKNOWN",
 })
 
 

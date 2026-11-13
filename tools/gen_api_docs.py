@@ -60,6 +60,8 @@ def main() -> int:
         "from/to 只接受带时区 ISO 8601 字符串；数字时间戳、无效日期及 UTC 范围溢出返回 ",
         "`422 VALIDATION_ERROR`。SQLAlchemy Enum 结果解码失败返回 ",
         "`503 OPS_DATA_UNAVAILABLE`，不回显内部值或 SQL。",
+        "error_code 仅原样展示已确认的 RunErrorCode 安全分类；未知值显示 UNKNOWN，",
+        "无错误保留 null，旧分类和自由文本不直接透传。",
         "当前基线缺少甲的正式 ops_runs 模型和记录接入，生产查询返回 ",
         "`503 OPS_DATA_UNAVAILABLE`，不能用隔离测试数据冒充真实台账。",
         "前端仍需从旧 v1 适配到 v2。完整字段、错误和交接边界见",

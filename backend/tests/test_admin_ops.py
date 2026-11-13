@@ -231,3 +231,38 @@ def test_enum_decode_failure_uses_safe_503(
         "code": "OPS_DATA_UNAVAILABLE", "message": "运行数据暂不可用，请稍后重试",
     }}
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("code,expected", [
+    # 与甲 cdcdf212 的有限枚举逐项对照，不能从被测白名单生成预期。
+    ("NEED_CONFIRM", "NEED_CONFIRM"),
+    ("MODEL_ERROR", "MODEL_ERROR"),
+    ("RETRIEVAL_ERROR", "RETRIEVAL_ERROR"),
+    ("GENERATION_ERROR", "GENERATION_ERROR"),
+    ("NO_PERSISTABLE_QUESTIONS", "NO_PERSISTABLE_QUESTIONS"),
+    ("PERSISTENCE_ERROR", "PERSISTENCE_ERROR"),
+    ("TASK_SUBMISSION_ERROR", "TASK_SUBMISSION_ERROR"),
+    ("EXECUTION_ERROR", "EXECUTION_ERROR"),
+    ("USER_CANCELED", "USER_CANCELED"),
+    ("EXECUTION_INTERRUPTED", "EXECUTION_INTERRUPTED"),
+    ("OUTCOME_UNKNOWN", "OUTCOME_UNKNOWN"),
+    (None, None), ("UNKNOWN", "UNKNOWN"),
+    ("", "UNKNOWN"), ("PERSIST_FAILED", "UNKNOWN"),
+    ("MODEL_ERROR\nsynthetic-private-detail", "UNKNOWN"),
+    ("SELECT synthetic_private FROM ops_runs", "UNKNOWN"),
+    ("synthetic model reply", "UNKNOWN"),
+    ("synthetic password=private", "UNKNOWN"),
+])
+def test_confirmed_error_codes_and_untrusted_text_on_all_routes(
+    client, admin, ledger, queries, code, expected,
+):
+    """三种响应投影保留有限安全分类；正文、旧分类和自由文本均不透传。"""
+    seed(ledger, run_row(error_code=code))
+    overview = client.get(PATHS[0], headers=admin, params=WINDOW)
+    listing = client.get(PATHS[1], headers=admin, params=WINDOW)
+    detail = client.get(PATHS[2], headers=admin)
+    assert overview.status_code == listing.status_code == detail.status_code == 200
+    rows = (overview.json()["recent_runs"][0], listing.json()["items"][0], detail.json()["run"])
+    assert all(row["error_code"] == expected for row in rows)
+    if code and code != expected:
+        assert all(code not in response.text for response in (overview, listing, detail))

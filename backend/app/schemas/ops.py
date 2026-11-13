@@ -103,7 +103,9 @@ class OpsRun(OpsModel):
     status: OpsStatus
     requested_count: int | None = Field(ge=1, strict=True)
     delivered_count: int | None = Field(ge=0, strict=True)
-    error_code: str | None
+    error_code: str | None = Field(
+        description="已确认的 RunErrorCode 安全分类；未知值为 UNKNOWN，无错误为 null，不返回原始异常",
+    )
     accepted_at: UtcTimestamp
     started_at: UtcTimestamp | None
     finished_at: UtcTimestamp | None
