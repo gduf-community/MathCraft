@@ -12,14 +12,17 @@ backend/
 │   ├── api/             # HTTP 与 WebSocket 路由
 │   │   └── export.py    # POST /api/export/docx 与导出请求契约
 │   ├── models/          # 数据库模型
+│   │   └── ops_run.py   # 最小运行摘要、UTC 时间和状态分类
 │   ├── schemas/         # 请求与响应契约
 │   └── services/        # 认证、文档、RAG 与教学业务
 │       ├── export_docx.py # Word 排版及数学公式转换
 │       ├── phoenix_tracing.py # 可选元数据追踪与线程上下文传递
+│       ├── ops_runs.py  # 台账受理、观察与批次同事务完成写入
 │       └── rag/         # 检索与四模式对话
 │           ├── skills.py # 四模式技能注册、执行上下文与延迟导入
 │           └── question_gen.py # 模型流式接收、滚动解析与题目校验
 ├── alembic/             # 数据库迁移
+│   └── versions/j5e6f7a8b901_add_ops_runs.py # 最小运行台账增量迁移
 ├── scripts/             # 认证密钥、管理员及迁移审计工具
 ├── tests/               # 后端测试与外部服务替身
 ├── .env.example         # 本机开发配置模板
@@ -108,7 +111,15 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 配置默认值为 `PHOENIX_ENABLED=false`、`PHOENIX_ENDPOINT=http://127.0.0.1:6017/v1/traces`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。修改开关后重启后端；本机容器默认无认证，仅限可信单机，远程须使用 HTTPS、独立认证和 API key。
 
-当前没有 `ops_runs` 表。`trace_run` 内部创建 `run_` 标识，`current_run_id()` 供后续台账复用；根 span OK 仅表示函数正常返回，LLM 错误独立记录。导出失败不改变业务结果。启停及完整边界见 [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)。
+`ops_runs` 基础已提供模型、迁移和 `RunLedger`；实际入口尚未接入。`accept` 优先使用显式 ID 或 `current_run_id()`，追踪关闭时仍可独立生成 ID。后台已有 ID 的 Phoenix 绑定留待入口接入；根 span OK 仅表示函数正常返回。导出失败不改变业务结果。启停边界见 [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)。
+
+## 最小运行台账基础
+
+迁移 `j5e6f7a8b901` 接在 `i4d5e6f7a890` 后，按现有备份与副本验证流程执行 `alembic upgrade head` 后创建空表，不回填旧批次。非空台账拒绝降级，以免静默丢失历史。
+
+`RunLedger.accept/start/fail/cancel/unknown` 使用自己的短事务；`complete_in_transaction` 只参加调用方已有事务，要求先 flush 全部批次与题目，不提交、回滚或关闭调用方 Session。本批没有修改 `persist_batch`、出题路由、管理员查询或前端；当前业务不会自动创建运行记录。
+
+字段、状态、归属校验、删除策略、调用约束和验收见 [运行台账基础](../docs/design/运维后台运行台账基础.md)。HTTP 契约仍见 [API 文档](../docs/api.md)，本批没有新增接口。
 
 ## 对话、生成与 Word 导出
 
@@ -169,5 +180,5 @@ uv run ruff check app tests
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
 - [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
-- 后台待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)和[三人实施分工](../docs/design/运维后台三人实施分工方案.md)。覆盖两条出题入口，后续新增最小 `ops_runs`，只做概览和运行查询。
+- 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)和[三人实施分工](../docs/design/运维后台三人实施分工方案.md)。台账基础已实现，两条入口及概览、运行查询后续接入。
 - [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/design/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。

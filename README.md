@@ -24,14 +24,17 @@ MathCraft/
 │   │   ├── api/              # HTTP 与 WebSocket 接口
 │   │   │   └── export.py     # 登录用户提交题目并导出 Word
 │   │   ├── models/           # 数据库模型
+│   │   │   └── ops_run.py    # 最小运行摘要模型、状态及安全分类
 │   │   ├── schemas/          # 请求与响应契约
 │   │   └── services/         # 认证、文档、RAG、出题等业务服务
 │   │       ├── export_docx.py # Word 排版与 LaTeX → MathML → OMML 公式转换
 │   │       ├── phoenix_tracing.py # 可选 OTLP 元数据追踪和线程上下文
+│   │       ├── ops_runs.py   # 运行台账写入与事务规则，实际入口尚未接入
 │   │       └── rag/          # 检索、出题及四模式对话
 │   │           ├── skills.py # 显式模式的技能注册与执行上下文
 │   │           └── question_gen.py # 流式接收、滚动解析与题目校验
 │   ├── alembic/              # 数据库迁移
+│   │   └── versions/j5e6f7a8b901_add_ops_runs.py # 空台账增量迁移与历史保护
 │   ├── scripts/              # 认证密钥、管理员与开发账号初始化
 │   ├── tests/                # 后端测试
 │   ├── .env.example          # 本机开发配置模板
@@ -75,6 +78,7 @@ MathCraft/
 │       ├── 运维后台系统方案说明.md # 面向方案评审的系统说明
 │       ├── 运维后台三人实施分工方案.md # 运行记录、查询后端与前端整合分工
 │       ├── 运维后台运行手册.md # 运行状态口径与可选追踪排障
+│       ├── 运维后台运行台账基础.md # 甲第一批存储、写入接口与事务验收
 │       ├── 对话四模式与主线整合.md # 对话流程、确认范围与合并边界
 │       ├── 题目Word导出与公式呈现.md # 导出契约、公式转换与显示边界
 │       ├── 登录视觉恢复与历史前端对照.md # 登录、agent 视觉基准与历史对照验收记录
@@ -247,7 +251,7 @@ docker compose down             # 移除容器，保留数据卷
 
 默认配置：`PHOENIX_ENABLED=false`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。根与后端 extra 均固定 `opentelemetry-sdk==1.45.2`、`opentelemetry-exporter-otlp-proto-http==1.45.2`，仅追踪元数据。停用时关闭开关并重启后端；容器可独立 `docker compose -f compose.phoenix.yaml stop phoenix`，保留数据卷。
 
-配置与结果语义见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：当前尚无 `ops_runs` 表，根 span OK 只证明函数返回，不证明业务成功。
+配置与结果语义见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：`ops_runs` 模型、迁移和写入基础已实现，实际入口尚未接入；根 span OK 只证明函数返回，不证明业务成功。台账字段、事务及未接入边界见 [运行台账基础](docs/design/运维后台运行台账基础.md)。
 
 ## 开发检查
 
@@ -277,7 +281,7 @@ npm run build
 - [Word 导出与公式呈现](docs/design/题目Word导出与公式呈现.md)：预览页导出入口、`POST /api/export/docx`、公式转换及样式范围。
 - [登录视觉恢复与历史前端对照](docs/design/登录视觉恢复与历史前端对照.md)：紧凑主卡、独立认证弹窗、登录页绑定邮箱及历史对照；保留四模式／图片／确认，Toast 恢复旧样式。最终 build／typecheck、lint（0 错误／3 条既有警告）、完整认证 e2e、59 组整合及两项会话回归均通过。历史隔离预览独立验收记录保留，5174 对照已于 2026-11-12 结束停服，目录删除受阻；真机安全区与软键盘未验证。
 - [账号与权限设计](docs/design/账号系统整合与审查修复.md)、[模型配置说明](docs/design/模型配置来源与普通知识库流程.md)、[知识库说明](docs/design/知识库模块说明.md)：业务规则与能力边界。
-- [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)、[模块说明](docs/design/运维后台模块说明.md)：两条出题入口、后续最小 `ops_runs` 与后台查询范围。
+- [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)、[模块说明](docs/design/运维后台模块说明.md)、[运行台账基础](docs/design/运维后台运行台账基础.md)：台账存储与写入基础已实现，实际入口及后台查询后续接入。
 - [三人实施分工方案](docs/design/运维后台三人实施分工方案.md)：甲负责运行记录，乙负责查询后端，本人负责前端、文档和整合。
 - [运维后台运行手册](docs/design/运维后台运行手册.md)、[Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：当前追踪实现、可选部署和故障边界。
 - [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)：开发约定与术语定义。
