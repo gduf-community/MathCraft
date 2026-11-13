@@ -1,15 +1,18 @@
 """V2 管理员运行查询契约；空值与 unknown 保留原有事实语义。"""
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Annotated, Literal
 
 from pydantic import (
-    AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, model_validator,
+    AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator,
 )
 from typing_extensions import Self
 
 OpsStatus = Literal["accepted", "running", "completed", "failed", "canceled", "unknown"]
 OpsEntrypoint = Literal["parameterized", "conversation"]
 OpsId = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
+_ISO_DATETIME_PREFIX = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ]")
+_QUERY_TIME_DESCRIPTION = "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
 
 
 def as_utc(value: datetime) -> datetime:
@@ -39,14 +42,26 @@ class OpsWindow(OpsModel):
 class OpsFilters(OpsModel):
     """概览、列表共用精确匹配条件；不接受旧版 cursor 或质量字段。"""
 
-    from_: AwareDatetime | None = Field(default=None, alias="from")
-    to: AwareDatetime | None = None
+    from_: AwareDatetime | None = Field(
+        default=None, alias="from", description=_QUERY_TIME_DESCRIPTION,
+    )
+    to: AwareDatetime | None = Field(default=None, description=_QUERY_TIME_DESCRIPTION)
     owner_user_id: OpsId | None = None
     entrypoint: OpsEntrypoint | None = None
     status: OpsStatus | None = None
     session_id: OpsId | None = None
     task_id: OpsId | None = None
     batch_id: OpsId | None = None
+
+    @field_validator("from_", "to", mode="before")
+    @classmethod
+    def validate_time_string(cls, value: object) -> object:
+        """先排除数字及其他对象；日期、偏移和时区由 AwareDatetime 继续校验。"""
+        if value is not None and (
+            not isinstance(value, str) or _ISO_DATETIME_PREFIX.match(value) is None
+        ):
+            raise ValueError("expected an ISO 8601 datetime string with timezone")
+        return value
 
     @model_validator(mode="after")
     def validate_interval(self) -> Self:
@@ -57,10 +72,10 @@ class OpsFilters(OpsModel):
 
     def window(self, now: datetime) -> OpsWindow:
         """未给 to 使用当前 UTC；未给 from 使用 to 前 24 小时。"""
-        end = as_utc(self.to if self.to is not None else now)
         try:
+            end = as_utc(self.to if self.to is not None else now)
             start = as_utc(self.from_) if self.from_ is not None else end - timedelta(days=1)
-        except OverflowError as exc:
+        except (OverflowError, ValueError) as exc:
             raise ValueError("invalid time window") from exc
         if start >= end:
             raise ValueError("from must precede to")

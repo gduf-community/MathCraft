@@ -42,6 +42,15 @@ def registered_ops_table() -> Table:
 
 
 @contextmanager
+def _result_boundary() -> Iterator[None]:
+    """Enum 的读取解码可直接抛 LookupError；只保护 SQL 执行和结果物化。"""
+    try:
+        yield
+    except LookupError as exc:
+        raise OpsDataUnavailable("ops result could not be decoded") from exc
+
+
+@contextmanager
 def _query_boundary() -> Iterator[None]:
     try:
         yield
@@ -105,7 +114,8 @@ class OpsQueryService:
             statement = select(stats, recent).select_from(stats.outerjoin(recent, true())).order_by(
                 recent.c.accepted_at.desc(), recent.c.run_id.desc(),
             )
-            rows = self.db.execute(statement).mappings().all()
+            with _result_boundary():
+                rows = self.db.execute(statement).mappings().all()
             counts = OpsStatusCounts.model_validate({name: rows[0][name] for name in STATUS_FIELDS})
             total = rows[0]["total_runs"]
             if sum(counts.model_dump().values()) != total:
@@ -123,7 +133,8 @@ class OpsQueryService:
             ).order_by(self.table.c.accepted_at.desc(), self.table.c.run_id.desc()).limit(
                 query.limit + 1
             ).offset(query.offset)
-            rows = self.db.execute(statement).mappings().all()
+            with _result_boundary():
+                rows = self.db.execute(statement).mappings().all()
             return OpsRuns(
                 generated_at=now, window=window,
                 items=[self._run(row) for row in rows[:query.limit]],
@@ -138,5 +149,6 @@ class OpsQueryService:
             statement = select(*(self.table.c[name] for name in RUN_FIELDS)).where(
                 self.table.c.run_id == run_id,
             )
-            row = self.db.execute(statement).mappings().one_or_none()
+            with _result_boundary():
+                row = self.db.execute(statement).mappings().one_or_none()
             return None if row is None else OpsRunDetail(generated_at=now, run=self._run(row))

@@ -1,14 +1,14 @@
 """真实管理员鉴权 + 注入测试台账的 V2 HTTP 契约验证。"""
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 
 from app.api import admin_ops
 from app.main import app
 from app.models import User
 from app.services.ops_queries import OpsDataUnavailable, OpsQueryService
-from ops_fixtures import NOW, ledger, run_row, seed
+from ops_fixtures import NOW, enum_ledger, ledger, run_row, seed
 from test_admin import admin_headers
 
 PATHS = ("/api/admin/ops/overview", "/api/admin/ops/runs", "/api/admin/ops/runs/run_fixture")
@@ -154,3 +154,80 @@ def test_basic_detail_hides_arbitrary_error_text_and_validation_details(
     response = client.get(PATHS[2], headers=admin)
     assert response.status_code == 503
     assert "synthetic-invalid-status" not in response.text
+
+
+@pytest.mark.parametrize("path", PATHS[:2])
+@pytest.mark.parametrize("params", [
+    {"to": "0001-01-01T00:00:00+01:00"},
+    {"to": "9999-12-31T23:59:59-01:00"},
+    {"from": "0001-01-01T00:00:00+01:00", "to": "0001-01-01T01:00:00Z"},
+    {"from": "9999-12-31T23:59:59-01:00"},
+    {"to": "0001-01-01T00:00:00Z"},  # 默认向前 24 小时超出年份下界
+    {"from": "0000-01-01T00:00:00Z"},
+    {"to": "10000-01-01T00:00:00Z"},
+    {"to": "2026-11-13T12:00:00+24:00"},
+])
+def test_time_parse_conversion_and_default_window_fail_with_safe_422(
+    client, admin, queries, path, params,
+):
+    response = client.get(path, headers=admin, params=params)
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": {
+        "code": "VALIDATION_ERROR", "message": "请求字段格式错误或包含不允许的字段",
+    }}
+
+
+@pytest.mark.parametrize("path", PATHS[:2])
+@pytest.mark.parametrize("start,end,expected_start,expected_end", [
+    ("0001-01-01T01:00:00+01:00", "0001-01-01T02:00:00+01:00",
+     "0001-01-01T00:00:00Z", "0001-01-01T01:00:00Z"),
+    ("9999-12-31T22:59:58-01:00", "9999-12-31T22:59:59.999999-01:00",
+     "9999-12-31T23:59:58Z", "9999-12-31T23:59:59.999999Z"),
+    ("2026-11-13T12:00:00Z", "2026-11-13T12:00:01Z",
+     "2026-11-13T12:00:00Z", "2026-11-13T12:00:01Z"),
+    ("2026-11-13T20:00:00.123+08:00", "2026-11-13T20:00:01.123+08:00",
+     "2026-11-13T12:00:00.123Z", "2026-11-13T12:00:01.123Z"),
+    ("2026-11-13T04:30:00.123456789-07:30", "2026-11-13T04:30:01.123456789-07:30",
+     "2026-11-13T12:00:00.123456Z", "2026-11-13T12:00:01.123456Z"),
+    ("2026-11-13t12:00:00z", "2026-11-13t12:00:01z",
+     "2026-11-13T12:00:00Z", "2026-11-13T12:00:01Z"),
+])
+def test_valid_iso_times_keep_utc_windows(
+    client, admin, queries, path, start, end, expected_start, expected_end,
+):
+    response = client.get(path, headers=admin, params={"from": start, "to": end})
+    assert response.status_code == 200, response.text
+    window = response.json()["window"]
+    assert datetime.fromisoformat(window["from"]) == datetime.fromisoformat(expected_start)
+    assert datetime.fromisoformat(window["to"]) == datetime.fromisoformat(expected_end)
+    assert window["time_basis"] == "accepted_at"
+
+
+@pytest.mark.parametrize("path", PATHS[:2])
+@pytest.mark.parametrize("field", ["from", "to"])
+def test_http_query_times_reject_numeric_and_unix_inputs(client, admin, queries, path, field):
+    for value in ("0", "1", "-1", "1.25", "1e3", "1700000000", "1700000000000"):
+        response = client.get(path, headers=admin, params={field: value})
+        assert response.status_code == 422, (field, value, response.text)
+        assert response.json() == {"detail": {
+            "code": "VALIDATION_ERROR", "message": "请求字段格式错误或包含不允许的字段",
+        }}
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_enum_decode_failure_uses_safe_503(
+    client, admin, enum_ledger, monkeypatch, path,
+):
+    db, table = enum_ledger
+    seed(enum_ledger, run_row())
+    db.execute(text("UPDATE ops_runs SET status = :value"),
+               {"value": "synthetic-invalid-enum-private-value"})
+    db.commit()
+    service = OpsQueryService(db, table)
+    monkeypatch.setitem(app.dependency_overrides, admin_ops.get_ops_queries, lambda: service)
+    response = client.get(path, headers=admin, params=WINDOW if path != PATHS[2] else None)
+    assert response.status_code == 503, response.text
+    assert response.json() == {"detail": {
+        "code": "OPS_DATA_UNAVAILABLE", "message": "运行数据暂不可用，请稍后重试",
+    }}
+    assert response.headers["cache-control"] == "no-store"

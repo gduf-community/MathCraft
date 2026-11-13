@@ -948,8 +948,10 @@
                   "type": "null"
                 }
               ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
               "title": "From"
-            }
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
           },
           {
             "name": "to",
@@ -965,8 +967,10 @@
                   "type": "null"
                 }
               ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
               "title": "To"
-            }
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
           },
           {
             "name": "owner_user_id",
@@ -1182,8 +1186,10 @@
                   "type": "null"
                 }
               ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
               "title": "From"
-            }
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
           },
           {
             "name": "to",
@@ -1199,8 +1205,10 @@
                   "type": "null"
                 }
               ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
               "title": "To"
-            }
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
           },
           {
             "name": "owner_user_id",

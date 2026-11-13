@@ -3,8 +3,8 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy import Column, DateTime, Enum, Integer, MetaData, String, Table, create_engine
+from sqlalchemy.orm import Session, registry
 
 NOW = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
 
@@ -51,3 +51,23 @@ def seed(ledger: tuple[Session, Table], *rows: dict[str, object]) -> None:
     db, table = ledger
     db.execute(table.insert(), list(rows))
     db.commit()
+
+
+@pytest.fixture
+def enum_ledger(ledger) -> Iterator[tuple[Session, Table]]:
+    """以独立合成 Enum 模型映射临时存量表，模拟列定义与历史数据不一致。"""
+    db, stored_table = ledger
+    table = stored_table.to_metadata(MetaData())
+    table.c.status.type = Enum(
+        "accepted", "running", "completed", "failed", "canceled", "unknown", native_enum=False,
+    )
+    mappings = registry()
+
+    class TestEnumRun:
+        """仅测试映射，不注册到生产 Base。"""
+
+    mappings.map_imperatively(TestEnumRun, table)
+    try:
+        yield db, table
+    finally:
+        mappings.dispose()

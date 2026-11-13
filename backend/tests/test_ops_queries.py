@@ -10,7 +10,7 @@ from sqlalchemy.orm import registry
 from app.schemas.ops import OpsFilters, OpsRunsQuery
 from app.services import ops_queries
 from app.services.ops_queries import OpsDataUnavailable, OpsQueryService
-from ops_fixtures import NOW, ledger, run_row, seed
+from ops_fixtures import NOW, enum_ledger, ledger, run_row, seed
 
 
 def test_window_defaults_and_timezone_are_unambiguous():
@@ -25,7 +25,8 @@ def test_window_defaults_and_timezone_are_unambiguous():
 
 @pytest.mark.parametrize("params", [
     {"from": "2026-11-13T12:00:00"}, {"to": "not-a-date"},
-    {"from": NOW, "to": NOW}, {"from": NOW + timedelta(seconds=1), "to": NOW},
+    {"from": NOW.isoformat(), "to": NOW.isoformat()},
+    {"from": (NOW + timedelta(seconds=1)).isoformat(), "to": NOW.isoformat()},
     {"status": "cancelled"}, {"status": "success"}, {"entrypoint": "chat"},
     {"owner_user_id": ""}, {"owner_user_id": "u' OR 1=1"}, {"owner_user_id": "a" * 129},
     {"limit": 0}, {"limit": 101}, {"offset": -1}, {"offset": 2**63},
@@ -38,7 +39,7 @@ def test_invalid_filters_and_legacy_fields_are_rejected(params):
 
 def test_future_start_without_end_is_invalid():
     with pytest.raises(ValueError):
-        OpsFilters(from_=NOW + timedelta(seconds=1)).window(NOW)
+        OpsFilters.model_validate({"from": (NOW + timedelta(seconds=1)).isoformat()}).window(NOW)
 
 
 def test_empty_ledger_is_known_empty_not_unavailable(ledger):
@@ -58,7 +59,9 @@ def test_overview_counts_all_six_states_and_limits_recent_with_one_select(ledger
     states = ("accepted", "running", "completed", "failed", "canceled", "unknown")
     seed(ledger, *(run_row(f"run_{i:02}", status=states[i % 6]) for i in range(18)))
     service = OpsQueryService(*ledger)
-    query = OpsFilters(from_=NOW, to=NOW + timedelta(seconds=1))
+    query = OpsFilters.model_validate({
+        "from": NOW.isoformat(), "to": (NOW + timedelta(seconds=1)).isoformat(),
+    })
     statements = []
     connection = ledger[0].connection()
     event.listen(connection, "before_cursor_execute", lambda c, x, sql, p, ctx, many:
@@ -98,8 +101,8 @@ def test_half_open_time_window_and_stable_tie_pagination(ledger):
 def test_each_filter_applies_to_both_aggregation_and_list(ledger, field, value, other):
     seed(ledger, run_row("match", **{field: value}), run_row("exclude", **{field: other}))
     service = OpsQueryService(*ledger)
-    query = OpsRunsQuery.model_validate({field: value, "from": NOW,
-                                        "to": NOW + timedelta(seconds=1)})
+    query = OpsRunsQuery.model_validate({field: value, "from": NOW.isoformat(),
+                                        "to": (NOW + timedelta(seconds=1)).isoformat()})
     window = query.window(NOW)
     assert [r.run_id for r in service.list_runs(query, window, NOW).items] == ["match"]
     result = service.overview(query, window, NOW)
@@ -111,8 +114,10 @@ def test_combined_filters_are_and_conditions(ledger):
     seed(ledger, run_row("both", owner_user_id="u_one", status="completed"),
          run_row("owner_only", owner_user_id="u_one", status="failed"),
          run_row("status_only", owner_user_id="u_two", status="completed"))
-    query = OpsRunsQuery(owner_user_id="u_one", status="completed", from_=NOW,
-                         to=NOW + timedelta(seconds=1))
+    query = OpsRunsQuery.model_validate({
+        "owner_user_id": "u_one", "status": "completed", "from": NOW.isoformat(),
+        "to": (NOW + timedelta(seconds=1)).isoformat(),
+    })
     service = OpsQueryService(*ledger)
     assert [r.run_id for r in service.list_runs(query, query.window(NOW), NOW).items] == ["both"]
 
@@ -160,7 +165,10 @@ def test_incompatible_rows_are_unavailable_not_invented_facts(ledger, changes):
 def test_unrecognized_status_outside_recent_ten_still_breaks_overview(ledger):
     seed(ledger, run_row("old_bad", status="invalid", accepted_at=NOW - timedelta(seconds=1)),
          *(run_row(f"run_{i:02}") for i in range(11)))
-    query = OpsFilters(from_=NOW - timedelta(hours=1), to=NOW + timedelta(seconds=1))
+    query = OpsFilters.model_validate({
+        "from": (NOW - timedelta(hours=1)).isoformat(),
+        "to": (NOW + timedelta(seconds=1)).isoformat(),
+    })
     with pytest.raises(OpsDataUnavailable):
         OpsQueryService(*ledger).overview(query, query.window(NOW), NOW)
 
@@ -210,3 +218,39 @@ def test_registry_lookup_reuses_only_a_registered_formal_table(ledger, monkeypat
         assert ops_queries.registered_ops_table() is ledger[1]
     finally:
         isolated_registry.dispose()
+
+
+@pytest.mark.parametrize("field", ["from", "to"])
+@pytest.mark.parametrize("value", [1, 1.25, True, NOW])
+def test_query_times_reject_non_string_objects(field, value):
+    with pytest.raises(ValidationError):
+        OpsFilters.model_validate({field: value})
+
+
+def test_valid_enum_results_keep_all_six_states(enum_ledger):
+    states = ("accepted", "running", "completed", "failed", "canceled", "unknown")
+    seed(enum_ledger, *(run_row(f"enum_{status}", status=status) for status in states))
+    service = OpsQueryService(*enum_ledger)
+    query = OpsRunsQuery.model_validate({
+        "from": NOW.isoformat(), "to": (NOW + timedelta(seconds=1)).isoformat(),
+    })
+    overview = service.overview(query, query.window(NOW), NOW)
+    assert overview.total_runs == 6
+    assert set(overview.status_counts.model_dump().values()) == {1}
+    assert {
+        run.status for run in service.list_runs(query, query.window(NOW), NOW).items
+    } == set(states)
+    detail = service.get_run("enum_unknown", NOW)
+    assert detail is not None and detail.run.status == "unknown"
+
+
+def test_non_read_lookup_errors_are_not_masked(ledger, monkeypatch):
+    seed(ledger, run_row())
+    service = OpsQueryService(*ledger)
+
+    def broken_projection(_row):
+        raise KeyError("synthetic programming error")
+
+    monkeypatch.setattr(service, "_run", broken_projection)
+    with pytest.raises(KeyError, match="synthetic programming error"):
+        service.get_run("run_fixture", NOW)

@@ -42,6 +42,12 @@ def test_runtime_openapi_contract(tmp_path):
         "from", "to", "owner_user_id", "entrypoint", "status", "session_id", "task_id",
         "batch_id", "limit", "offset",
     }
+    for parameter in parameters:
+        if parameter["name"] in {"from", "to"}:
+            assert "不接受数字或 Unix 时间戳" in parameter["description"]
+            assert {"type": "string", "format": "date-time"} in (
+                parameter["schema"]["anyOf"]
+            )
     # 外部隔离执行器可复制此产物更新版本库；测试本身不修改仓库文件。
     (tmp_path / "ops-openapi.json").write_text(
         json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
