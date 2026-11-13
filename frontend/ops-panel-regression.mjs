@@ -193,7 +193,7 @@ try {
   await page.goto(origin)
   await page.getByLabel('登录账号', { exact: true }).fill('fake-ops-admin')
   await page.getByLabel('密码', { exact: true }).fill('Fake-test-password')
-  await page.getByRole('button', { name: '进入学习空间', exact: true }).click()
+  await page.getByRole('button', { name: '登录并进入工作台' }).click()
   await page.getByRole('heading', { name: '运维后台', exact: true }).waitFor()
 
   await check('登录门禁、七个入口与真实接口未就绪', async () => {
@@ -1114,7 +1114,7 @@ try {
       if (await productionPage.getByLabel('登录账号', { exact: true }).isVisible()) {
         await productionPage.getByLabel('登录账号', { exact: true }).fill('fake-ops-admin')
         await productionPage.getByLabel('密码', { exact: true }).fill('Fake-test-password')
-        await productionPage.getByRole('button', { name: '进入学习空间', exact: true }).click()
+        await productionPage.getByRole('button', { name: '登录并进入工作台' }).click()
       }
       await productionPage.getByRole('heading', { name: '运维后台', exact: true }).waitFor()
       await productionPage.getByRole('heading', { name: '采集窗口与覆盖范围', exact: true }).waitFor()

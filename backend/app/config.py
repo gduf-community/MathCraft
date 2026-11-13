@@ -1,6 +1,5 @@
 """全局配置，从 backend/.env 读取。密钥只存在于环境变量与 local_secrets.py，绝不进 git。"""
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -109,16 +108,6 @@ class Settings(BaseSettings):
     deepseek_display_name: str = "DeepSeek Flash"
     # 单次模型调用超时；SDK 内部重试已关闭，避免超时被放大成十几分钟
     llm_timeout_seconds: int = 300
-
-    # 仅已受理的出题阶段使用 SDK；其他对话继续使用既有客户端。
-    generation_llm_backend: Literal["sdk", "legacy"] = "sdk"
-    agent_trace_enabled: bool = False
-    agent_trace_endpoint: str = "http://127.0.0.1:6026/v1/traces"
-    agent_trace_project: str = "mathcraft-agent"
-    agent_trace_api_key: str = ""
-    agent_trace_queue_capacity: int = 64
-    agent_trace_max_attempts: int = 2
-    agent_trace_timeout_seconds: float = 0.5
 
     # 硅基流动（向量与重排，密钥在 app/local_secrets.py，不提供配置入口）
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"

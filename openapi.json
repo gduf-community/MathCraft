@@ -3078,16 +3078,6 @@
               }
             }
           },
-          "503": {
-            "description": "智能出题 SDK 执行环境暂不可用",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -3204,7 +3194,7 @@
             }
           },
           "503": {
-            "description": "智能出题 SDK、向量存储或嵌入服务暂不可用",
+            "description": "向量存储或嵌入服务暂不可用",
             "content": {
               "application/json": {
                 "schema": {
@@ -4311,16 +4301,6 @@
             "content": {
               "application/json": {
                 "schema": {}
-              }
-            }
-          },
-          "503": {
-            "description": "实际出题所需的 SDK 执行环境暂不可用",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
               }
             }
           },

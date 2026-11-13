@@ -12,15 +12,12 @@
 import json
 import re
 import uuid
-from contextlib import ExitStack, nullcontext
-from contextvars import copy_context
 from typing import Callable
 
 import json_repair
 from pydantic import ValidationError
 
 from app.schemas.question import GenerateParams, Question, QuestionType
-from app.services import generation_observation as observation
 from app.services.rag import retrieval, vectorstore
 from app.services.rag import llm
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
@@ -184,24 +181,16 @@ class _RollingParser:
         return out
 
 
-@observation.observed_stage("generation.stream")
 def _stream_questions(messages: list[dict], budget: int, api_key: str | None) -> list[Question]:
     """流式生成 + 滚动解析：每个完整对象立即校验，有错立刻阻断当前批次。"""
     parser = _RollingParser()
     raw: list[str] = []
     collected: list[Question] = []
     try:
-        stream = llm.chat_stream(
-            messages, api_key=api_key, max_tokens=budget, thinking_off=True,
-        )
-        with ExitStack() as stack:
-            close_stream = getattr(stream, "close", None)
-            if callable(close_stream):
-                stack.callback(close_stream)
-            for delta in stream:
-                raw.append(delta)
-                parser.feed(delta)
-                collected.extend(parser.extract(_schema_validate))
+        for delta in llm.chat_stream(messages, api_key=api_key, max_tokens=budget, thinking_off=True):
+            raw.append(delta)
+            parser.feed(delta)
+            collected.extend(parser.extract(_schema_validate))
         collected.extend(parser.finish(_schema_validate))
     except QuestionOutputError as exc:
         exc.raw_excerpt = "".join(raw)[-1500:]
@@ -264,7 +253,6 @@ def _split_counts(total: int, size: int) -> list[int]:
     return out
 
 
-@observation.observed_stage("generation.batch")
 def _gen_batch(
     tc,
     params: GenerateParams,
@@ -335,10 +323,7 @@ def _gen_batch(
                 )},
             ]
         try:
-            with (observation.regeneration_attempt(
-                "schema_retry", question_type=tc.type.value, requested_count=count,
-            ) if attempt else nullcontext()):
-                questions = _stream_questions(msgs, budget, api_key)
+            questions = _stream_questions(msgs, budget, api_key)
             break
         except QuestionOutputError as exc:
             last_error = exc
@@ -358,7 +343,6 @@ def _gen_batch(
 
             q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
             q.answer = "A" if q.answer in ("正确", "对", "T", "true", "√") else "B"
-        observation.observe_question(q, "generated")
         out.append(q)
     if out:
         return out
@@ -380,7 +364,6 @@ PLAN_PROMPT = """你是高等数学命题组长。根据下面的教学材料与
 只输出 JSON：{{"points": ["考点或命题角度", "..."]}}，数组长度恰好 {count}。"""
 
 
-@observation.observed_stage("planning")
 def _plan_points(
     scope: str | None,
     type_label: str,
@@ -409,13 +392,11 @@ def _plan_points(
             thinking_off=True,
         )
     except Exception:  # noqa: BLE001
-        observation.degradation("planning_unavailable")
         return []  # 规划失败就按原来的并行出题，不阻断
     points = [str(p).strip() for p in (data.get("points") or []) if str(p).strip()]
     return points[:count]
 
 
-@observation.observed_stage("generation.type")
 def _gen_for_type(
     tc,
     params: GenerateParams,
@@ -454,8 +435,7 @@ def _gen_for_type(
     retrieve = retrieve_fn or (
         lambda q: retrieval.retrieve_for_generation(params.kb_id, q, params.doc_id or None, hyde_text)
     )
-    with observation.stage("retrieval"):
-        hits = retrieve(" ".join(query_parts))
+    hits = retrieve(" ".join(query_parts))
     if not hits:
         raise ValueError(f"知识库中没有可参考的内容，请先上传文档（检索「{type_label}」无结果）")
 
@@ -480,24 +460,14 @@ def _gen_for_type(
                 + ("，正在补齐" if round_no else ""),
             )
         snapshot = list(taken)[-12:]
-        completed_count = len(collected)
-
-        def run_batch(index: int, size: int) -> list[Question]:
-            with (observation.regeneration_attempt(
-                "generation_shortfall", question_type=tc.type.value,
-                requested_count=size, round=round_no,
-            ) if round_no else nullcontext()):
-                return _gen_batch(
-                    tc, params, doc_name, scope, size, snapshot,
-                    mixed_difficulty, api_key, hits, directive,
-                    points[completed_count + index] if completed_count + index < len(points) else "",
-                )
-
         with ThreadPoolExecutor(max_workers=min(len(batch_sizes), GEN_BATCH_WORKERS),
                                 thread_name_prefix="qgen-batch") as pool:
             futures = [
                 pool.submit(
-                    copy_context().run, run_batch, index, size,
+                    _gen_batch, tc, params, doc_name, scope, size, snapshot,
+                    mixed_difficulty, api_key, hits, directive,
+                    # 按已完成题数取考点，补齐轮次接着往后排，避免重复同一考点
+                    points[len(collected) + index] if len(collected) + index < len(points) else "",
                 )
                 for index, size in enumerate(batch_sizes)
             ]
@@ -506,7 +476,6 @@ def _gen_for_type(
                 try:
                     batch = future.result()
                 except Exception as exc:  # noqa: BLE001
-                    observation.degradation("generation_batch_failed")
                     errors.append(exc)
                     continue
                 for q in batch:
@@ -532,7 +501,6 @@ def _gen_for_type(
     )
 
 
-@observation.observed_stage("generation")
 def generate_questions(
     params: GenerateParams,
     doc_name: str,
@@ -594,10 +562,7 @@ def generate_questions(
     workers = max(1, min(len(params.types), 6))
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qgen-agent") as pool:
-            futures = [
-                pool.submit(copy_context().run, run_one, idx, tc)
-                for idx, tc in enumerate(params.types)
-            ]
+            futures = [pool.submit(run_one, idx, tc) for idx, tc in enumerate(params.types)]
             for future in futures:
                 future.result()
     else:

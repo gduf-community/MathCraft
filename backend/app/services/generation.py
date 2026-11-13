@@ -10,7 +10,6 @@ from app.models import GenerationBatch, Question
 from app.models.base import new_id
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
 from app.services import cache, question_review
-from app.services import generation_observation as observation
 from app.services.rag import hyde, question_gen
 from app.services.rag.question_gen import NeedConfirmError
 
@@ -29,7 +28,6 @@ def _write_progress(task_id: str, percent: int, stage: str, **fields) -> None:
     r.expire(_task_key(task_id), settings.generate_task_ttl_seconds)
 
 
-@observation.observed_stage("persist_batch")
 def persist_batch(
     db: Session,
     user_id: str,
@@ -76,12 +74,7 @@ def persist_batch(
                 created_by=user_id,
             )
         )
-    for q in questions:
-        observation.observe_question(q, "pre_commit")
-    with observation.delivery("batch", batch_id=batch.id, question_count=len(questions)):
-        db.commit()
-    for q in questions:
-        observation.record_delivered_question(q)
+    db.commit()
     return batch
 
 
@@ -136,70 +129,66 @@ def build_params_from_slots(slot_state: dict, bank_id: str, document_id: str) ->
     return params
 
 
-def run_generation_task(
-    task_id: str, user_id: str, api_key: str, body, mode: str = "parametric",
-    *, run: observation.GenerationRun | None = None,
-) -> None:
+def run_generation_task(task_id: str, user_id: str, api_key: str, body, mode: str = "parametric") -> None:
     """后台任务：HyDE → 混合检索 → 生成 → 落库 → 更新 Redis 进度到完成。"""
     r = cache.get_redis()
     try:
-        with observation.generation_scope(user_id, "parameterized", task_id=task_id, run=run):
-            params = build_params(body)
-            _write_progress(task_id, 2, "准备生成")
+        params = build_params(body)
+        _write_progress(task_id, 2, "准备生成")
 
-            # HyDE（有 scope 且有密钥时）
-            hyde_text = hyde.get_hyde(
-                r, params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
-            )
-            if body.scope and hyde_text:
-                _write_progress(task_id, 5, "已生成假设文档（HyDE），正在混合检索")
+        # HyDE（有 scope 且有密钥时）
+        hyde_text = hyde.get_hyde(
+            r, params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
+        )
+        if body.scope and hyde_text:
+            _write_progress(task_id, 5, "已生成假设文档（HyDE），正在混合检索")
 
-            doc_name = body.doc_name or ""
-            if not doc_name:
-                db = SessionLocal()
-                try:
-                    from app.models import Document
-
-                    d = db.get(Document, params.doc_id)
-                    doc_name = d.name if d else ""
-                finally:
-                    db.close()
-
-            questions = question_gen.generate_questions(
-                params,
-                doc_name,
-                scope=body.scope or None,
-                existing_stems=body.existing_stems,
-                progress_cb=lambda p, s: _write_progress(task_id, p, s),
-                api_key=api_key,
-                hyde_text=hyde_text,
-            )
-
+        doc_name = body.doc_name or ""
+        if not doc_name:
             db = SessionLocal()
             try:
-                # 中间件：查重 → 难度评分与重出 → 生成解析，通过后才落库并交给预览
-                questions, stats = question_review.review_questions(
-                    db, user_id, questions, params, doc_name, api_key, hyde_text,
-                    progress=lambda p, s: _write_progress(task_id, p, s),
-                )
-                if stats.summary():
-                    logger.info("[gen:%s] 中间件：%s", task_id, stats.summary())
-                batch = persist_batch(db, user_id, params.kb_id, params.doc_id, mode, params, hyde_text, questions)
-                payload = [q.model_dump() for q in questions]
-                r.hset(_task_key(task_id), mapping={
-                    "progress": 100, "stage": "生成完成", "status": "done",
-                    "done": "1", "batch_id": batch.id,
-                    "questions": json.dumps(payload, ensure_ascii=False),
-                    "review": json.dumps({
-                        "duplicates": stats.duplicates,
-                        "repaired": stats.repaired,
-                        "regenerated": stats.regenerated,
-                        "solved": stats.solved,
-                    }, ensure_ascii=False),
-                })
-                r.expire(_task_key(task_id), settings.generate_task_ttl_seconds)
+                from app.models import Document
+
+                d = db.get(Document, params.doc_id)
+                doc_name = d.name if d else ""
             finally:
                 db.close()
+
+        questions = question_gen.generate_questions(
+            params,
+            doc_name,
+            scope=body.scope or None,
+            existing_stems=body.existing_stems,
+            progress_cb=lambda p, s: _write_progress(task_id, p, s),
+            api_key=api_key,
+            hyde_text=hyde_text,
+        )
+
+        db = SessionLocal()
+        try:
+            # 中间件：查重 → 难度评分与重出 → 生成解析，通过后才落库并交给预览
+            questions, stats = question_review.review_questions(
+                db, user_id, questions, params, doc_name, api_key, hyde_text,
+                progress=lambda p, s: _write_progress(task_id, p, s),
+            )
+            if stats.summary():
+                logger.info("[gen:%s] 中间件：%s", task_id, stats.summary())
+            batch = persist_batch(db, user_id, params.kb_id, params.doc_id, mode, params, hyde_text, questions)
+            payload = [q.model_dump() for q in questions]
+            r.hset(_task_key(task_id), mapping={
+                "progress": 100, "stage": "生成完成", "status": "done",
+                "done": "1", "batch_id": batch.id,
+                "questions": json.dumps(payload, ensure_ascii=False),
+                "review": json.dumps({
+                    "duplicates": stats.duplicates,
+                    "repaired": stats.repaired,
+                    "regenerated": stats.regenerated,
+                    "solved": stats.solved,
+                }, ensure_ascii=False),
+            })
+            r.expire(_task_key(task_id), settings.generate_task_ttl_seconds)
+        finally:
+            db.close()
     except NeedConfirmError as exc:
         r.hset(_task_key(task_id), mapping={
             "status": "failed", "done": "1",

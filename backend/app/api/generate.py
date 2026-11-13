@@ -11,7 +11,6 @@ from app.models.base import new_id
 from app.schemas.api import GenerateStartBody
 from app.schemas.auth import ErrorResponse
 from app.services import cache, generation
-from app.services import generation_observation as observation
 from app.services.model_settings import require_deepseek_key
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
@@ -40,9 +39,7 @@ def _validate_ready(access: BankAccess, body: GenerateStartBody, db: Session) ->
     return doc
 
 
-@router.post("/start", status_code=202, responses={
-    503: {"model": ErrorResponse, "description": "智能出题 SDK 执行环境暂不可用"},
-})
+@router.post("/start", status_code=202)
 def start_generation(
     body: GenerateStartBody,
     background: BackgroundTasks,
@@ -53,7 +50,6 @@ def start_generation(
     access = _resolve(body, user, db)
     _validate_ready(access, body, db)
     api_key = require_deepseek_key(db, user.id)
-    backend = observation.ensure_backend_available()
     if not generation.acquire_lock(user.id):
         raise AppError("GENERATION_BUSY", "你已有进行中的出题任务，请等待完成后再试", status_code=409)
 
@@ -66,10 +62,7 @@ def start_generation(
         "document_id": body.document_id or body.doc_id,
     })
     r.expire(key, 1800)
-    run = observation.accept_generation(
-        user.id, "parameterized", backend=backend, task_id=task_id,
-    )
-    background.add_task(generation.run_generation_task, task_id, user.id, api_key, body, run=run)
+    background.add_task(generation.run_generation_task, task_id, user.id, api_key, body)
     return {"task_id": task_id}
 
 
@@ -83,7 +76,7 @@ def get_progress(task_id: str, user: User = Depends(get_current_user)):
 
 
 @router.post("", responses={
-    503: {"model": ErrorResponse, "description": "智能出题 SDK、向量存储或嵌入服务暂不可用"},
+    503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
 })
 def generate_sync(
     body: GenerateStartBody,
@@ -98,37 +91,36 @@ def generate_sync(
     doc = _validate_ready(access, body, db)
     api_key = require_deepseek_key(db, user.id)
     params = generation.build_params(body)
-    with observation.generation_scope(user.id, "parameterized"):
-        hyde_text = hyde_mod.get_hyde(
-            cache.get_redis(), params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
+    hyde_text = hyde_mod.get_hyde(
+        cache.get_redis(), params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
+    )
+    try:
+        questions = question_gen.generate_questions(
+            params,
+            doc.name,
+            scope=body.scope or None,
+            existing_stems=body.existing_stems,
+            api_key=api_key,
+            hyde_text=hyde_text,
         )
-        try:
-            questions = question_gen.generate_questions(
-                params,
-                doc.name,
-                scope=body.scope or None,
-                existing_stems=body.existing_stems,
-                api_key=api_key,
-                hyde_text=hyde_text,
-            )
-        except question_gen.NeedConfirmError as exc:
-            raise AppError(
-                "NEED_CONFIRM",
-                f"材料中「{exc.type_label}」的原题只有 {exc.available} 道，不足 {exc.requested} 道",
-                status_code=422,
-                kind="need_confirm",
-                available=exc.available,
-                requested=exc.requested,
-            ) from exc
-        from app.services import question_review
+    except question_gen.NeedConfirmError as exc:
+        raise AppError(
+            "NEED_CONFIRM",
+            f"材料中「{exc.type_label}」的原题只有 {exc.available} 道，不足 {exc.requested} 道",
+            status_code=422,
+            kind="need_confirm",
+            available=exc.available,
+            requested=exc.requested,
+        ) from exc
+    from app.services import question_review
 
-        questions, _stats = question_review.review_questions(
-            db, user.id, questions, params, doc.name, api_key, hyde_text
-        )
-        generation.persist_batch(
-            db, user.id, access.bank.id, doc.id, "parametric", params, hyde_text, questions
-        )
-        return [q.model_dump() for q in questions]
+    questions, _stats = question_review.review_questions(
+        db, user.id, questions, params, doc.name, api_key, hyde_text
+    )
+    generation.persist_batch(
+        db, user.id, access.bank.id, doc.id, "parametric", params, hyde_text, questions
+    )
+    return [q.model_dump() for q in questions]
 
 
 @router.get("/batches/latest")

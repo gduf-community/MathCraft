@@ -57,24 +57,6 @@ def _create(kwargs: dict, api_key: str | None, thinking_off: bool):
     return client.chat.completions.create(**kwargs)
 
 
-def _sdk_enabled() -> bool:
-    from app.services.generation_observation import current_run
-
-    run = current_run()
-    return run is not None and run.backend == "sdk"
-
-
-def _complete(
-    kwargs: dict, api_key: str | None, thinking_off: bool, *, use_sdk: bool,
-) -> str:
-    if use_sdk:
-        from app.services import agent_sdk
-
-        return agent_sdk.complete(kwargs, api_key, thinking_off)
-    response = _create(kwargs, api_key, thinking_off)
-    return response.choices[0].message.content or ""
-
-
 def chat_json(
     messages: list[dict],
     api_key: str | None = None,
@@ -94,7 +76,6 @@ def chat_json(
     left = retries
     escalations = 0
     temperature = 0.7
-    use_sdk = _sdk_enabled()
     while True:
         try:
             kwargs: dict = {
@@ -105,10 +86,12 @@ def chat_json(
             }
             if budget:
                 kwargs["max_tokens"] = budget
-            content = _complete(kwargs, api_key, thinking_off, use_sdk=use_sdk)
-            return json.loads(content)
+            resp = _create(kwargs, api_key, thinking_off)
+            choice = resp.choices[0]
+            return json.loads(choice.message.content or "")
         except json.JSONDecodeError as exc:
             last_err = exc
+            content = choice.message.content or ""
             temperature = 0.3
             if budget and escalations < 2:
                 escalations += 1
@@ -139,7 +122,8 @@ def chat_text(
         kwargs["max_tokens"] = max_tokens
     if response_format:
         kwargs["response_format"] = response_format
-    return _complete(kwargs, api_key, thinking_off, use_sdk=_sdk_enabled())
+    resp = _create(kwargs, api_key, thinking_off)
+    return resp.choices[0].message.content or ""
 
 
 def chat_stream(
@@ -156,11 +140,6 @@ def chat_stream(
     }
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
-    if _sdk_enabled():
-        from app.services import agent_sdk
-
-        yield from agent_sdk.stream(kwargs, api_key, thinking_off)
-        return
     resp = _create(kwargs, api_key, thinking_off)
     for chunk in resp:
         choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
