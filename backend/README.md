@@ -15,6 +15,7 @@ backend/
 │   ├── schemas/         # 请求与响应契约
 │   └── services/        # 认证、文档、RAG 与教学业务
 │       ├── export_docx.py # Word 排版及数学公式转换
+│       ├── phoenix_tracing.py # 可选元数据追踪与线程上下文传递
 │       └── rag/         # 检索与四模式对话
 │           ├── skills.py # 四模式技能注册、执行上下文与延迟导入
 │           └── question_gen.py # 模型流式接收、滚动解析与题目校验
@@ -99,6 +100,16 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 平台索引重建依赖进程内任务，当前使用单 worker。重启中断的资料入库或索引重建需由用户重新解析、管理员重新发起。
 
+## 可选 Phoenix
+
+`app/services/phoenix_tracing.py` 使用私有 OpenTelemetry provider、有界队列和手工 OTLP protobuf 导出。`MetadataClient` 沿用普通 OpenAI 客户端的代理、重定向和连接配置，不采集正文；`@trace_run` 覆盖对话、同步参数化及后台参数化执行，`TracingThreadPoolExecutor` 传递线程上下文，不引入 Agent SDK。
+
+在 `backend/` 安装 `uv sync --extra phoenix`。该 extra 与仓库根环境均固定 `opentelemetry-sdk==1.45.2` 和 `opentelemetry-exporter-otlp-proto-http==1.45.2`，默认关闭时不要求安装。独立部署使用根 `compose.phoenix.yaml`，本机 6017 回环端口、固定 Phoenix 21 digest 与 `phoenix_data` 卷。
+
+配置默认值为 `PHOENIX_ENABLED=false`、`PHOENIX_ENDPOINT=http://127.0.0.1:6017/v1/traces`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。修改开关后重启后端；本机容器默认无认证，仅限可信单机，远程须使用 HTTPS、独立认证和 API key。
+
+当前没有 `ops_runs` 表。`trace_run` 内部创建 `run_` 标识，`current_run_id()` 供后续台账复用；根 span OK 仅表示函数正常返回，LLM 错误独立记录。导出失败不改变业务结果。启停及完整边界见 [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)。
+
 ## 对话、生成与 Word 导出
 
 `POST /api/chat/sessions/{session_id}/messages` 经 `rag/skills.py` 将显式模式分发给快速出题、创新命题、知识答疑或数据管理；路由继续负责会话与资源权限、进度及结果持久化。模型生成通过 `rag/llm.py` 的 `chat_stream` 接收增量文本，`question_gen.py` 逐个提取完整题目并用 `Question` 校验，随后进入既有审核链路。浏览器仍通过普通 HTTP 响应与进度轮询获取结果，不提供题目 token 流接口。
@@ -158,6 +169,5 @@ uv run ruff check app tests
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
 - [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
-- 待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[运维后台](../docs/design/运维后台升级方案.md)、[接口与联调契约](../docs/design/运维后台接口与联调契约.md)、[模块说明](../docs/design/运维后台模块说明.md)。
-- 运维后端协作见[三人实施分工方案](../docs/design/运维后台三人实施分工方案.md)；采集接点、题目版本及审核范围待 G1 冻结，运维 SQL、独立周期心跳、五接口及告警清理在 G0 后实施。
-- 运维部署和值守见[运行手册](../docs/design/运维后台运行手册.md)；M9 自监控、容量保护和正文访问审计仍待实现，阈值首期只从配置文件或环境变量读取。
+- 后台待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)和[三人实施分工](../docs/design/运维后台三人实施分工方案.md)。覆盖两条出题入口，后续新增最小 `ops_runs`，只做概览和运行查询。
+- [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/design/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。

@@ -27,6 +27,7 @@ MathCraft/
 │   │   ├── schemas/          # 请求与响应契约
 │   │   └── services/         # 认证、文档、RAG、出题等业务服务
 │   │       ├── export_docx.py # Word 排版与 LaTeX → MathML → OMML 公式转换
+│   │       ├── phoenix_tracing.py # 可选 OTLP 元数据追踪和线程上下文
 │   │       └── rag/          # 检索、出题及四模式对话
 │   │           ├── skills.py # 显式模式的技能注册与执行上下文
 │   │           └── question_gen.py # 流式接收、滚动解析与题目校验
@@ -38,7 +39,7 @@ MathCraft/
 ├── frontend/                 # React 前端
 │   ├── src/                  # 页面、组件、API 与状态管理
 │   │   ├── api/              # 认证及业务 API 请求
-│   │   │   ├── adminOps.ts   # 运维 v1 真实请求适配；五个后端接口待实现
+│   │   │   ├── adminOps.ts   # 旧运维请求适配，待收缩并对接真实后台
 │   │   │   ├── adminOpsDemo.ts # 仅 DEV 显式启用的合成演示
 │   │   │   └── exportDocx.ts # 认证请求与 Word 文件下载
 │   │   ├── components/
@@ -51,7 +52,7 @@ MathCraft/
 │   │   │   ├── ui/ConfirmCard.tsx # 数据操作影响预览与确认
 │   │   │   ├── ui/SegmentedControl.tsx # 对话模式选择
 │   │   │   ├── ui/Toast.tsx # 全站共享提示；本轮仅恢复历史外观
-│   │   │   └── admin/        # 七入口管理面板与既有管理操作
+│   │   │   └── admin/        # 现有管理面板；依赖／异常等旧运维入口待删除
 │   │   │       ├── AdminPanel.tsx
 │   │   │       ├── LegacyOverview.tsx # 原平台资源与历史批次真实统计
 │   │   │       └── ops/      # 运维页面、通知及共用展示／查询
@@ -70,22 +71,20 @@ MathCraft/
 ├── docs/
 │   ├── api.md                # API 文档
 │   └── design/               # 功能设计、实施记录与待实现方案
-│       ├── 运维后台升级方案.md # 运维方案、前端先行例外与验收记录
-│       ├── 运维后台接口与联调契约.md   # 拟新增接口、状态和联调样例
 │       ├── 运维后台模块说明.md     # 模块职责、依赖与验收要点
 │       ├── 运维后台系统方案说明.md # 面向方案评审的系统说明
-│       ├── 运维后台三人实施分工方案.md # 三人职责、接口归属与交接顺序
-│       ├── 运维后台运行手册.md # 部署、值守、故障恢复与审计方案
+│       ├── 运维后台三人实施分工方案.md # 运行记录、查询后端与前端整合分工
+│       ├── 运维后台运行手册.md # 运行状态口径与可选追踪排障
 │       ├── 对话四模式与主线整合.md # 对话流程、确认范围与合并边界
 │       ├── 题目Word导出与公式呈现.md # 导出契约、公式转换与显示边界
 │       ├── 登录视觉恢复与历史前端对照.md # 登录、agent 视觉基准与历史对照验收记录
-│       ├── 运维后台A0与G0独立准备记录.md # 甲的本地核验、合成证据与待交接边界
-│       └── 运维后台G0技术核验.md # 固定版本、Phoenix 认证及清理依据
+│       └── Phoenix可选扩展.md # 普通 OpenAI 客户端手工 OTLP 元数据追踪
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
 ├── tools/                    # API 文档生成等维护脚本
-│   └── ops_g0/               # 独立 SDK/Phoenix 验证；显式授权后可做限额真实模型验收
+│   └── ops_g0/               # 保留的旧独立工具，非当前启动与验收入口
 ├── compose.yaml              # 本地 Redis 容器
+├── compose.phoenix.yaml      # 可选 Phoenix，回环 6017 与独立持久卷
 ├── pyproject.toml            # 仓库级依赖与检查配置
 ├── openapi.json              # 当前接口契约
 ├── AGENTS.md                 # 协作约定
@@ -240,9 +239,19 @@ docker compose down             # 移除容器，保留数据卷
 
 生产部署需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true` 并配置 Cloudflare 站点信息，关闭开发账号能力，配置持久化路径与备份。服务器通过 SSH 连接，部署前按 [后端迁移说明](backend/README.md#迁移与验证) 完成备份、迁移与审计。
 
+### 可选 Phoenix
+
+默认关闭。需要时在 `backend/` 执行 `uv sync --extra phoenix`，在仓库根执行 `docker compose -f compose.phoenix.yaml up -d --wait phoenix`；设置 `PHOENIX_ENABLED=true` 并重启后端。使用根环境时也在根目录安装同名 extra。
+
+默认 OTLP 地址为 `http://127.0.0.1:6017/v1/traces`，查看入口为 `http://127.0.0.1:6017`。容器固定 Phoenix 21 镜像 digest，数据保存到 `phoenix_data` 命名卷。此本机部署默认无认证，仅限可信单机；远程访问须独立配置 HTTPS、认证和 API key。
+
+默认配置：`PHOENIX_ENABLED=false`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。根与后端 extra 均固定 `opentelemetry-sdk==1.45.2`、`opentelemetry-exporter-otlp-proto-http==1.45.2`，仅追踪元数据。停用时关闭开关并重启后端；容器可独立 `docker compose -f compose.phoenix.yaml stop phoenix`，保留数据卷。
+
+配置与结果语义见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：当前尚无 `ops_runs` 表，根 span OK 只证明函数返回，不证明业务成功。
+
 ## 开发检查
 
-运维 A0/G0 独立准备使用单独环境与本机 Phoenix 6016 端口，不随应用启动，默认只用假模型；安装、认证配置生成、合成复现及显式授权的限额真实模型验收见 [工具说明](tools/ops_g0/README.md)。独立验证通过不代表实际业务 G0 通过。
+`tools/ops_g0` 是保留的旧独立工具，代码和测试不删除，不属于当前启动和验收流程。当前扩展见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)。
 
 后端在 `backend/` 执行；测试使用临时 SQLite、进程内 fakeredis 和外部服务替身，夹具禁止外部网络，不连接或清空本机 Redis：
 
@@ -268,11 +277,9 @@ npm run build
 - [Word 导出与公式呈现](docs/design/题目Word导出与公式呈现.md)：预览页导出入口、`POST /api/export/docx`、公式转换及样式范围。
 - [登录视觉恢复与历史前端对照](docs/design/登录视觉恢复与历史前端对照.md)：紧凑主卡、独立认证弹窗、登录页绑定邮箱及历史对照；保留四模式／图片／确认，Toast 恢复旧样式。最终 build／typecheck、lint（0 错误／3 条既有警告）、完整认证 e2e、59 组整合及两项会话回归均通过。历史隔离预览独立验收记录保留，5174 对照已于 2026-11-12 结束停服，目录删除受阻；真机安全区与软键盘未验证。
 - [账号与权限设计](docs/design/账号系统整合与审查修复.md)、[模型配置说明](docs/design/模型配置来源与普通知识库流程.md)、[知识库说明](docs/design/知识库模块说明.md)：业务规则与能力边界。
-- [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)：面向方案评审与协作沟通，介绍系统目标、使用场景、功能模块和建设边界；文末列明代码实施必须参考的三份约定文档。
-- [A0 与 G0 独立准备记录](docs/design/运维后台A0与G0独立准备记录.md)、[技术核验](docs/design/运维后台G0技术核验.md)：甲的源码接点盘点、固定环境、合成追踪／故障／真实删除证据及外部 SDK 交接清单；完整业务 G0 保持待验收。
-- [运维后台三人实施分工方案](docs/design/运维后台三人实施分工方案.md)：本人负责前端、联调及审查，两位同事分别负责追踪／运行／质量与依赖／告警／清理调度；明确五接口归属及 G0～G3 交接。
-- [运维后台运行手册](docs/design/运维后台运行手册.md)：补充 Phoenix 部署、容量保护、日常巡检、故障处理、清理验证和访问审计方案；当前为待实现手册。
-- [运维后台扩展方案](docs/design/运维后台升级方案.md)：七入口保持不变，新增前端及合成交互已完成，含自监控、每题最终版本／审核范围、只读配置与排障指引；2026-11-11 历史验收不覆盖本次补全，新增前端检查及独立复审已通过。真实授权审计和后端联调待完成，五个 ops 后端接口仍待实现，G0／G1／G3 均未通过，真实追踪正文入口固定关闭。DEV 中管理员登录后可显式启用原五场景及四种访问结果模拟，默认真实，真实错误不自动转演示；旧平台资源、账号、模型与安全始终真实，生产排除 demo。配套[接口与联调契约](docs/design/运维后台接口与联调契约.md)、[模块说明](docs/design/运维后台模块说明.md)和[演示边界](STUBS.md)记录可选扩展与待 G1 边界；本次不新增后端或审计 API，不改 OpenAPI。
+- [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)、[模块说明](docs/design/运维后台模块说明.md)：两条出题入口、后续最小 `ops_runs` 与后台查询范围。
+- [三人实施分工方案](docs/design/运维后台三人实施分工方案.md)：甲负责运行记录，乙负责查询后端，本人负责前端、文档和整合。
+- [运维后台运行手册](docs/design/运维后台运行手册.md)、[Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：当前追踪实现、可选部署和故障边界。
 - [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)：开发约定与术语定义。
 
 当前实现以 `backend/app/`、`frontend/src/` 与根 `openapi.json` 为准；设计文档中的历史记录仅供参考。

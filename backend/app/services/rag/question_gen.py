@@ -419,7 +419,7 @@ def _gen_for_type(
     单次模型调用只生成 GEN_BATCH_SIZE 道，多批并发。一次要十道题的输出量会超过模型
     单次响应能力，慢通道下能拖十分钟以上，因此必须拆批。
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
     type_label = TYPE_LABELS[tc.type]
 
@@ -524,7 +524,7 @@ def generate_questions(
     - 任一 agent 失败（原题不足 / 检索为空 / 模型超时）整体抛出该异常
     """
     import threading
-    from concurrent.futures import ThreadPoolExecutor
+    from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
     avoid_base = {_norm_stem(s) for s in (existing_stems or []) if s}
     weights = [max(1, tc.count) for tc in params.types]

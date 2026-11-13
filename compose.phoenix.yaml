@@ -1,0 +1,23 @@
+name: mathcraft-phoenix
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-21.0.0@sha256:b5bcec3455bd5c431f52737fc62046c081752b483e3fff40c63f40783736bcad
+    ports:
+      - "127.0.0.1:6017:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+      PHOENIX_ENABLE_AUTH: "false"
+    volumes:
+      - phoenix_data:/mnt/data
+    cpus: 2
+    mem_limit: 2g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  phoenix_data:
