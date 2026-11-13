@@ -4,6 +4,7 @@ import json
 from openai import OpenAI
 
 from app.config import settings
+from app.services.phoenix_tracing import MetadataClient
 
 
 class LLMError(RuntimeError):
@@ -40,7 +41,8 @@ def get_client(api_key: str | None = None) -> OpenAI:
     cli = _clients.get(key)
     if cli is None:
         cli = OpenAI(api_key=key, base_url=settings.deepseek_base_url,
-                     timeout=float(settings.llm_timeout_seconds), max_retries=0)
+                     timeout=float(settings.llm_timeout_seconds), max_retries=0,
+                     http_client=MetadataClient(settings.deepseek_model))
         _clients[key] = cli
     return cli
 
@@ -141,9 +143,12 @@ def chat_stream(
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
     resp = _create(kwargs, api_key, thinking_off)
-    for chunk in resp:
-        choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
-        delta = getattr(choice, "delta", None) if choice else None
-        piece = getattr(delta, "content", None) if delta else None
-        if piece:
-            yield piece
+    try:
+        for chunk in resp:
+            choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
+            delta = getattr(choice, "delta", None) if choice else None
+            piece = getattr(delta, "content", None) if delta else None
+            if piece:
+                yield piece
+    finally:
+        resp.close()

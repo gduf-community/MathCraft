@@ -13,6 +13,7 @@ from app.models.base import new_id, utcnow
 from app.schemas.api import ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody
 from app.schemas.question import Question
 from app.services import cache
+from app.services.phoenix_tracing import trace_run
 from app.services.generation import persist_batch
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.rag import chat_flow, hyde
@@ -105,6 +106,7 @@ def get_session(
 
 
 @router.post("/sessions/{session_id}/messages")
+@trace_run("conversation")
 def send_message(
     session_id: str,
     body: ChatMessageBody,

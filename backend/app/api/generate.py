@@ -11,6 +11,7 @@ from app.models.base import new_id
 from app.schemas.api import GenerateStartBody
 from app.schemas.auth import ErrorResponse
 from app.services import cache, generation
+from app.services.phoenix_tracing import trace_run
 from app.services.model_settings import require_deepseek_key
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
@@ -78,6 +79,7 @@ def get_progress(task_id: str, user: User = Depends(get_current_user)):
 @router.post("", responses={
     503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
 })
+@trace_run("parameterized")
 def generate_sync(
     body: GenerateStartBody,
     user: User = Depends(get_current_user),

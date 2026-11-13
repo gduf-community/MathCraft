@@ -16,7 +16,6 @@ import json
 import logging
 import math
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import json_repair
@@ -28,6 +27,7 @@ from app.schemas.question import Difficulty, GenerateParams, Question, QuestionT
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import SOLVE_SYSTEM
 from app.services.rag_runtime import with_snapshot
+from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
 logger = logging.getLogger("app.review")
 

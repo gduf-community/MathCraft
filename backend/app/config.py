@@ -1,12 +1,15 @@
 """全局配置，从 backend/.env 读取。密钥只存在于环境变量与 local_secrets.py，绝不进 git。"""
+import logging
 from pathlib import Path
+from typing import Self
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import ModelWrapValidatorHandler, SecretStr, ValidationError, model_validator
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -108,6 +111,31 @@ class Settings(BaseSettings):
     deepseek_display_name: str = "DeepSeek Flash"
     # 单次模型调用超时；SDK 内部重试已关闭，避免超时被放大成十几分钟
     llm_timeout_seconds: int = 300
+
+    # 独立可选扩展；缺依赖、配置无效或导出失败都不阻断业务。
+    phoenix_enabled: bool = False
+    phoenix_endpoint: str = "http://127.0.0.1:6017/v1/traces"
+    phoenix_project: str = "mathcraft"
+    phoenix_api_key: SecretStr = SecretStr("")
+    phoenix_queue_size: int = 128
+    phoenix_timeout_seconds: float = 0.5
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def isolate_phoenix_configuration(
+        cls, data: object, handler: ModelWrapValidatorHandler[Self],
+    ) -> Self:
+        """Discard malformed optional settings without weakening core validation."""
+        try:
+            return handler(data)
+        except ValidationError as exc:
+            fields = {name for name in cls.model_fields if name.startswith("phoenix_")}
+            errors = exc.errors(include_input=False)
+            if (not isinstance(data, dict) or not errors
+                    or any(not error["loc"] or error["loc"][0] not in fields for error in errors)):
+                raise
+            logger.warning("Phoenix unavailable: invalid optional configuration types")
+            return handler({key: value for key, value in data.items() if key not in fields})
 
     # 硅基流动（向量与重排，密钥在 app/local_secrets.py，不提供配置入口）
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"

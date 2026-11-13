@@ -20,6 +20,7 @@ from app.schemas.auth import ErrorResponse
 from app.services.rag import tokenizer  # 预热 jieba 词典
 from app.services.rag.embeddings import EmbeddingError
 from app.services.rag.vectorstore import VectorStoreError
+from app.services import phoenix_tracing
 
 from app.api import (
     admin,
@@ -72,7 +73,11 @@ async def lifespan(_app: FastAPI):
         db.rollback()
     finally:
         db.close()
-    yield
+    phoenix_tracing.configure(settings)
+    try:
+        yield
+    finally:
+        phoenix_tracing.shutdown()
 
 
 app = FastAPI(title="MathCraft Backend", version="0.2.0", lifespan=lifespan)

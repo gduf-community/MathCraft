@@ -10,6 +10,7 @@ from app.models import GenerationBatch, Question
 from app.models.base import new_id
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
 from app.services import cache, question_review
+from app.services.phoenix_tracing import trace_run
 from app.services.rag import hyde, question_gen
 from app.services.rag.question_gen import NeedConfirmError
 
@@ -129,6 +130,7 @@ def build_params_from_slots(slot_state: dict, bank_id: str, document_id: str) ->
     return params
 
 
+@trace_run("parameterized")
 def run_generation_task(task_id: str, user_id: str, api_key: str, body, mode: str = "parametric") -> None:
     """后台任务：HyDE → 混合检索 → 生成 → 落库 → 更新 Redis 进度到完成。"""
     r = cache.get_redis()
