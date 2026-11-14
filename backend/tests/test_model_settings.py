@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.services import mineru
+from app.services.rag import llm
 
 
 FAKE_MINERU_TOKEN = "fake-mineru-token-for-regression-tests-only"
@@ -302,6 +303,32 @@ def test_test_deepseek_with_key(client, teacher):
     resp = client.post("/api/users/me/model-settings/test-deepseek", headers=teacher)
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, llm.LLMError])
+def test_deepseek_rejects_untrusted_exception_messages(
+    client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture, error_type: type[Exception],
+) -> None:
+    """即使下层直接抛普通 LLMError，公开边界也不能信任它的文本。"""
+    marker = "FAKE_PRIVATE_DEEPSEEK_EXCEPTION"
+
+    def fail(*args, **kwargs) -> str:
+        raise error_type(marker)
+
+    monkeypatch.setattr(llm, "chat_text", fail)
+    assert client.put(
+        "/api/users/me/model-settings", headers=teacher,
+        json={"deepseek_api_key": "fake-api-key-for-exception-test-only"},
+    ).status_code == 200
+
+    response = client.post("/api/users/me/model-settings/test-deepseek", headers=teacher)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "code": "LLM_ERROR", "message": "模型调用失败，请稍后重试",
+    }
+    assert marker not in response.text + caplog.text
 
 
 @pytest.mark.parametrize("code", [0, -60012, "-60012"])
