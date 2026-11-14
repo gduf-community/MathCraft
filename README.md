@@ -16,80 +16,28 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 ```text
 MathCraft/
-├── .scratch/frontend-0b5d4b4/ # 已结束的本地历史对照残留，删除受阻，待清理
-├── backend/                  # FastAPI 后端与独立 uv 依赖环境
-│   ├── app/
-│   │   ├── main.py           # 应用入口 app.main:app
-│   │   ├── config.py         # 配置定义，读取 backend/.env
-│   │   ├── api/              # HTTP 与 WebSocket 接口
-│   │   │   └── export.py     # 登录用户提交题目并导出 Word
-│   │   ├── models/           # 数据库模型
-│   │   ├── schemas/          # 请求与响应契约
-│   │   └── services/         # 认证、文档、RAG、出题等业务服务
-│   │       ├── export_docx.py # Word 排版与 LaTeX → MathML → OMML 公式转换
-│   │       ├── phoenix_tracing.py # 可选 OTLP 元数据追踪和线程上下文
-│   │       └── rag/          # 检索、出题及四模式对话
-│   │           ├── skills.py # 显式模式的技能注册与执行上下文
-│   │           └── question_gen.py # 流式接收、滚动解析与题目校验
+├── backend/                  # FastAPI 后端
+│   ├── app/                  # 接口、数据模型与业务服务
 │   ├── alembic/              # 数据库迁移
-│   ├── scripts/              # 认证密钥、管理员与开发账号初始化
+│   ├── scripts/              # 配置初始化与账号管理
 │   ├── tests/                # 后端测试
-│   ├── .env.example          # 本机开发配置模板
-│   └── README.md             # 后端配置、迁移与故障处理
-├── frontend/                 # React 前端
+│   └── README.md             # 后端配置、迁移与排错
+├── frontend/                 # React + TypeScript 前端
 │   ├── src/                  # 页面、组件、API 与状态管理
-│   │   ├── api/              # 认证及业务 API 请求
-│   │   │   ├── adminOps.ts   # 旧运维请求适配，待收缩并对接真实后台
-│   │   │   ├── adminOpsDemo.ts # 仅 DEV 显式启用的合成演示
-│   │   │   └── exportDocx.ts # 认证请求与 Word 文件下载
-│   │   ├── components/
-│   │   │   ├── auth/         # 历史登录视觉、手动身份选择与当前安全认证
-│   │   │   │   ├── AuthDialog.tsx # 邮箱登录与两种密码找回方式的独立弹窗
-│   │   │   │   └── LoginEmailBindingDialog.tsx # 临时认证后绑定邮箱，退出失败可重试
-│   │   │   ├── tabs/GenerateTab/ # 历史视觉恢复，保留四模式、图片与确认
-│   │   │   │   └── QuickPrompts.tsx # 恢复历史快捷提问，点击填入草稿
-│   │   │   ├── tabs/PreviewTab/ExportModal.tsx # 已选题目的 Word 导出设置
-│   │   │   ├── ui/ConfirmCard.tsx # 数据操作影响预览与确认
-│   │   │   ├── ui/SegmentedControl.tsx # 对话模式选择
-│   │   │   ├── ui/Toast.tsx # 全站共享提示；本轮仅恢复历史外观
-│   │   │   └── admin/        # 现有管理面板；依赖／异常等旧运维入口待删除
-│   │   │       ├── AdminPanel.tsx
-│   │   │       ├── LegacyOverview.tsx # 原平台资源与历史批次真实统计
-│   │   │       └── ops/      # 运维页面、通知及共用展示／查询
-│   │   │           ├── OpsPages.tsx
-│   │   │           ├── RunDrawer.tsx
-│   │   │           ├── AdminNotifications.tsx
-│   │   │           ├── OpsShared.tsx
-│   │   │           ├── OpsExtensions.tsx # 自监控、配置、版本／范围及只读指引
-│   │   │           ├── useOpsQuery.ts
-│   │   │           └── useOpsClock.ts # 服务端快照加页面经过时间复核新鲜度
-│   │   └── types/
-│   │       └── ops.ts        # 运维 v1 前端类型，不代表新增 OpenAPI
-│   ├── ops-panel-regression.mjs # 运维面板离线浏览器回归
-│   ├── package.json          # 前端依赖与命令
 │   └── README.md             # 前端开发说明
-├── docs/
-│   ├── api.md                # API 文档
-│   └── design/               # 功能设计、实施记录与待实现方案
-│       ├── 运维后台模块说明.md     # 模块职责、依赖与验收要点
-│       ├── 运维后台系统方案说明.md # 面向方案评审的系统说明
-│       ├── 运维后台三人实施分工方案.md # 运行记录、查询后端与前端整合分工
-│       ├── 运维后台运行手册.md # 运行状态口径与可选追踪排障
-│       ├── 对话四模式与主线整合.md # 对话流程、确认范围与合并边界
-│       ├── 题目Word导出与公式呈现.md # 导出契约、公式转换与显示边界
-│       ├── 登录视觉恢复与历史前端对照.md # 登录、agent 视觉基准与历史对照验收记录
-│       └── Phoenix可选扩展.md # 普通 OpenAI 客户端手工 OTLP 元数据追踪
+├── docs/                     # API 文档与设计说明
+│   ├── api.md                # API 索引
+│   └── design/               # 设计、实施与验证记录
+├── tools/                    # 文档生成与维护工具
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
-├── tools/                    # API 文档生成等维护脚本
-│   └── ops_g0/               # 保留的旧独立工具，非当前启动与验收入口
 ├── compose.yaml              # 本地 Redis 容器
-├── compose.phoenix.yaml      # 可选 Phoenix，回环 6017 与独立持久卷
+├── compose.phoenix.yaml      # 可选 Phoenix 追踪服务
 ├── pyproject.toml            # 仓库级依赖与检查配置
-├── openapi.json              # 当前接口契约
+├── openapi.json              # 接口契约
 ├── AGENTS.md                 # 协作约定
 ├── GLOSSARY.md               # 领域术语
-└── STUBS.md                  # 当前 DEV 演示边界与历史替身说明
+└── STUBS.md                  # 开发演示与历史替身说明
 ```
 
 ## 启动方法
@@ -201,24 +149,11 @@ npm install
 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-打开 `http://127.0.0.1:5173`，使用刚创建的管理员账号选择“密码登录”。前端将 `/api` 和 `/media` 请求代理到后端的 8000 端口；端口占用时退出，不自动换端口。当前环境的 npm wrapper 会错误解析附加启动参数，因此直接用 Node 执行本地 Vite 入口。
+打开 `http://127.0.0.1:5173`，使用刚创建的管理员账号选择“密码登录”。前端将 `/api` 和 `/media` 请求代理到后端的 8000 端口；端口占用时退出，不自动换端口。
 
 前端隔离项目环境文件，根 `.env` 和 `frontend/.env` 均不会被 Vite 加载；自定义公开 API 地址需在开发启动或构建前通过进程环境变量 `VITE_API_BASE_URL` 注入。监听地址与端口使用上述命令行参数，开发代理目标由 `frontend/vite.config.ts` 定义；`VITE_*` 会进入浏览器代码，不得放入凭据。详见[前端配置说明](frontend/README.md#构建与检查)。
 
-主登录页按 `0b5d4b4` 恢复历史视觉，学生、教师可手动选择身份；认证角色以服务端响应为准，不匹配时退出并提示重新选择，管理员可直接进入管理面板。当前密码、邮箱验证码、重置密码、Turnstile 与安全会话流程保留，现有接口不变。
-
-紧凑主卡以密码登录为主，提供“邮箱登录”和“忘记密码？”两个入口。邮箱登录弹窗内通过“尚未绑定邮箱？先绑定”切换到绑定流程，并可返回邮箱登录。未登录绑定一次填写账号、密码和邮箱，点击“发送验证码”后先验证账号，再发码并显示验证码框，成功发码后至少等待 60 秒才能重发；已登录个人页面绑定无需重复密码。绑定不进入工作台，成功返回登录，返回或关闭时撤销临时会话，退出失败可重试。找回密码可联系管理员或验证已绑定邮箱；未配置有效联系邮箱时隐藏邮件入口。
-
-个人中心账号安全按学工号、邮箱、修改密码纵向排列；修改密码仍用弹窗。登录后首次绑定或重新绑定未验证邮箱只需邮箱验证码，换绑已验证邮箱需旧、新邮箱双验证码，解绑需当前密码；邮箱变更成功后全部设备退出。
-
-5174 临时历史对照已于 **2026-11-12 结束并停服**，不再提供旧登录或隔离预览入口。`.scratch/frontend-0b5d4b4/` 的递归删除被自动审批审查拒绝，目录及其历史预览、依赖尚待清理；它们仍被 Git 忽略，不属于当前启动流程。历史核验与清理状态见[恢复设计](docs/design/登录视觉恢复与历史前端对照.md#2026-11-12-临时对照结束与清理状态)。
-
-agent 视觉基准为 `5155f8a`（`bca8fb9^1`，前端树与 `bca8fb9` 相同），用户已明确确认恢复旧视觉并保留当前四模式、图片和数据确认。历史用户消息可编辑或回退后重发，但服务端没有历史截断接口，回退只裁切前端消息，不能保证服务端上下文同步回退。恢复文件、交互及验收见[登录视觉恢复与历史前端对照](docs/design/登录视觉恢复与历史前端对照.md)。
-
-管理员登录后在管理面板开通教师、学生账号。教师创建题库并上传资料，随后可检索、出题和组卷。模型配置分为两处：
-
-- “设置 → 模型与服务”：个人 DeepSeek Key、MinerU Token，个人配置优先于部署默认值。
-- 管理员“模型与检索”：平台嵌入、重排模型与凭据；修改嵌入模型或服务地址后，需显式重建索引才能应用。
+教师、学生账号由管理员开通。个人 DeepSeek Key 和 MinerU Token 在“设置 → 模型与服务”配置；平台嵌入、重排模型由管理员在“模型与检索”配置。嵌入模型或服务地址变更后，需重建索引才能应用。
 
 部署默认的硅基流动与 MinerU 凭据配置方式见 [模型配置说明](docs/design/模型配置来源与普通知识库流程.md)，占位格式见 [local_secrets.example.py](backend/app/local_secrets.example.py)。
 
@@ -254,11 +189,9 @@ docker compose down             # 移除容器，保留数据卷
 
 默认配置：`PHOENIX_ENABLED=false`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。根与后端 extra 均固定 `opentelemetry-sdk==1.45.2`、`opentelemetry-exporter-otlp-proto-http==1.45.2`，仅追踪元数据。停用时关闭开关并重启后端；容器可独立 `docker compose -f compose.phoenix.yaml stop phoenix`，保留数据卷。
 
-配置与结果语义见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：当前尚无 `ops_runs` 表，根 span OK 只证明函数返回，不证明业务成功。
+详细配置与排错见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)。
 
 ## 开发检查
-
-`tools/ops_g0` 是保留的旧独立工具，代码和测试不删除，不属于当前启动和验收流程。当前扩展见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)。
 
 后端在 `backend/` 执行；测试使用临时 SQLite、进程内 fakeredis 和外部服务替身，夹具禁止外部网络，不连接或清空本机 Redis：
 
@@ -277,19 +210,13 @@ npm run build
 
 ## 文档入口
 
-- [后端说明](backend/README.md)、[前端说明](frontend/README.md)：各端开发、配置与排错。
+- [后端说明](backend/README.md)、[前端说明](frontend/README.md)：开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
-- [四模式对话](docs/design/对话四模式与主线整合.md)：快速出题、创新命题、知识答疑和数据管理，包含图片及数据操作确认边界。
-- [出题审核](docs/design/出题审核中间件设计与实施记录.md)：后端流式生成、滚动校验、JSON 修复与审核边界。
-- [Word 导出与公式呈现](docs/design/题目Word导出与公式呈现.md)：预览页导出入口、`POST /api/export/docx`、公式转换及样式范围。
-- [登录视觉恢复与历史前端对照](docs/design/登录视觉恢复与历史前端对照.md)：紧凑主卡、独立认证弹窗、登录页绑定邮箱及历史对照；保留四模式／图片／确认，Toast 恢复旧样式。最终 build／typecheck、lint（0 错误／3 条既有警告）、完整认证 e2e、59 组整合及两项会话回归均通过。历史隔离预览独立验收记录保留，5174 对照已于 2026-11-12 结束停服，目录删除受阻；真机安全区与软键盘未验证。
-- [账号与权限设计](docs/design/账号系统整合与审查修复.md)、[模型配置说明](docs/design/模型配置来源与普通知识库流程.md)、[知识库说明](docs/design/知识库模块说明.md)：业务规则与能力边界。
-- [运维后台系统方案说明](docs/design/运维后台系统方案说明.md)、[模块说明](docs/design/运维后台模块说明.md)：两条出题入口、后续最小 `ops_runs` 与后台查询范围。
-- [三人实施分工方案](docs/design/运维后台三人实施分工方案.md)：甲负责运行记录，乙负责查询后端，本人负责前端、文档和整合。
-- [运维后台运行手册](docs/design/运维后台运行手册.md)、[Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)：当前追踪实现、可选部署和故障边界。
-- [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)：开发约定与术语定义。
-
-当前实现以 `backend/app/`、`frontend/src/` 与根 `openapi.json` 为准；设计文档中的历史记录仅供参考。
+- [账号与权限](docs/design/账号系统整合与审查修复.md)、[认证与账号安全](docs/design/登录视觉恢复与历史前端对照.md)。
+- [模型配置](docs/design/模型配置来源与普通知识库流程.md)、[知识库](docs/design/知识库模块说明.md)。
+- [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
+- [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/design/运维后台运行手册.md)、[可选追踪](docs/design/Phoenix可选扩展.md)。
+- [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)。
 
 ## 许可证
 
