@@ -8,7 +8,7 @@
 
 模型凭据使用 `/api/users/me/model-settings`，知识库资料使用 `/api/banks`；旧 `/api/settings` 与 `/api/knowledge-bases` 不属于当前后端契约。平台模型与检索通过管理员专用 `/api/admin/rag-settings` 维护；嵌入模型或地址变更先保存待应用值，另行提交重建后才切换，使用方法见 [设置拆分与保存反馈设计](design/设置拆分与保存反馈设计.md)。配置优先级、保存与测试规则见 [模型配置与入库流程](design/模型配置来源与普通知识库流程.md)，权限、完成情况及验收边界见 [知识库模块说明](design/知识库模块说明.md) 和[扫描 PDF 策略](design/扫描PDF云端OCR策略.md)。
 
-个人 DeepSeek 连接测试与出题任务进度仅返回固定脱敏错误提示。检索仅发布 ready 文档；`hybrid` 只融合向量与稀疏结果，`hybrid_rerank` 另行调用重排。修复与验收记录见[设置设计](design/设置拆分与保存反馈设计.md#模型配置与检索审查修复2026-11-14)。
+个人 DeepSeek 连接测试与出题任务进度仅返回固定脱敏错误提示。个人模型设置的 `mineru_using_default` 仅在未配置个人 Token 且服务端默认 Token 存在时为真，不代表凭据已通过鉴权；两者均缺失时连接测试返回 `400 MINERU_TOKEN_MISSING`，不发起外部请求。检索仅发布 ready 文档；`hybrid` 只融合向量与稀疏结果，`hybrid_rerank` 另行调用重排。修复与验收记录见[设置设计](design/设置拆分与保存反馈设计.md#模型配置与检索审查修复2026-11-14)。
 
 删除资料或题库时，SQLite 写锁有限重试耗尽返回 `503 DATABASE_BUSY`；向量存储故障返回 `503 VECTOR_STORE_UNAVAILABLE`，两者均保留 SQL 记录与原件。失败状态或零切片计数不能作为跳过向量清理的依据。
 

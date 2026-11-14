@@ -154,6 +154,140 @@ def test_search_backfills_ready_hits_past_unpublished_and_orphan_candidates(
         assert {hit["chunk_id"] for hit in payload[name]} <= ready_chunks
 
 
+@pytest.mark.parametrize("mode", ["dense", "sparse", "hybrid", "hybrid_rerank"])
+@pytest.mark.parametrize("document_scope", [False, True], ids=["bank", "document"])
+@pytest.mark.parametrize("pollute_index", [False, True], ids=["clean-index", "polluted-index"])
+def test_search_keeps_ready_results_within_sql_scope(
+    client, teacher, db, monkeypatch, retrieval_store,
+    mode: str, document_scope: bool, pollute_index: bool,
+) -> None:
+    """其他 ready 文档及伪造索引归属不能越界，也不能挤掉范围内的 top_k。"""
+    monkeypatch.setattr(embeddings, "embed_texts", lambda contents: [[0.0, 1.0] for _ in contents])
+    monkeypatch.setattr(embeddings, "embed_one", lambda content: [1.0, 0.0])
+    bank_id = create_bank(client, teacher, "目标题库")["id"]
+    other_bank_id = create_bank(client, teacher, "其他题库")["id"]
+    target_id = upload_markdown(client, teacher, bank_id, "target.md")["document_id"]
+    sibling_id = upload_markdown(client, teacher, bank_id, "sibling.md")["document_id"]
+    foreign_id = upload_markdown(client, teacher, other_bank_id, "foreign.md")["document_id"]
+    chunks_by_document = {}
+    for document_id, owner_bank, count, vector, tokens in (
+        (target_id, bank_id, 3, [0.0, 1.0], "导数 " + "背景 " * 100),
+        (sibling_id, bank_id, 24, [0.8, 0.6], "导数 " + "背景 " * 25),
+        (foreign_id, other_bank_id, 24, [1.0, 0.0], "导数 " * 16),
+    ):
+        document = db.get(Document, document_id)
+        assert document.status == "ready"
+        chunks = db.query(DocumentChunk).filter_by(document_id=document_id).all()
+        next_index = max(chunk.chunk_index for chunk in chunks) + 1
+        extra_chunks = [
+            DocumentChunk(
+                id=f"{document_id}_scope_{index}", bank_id=owner_bank,
+                document_id=document_id, chunk_index=next_index + index,
+                text=tokens.strip(), tokens=tokens.strip(), char_count=len(tokens.strip()),
+            )
+            for index in range(max(0, count - len(chunks)))
+        ]
+        db.add_all(extra_chunks)
+        fts.insert_rows(db, [
+            {"chunk_id": chunk.id, "bank_id": owner_bank,
+             "document_id": document_id, "tokens": chunk.tokens}
+            for chunk in extra_chunks
+        ])
+        if extra_chunks:
+            vectorstore.get_collection(owner_bank).add(
+                ids=[chunk.id for chunk in extra_chunks],
+                documents=[chunk.text for chunk in extra_chunks],
+                embeddings=[vector for _ in extra_chunks],
+                metadatas=[{"chunk_id": chunk.id, "doc_id": document_id}
+                           for chunk in extra_chunks],
+            )
+        chunks_by_document[document_id] = chunks + extra_chunks
+    db.commit()
+    target_chunks = {chunk.id for chunk in chunks_by_document[target_id]}
+    sibling_chunks = {chunk.id for chunk in chunks_by_document[sibling_id]}
+    allowed_chunks = target_chunks if document_scope else target_chunks | sibling_chunks
+    scoped_document = target_id if document_scope else None
+
+    if pollute_index:
+        # SQL 也可能留下错误的冗余 bank_id；文档与切片的两侧归属都必须校验。
+        failed_id = "scope_failed_document"
+        db.add(Document(
+            id=failed_id, bank_id=bank_id, name="failed.md", format="MD", size_bytes=1,
+            storage_path="unused-test-path", status="failed",
+            uploader_id=db.get(Document, target_id).uploader_id,
+        ))
+        db.flush()
+        invalid_chunks = [
+            DocumentChunk(
+                id=chunk_id, bank_id=chunk_bank, document_id=document_id,
+                chunk_index=1000, text="导数 " * 16, tokens="导数 " * 16, char_count=48,
+            )
+            for chunk_id, chunk_bank, document_id in (
+                ("scope_wrong_document_bank", bank_id, foreign_id),
+                ("scope_wrong_chunk_bank", other_bank_id, target_id),
+                ("scope_failed_chunk", bank_id, failed_id),
+            )
+        ]
+        db.add_all(invalid_chunks)
+        candidates = [
+            *chunks_by_document[foreign_id], *chunks_by_document[sibling_id], *invalid_chunks,
+        ]
+        # 同库跨文档和跨库切片都伪装成目标文档，绕过 Chroma 自身的 where 过滤。
+        vectorstore.get_collection(bank_id).upsert(
+            ids=[chunk.id for chunk in candidates] + ["scope_orphan"],
+            documents=[chunk.text for chunk in candidates] + ["导数 " * 16],
+            embeddings=[
+                [0.8, 0.6] if chunk.id in sibling_chunks else [1.0, 0.0]
+                for chunk in candidates
+            ] + [[1.0, 0.0]],
+            metadatas=[
+                {"chunk_id": chunk_id, "bank_id": bank_id, "doc_id": target_id}
+                for chunk_id in [chunk.id for chunk in candidates] + ["scope_orphan"]
+            ],
+        )
+        fts.insert_rows(db, [
+            {"chunk_id": chunk.id, "bank_id": bank_id,
+             "document_id": target_id, "tokens": chunk.tokens}
+            for chunk in candidates
+        ] + [{"chunk_id": "scope_orphan", "bank_id": bank_id,
+              "document_id": target_id, "tokens": "导数 " * 16}])
+        db.commit()
+        # 20 超过本例 top_k，也覆盖 hybrid 默认候选窗口；证明补召回确实受到攻击。
+        raw_dense = vectorstore.search(bank_id, [1.0, 0.0], 20, doc_id=scoped_document)
+        assert len(raw_dense) == 20
+        assert all(hit["chunk_id"] not in allowed_chunks for hit in raw_dense)
+        raw_sparse = db.execute(text(
+            "SELECT chunk_id FROM document_chunks_fts "
+            "WHERE document_chunks_fts MATCH :query AND bank_id = :bank "
+            "AND document_id = :document ORDER BY bm25(document_chunks_fts) LIMIT 20"
+        ), {"query": '"导数"', "bank": bank_id, "document": target_id}).scalars().all()
+        assert len(raw_sparse) == 20
+        assert not set(raw_sparse) & allowed_chunks
+
+    top_k = 2
+    response = client.post(
+        f"/api/banks/{bank_id}/search", headers=teacher,
+        json={"query": "导数", "mode": mode, "top_k": top_k,
+              "document_id": scoped_document},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    groups = ("results",) if mode in ("dense", "sparse") else (
+        "dense", "sparse", "fused", "reranked",
+    )
+    for name in groups:
+        hits = payload[name]
+        if mode == "hybrid" and name == "reranked":
+            assert hits == []
+            continue
+        chunk_ids = {hit["chunk_id"] for hit in hits}
+        assert chunk_ids <= allowed_chunks, f"{mode}/{name} 泄漏范围外或非 ready 切片"
+        assert len(chunk_ids) == len(hits), f"{mode}/{name} 重复候选挤占名额"
+        assert len(hits) >= top_k, f"{mode}/{name} 越界候选挤掉有效 top_k"
+        if name in ("results", "reranked"):
+            assert len(hits) == top_k
+
+
 @pytest.mark.parametrize("mode", ["hybrid", "hybrid_rerank", "generation"])
 def test_hybrid_mode_controls_rerank_calls(
     client, teacher, monkeypatch, retrieval_store, mode,

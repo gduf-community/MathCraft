@@ -43,6 +43,8 @@ def main() -> int:
         "权限、完成情况及验收边界见 [知识库模块说明](design/知识库模块说明.md) 和",
         "[扫描 PDF 策略](design/扫描PDF云端OCR策略.md)。\n\n",
         "个人 DeepSeek 连接测试与出题任务进度仅返回固定脱敏错误提示。",
+        "个人模型设置的 `mineru_using_default` 仅在未配置个人 Token 且服务端默认 Token 存在时为真，",
+        "不代表凭据已通过鉴权；两者均缺失时连接测试返回 `400 MINERU_TOKEN_MISSING`，不发起外部请求。",
         "检索仅发布 ready 文档；`hybrid` 只融合向量与稀疏结果，",
         "`hybrid_rerank` 另行调用重排。修复与验收记录见",
         "[设置设计](design/设置拆分与保存反馈设计.md#模型配置与检索审查修复2026-11-14)。\n\n",

@@ -1277,6 +1277,7 @@
           "users"
         ],
         "summary": "Read Model Settings",
+        "description": "读取脱敏配置；mineru_using_default 仅在无个人 Token 且默认 Token 存在时为真。",
         "operationId": "read_model_settings_api_users_me_model_settings_get",
         "parameters": [
           {

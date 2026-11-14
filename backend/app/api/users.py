@@ -90,6 +90,7 @@ async def upload_avatar(
 
 @router.get("/model-settings")
 def read_model_settings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """读取脱敏配置；mineru_using_default 仅在无个人 Token 且默认 Token 存在时为真。"""
     row = get_setting(db, user.id)
     runtime = current_snapshot().config
     return {
@@ -99,7 +100,7 @@ def read_model_settings(user: User = Depends(get_current_user), db: Session = De
         "deepseek_key_masked": mask(row.deepseek_api_key),
         "mineru_token_configured": bool(row.mineru_token),
         "mineru_token_masked": mask(row.mineru_token),
-        "mineru_using_default": not row.mineru_token,
+        "mineru_using_default": not row.mineru_token and bool(get_effective_mineru_token(db, user.id)),
         "mineru_limits": MINERU_LIMITS,
         **SYSTEM_BUILTIN,
         "embedding_model": runtime.embedding_model,
