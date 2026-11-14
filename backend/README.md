@@ -57,6 +57,8 @@ if (-not (Test-Path app/local_secrets.py)) {
 
 `uv sync` 同时安装 `json-repair`（生成及审核 JSON 修复）、`python-docx`、`latex2mathml`、`mathml2omml`（Word 与公式转换）。它们是当前后端运行依赖，升级后需重新同步；仓库根测试环境使用根目录自己的 `pyproject.toml` 和 `uv.lock`。Word 导出无需模型服务或 Microsoft Word。
 
+OpenAI SDK 使用 `openai<3`：当前追踪客户端基于 `httpx`，不兼容 SDK 3.x 的 `httpx2`。更新后在 `backend/` 执行 `uv sync` 并按第 4 步重启后端；根目录与后端虚拟环境分别管理。兼容性原因与验证记录见[模型配置说明](../docs/design/模型配置来源与普通知识库流程.md#deepseek-sdk-兼容性诊断与修复范围2026-11-14)。
+
 认证初始化脚本在缺少 `.env` 时从 [.env.example](.env.example) 创建，补齐 `AUTH_JWT_SECRET` 和 `AUTH_CODE_SECRET`，保留已有合法值且不打印。占位模型配置只在文件缺失时复制；账号密码登录无需真实模型凭据。
 
 用编辑器检查 `.env`：
@@ -89,10 +91,13 @@ uv run python scripts/create_admin.py
 ### 4. 启动服务
 
 ```powershell
+$mathcraftTemp = (New-Item -ItemType Directory -Path data/tmp -Force).FullName
+$env:TEMP = $mathcraftTemp
+$env:TMP = $mathcraftTemp
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
 ```
 
-保持终端运行，按 `Ctrl+C` 停止。
+保持终端运行，按 `Ctrl+C` 停止。上述临时目录覆盖仅影响当前终端及后端子进程，避免 Windows 默认临时目录不可写导致 Chroma 初始化或写入失败；正式索引仍保存在 `CHROMA_DIR`。Chroma 为进程内本地持久存储，无需单独启动服务。
 
 - 健康检查：`http://127.0.0.1:8000/api/health`
 - Swagger：`http://127.0.0.1:8000/docs`
@@ -138,10 +143,10 @@ uv run python scripts/auth_migration.py audit --operator-confirmed --database 'C
 - **邮箱功能不可用**：配置 SMTP；人机验证开关不替代邮件验证码或邮件服务。
 - **删除资料提示数据库繁忙（`DATABASE_BUSY`）**：删除会先预热 Chroma，并对 SQLite 短暂写锁做有限重试；持续占锁时保留资料和原件，稍后重试。检查并发写入或其他进程是否长期持有数据库事务。失败状态或零切片计数不代表没有残余索引，不能通过跳过向量清理强制删除。
 - **删除资料时全文索引报 `SQLITE_CANTOPEN / 14`**：这不是写锁错误。SQLite 连接已配置 `temp_store=MEMORY`，避免 FTS5 临时结构依赖进程临时目录；数据库及 WAL 仍保存在磁盘。更新后须重启后端，临时结构较大时会增加内存占用。该设置不能修复数据库自身路径不可访问的问题。
-- **Chroma 报 `code 14`**：除数据路径权限外，检查启动进程的 `TEMP/TMP` 是否可写。Windows 可在启动前为当前终端指定可写目录：
+- **Chroma 报 `code 14` 或向量写入失败**：除数据路径权限外，检查启动进程的 `TEMP/TMP` 能否实际创建文件；目录存在或权限标志显示可写，不代表文件操作一定成功。临时目录故障也可能表现为元数据段 compaction 失败，且心跳和嵌入探测仍正常。Windows 可在 `backend/` 启动前为当前终端指定可写目录：
 
 ```powershell
-$mathcraftTemp = Join-Path $env:LOCALAPPDATA 'MathCraft/Temp'
+$mathcraftTemp = Join-Path (Get-Location).Path 'data/tmp'
 New-Item -ItemType Directory -Path $mathcraftTemp -Force | Out-Null
 $env:TEMP = $mathcraftTemp
 $env:TMP = $mathcraftTemp

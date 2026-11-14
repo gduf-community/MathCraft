@@ -137,6 +137,8 @@ if (-not (Test-Path app/local_secrets.py)) {
 
 出题 JSON 修复依赖 `json-repair`，Word 导出依赖 `python-docx`、`latex2mathml` 和 `mathml2omml`，由上述 `uv sync` 安装。升级时需重新同步依赖；仓库根环境与后端独立环境分别由各自的 `pyproject.toml`、`uv.lock` 管理，使用哪个环境就同步哪个环境。导出在本地生成文档，无需模型调用或安装 Microsoft Word。
 
+OpenAI 兼容客户端使用 `openai<3`：当前追踪适配基于 `httpx`，不兼容 OpenAI SDK 3.x 的 `httpx2`。已有环境更新后执行 `uv sync` 并重启后端，避免个人模型连接测试在请求发出前报客户端兼容错误。
+
 初始化脚本在缺少 `backend/.env` 时从 `.env.example` 创建，生成两项独立的认证密钥；已有合法密钥会保留，且不会打印。随后用编辑器打开 `backend/.env`，确认以下配置：
 
 | 配置 | 本机开发填写方式 |
@@ -174,8 +176,13 @@ uv run python scripts/create_admin.py
 仍在 `backend/` 执行，并保持该终端运行：
 
 ```powershell
+$mathcraftTemp = (New-Item -ItemType Directory -Path data/tmp -Force).FullName
+$env:TEMP = $mathcraftTemp
+$env:TMP = $mathcraftTemp
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
 ```
+
+上述 PowerShell 启动方式为当前终端及后端子进程指定本地临时目录，避免 Windows 默认临时目录不可写时导致 Chroma 初始化或向量写入失败。Chroma 使用进程内本地持久存储，无需另外启动向量数据库服务；临时目录不替代 `CHROMA_DIR` 中的正式索引。
 
 启动后可访问：
 
