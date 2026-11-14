@@ -4345,6 +4345,16 @@
               }
             }
           },
+          "409": {
+            "description": "当前会话正在处理消息，请稍后再试",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {

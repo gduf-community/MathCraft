@@ -222,4 +222,4 @@ npm run build
 
 项目以 [Apache-2.0](LICENSE) 发布，最初从 DeepTutor 裁剪而来；第三方来源与许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-运行台账存储与事务契约见 [运行台账基础](docs/design/运维后台运行台账基础.md)。
+出题运行台账及生命周期见 [台账基础](docs/design/运维后台运行台账基础.md)与[入口接入](docs/design/运维后台出题入口接入.md)。

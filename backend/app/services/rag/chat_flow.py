@@ -1,9 +1,13 @@
 """对话出题编排：槽位抽取 → 缺失追问 → 齐备生成（含 HyDE + 混合检索）。"""
 from typing import Callable
 
+from app.models.ops_run import RunErrorCode
+from app.schemas.question import GenerateParams
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
 from app.services.rag.question_gen import NeedConfirmError, generate_questions
-from app.services.rag.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
+from app.services.rag.slots import (
+    build_followup, build_params, extract_slots, merge_slots, missing_keys,
+)
 
 DONE_REPLY = "题目已生成完成，共 {n} 道，已同步到「题目预览」标签页。还需要生成其他题型吗？"
 SHORTFALL_REPLY = (
@@ -68,13 +72,16 @@ def handle_chat(
     retrieve_fn=None,
     progress_cb: ProgressCB | None = None,
     cancel_check: CancelCheck | None = None,
+    on_generate: Callable[[GenerateParams], None] | None = None,
 ) -> dict:
     def report(percent: int, stage: str) -> None:
         if progress_cb:
             progress_cb(percent, stage)
 
     report(3, "正在理解你的要求")
-    state = merge_slots(slot_state or {}, extract_slots(message, history, api_key=api_key, images=images))
+    state = merge_slots(slot_state or {}, extract_slots(
+        message, history, api_key=api_key, images=images,
+    ))
     missing = missing_keys(state)
     if missing:
         return {"reply": build_followup(missing, state), "slot_state": state,
@@ -82,6 +89,8 @@ def handle_chat(
 
     _guard(cancel_check)
     params, scope = build_params(state, bank_id, document_id)
+    if on_generate:
+        on_generate(params)
     requested = sum(t.count for t in params.types)
     report(8, f"已确定 {requested} 道题，开始检索知识点")
 
@@ -112,6 +121,7 @@ def handle_chat(
             "slot_state": state,
             "questions": [],
             "done": False,
+            "generation_error": RunErrorCode.NEED_CONFIRM,
         }
 
     _guard(cancel_check)
@@ -159,6 +169,7 @@ def handle_creative(
     images: list[str] | None = None,
     progress_cb: ProgressCB | None = None,
     cancel_check: CancelCheck | None = None,
+    on_generate: Callable[[GenerateParams], None] | None = None,
 ) -> dict:
     """创新命题：固定单题，题干追求新颖；查重与难度评估复用快速出题中间件。"""
 
@@ -167,9 +178,12 @@ def handle_creative(
             progress_cb(percent, stage)
 
     report(3, "正在理解你的要求")
-    state = merge_slots(slot_state or {}, extract_slots(message, history, api_key=api_key, images=images))
+    state = merge_slots(slot_state or {}, extract_slots(
+        message, history, api_key=api_key, images=images,
+    ))
     types = state.get("types") or []
-    state["types"] = [{"type": types[0]["type"], "count": 1}] if types and types[0].get("type") else []
+    state["types"] = ([{"type": types[0]["type"], "count": 1}]
+                      if types and types[0].get("type") else [])
     missing = _creative_missing(state)
     if missing:
         return {"reply": build_creative_followup(missing), "slot_state": state,
@@ -177,6 +191,9 @@ def handle_creative(
 
     params, scope = build_params(state, bank_id, document_id)
     params = params.model_copy(update={"source_mode": "new"})
+    _guard(cancel_check)
+    if on_generate:
+        on_generate(params)
     directive = CREATIVE_SYSTEM_EXTRA
     if state.get("image_note"):
         directive += f"\n参考图片的题型说明：{state['image_note']}"

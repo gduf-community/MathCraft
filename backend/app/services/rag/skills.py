@@ -11,6 +11,7 @@ from typing import Callable
 from sqlalchemy.orm import Session
 
 from app.models import ChatSession, User
+from app.schemas.question import GenerateParams
 from app.services.rag.chat_flow import ChatCanceled
 from app.services.rag.modes import MODES, mode_label
 
@@ -32,6 +33,7 @@ class ChatContext:
     images: list[str] | None
     progress_cb: Callable[[int, str], None]
     cancel_check: Callable[[], bool]
+    on_generate: Callable[[GenerateParams], None] | None = None
 
 
 def run_generate(ctx: ChatContext) -> dict:
@@ -51,6 +53,7 @@ def run_generate(ctx: ChatContext) -> dict:
         images=ctx.images,
         progress_cb=ctx.progress_cb,
         cancel_check=ctx.cancel_check,
+        on_generate=ctx.on_generate,
     )
 
 
@@ -71,6 +74,7 @@ def run_creative(ctx: ChatContext) -> dict:
         images=ctx.images,
         progress_cb=ctx.progress_cb,
         cancel_check=ctx.cancel_check,
+        on_generate=ctx.on_generate,
     )
 
 

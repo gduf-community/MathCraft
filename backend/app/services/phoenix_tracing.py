@@ -218,7 +218,9 @@ def _end(span: "Span | None", error: str | None = None, *, incomplete: bool = Fa
         logger.warning("Phoenix span completion unavailable")
 
 
-def trace_run(entrypoint: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
+def trace_run(
+    entrypoint: str, *, run_id_kwarg: str | None = None,
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Group a current business execution without changing its result or signature."""
     def decorate(function: Callable[P, T]) -> Callable[P, T]:
         @wraps(function)
@@ -227,7 +229,9 @@ def trace_run(entrypoint: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
             if runtime is None or _run.get() is not None:
                 return function(*args, **kwargs)
             try:
-                run_id = "run_" + uuid4().hex
+                supplied = kwargs.get(run_id_kwarg) if run_id_kwarg is not None else None
+                run_id = (supplied if isinstance(supplied, str)
+                          and _IDENTIFIER.fullmatch(supplied) else "run_" + uuid4().hex)
                 span = runtime.provider.get_tracer("mathcraft.phoenix").start_span(
                     "mathcraft." + entrypoint,
                     attributes={"openinference.span.kind": "CHAIN", "mathcraft.run_id": run_id,

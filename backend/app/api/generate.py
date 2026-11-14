@@ -8,9 +8,11 @@ from app.deps import BankAccess, get_current_user, resolve_bank_access
 from app.errors import AppError
 from app.models import Document, GenerationBatch, Question, User
 from app.models.base import new_id
+from app.models.ops_run import RunEntrypoint, RunErrorCode
 from app.schemas.api import GenerateStartBody
 from app.schemas.auth import ErrorResponse
 from app.services import cache, generation
+from app.services.generation_lifecycle import GenerationRun
 from app.services.phoenix_tracing import trace_run
 from app.services.model_settings import require_deepseek_key
 
@@ -49,21 +51,31 @@ def start_generation(
 ):
     """创建异步出题任务。同一用户同时只允许一个进行中任务（409 GENERATION_BUSY）。"""
     access = _resolve(body, user, db)
-    _validate_ready(access, body, db)
+    doc = _validate_ready(access, body, db)
     api_key = require_deepseek_key(db, user.id)
     if not generation.acquire_lock(user.id):
         raise AppError("GENERATION_BUSY", "你已有进行中的出题任务，请等待完成后再试", status_code=409)
 
     task_id = new_id("task")
-    r = cache.get_redis()
-    key = cache.PREFIX_GEN_TASK.format(task_id=task_id)
-    r.hset(key, mapping={
-        "status": "running", "progress": 0, "stage": "任务已创建",
-        "user_id": user.id, "bank_id": access.bank.id,
-        "document_id": body.document_id or body.doc_id,
-    })
-    r.expire(key, 1800)
-    background.add_task(generation.run_generation_task, task_id, user.id, api_key, body)
+    run = GenerationRun(
+        RunEntrypoint.PARAMETERIZED, user.id, access.bank.id, doc.id, task_id=task_id,
+    )
+    try:
+        run_id = run.accept(generation.build_params(body))
+        r = cache.get_redis()
+        key = cache.PREFIX_GEN_TASK.format(task_id=task_id)
+        r.hset(key, mapping={
+            "status": "running", "progress": 0, "stage": "任务已创建",
+            "user_id": user.id, "bank_id": access.bank.id, "document_id": doc.id,
+        })
+        r.expire(key, 1800)
+        background.add_task(
+            generation.run_generation_task, task_id, user.id, api_key, body, run_id=run_id,
+        )
+    except Exception:
+        run.fail(RunErrorCode.TASK_SUBMISSION_ERROR)
+        cache.get_redis().delete(cache.PREFIX_GEN_LOCK.format(user_id=user.id))
+        raise
     return {"task_id": task_id}
 
 
@@ -93,36 +105,35 @@ def generate_sync(
     doc = _validate_ready(access, body, db)
     api_key = require_deepseek_key(db, user.id)
     params = generation.build_params(body)
-    hyde_text = hyde_mod.get_hyde(
-        cache.get_redis(), params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
-    )
-    try:
-        questions = question_gen.generate_questions(
-            params,
-            doc.name,
-            scope=body.scope or None,
-            existing_stems=body.existing_stems,
-            api_key=api_key,
-            hyde_text=hyde_text,
+    run = GenerationRun(RunEntrypoint.PARAMETERIZED, user.id, access.bank.id, doc.id)
+    with run.observe(db):
+        run.begin(params)
+        hyde_text = hyde_mod.get_hyde(
+            cache.get_redis(), params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
         )
-    except question_gen.NeedConfirmError as exc:
-        raise AppError(
-            "NEED_CONFIRM",
-            f"材料中「{exc.type_label}」的原题只有 {exc.available} 道，不足 {exc.requested} 道",
-            status_code=422,
-            kind="need_confirm",
-            available=exc.available,
-            requested=exc.requested,
-        ) from exc
-    from app.services import question_review
+        try:
+            questions = question_gen.generate_questions(
+                params, doc.name, scope=body.scope or None, existing_stems=body.existing_stems,
+                api_key=api_key, hyde_text=hyde_text,
+            )
+        except question_gen.NeedConfirmError as exc:
+            run.fail(RunErrorCode.NEED_CONFIRM)
+            raise AppError(
+                "NEED_CONFIRM",
+                f"材料中「{exc.type_label}」的原题只有 {exc.available} 道，不足 {exc.requested} 道",
+                status_code=422, kind="need_confirm", available=exc.available,
+                requested=exc.requested,
+            ) from exc
+        from app.services import question_review
 
-    questions, _stats = question_review.review_questions(
-        db, user.id, questions, params, doc.name, api_key, hyde_text
-    )
-    generation.persist_batch(
-        db, user.id, access.bank.id, doc.id, "parametric", params, hyde_text, questions
-    )
-    return [q.model_dump() for q in questions]
+        questions, _stats = question_review.review_questions(
+            db, user.id, questions, params, doc.name, api_key, hyde_text
+        )
+        generation.persist_batch(
+            db, user.id, access.bank.id, doc.id, "parametric", params, hyde_text, questions,
+            run=run,
+        )
+        return [q.model_dump() for q in questions]
 
 
 @router.get("/batches/latest")
@@ -143,7 +154,8 @@ def latest_batch(
     batch = q.order_by(GenerationBatch.created_at.desc()).first()
     if batch is None:
         return {"batch_id": None, "questions": []}
-    rows = db.query(Question).filter(Question.batch_id == batch.id).order_by(Question.created_at).all()
+    rows = (db.query(Question).filter(Question.batch_id == batch.id)
+            .order_by(Question.created_at).all())
     doc_names = {
         d.id: d.name
         for d in db.query(Document).filter(Document.id.in_({r.document_id for r in rows}))
