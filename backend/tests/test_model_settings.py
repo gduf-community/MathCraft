@@ -5,7 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.services import mineru
+from app.services import mineru, model_settings
 from app.services.rag import llm
 
 
@@ -252,6 +252,71 @@ def test_default_model_settings(client, teacher):
     assert data["embedding_configurable"] is False
     assert data["rerank_configurable"] is False
     assert data["mineru_limits"] == {"max_file_mb": 200, "max_pages": 200}
+
+
+@pytest.mark.parametrize("has_personal_token", [False, True], ids=["no-personal", "personal"])
+@pytest.mark.parametrize("has_default_token", [False, True], ids=["no-default", "default"])
+def test_mineru_default_status_matches_effective_credentials(
+    client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    mineru_response: MineruResponseStub, has_personal_token: bool, has_default_token: bool,
+) -> None:
+    """配置状态与实际探测使用同一凭据；两处均缺失时不发送 HTTP 请求。"""
+    default_token = "fake-default-mineru-token-for-status-tests-only" if has_default_token else ""
+    personal_token = FAKE_MINERU_TOKEN if has_personal_token else ""
+    monkeypatch.setattr(model_settings.local_secrets, "MINERU_DEFAULT_TOKEN", default_token)
+    requests = mineru_response(httpx.Response(200, json={"code": 0, "data": {}}))
+    assert client.put(
+        "/api/users/me/model-settings", headers=teacher, json={"mineru_token": personal_token},
+    ).status_code == 200
+
+    response = client.get("/api/users/me/model-settings", headers=teacher)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["mineru_token_configured"] is has_personal_token
+    assert data["mineru_using_default"] is (has_default_token and not has_personal_token)
+    for token in (personal_token, default_token):
+        if token:
+            assert token not in response.text
+
+    probe = client.post("/api/users/me/model-settings/test-mineru", headers=teacher)
+    effective_token = personal_token or default_token
+    if effective_token:
+        assert probe.status_code == 200
+        assert probe.json()["ok"] is True
+        assert len(requests) == 1
+        assert requests[0].headers["Authorization"] == f"Bearer {effective_token}"
+        assert effective_token not in probe.text
+    else:
+        assert probe.status_code == 400
+        assert probe.json()["detail"] == {
+            "code": "MINERU_TOKEN_MISSING", "message": "请先填写 MinerU Token",
+        }
+        assert requests == []
+
+
+@pytest.mark.parametrize("has_default_token", [False, True], ids=["no-default", "default"])
+def test_clearing_mineru_token_recomputes_default_status(
+    client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    has_default_token: bool,
+) -> None:
+    """清除个人 Token 后仅在默认 Token 存在时报告回退，不修改默认配置。"""
+    default_token = "fake-default-mineru-token-for-clear-tests-only" if has_default_token else ""
+    monkeypatch.setattr(model_settings.local_secrets, "MINERU_DEFAULT_TOKEN", default_token)
+    assert client.put(
+        "/api/users/me/model-settings", headers=teacher, json={"mineru_token": FAKE_MINERU_TOKEN},
+    ).status_code == 200
+    assert client.get(
+        "/api/users/me/model-settings", headers=teacher,
+    ).json()["mineru_using_default"] is False
+
+    assert client.put(
+        "/api/users/me/model-settings", headers=teacher, json={"mineru_token": ""},
+    ).status_code == 200
+    data = client.get("/api/users/me/model-settings", headers=teacher).json()
+    assert data["mineru_token_configured"] is False
+    assert data["mineru_token_masked"] is None
+    assert data["mineru_using_default"] is has_default_token
+    assert model_settings.local_secrets.MINERU_DEFAULT_TOKEN == default_token
 
 
 def test_save_and_mask_keys(client, teacher):
