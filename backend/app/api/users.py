@@ -90,6 +90,7 @@ async def upload_avatar(
 
 @router.get("/model-settings")
 def read_model_settings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """读取脱敏配置；mineru_using_default 仅在无个人 Token 且默认 Token 存在时为真。"""
     row = get_setting(db, user.id)
     runtime = current_snapshot().config
     return {
@@ -99,7 +100,7 @@ def read_model_settings(user: User = Depends(get_current_user), db: Session = De
         "deepseek_key_masked": mask(row.deepseek_api_key),
         "mineru_token_configured": bool(row.mineru_token),
         "mineru_token_masked": mask(row.mineru_token),
-        "mineru_using_default": not row.mineru_token,
+        "mineru_using_default": not row.mineru_token and bool(get_effective_mineru_token(db, user.id)),
         "mineru_limits": MINERU_LIMITS,
         **SYSTEM_BUILTIN,
         "embedding_model": runtime.embedding_model,
@@ -125,6 +126,7 @@ def save_model_settings(
 
 @router.post("/model-settings/test-deepseek")
 def test_deepseek(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """测试 DeepSeek 连接，失败仅返回固定脱敏提示。"""
     from app.services.rag import llm
 
     row = get_setting(db, user.id)
@@ -139,7 +141,7 @@ def test_deepseek(user: User = Depends(get_current_user), db: Session = Depends(
             max_tokens=8,
         )
     except Exception as exc:
-        raise AppError("LLM_ERROR", f"DeepSeek 连接失败：{exc}", status_code=400) from exc
+        raise AppError("LLM_ERROR", llm.friendly_error(exc), status_code=400) from None
     return {"ok": True, "model": settings.deepseek_display_name, "reply": (reply or "")[:32]}
 
 

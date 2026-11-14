@@ -11,7 +11,7 @@ from app.models.base import new_id
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
 from app.services import cache, question_review
 from app.services.phoenix_tracing import trace_run
-from app.services.rag import hyde, question_gen
+from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import NeedConfirmError
 
 logger = logging.getLogger("app.generation")
@@ -192,17 +192,22 @@ def run_generation_task(task_id: str, user_id: str, api_key: str, body, mode: st
         finally:
             db.close()
     except NeedConfirmError as exc:
+        type_label = next(
+            (label for label in question_gen.TYPE_LABELS.values() if label == exc.type_label),
+            "材料",
+        )
         r.hset(_task_key(task_id), mapping={
             "status": "failed", "done": "1",
             "error": json.dumps({
-                "kind": "need_confirm", "message": str(exc),
+                "kind": "need_confirm",
+                "message": f"{type_label}原题仅 {exc.available} 道，不足 {exc.requested} 道",
                 "available": exc.available, "requested": exc.requested,
             }, ensure_ascii=False),
         })
     except Exception as exc:
         r.hset(_task_key(task_id), mapping={
             "status": "failed", "done": "1",
-            "error": json.dumps({"message": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False),
+            "error": json.dumps({"message": llm.friendly_error(exc)}, ensure_ascii=False),
         })
     finally:
         # 释放同用户生成锁
