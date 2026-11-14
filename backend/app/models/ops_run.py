@@ -51,6 +51,11 @@ class UTCDateTime(TypeDecorator[datetime]):
     impl = DateTime(timezone=True)
     cache_ok = True
 
+    @property
+    def python_type(self) -> type[datetime]:
+        """供字段类型内省识别运行时间的 Python 类型。"""
+        return datetime
+
     def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
         if value is None:
             return None
