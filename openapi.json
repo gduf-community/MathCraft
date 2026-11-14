@@ -1379,6 +1379,7 @@
           "users"
         ],
         "summary": "Test Deepseek",
+        "description": "测试 DeepSeek 连接，失败仅返回固定脱敏提示。",
         "operationId": "test_deepseek_api_users_me_model_settings_test_deepseek_post",
         "parameters": [
           {
@@ -2963,7 +2964,7 @@
           "documents"
         ],
         "summary": "Search Bank",
-        "description": "检索测试：mode=dense/sparse/hybrid/hybrid_rerank，默认完整链路。",
+        "description": "仅检索 ready 文档；hybrid 只融合不重排，默认 hybrid_rerank 执行重排。",
         "operationId": "search_bank_api_banks__bank_id__search_post",
         "parameters": [
           {
@@ -8537,6 +8538,7 @@
             "type": "string",
             "pattern": "^(dense|sparse|hybrid|hybrid_rerank)$",
             "title": "Mode",
+            "description": "仅检索 ready 文档；hybrid 融合向量与稀疏结果，hybrid_rerank 额外调用重排",
             "default": "hybrid_rerank"
           }
         },

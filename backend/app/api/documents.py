@@ -197,7 +197,7 @@ def search_bank(
     body: SearchBody,
     access: BankAccess = Depends(get_bank_access),
 ):
-    """检索测试：mode=dense/sparse/hybrid/hybrid_rerank，默认完整链路。"""
+    """仅检索 ready 文档；hybrid 只融合不重排，默认 hybrid_rerank 执行重排。"""
     try:
         return _search_bank(body, access)
     except vectorstore.VectorStoreError as exc:
@@ -207,7 +207,7 @@ def search_bank(
 
 
 def _search_bank(body: SearchBody, access: BankAccess) -> dict:
-    from app.services.rag import fts, retrieval, vectorstore
+    from app.services.rag import fts, retrieval
     from app.services.rag import embeddings
 
     if body.mode in ("hybrid", "hybrid_rerank"):
@@ -216,16 +216,17 @@ def _search_bank(body: SearchBody, access: BankAccess) -> dict:
             body.query,
             document_id=body.document_id,
             rerank_top_k=body.top_k if body.mode == "hybrid_rerank" else None,
+            skip_rerank=body.mode == "hybrid",
         )
-        if body.mode == "hybrid":
-            result["reranked"] = []
         # 精简 dense 字段
         result["dense"] = [{k: h[k] for k in ("chunk_id", "doc_name", "chunk_index", "distance")} | {"text": h["text"]} for h in result["dense"]]
         return result
 
     if body.mode == "dense":
         vec = embeddings.embed_one(body.query)
-        hits = vectorstore.search(access.bank.id, vec, top_k=body.top_k, doc_id=body.document_id)
+        hits = retrieval.dense_search(
+            access.bank.id, vec, top_k=body.top_k, document_id=body.document_id,
+        )
         return {"mode": "dense", "results": hits}
 
     # sparse

@@ -170,14 +170,15 @@ export function PersonalModelSettings({ onDirtyChange, onSavingChange }: Persona
       </fieldset>
       <fieldset disabled={disabled} className="space-y-2 rounded-xl border border-line p-3">
         <legend className="px-1 text-sm font-semibold">MinerU OCR</legend>
-        <p className="text-xs text-ink-3">{model ? model.mineru_token_configured ? `已配置个人 Token ${model.mineru_token_masked ?? ''}` : '使用系统默认 Token（测试仅验证连接和鉴权）' : '配置尚未读取'}</p>
+        <p className="text-xs text-ink-3">{model ? model.mineru_token_configured ? `已配置个人 Token ${model.mineru_token_masked ?? ''}` : '未配置个人 Token；如服务端已配置默认 Token 则使用，否则不可用。' : '配置尚未读取'}</p>
         <label htmlFor={`${id}-mineru`} className="block text-sm">新的 MinerU Token</label>
         <input id={`${id}-mineru`} type="password" autoComplete="new-password" value={mineruToken} disabled={disabled || clearMineru}
           onChange={(event) => edit(() => setMineruToken(event.target.value))} className={inputClass} />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={clearMineru} onChange={(event) => edit(() => { setClearMineru(event.target.checked); setMineruToken('') })} />
-          清除个人 MinerU Token，使用系统默认 Token
+          清除个人 MinerU Token
         </label>
+        <p className="text-xs text-ink-3">清除后仅在服务端已配置默认 Token 时使用；没有默认 Token 时 OCR 不可用。</p>
         {model && <p className="text-xs text-ink-3">单文件 ≤ {model.mineru_limits.max_file_mb} MB，页数 ≤ {model.mineru_limits.max_pages} 页</p>}
         <p className="text-xs text-ink-3">测试仅验证已保存配置的连接和鉴权，不保证任务解析成功、额度充足或内容可用。</p>
         <button type="button" className={buttonClass} disabled={disabled || dirty} onClick={() => void test('mineru')}>

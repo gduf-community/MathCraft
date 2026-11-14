@@ -35,6 +35,8 @@ from test_admin import admin_headers
 RAG_URL = "/api/admin/rag-settings"
 EMBEDDING_KEY = "fake-admin-embedding-key-for-tests-1234"
 RERANK_KEY = "fake-admin-rerank-key-for-tests-5678"
+PENDING_EMBEDDING_KEY = "fake-pending-embedding-key-for-tests-4321"
+EXPLICIT_KEY = "fake-explicit-draft-key-for-tests-9876"
 # 在 autouse fake_models 生效前捕获真实适配器，专用回归仍通过假 HTTP 返回值隔离网络。
 _ORIGINAL_RERANK = rerank.rerank
 
@@ -157,6 +159,23 @@ def _save(
     assert set(snapshot) == {"active", "pending", "vector_store", "rebuild", "revision"}
     assert snapshot == _snapshot(client, headers)
     return snapshot
+
+
+@pytest.fixture()
+def saved_model_draft(
+    client: TestClient, administrator: dict[str, str],
+) -> tuple[RagSnapshot, RagSnapshot]:
+    """通过保存接口建立凭据不同的活动配置与待应用配置。"""
+    body = _update_body(_snapshot(client, administrator))
+    body.update(embedding_api_key=EMBEDDING_KEY, rerank_api_key=RERANK_KEY)
+    active = _save(client, administrator, body)
+    body = _update_body(active)
+    body.update(
+        embedding_model="fake-pending-embedding",
+        embedding_base_url="https://pending.example.test/v1",
+        embedding_api_key=PENDING_EMBEDDING_KEY,
+    )
+    return active, _save(client, administrator, body)
 
 
 @pytest.mark.parametrize("role", ["anonymous", "teacher", "student"])
@@ -417,6 +436,159 @@ def test_probe_uses_one_off_credentials_without_persisting_them(
     assert getattr(snapshot.config, f"{service}_model") == "fake-one-off-probe-model"
     assert temporary_key not in response.text
     assert _snapshot(client, administrator) == before
+
+
+@pytest.mark.parametrize("key_fields,expected_key", [
+    pytest.param({}, EMBEDDING_KEY, id="omitted"),
+    pytest.param({"api_key": None}, EMBEDDING_KEY, id="null"),
+    pytest.param({"api_key": ""}, EMBEDDING_KEY, id="empty"),
+    pytest.param({"api_key": " \t "}, EMBEDDING_KEY, id="whitespace"),
+    pytest.param({"api_key": EXPLICIT_KEY}, EXPLICIT_KEY, id="explicit"),
+    pytest.param({"api_key": f" {EXPLICIT_KEY} "}, EXPLICIT_KEY, id="trimmed-explicit"),
+])
+def test_embedding_probe_matches_save_when_draft_cancels_pending(
+    client: TestClient, administrator: dict[str, str],
+    model_calls: list[tuple[str, RuntimeSnapshot]],
+    saved_model_draft: tuple[RagSnapshot, RagSnapshot],
+    key_fields: dict[str, str | None], expected_key: str,
+) -> None:
+    """草稿恢复活动配置时，测试与取消 pending 均保留活动凭据或使用显式值。"""
+    active, before = saved_model_draft
+    draft = _update_body(active)
+    draft["revision"] = before["revision"]
+    if "api_key" in key_fields:
+        draft["embedding_api_key"] = key_fields["api_key"]
+    before_runtime = current_snapshot()
+
+    response = client.post(f"{RAG_URL}/test", headers=administrator, json={
+        "service": "embedding", "model": draft["embedding_model"],
+        "base_url": draft["embedding_base_url"], **key_fields,
+    })
+
+    assert response.status_code == 200, response.text
+    assert _snapshot(client, administrator) == before
+    assert current_snapshot() == before_runtime
+    saved = _save(client, administrator, draft)
+    assert saved["pending"] is None
+    assert saved["revision"] == before["revision"] + 1
+    assert len(model_calls) == 1
+    assert model_calls[0][0] == "embedding"
+    assert model_calls[0][1].config.embedding_api_key == expected_key
+    assert model_calls[0][1].config == current_snapshot().config
+
+
+@pytest.mark.parametrize("draft_target", ["pending", "model-only", "url-only", "new"])
+@pytest.mark.parametrize("key_input,expected_key", [
+    pytest.param(" \t ", PENDING_EMBEDDING_KEY, id="saved-pending-key"),
+    pytest.param(EXPLICIT_KEY, EXPLICIT_KEY, id="explicit-key"),
+])
+def test_embedding_probe_matches_save_for_pending_drafts(
+    client: TestClient, administrator: dict[str, str], db: Session,
+    model_calls: list[tuple[str, RuntimeSnapshot]],
+    saved_model_draft: tuple[RagSnapshot, RagSnapshot],
+    draft_target: str, key_input: str, expected_key: str,
+) -> None:
+    """仅模型或地址不同仍是待应用配置，测试和保存保留同一候选凭据。"""
+    active, before = saved_model_draft
+    draft = _update_body(before)
+    if draft_target == "model-only":
+        draft["embedding_base_url"] = active["active"]["embedding_base_url"]
+    elif draft_target == "url-only":
+        draft["embedding_model"] = active["active"]["embedding_model"]
+    elif draft_target == "new":
+        draft.update(embedding_model="fake-third-embedding",
+                     embedding_base_url="https://third.example.test/v1")
+    draft["embedding_api_key"] = key_input
+    before_runtime = current_snapshot()
+
+    response = client.post(f"{RAG_URL}/test", headers=administrator, json={
+        "service": "embedding", "model": draft["embedding_model"],
+        "base_url": draft["embedding_base_url"], "api_key": key_input,
+    })
+
+    assert response.status_code == 200, response.text
+    assert _snapshot(client, administrator) == before
+    assert current_snapshot() == before_runtime
+    saved = _save(client, administrator, draft)
+    assert saved["active"] == active["active"]
+    assert saved["pending"] is not None
+    assert saved["revision"] == before["revision"] + 1
+    assert len(model_calls) == 1
+    service, snapshot = model_calls[0]
+    assert service == "embedding"
+    assert snapshot.config.embedding_api_key == expected_key
+    assert snapshot.config.embedding_model == draft["embedding_model"]
+    assert snapshot.config.embedding_base_url == draft["embedding_base_url"]
+    row = db.get(RagSetting, 1, populate_existing=True)
+    assert row is not None and row.pending_json is not None
+    assert RuntimeConfig(**json.loads(row.pending_json)) == snapshot.config
+
+
+@pytest.mark.parametrize("key_input,expected_key", [
+    pytest.param("", RERANK_KEY, id="empty"),
+    pytest.param(" \t ", RERANK_KEY, id="whitespace"),
+    pytest.param(EXPLICIT_KEY, EXPLICIT_KEY, id="explicit"),
+])
+def test_rerank_probe_matches_save_with_embedding_pending(
+    client: TestClient, administrator: dict[str, str],
+    model_calls: list[tuple[str, RuntimeSnapshot]],
+    saved_model_draft: tuple[RagSnapshot, RagSnapshot],
+    key_input: str, expected_key: str,
+) -> None:
+    """待应用嵌入配置不影响重排凭据选择，重排修改仍直接生效。"""
+    _, before = saved_model_draft
+    draft = _update_body(before)
+    draft.update(rerank_model="fake-next-rerank",
+                 rerank_base_url="https://next-rerank.example.test/v1",
+                 rerank_api_key=key_input)
+    before_runtime = current_snapshot()
+
+    response = client.post(f"{RAG_URL}/test", headers=administrator, json={
+        "service": "rerank", "model": draft["rerank_model"],
+        "base_url": draft["rerank_base_url"], "api_key": key_input,
+    })
+
+    assert response.status_code == 200, response.text
+    assert _snapshot(client, administrator) == before
+    assert current_snapshot() == before_runtime
+    saved = _save(client, administrator, draft)
+    assert saved["pending"] == before["pending"]
+    assert len(model_calls) == 1
+    service, snapshot = model_calls[0]
+    assert service == "rerank"
+    assert snapshot.config.rerank_api_key == expected_key
+    assert snapshot.config == current_snapshot().config
+
+
+@pytest.mark.parametrize("active_key", [None, EMBEDDING_KEY], ids=["default", "active"])
+def test_embedding_probe_matches_save_without_pending_credentials(
+    client: TestClient, administrator: dict[str, str], db: Session,
+    model_calls: list[tuple[str, RuntimeSnapshot]], active_key: str | None,
+) -> None:
+    """无待应用配置时沿用活动凭据；没有平台凭据则保留空值供部署默认兜底。"""
+    before = _snapshot(client, administrator)
+    if active_key is not None:
+        body = _update_body(before)
+        body["embedding_api_key"] = active_key
+        before = _save(client, administrator, body)
+    draft = _update_body(before)
+    draft.update(embedding_model="fake-first-pending-embedding", embedding_api_key="")
+
+    response = client.post(f"{RAG_URL}/test", headers=administrator, json={
+        "service": "embedding", "model": draft["embedding_model"],
+        "base_url": draft["embedding_base_url"], "api_key": "",
+    })
+
+    assert response.status_code == 200, response.text
+    assert _snapshot(client, administrator) == before
+    saved = _save(client, administrator, draft)
+    assert saved["active"] == before["active"]
+    assert saved["pending"] is not None
+    assert len(model_calls) == 1
+    assert model_calls[0][1].config.embedding_api_key == active_key
+    row = db.get(RagSetting, 1, populate_existing=True)
+    assert row is not None and row.pending_json is not None
+    assert RuntimeConfig(**json.loads(row.pending_json)) == model_calls[0][1].config
 
 
 def test_failed_rebuild_preserves_active_index_and_can_retry(

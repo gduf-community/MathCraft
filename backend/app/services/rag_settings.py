@@ -18,7 +18,7 @@ from app.schemas.rag_settings import (
 )
 from app.services.model_settings import mask
 from app.services.rag_runtime import (
-    RuntimeSnapshot, decode_config, use_snapshot,
+    RuntimeConfig, RuntimeSnapshot, decode_config, use_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,12 +118,26 @@ def read_settings(db: Session) -> RagSettingsResult:
     )
 
 
+def _embedding_candidate(
+    active: RuntimeConfig, pending: RuntimeConfig | None,
+    model: str, base_url: str, api_key: str,
+) -> RuntimeConfig:
+    """测试和保存共用候选配置；恢复活动模型与地址时不继承待应用凭据。"""
+    source = active
+    if model != active.embedding_model or base_url != active.embedding_base_url:
+        source = pending or active
+    return replace(
+        active, embedding_model=model, embedding_base_url=base_url,
+        embedding_api_key=api_key or source.embedding_api_key,
+    )
+
+
 def save_settings(db: Session, body: RagSettingsBody) -> RagSettingsResult:
     """模型或地址变化仅写待应用值；凭据单独更新和重排变更供后续请求使用。"""
     row = _lock_settings(db)
     _assert_editable(row, body.revision)
     active = decode_config(row.active_json)
-    pending = decode_config(row.pending_json) if row.pending_json else active
+    pending = decode_config(row.pending_json) if row.pending_json else None
     embedding_key = body.embedding_api_key.get_secret_value().strip() if body.embedding_api_key else ""
     rerank_key = body.rerank_api_key.get_secret_value().strip() if body.rerank_api_key else ""
     embedding_changed = (
@@ -134,15 +148,13 @@ def save_settings(db: Session, body: RagSettingsBody) -> RagSettingsResult:
         active, rerank_model=body.rerank_model, rerank_base_url=body.rerank_base_url,
         rerank_api_key=rerank_key or active.rerank_api_key,
     )
+    candidate = _embedding_candidate(
+        active, pending, body.embedding_model, body.embedding_base_url, embedding_key,
+    )
     if embedding_changed:
-        candidate = replace(
-            active, embedding_model=body.embedding_model,
-            embedding_base_url=body.embedding_base_url,
-            embedding_api_key=embedding_key or pending.embedding_api_key,
-        )
         row.pending_json = candidate.serialize()
     else:
-        active = replace(active, embedding_api_key=embedding_key or active.embedding_api_key)
+        active = candidate
         row.pending_json = None
     row.active_json = active.serialize()
     row.revision += 1
@@ -161,11 +173,10 @@ def test_service(db: Session, body: ServiceTestBody) -> ServiceTestResult:
     row = db.get(RagSetting, 1)
     active = decode_config(row.active_json if row else None)
     if body.service == "embedding":
-        source = decode_config(row.pending_json) if row and row.pending_json else active
-        config = replace(
-            active, embedding_model=body.model, embedding_base_url=body.base_url,
-            embedding_api_key=(body.api_key.get_secret_value().strip() if body.api_key else "")
-            or source.embedding_api_key,
+        pending = decode_config(row.pending_json) if row and row.pending_json else None
+        config = _embedding_candidate(
+            active, pending, body.model, body.base_url,
+            body.api_key.get_secret_value().strip() if body.api_key else "",
         )
     else:
         config = replace(

@@ -47,7 +47,7 @@ def search(
     document_id: str | None = None,
     db: Session | None = None,
 ) -> list[tuple[str, float]]:
-    """BM25 检索，返回 [(chunk_id, 正向得分)]，按相关性降序。"""
+    """仅检索 ready 文档的现存切片，返回按相关性降序的 [(chunk_id, 正向得分)]。"""
     match = _match_expr(query)
     if not match:
         return []
@@ -55,13 +55,18 @@ def search(
     session = db or SessionLocal()
     try:
         sql = (
-            "SELECT chunk_id, bm25(document_chunks_fts) AS s "
+            "SELECT document_chunks_fts.chunk_id, bm25(document_chunks_fts) AS s "
             "FROM document_chunks_fts "
-            "WHERE document_chunks_fts MATCH :m AND bank_id = :b"
+            "JOIN document_chunks c ON c.id = document_chunks_fts.chunk_id "
+            "AND c.document_id = document_chunks_fts.document_id "
+            "AND c.bank_id = document_chunks_fts.bank_id "
+            "JOIN documents d ON d.id = c.document_id AND d.bank_id = c.bank_id "
+            "WHERE document_chunks_fts MATCH :m AND document_chunks_fts.bank_id = :b "
+            "AND d.status = 'ready'"
         )
         params: dict = {"m": match, "b": bank_id}
         if document_id:
-            sql += " AND document_id = :d"
+            sql += " AND d.id = :d"
             params["d"] = document_id
         sql += " ORDER BY s LIMIT :k"
         params["k"] = top_k

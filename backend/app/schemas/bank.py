@@ -31,7 +31,11 @@ class SearchBody(BaseModel):
     query: str = Field(min_length=1, max_length=512)
     top_k: int = Field(default=6, ge=1, le=50)
     document_id: str | None = None
-    mode: str = Field(default="hybrid_rerank", pattern="^(dense|sparse|hybrid|hybrid_rerank)$")
+    mode: str = Field(
+        default="hybrid_rerank",
+        pattern="^(dense|sparse|hybrid|hybrid_rerank)$",
+        description="仅检索 ready 文档；hybrid 融合向量与稀疏结果，hybrid_rerank 额外调用重排",
+    )
 
 
 class DocumentRenameBody(BaseModel):

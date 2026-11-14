@@ -1,7 +1,11 @@
 """出题任务、批次落库、题目 CRUD 测试。"""
+import pytest
+from fastapi.testclient import TestClient
+
 from app.models import Document
 from app.models.base import new_id
 from app.services import generation
+from app.services.rag import llm, question_gen
 from conftest import create_bank, upload_markdown
 
 GEN_BODY_TEMPLATE = {
@@ -156,3 +160,59 @@ def test_sync_generation_non_member(client, teacher, student):
     resp = client.post("/api/generate", json=_body(bank, doc), headers=student)
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "BANK_NOT_FOUND"
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, llm.LLMError])
+def test_generation_progress_redacts_non_sdk_errors(
+    client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture, error_type: type[Exception],
+) -> None:
+    """模型生成后其他阶段的未知异常也必须经过公开错误过滤。"""
+    bank, doc = _setup(client, teacher)
+    marker = "FAKE_PRIVATE_GENERATION_REVIEW_EXCEPTION"
+
+    def fail(*args, **kwargs):
+        raise error_type(marker)
+
+    monkeypatch.setattr(generation.question_review, "review_questions", fail)
+    started = client.post("/api/generate/start", headers=teacher, json=_body(bank, doc))
+    assert started.status_code == 202
+
+    response = client.get(
+        f"/api/generate/progress/{started.json()['task_id']}", headers=teacher,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["done"] is True
+    assert response.json()["error"] == {"message": "模型调用失败，请稍后重试"}
+    assert marker not in response.text + caplog.text
+
+
+def test_generation_confirmation_preserves_counts_without_exception_text(
+    client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """原题不足保留确认契约，但不信任异常 args 中的任意文本。"""
+    bank, doc = _setup(client, teacher)
+    marker = "FAKE_PRIVATE_CONFIRMATION_EXCEPTION"
+
+    def fail(*args, **kwargs):
+        error = question_gen.NeedConfirmError("单选题", 1, 2)
+        error.args = (marker,)
+        raise error
+
+    monkeypatch.setattr(question_gen, "generate_questions", fail)
+    started = client.post("/api/generate/start", headers=teacher, json=_body(bank, doc))
+    assert started.status_code == 202
+
+    response = client.get(
+        f"/api/generate/progress/{started.json()['task_id']}", headers=teacher,
+    )
+
+    assert response.status_code == 200
+    error = response.json()["error"]
+    assert error["kind"] == "need_confirm"
+    assert error["available"] == 1
+    assert error["requested"] == 2
+    assert error["message"]
+    assert marker not in response.text + caplog.text

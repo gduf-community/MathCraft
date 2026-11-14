@@ -11,6 +11,8 @@ from app.db import SessionLocal
 from app.services.rag_runtime import with_snapshot
 from app.services.rag import embeddings, fts, rerank, vectorstore
 
+_CHUNK_LOOKUP_BATCH_SIZE = 500
+
 
 def _rrf_fuse(dense_hits: list[dict], sparse_hits: list[tuple[str, float]]) -> list[dict]:
     """RRF：score = Σ 1/(k + rank)，按 chunk_id 去重累加。"""
@@ -27,35 +29,69 @@ def _rrf_fuse(dense_hits: list[dict], sparse_hits: list[tuple[str, float]]) -> l
     ][: settings.fused_top_k]
 
 
-def _fetch_chunks(chunk_ids: list[str]) -> dict[str, dict]:
-    """从 SQLite 取 chunk 详情（文本、题型、章节、文档名）。"""
+def _fetch_chunks(
+    chunk_ids: list[str], bank_id: str, document_id: str | None = None,
+) -> dict[str, dict]:
+    """分批读取 ready 切片，给 SQLite 的绑定参数上限预留作用域参数。"""
     if not chunk_ids:
         return {}
     db = SessionLocal()
     try:
-        placeholders = ", ".join(f":i{n}" for n in range(len(chunk_ids)))
-        params = {f"i{n}": cid for n, cid in enumerate(chunk_ids)}
-        rows = db.execute(
-            sql_text(
-                "SELECT c.id, c.text, c.chunk_type, c.section, c.document_id, d.name AS doc_name "
-                "FROM document_chunks c LEFT JOIN documents d ON d.id = c.document_id "
-                f"WHERE c.id IN ({placeholders})"
-            ),
-            params,
-        ).fetchall()
-        return {
-            r[0]: {
-                "chunk_id": r[0],
-                "text": r[1],
-                "chunk_type": r[2] or "general",
-                "section": r[3] or "",
-                "document_id": r[4],
-                "doc_name": r[5] or "",
-            }
-            for r in rows
-        }
+        unique_ids = list(dict.fromkeys(chunk_ids))
+        chunks: dict[str, dict] = {}
+        for start in range(0, len(unique_ids), _CHUNK_LOOKUP_BATCH_SIZE):
+            batch = unique_ids[start:start + _CHUNK_LOOKUP_BATCH_SIZE]
+            placeholders = ", ".join(f":i{n}" for n in range(len(batch)))
+            params = {f"i{n}": cid for n, cid in enumerate(batch)}
+            params["bank_id"] = bank_id
+            scope = ""
+            if document_id:
+                scope = " AND d.id = :document_id"
+                params["document_id"] = document_id
+            rows = db.execute(
+                sql_text(
+                    "SELECT c.id, c.text, c.chunk_type, c.section, c.document_id, "
+                    "d.name AS doc_name "
+                    "FROM document_chunks c JOIN documents d ON d.id = c.document_id "
+                    "AND d.bank_id = c.bank_id "
+                    f"WHERE c.id IN ({placeholders}) AND c.bank_id = :bank_id "
+                    "AND d.status = 'ready'" + scope
+                ),
+                params,
+            ).fetchall()
+            chunks.update({
+                r[0]: {
+                    "chunk_id": r[0],
+                    "text": r[1],
+                    "chunk_type": r[2] or "general",
+                    "section": r[3] or "",
+                    "document_id": r[4],
+                    "doc_name": r[5] or "",
+                }
+                for r in rows
+            })
+        return chunks
     finally:
         db.close()
+
+
+def dense_search(
+    bank_id: str,
+    query_embedding: list[float],
+    top_k: int,
+    document_id: str | None = None,
+) -> list[dict]:
+    """校验 SQL 发布状态并补召回，避免未发布或孤立向量占用 top_k。"""
+    candidate_k = top_k
+    while True:
+        candidates = vectorstore.search(
+            bank_id, query_embedding, top_k=candidate_k, doc_id=document_id,
+        )
+        visible = _fetch_chunks([hit["chunk_id"] for hit in candidates], bank_id, document_id)
+        hits = [hit for hit in candidates if hit["chunk_id"] in visible]
+        if len(hits) >= top_k or len(candidates) < candidate_k:
+            return hits[:top_k]
+        candidate_k *= 2
 
 
 @with_snapshot
@@ -68,8 +104,10 @@ def hybrid_retrieve(
     sparse_top_k: int | None = None,
     fused_top_k: int | None = None,
     rerank_top_k: int | None = None,
+    *,
+    skip_rerank: bool = False,
 ) -> dict:
-    """完整混合检索，返回 dense / sparse / fused / reranked 四段结果（检索测试接口用）。"""
+    """仅召回 ready 切片；默认执行重排，skip_rerank 显式跳过重排服务调用。"""
     dense_k = dense_top_k or settings.dense_top_k
     sparse_k = sparse_top_k or settings.sparse_top_k
     fused_k = fused_top_k or settings.fused_top_k
@@ -80,7 +118,7 @@ def hybrid_retrieve(
     dense_hits: list[dict] = []
     try:
         vec = embeddings.embed_one(dense_query)
-        dense_hits = vectorstore.search(bank_id, vec, top_k=dense_k, doc_id=document_id)
+        dense_hits = dense_search(bank_id, vec, top_k=dense_k, document_id=document_id)
     except embeddings.EmbeddingError:
         dense_hits = []
 
@@ -91,11 +129,17 @@ def hybrid_retrieve(
     except Exception:
         sparse_hits = []
 
+    # 融合前再次核对全部候选，四段响应都不得保留已失效的 hit。
+    chunk_map = _fetch_chunks(
+        [hit["chunk_id"] for hit in dense_hits] + [cid for cid, _ in sparse_hits],
+        bank_id, document_id,
+    )
+    dense_hits = [hit for hit in dense_hits if hit["chunk_id"] in chunk_map]
+    sparse_hits = [(cid, score) for cid, score in sparse_hits if cid in chunk_map]
     fused = _rrf_fuse(dense_hits, sparse_hits)[:fused_k]
-    chunk_map = _fetch_chunks([f["chunk_id"] for f in fused])
 
     reranked: list[dict] = []
-    if fused:
+    if fused and not skip_rerank:
         ordered = [chunk_map.get(f["chunk_id"]) for f in fused]
         ordered = [c for c in ordered if c]
         try:
