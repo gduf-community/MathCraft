@@ -75,3 +75,38 @@ def build_memory_block(mode: str, doc_name: str, history: list[dict]) -> str:
         mode_label=mode_label(mode or DEFAULT_MODE), doc_name=doc_name or "当前文档",
         turns=turns or "（暂无历史对话）",
     )
+
+
+# 自由对话的附加规则：非出题消息也要基于记忆具体、自然地回应
+SMALLTALK_EXTRA = """
+当前这条消息不是出题指令，请作为对话伙伴用简短自然的中文回应：
+1 问候、追问、回忆之前的请求都要具体回应；用户问「我刚刚说了什么」时，
+  用记忆概述最近几轮的请求要点（题型、数量、难度、范围）；
+2 记忆中没有的信息就明确说记忆里没有，不要编造；
+3 不要生成题目、不要输出 JSON；如果用户的意图其实是要出题，
+  温和提示补全题型、数量、难度与知识点范围即可。"""
+
+
+def answer_casually(
+    mode: str, doc_name: str, history: list[dict], message: str, api_key: str | None = None,
+) -> str:
+    """非出题、非业务消息的自由对话：基于短期记忆自然回应。
+
+    供快速出题模式分流使用——意图拿不准的消息不再机械追问槽位。
+    失败时返回引导文案，不抛异常（对话回复不应打断会话）。
+    """
+    from app.services.rag.llm import chat_text
+
+    system = build_memory_system(mode, doc_name) + SMALLTALK_EXTRA
+    messages: list[dict] = [{"role": "system", "content": system}]
+    for item in build_short_term_history(history):
+        role = item.get("role")
+        if role in ("user", "assistant") and item.get("text"):
+            messages.append({"role": role, "content": str(item["text"])})
+    messages.append({"role": "user", "content": message})
+    try:
+        reply = chat_text(messages, api_key=api_key, temperature=0.6,
+                          max_tokens=600, thinking_off=True)
+    except Exception:  # noqa: BLE001  对话回复失败降级为引导文案
+        return "这条消息我没对应上出题需求。要出题的话，告诉我题型、数量、难度和知识点范围即可。"
+    return reply.strip() or "我在的。要出题的话，告诉我题型、数量、难度和知识点范围即可。"

@@ -15,7 +15,7 @@ from app.services.rag.question_gen import (
 )
 from app.services.rag.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
 
-DONE_REPLY = "题目已生成完成，共 {n} 道，已同步到「题目预览」标签页。还需要生成其他题型吗？"
+DONE_REPLY = "已按你的要求生成完毕，共 {n} 道，已同步到「题目预览」标签页。{context}要调整数量、难度或换一批，直接告诉我。"
 SHORTFALL_REPLY = (
     "实际生成 {actual} 道（你要求 {requested} 道，{reasons}已剔除）。"
     "需要的话回复「再补 {missing} 道」，我会换考点重新出。"
@@ -37,12 +37,20 @@ class ChatCanceled(Exception):
     """用户点了暂停：在阶段检查点抛出，阻止继续生成与落库。"""
 
 
-def build_result_reply(actual: int, requested: int, stats=None) -> str:
-    """按审核后的真实结果写回复，数量对不上时说明原因。"""
+def build_result_reply(
+    actual: int, requested: int, stats=None, type_label: str | None = None, scope: str | None = None,
+) -> str:
+    """按审核后的真实结果写回复，数量对不上时说明原因；有语境时回应用户的具体要求。"""
     if actual <= 0:
         return EMPTY_REPLY
     if actual >= requested:
-        return DONE_REPLY.format(n=actual)
+        parts = []
+        if scope:
+            parts.append(f"知识点范围为「{scope}」")
+        if type_label:
+            parts.append(f"题型为{type_label}")
+        context = ("本次" + "、".join(parts) + "，") if parts else ""
+        return DONE_REPLY.format(n=actual, context=context)
     reasons = []
     if stats is not None:
         if getattr(stats, "duplicates", 0):
@@ -130,7 +138,7 @@ def handle_chat(
     _guard(cancel_check)
     report(78, f"已生成 {len(questions)} 道，正在查重与评估难度")
     return {
-        "reply": DONE_REPLY.format(n=len(questions)),
+        "reply": DONE_REPLY.format(n=len(questions), context=""),
         "slot_state": state,
         "questions": [q.model_dump() for q in questions],
         "done": True,
@@ -206,7 +214,7 @@ def handle_creative(
     )
     _guard(cancel_check)
     report(78, "正在查重与评估难度")
-    return {"reply": DONE_REPLY.format(n=len(questions)), "slot_state": state,
+    return {"reply": DONE_REPLY.format(n=len(questions), context=""), "slot_state": state,
             "questions": [q.model_dump() for q in questions], "done": True}
 
 

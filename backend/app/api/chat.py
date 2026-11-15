@@ -21,8 +21,9 @@ from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
 from app.services.rag.intent import detect_intent
 from app.services.rag.llm import LLMError, friendly_error
-from app.services.rag.memory import build_short_term_history
+from app.services.rag.memory import answer_casually, build_short_term_history
 from app.services.rag.modes import DEFAULT_MODE, MODES, mode_label
+from app.services.rag.question_gen import TYPE_LABELS
 from app.services.rag.skills import ChatContext, get_skill
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -265,6 +266,16 @@ def send_message(
         )[::-1]
     ])
 
+    # 非出题、非业务消息（意图拿不准）：基于短期记忆自然回应，不再机械追问槽位
+    if (not body.switch_only and detected.get("intent") == "unknown"
+            and detected.get("confidence") in ("low", "mid")):
+        reply = answer_casually(session_mode, doc.name, history, body.message, api_key)
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
+        db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
+        s.last_message_at = utcnow()
+        db.commit()
+        return _base_result(reply=reply, kind="reply", done=True)
+
     # HyDE：scope 未知时先无 HyDE 检索；slot_state 里可能已有 scope
     hyde_text = None
     if slot_state.get("scope"):
@@ -351,7 +362,15 @@ def send_message(
             # 同题型“再来一批”由短期记忆沿用上一轮数量，未说明数量时照常追问。
             result["slot_state"]["types"] = []
         result["questions"] = [q.model_dump() for q in accepted]
-        result["reply"] = build_result_reply(len(accepted), requested, stats)
+        # 完成回复带上本轮语境：让确认信息回应用户的具体要求而不是固定模板
+        type_label = None
+        if len(params.types) == 1:
+            type_label = TYPE_LABELS[params.types[0].type]
+        elif params.types:
+            type_label = f"{len(params.types)} 类题型组合"
+        result["reply"] = build_result_reply(
+            len(accepted), requested, stats, type_label=type_label, scope=params.scope or None,
+        )
     db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=result["reply"], batch_id=batch_id))
     s.slot_state_json = json.dumps(result["slot_state"], ensure_ascii=False)
     s.last_message_at = utcnow()

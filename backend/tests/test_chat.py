@@ -122,6 +122,52 @@ def test_delivered_round_clears_type_slots_for_next_request(client, teacher, mon
     assert len(data["questions"]) == 3
 
 
+def test_unknown_intent_gets_conversational_reply(client, teacher, monkeypatch):
+    """非出题消息（如「我刚刚说了什么」）基于短期记忆自然回应，不机械追问槽位。"""
+    bank, doc = _setup(client, teacher)
+    session = client.post(
+        "/api/chat/sessions",
+        json={"bank_id": bank["id"], "document_id": doc["document_id"]},
+        headers=teacher,
+    ).json()
+    url = f"/api/chat/sessions/{session['session_id']}/messages"
+
+    # 第一轮正常出题，给短期记忆积累素材
+    resp = client.post(
+        url,
+        json={"message": "帮我出 2 道计算题，范围是导数，中等难度", "existing_stems": []},
+        headers=teacher,
+    )
+    assert resp.status_code == 200 and resp.json()["done"] is True
+
+    captured: dict = {}
+
+    def fake_casually(mode, doc_name, history, message, api_key=None):
+        captured["history_texts"] = [h.get("text") for h in history]
+        captured["message"] = message
+        captured["mode"] = mode
+        return "你刚才让我生成 2 道中等难度的导数计算题。"
+
+    monkeypatch.setattr("app.api.chat.answer_casually", fake_casually)
+    monkeypatch.setattr("app.api.chat.detect_intent", lambda *a, **k: {
+        "intent": "unknown", "confidence": "low", "need_confirm": True,
+        "suggested_template": "none", "slots": {}, "reason": "测试桩",
+    })
+    resp = client.post(
+        url,
+        json={"message": "我刚刚说了什么", "existing_stems": []},
+        headers=teacher,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["done"] is True
+    assert "2 道" in data["reply"]
+    # 自由对话拿到了短期记忆与当前消息
+    assert any("计算题" in text for text in captured["history_texts"])
+    assert captured["message"] == "我刚刚说了什么"
+    assert captured["mode"] == "generate"
+
+
 def test_chat_requires_membership(client, teacher, student):
     bank, doc = _setup(client, teacher)
     resp = client.post(

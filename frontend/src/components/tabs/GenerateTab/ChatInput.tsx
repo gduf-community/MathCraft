@@ -137,7 +137,6 @@ export default function ChatInput() {
           className="block w-full resize-none bg-transparent px-1 text-sm leading-6 text-ink outline-none placeholder:text-ink-3"
         />
         <div className="mt-0.5 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-ink-3">支持粘贴多种题型文档或上传</span>
           <div className="ml-auto flex shrink-0 items-center gap-3">
             <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
             {botThinking ? (
