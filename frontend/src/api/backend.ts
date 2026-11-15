@@ -375,16 +375,6 @@ export async function viewDocument(bankId: string, docId: string): Promise<void>
 
 /* ---------------- 出题与题目 ---------------- */
 
-export interface GenerateBody {
-  bank_id: string
-  document_id: string
-  types: { type: QuestionType; count: number }[]
-  difficulty: Difficulty
-  scope?: string
-  source_mode?: string
-  existing_stems?: string[]
-}
-
 export interface ApiQuestion {
   id: string
   paper_question_id?: string
@@ -435,28 +425,6 @@ export function mapQuestion(q: ApiQuestion): Question {
     favGroupId: q.favorite_group_id ?? undefined,
     docName: q.doc_name ?? '',
   }
-}
-
-export async function startGeneration(body: GenerateBody): Promise<{ task_id: string }> {
-  return request<{ task_id: string }>('/api/generate/start', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-}
-
-export interface GenerateProgress {
-  progress: number
-  stage: string
-  done: boolean
-  batch_id: string | null
-  questions: ApiQuestion[]
-  /** 出题中间件的处理统计：去重、重出、补解析的题数 */
-  review?: { duplicates: number; repaired?: number; regenerated: number; solved: number } | null
-  error: { message?: string; kind?: string; available?: number; requested?: number } | null
-}
-
-export async function getGenerationProgress(taskId: string): Promise<GenerateProgress> {
-  return request<GenerateProgress>(`/api/generate/progress/${taskId}`)
 }
 
 export async function latestBatch(
@@ -992,16 +960,40 @@ export interface ChatSession {
   welcome?: string
 }
 
+/** 历史会话列表项：标题取首条用户消息，按账号隔离 */
+export interface ApiChatSessionSummary {
+  session_id: string
+  title: string
+  bank_id: string
+  document_id: string
+  document_name?: string | null
+  last_message_at?: string | null
+  created_at?: string | null
+}
+
+export async function listChatSessions(): Promise<ApiChatSessionSummary[]> {
+  const data = await request<{ items: ApiChatSessionSummary[] }>('/api/chat/sessions')
+  return data.items
+}
+
+export interface ApiChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  batch_id?: string | null
+  created_at?: string
+}
+
+export async function getChatSession(sessionId: string): Promise<{ messages: ApiChatMessage[] }> {
+  return request(`/api/chat/sessions/${sessionId}`)
+}
+
 export async function createChatSession(bankId: string, documentId: string, signal?: AbortSignal): Promise<ChatSession> {
   return request<ChatSession>('/api/chat/sessions', {
     method: 'POST',
     body: JSON.stringify({ bank_id: bankId, document_id: documentId }),
     signal,
   })
-}
-
-export async function getChatSession(sessionId: string): Promise<{ messages: { role: 'user' | 'assistant'; text: string }[] }> {
-  return request(`/api/chat/sessions/${sessionId}`)
 }
 
 export async function sendChatMessage(

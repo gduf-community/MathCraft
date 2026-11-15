@@ -27,19 +27,15 @@ import type { AuthRole, AuthUser } from '../api/auth'
 
 export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
 
-export interface TypeConfig {
-  checked: boolean
-  count: number
+/** 历史会话侧边栏列表项（来自后端，按账号隔离） */
+export interface ChatSessionSummary {
+  id: string
+  title: string
+  bankId: string
+  docId: string
+  documentName?: string | null
+  lastMessageAt: string | null
 }
-
-const initialTypeConfigs = (): Record<QuestionType, TypeConfig> => ({
-  single: { checked: true, count: 5 },
-  multiple: { checked: true, count: 3 },
-  judge: { checked: false, count: 2 },
-  blank: { checked: false, count: 2 },
-  compute: { checked: false, count: 2 },
-  essay: { checked: false, count: 1 },
-})
 
 function buildProfile(user: AuthUser | null): TeacherProfile {
   return {
@@ -69,8 +65,8 @@ interface AppState {
   setActiveTab: (t: TabKey) => void
   navCollapsed: boolean
   toggleNav: () => void
-  paramsCollapsed: boolean
-  toggleParams: () => void
+  historyCollapsed: boolean
+  toggleHistory: () => void
 
   kbs: KnowledgeBase[]
   docs: KbDocument[]
@@ -89,16 +85,6 @@ interface AppState {
   setHasUnsavedChanges: (v: boolean) => void
   isSettingsSaving: boolean
   setIsSettingsSaving: (saving: boolean) => void
-
-  typeConfigs: Record<QuestionType, TypeConfig>
-  setTypeConfig: (type: QuestionType, patch: Partial<TypeConfig>) => void
-  difficulty: Difficulty
-  setDifficulty: (d: Difficulty) => void
-  knowledgeScope: string
-  setKnowledgeScope: (v: string) => void
-  generating: boolean
-  genProgress: { percent: number; stage: string } | null
-  generate: (opts?: { silent?: boolean }) => Promise<boolean>
 
   questions: Question[]
   favorites: Question[]
@@ -136,7 +122,8 @@ interface AppState {
     allowReview?: boolean,
     allowRetake?: boolean,
   ) => Promise<boolean>
-  clearAll: () => void
+  /** 一键清空（题目预览）：只清空题目内容与勾选，不影响对话记录和当前会话 */
+  clearQuestions: () => void
   deleteSelected: () => Promise<void>
   uploadDocument: (file: File) => Promise<void>
   deleteRecord: (id: string, opts?: { withPaper?: boolean }) => Promise<void>
@@ -178,8 +165,20 @@ interface AppState {
 
   messages: ChatMessage[]
   botThinking: boolean
+  /** 历史会话消息加载中：切换会话时为真，期间不渲染欢迎态避免布局弹跳 */
+  sessionLoading: boolean
   inputDraft: string
   setInputDraft: (v: string) => void
+  /** 历史会话列表（当前账号，后端持久化） */
+  sessions: ChatSessionSummary[]
+  /** 当前激活的会话 id；null 表示新对话（欢迎态） */
+  activeSessionId: string | null
+  /** 打开历史会话：恢复题库文档选择与消息，可继续对话 */
+  openSession: (session: ChatSessionSummary) => Promise<void>
+  /** 新建对话：清空当前对话视图回到欢迎态（不改历史记录） */
+  startNewChat: () => void
+  /** 删除一条历史会话（同步后端）；若删除的是当前会话则回到欢迎态 */
+  removeSession: (sessionId: string) => Promise<void>
   /** 分段控制器当前模式：用户显式选择，优先级最高 */
   mode: ChatMode
   setMode: (m: ChatMode) => void
@@ -222,19 +221,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeTab, setActiveTabState] = useState<TabKey>('generate')
   const activeTabRef = useRef<TabKey>('generate')
   const [navCollapsed, setNavCollapsed] = useState(false)
-  const [paramsCollapsed, setParamsCollapsed] = useState(false)
+  const [historyCollapsed, setHistoryCollapsed] = useState(false)
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [docs, setDocs] = useState<KbDocument[]>([])
   const [spaces, setSpaces] = useState<StudySpace[]>([])
   const [selectedKbId, setSelectedKbId] = useState('')
   const [selectedDocId, setSelectedDocId] = useState('')
-
-  const [typeConfigs, setTypeConfigs] = useState<Record<QuestionType, TypeConfig>>(initialTypeConfigs)
-  const [difficulty, setDifficulty] = useState<Difficulty>('中')
-  const [knowledgeScope, setKnowledgeScope] = useState('')
-  const [generating, setGenerating] = useState(false)
-  const [genProgress, setGenProgress] = useState<{ percent: number; stage: string } | null>(null)
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
@@ -246,6 +239,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [records, setRecords] = useState<AssembleRecord[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(false)
   const [chatProgress, setChatProgress] = useState<{ percent: number; stage: string } | null>(null)
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
@@ -349,8 +345,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
     chatPollRef.current = null
     setBotThinking(false)
-    setGenerating(false)
-    setGenProgress(null)
+    setSessionLoading(false)
     setConfirmBusy(false)
     setChatProgress(null)
     setChatStartedAt(null)
@@ -363,7 +358,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setModeVisible(true)
     setModeSuggested(null)
     setPendingConfirm(null)
+    setActiveSessionId(null)
   }, [setPendingConfirm])
+
+  /** 拉取当前账号的历史会话列表；失败静默（侧边栏显示空态） */
+  const loadSessions = useCallback(async () => {
+    if (!sessionIsCurrent()) return
+    try {
+      const rows = await api.listChatSessions()
+      if (!sessionIsCurrent()) return
+      setSessions(rows.map((row) => ({
+        id: row.session_id,
+        title: row.title,
+        bankId: row.bank_id,
+        docId: row.document_id,
+        documentName: row.document_name,
+        lastMessageAt: row.last_message_at ?? null,
+      })))
+      // 列表刷新后校验当前激活会话是否仍存在（可能已被其他入口删除）
+      setActiveSessionId((current) => current && rows.some((row) => row.session_id === current) ? current : null)
+    } catch {
+      /* 静默：历史列表加载失败不打断主流程 */
+    }
+  }, [sessionIsCurrent])
 
   const loadFavorites = useCallback(async (isActive = sessionIsCurrent) => {
     if (!sessionIsCurrent() || !isActive()) return
@@ -596,7 +613,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const [bankRows, latest] = await Promise.all([api.listBanks('all'), api.latestBatch()])
         if (!sessionIsCurrent()) return
         setKbs(bankRows.map(api.mapBankToKnowledgeBase))
-        await Promise.all([loadFavorites(), loadRecords(), refreshSpaces()])
+        await Promise.all([loadFavorites(), loadRecords(), refreshSpaces(), loadSessions()])
         if (!sessionIsCurrent()) return
         if (latest.batch_id) {
           activeBatchRef.current = latest.batch_id
@@ -606,7 +623,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(err instanceof Error ? err.message : '加载数据失败，请检查后端服务')
       }
     })()
-  }, [user, loadFavorites, loadRecords, refreshSpaces, sessionIsCurrent, showToast])
+  }, [user, loadFavorites, loadRecords, loadSessions, refreshSpaces, sessionIsCurrent, showToast])
 
   const selectKb = useCallback(
     (id: string) => {
@@ -658,81 +675,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [resetChat, sessionIsCurrent, showToast],
   )
 
-  const setTypeConfig = useCallback((type: QuestionType, patch: Partial<TypeConfig>) => {
-    setTypeConfigs((prev) => ({ ...prev, [type]: { ...prev[type], ...patch } }))
-  }, [])
-
-  const runGenerate = useCallback(
-    async (opts?: { silent?: boolean }) => {
-      const version = chatVersionRef.current
-      const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
-      if (!isActive()) return false
-      const doc = docs.find((d) => d.id === selectedDocId)
-      if (!doc) {
-        showToast('请先选择知识库文档')
-        return false
-      }
-      const types = (Object.keys(typeConfigs) as QuestionType[])
-        .filter((t) => typeConfigs[t].checked && typeConfigs[t].count > 0)
-        .map((t) => ({ type: t, count: typeConfigs[t].count }))
-      if (!types.length) {
-        showToast('请至少勾选一个题型并设置数量')
-        return false
-      }
-      setGenerating(true)
-      setGenProgress({ percent: 0, stage: '准备生成' })
-      try {
-        const started = await api.startGeneration({
-          bank_id: selectedKbId,
-          document_id: doc.id,
-          types,
-          difficulty,
-          scope: knowledgeScope.trim() || undefined,
-          source_mode: 'variant_data',
-          existing_stems: questions.map((q) => q.stem),
-        })
-        if (!isActive()) return false
-        let state = await api.getGenerationProgress(started.task_id)
-        while (!state.done) {
-          if (!isActive()) return false
-          setGenProgress({ percent: state.progress, stage: state.stage })
-          await new Promise((r) => setTimeout(r, 500))
-          if (!isActive()) return false
-          state = await api.getGenerationProgress(started.task_id)
-        }
-        if (!isActive()) return false
-        if (state.error?.message) throw new Error(state.error.message)
-        const incoming = state.questions.map(api.mapQuestion)
-        setQuestions((prev) => dedupeQuestions(prev, incoming))
-        activeBatchRef.current = state.batch_id
-        setSelectedIds([])
-        setTypeFilter('all')
-        setDiffFilter('all')
-        if (!opts?.silent) {
-          const rv = state.review
-          const detail: string[] = []
-          if (rv?.duplicates) detail.push(`去重 ${rv.duplicates} 题`)
-          if (rv?.repaired) detail.push(`修补 ${rv.repaired} 题`)
-          if (rv?.regenerated) detail.push(`重出 ${rv.regenerated} 题`)
-          const extra = detail.length ? `（${detail.join('，')}）` : ''
-          showToast(`已生成 ${incoming.length} 道题目${extra}`)
-        }
-        setActiveTab('preview')
-        return true
-      } catch (err) {
-        if (!isActive()) return false
-        showToast(err instanceof Error ? err.message : '生成失败，请检查后端服务')
-        return false
-      } finally {
-        if (isActive()) {
-          setGenerating(false)
-          setGenProgress(null)
-        }
-      }
-    },
-    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, sessionIsCurrent, setActiveTab, showToast],
-  )
-
   const setMode = useCallback((next: ChatMode) => {
     if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
       || pendingConfirmRef.current) return
@@ -779,6 +721,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!isActive()) return
           session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
           chatSessionRef.current = session
+          setActiveSessionId(created.session_id)
+          void loadSessions()
         }
         const sessionId = session.id
         if (!isActive()) return
@@ -828,10 +772,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setChatProgress(null)
           setChatStartedAt(null)
           setBotThinking(false)
+          // 消息已写库：刷新会话列表，让最近消息时间立即更新（避免新会话日期短暂为空）
+          void loadSessions()
         }
       }
     },
-    [mode, selectedDocId, selectedKbId, questions, sessionIsCurrent, setPendingConfirm, showToast],
+    [mode, loadSessions, selectedDocId, selectedKbId, questions, sessionIsCurrent, setPendingConfirm, showToast],
   )
 
   const addChatImages = useCallback((files: File[]) => {
@@ -927,12 +873,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMessages((prev) => [...prev, {
       id: `m-${++messageIdRef.current}`, role: 'assistant', text: '已暂停本次生成。',
     }])
-    if (sessionId) void api.cancelChat(sessionId).catch((error: unknown) => {
+    if (sessionId) void api.cancelChat(sessionId).then(() => loadSessions()).catch((error: unknown) => {
       if (sessionIsCurrent() && version === chatVersionRef.current && !chatBusyRef.current) {
         showToast(error instanceof Error ? error.message : '服务端暂停未确认')
       }
     })
-  }, [sessionIsCurrent, showToast])
+  }, [loadSessions, sessionIsCurrent, showToast])
 
   const retryChat = useCallback((messageId: string) => {
     if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
@@ -955,6 +901,107 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setChatImages(chatImagesRef.current)
     setMessages((prev) => prev.slice(0, index))
   }, [messages, sessionIsCurrent])
+
+  /** 打开历史会话：恢复题库文档选择、消息与最近产出题目，可继续对话 */
+  const openSession = useCallback(
+    async (target: ChatSessionSummary) => {
+      const confirmInFlight = confirmRequestRef.current !== null
+      if (!sessionIsCurrent() || chatBusyRef.current || confirmInFlight
+        || pendingConfirmRef.current !== null) return
+      const version = ++chatVersionRef.current
+      const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
+      chatAbortRef.current?.abort()
+      chatAbortRef.current = null
+      confirmRequestRef.current?.abort()
+      confirmRequestRef.current = null
+      if (chatPollRef.current !== null) {
+        window.clearInterval(chatPollRef.current)
+        chatPollRef.current = null
+      }
+      pendingDocumentSelection.current = null
+      imageVersionRef.current += 1
+      chatImagesRef.current = []
+      setBotThinking(false)
+      setConfirmBusy(false)
+      setChatProgress(null)
+      setChatStartedAt(null)
+      setPendingConfirm(null)
+      setChatImages([])
+      setInputDraft('')
+      setModeState('generate')
+      setSessionMode('generate')
+      setModeVisible(false)
+      setModeSuggested(null)
+      // 直接恢复选中态，绕过 selectKb/selectDoc 的 resetChat 副作用
+      selectedKbRef.current = target.bankId
+      selectedDocRef.current = target.docId
+      setSelectedKbId(target.bankId)
+      setSelectedDocId(target.docId)
+      setDocs([])
+      void api.listDocuments(target.bankId).then((rows) => {
+        if (isActive() && selectedKbRef.current === target.bankId) applyDocumentRows(target.bankId, rows)
+      }).catch(() => { /* 文档列表加载失败不阻塞会话恢复 */ })
+      chatSessionRef.current = { id: target.id, bankId: target.bankId, docId: target.docId }
+      setActiveSessionId(target.id)
+      setQuestions([])
+      activeBatchRef.current = null
+      setSessionLoading(true)
+      setMessages([])
+      try {
+        const detail = await api.getChatSession(target.id)
+        if (!isActive() || chatSessionRef.current?.id !== target.id) return
+        setMessages(detail.messages.map((m, index) => ({
+          id: m.id || `m-his-${index}`,
+          role: m.role,
+          text: m.text,
+        })))
+        // 恢复该会话最近一次产出的题目到预览，继续出题时用于查重
+        const batchId = [...detail.messages].reverse().find((m) => m.batch_id)?.batch_id ?? null
+        if (batchId) {
+          try {
+            const restored = await api.listQuestions({ batch_id: batchId, page_size: 100 })
+            if (!isActive() || chatSessionRef.current?.id !== target.id) return
+            setQuestions(restored.items.map(api.mapQuestion))
+            activeBatchRef.current = batchId
+            setSelectedIds([])
+          } catch { /* 题目恢复失败仅影响预览，不阻塞对话 */ }
+        }
+      } catch (error: unknown) {
+        if (isActive()) {
+          showToast(error instanceof Error ? error.message : '读取历史会话失败', 'error')
+          chatSessionRef.current = null
+          setActiveSessionId(null)
+        }
+      } finally {
+        // 仅由当前这一次加载负责收尾；用户已切走时交给新的加载流程管理
+        if (sessionIsCurrent() && version === chatVersionRef.current) setSessionLoading(false)
+      }
+    },
+    [applyDocumentRows, sessionIsCurrent, setPendingConfirm, showToast],
+  )
+
+  /** 新建对话：回到欢迎态；当前会话保留在历史列表中 */
+  const startNewChat = useCallback(() => {
+    if (!setActiveTab('generate')) return
+    resetChat()
+  }, [resetChat, setActiveTab])
+
+  /** 删除一条历史会话（同步后端）；删除当前会话时回到欢迎态 */
+  const removeSession = useCallback(
+    async (sessionId: string) => {
+      if (!sessionIsCurrent()) return
+      try {
+        await api.deleteChatSession(sessionId)
+      } catch (error: unknown) {
+        showToast(error instanceof Error ? error.message : '删除会话失败', 'error')
+        return
+      }
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      if (chatSessionRef.current?.id === sessionId) resetChat()
+      showToast('已删除该对话')
+    },
+    [resetChat, sessionIsCurrent, showToast],
+  )
 
   const updateQuestion = useCallback(
     async (q: Question) => {
@@ -1239,25 +1286,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [records, spaces, showToast],
   )
 
-  const clearAll = useCallback(() => {
-    if (!sessionIsCurrent() || !setActiveTab('generate')) return
-    const sessionId = chatSessionRef.current?.id
-    resetChat()
-    const version = chatVersionRef.current
-    const reportFailure = (error: unknown) => {
-      if (sessionIsCurrent() && version === chatVersionRef.current) {
-        showToast(error instanceof Error ? error.message : '清理服务端记录失败，请重试', 'error')
-      }
+  /** 一键清空（题目预览）：仅删除当前全部题目（同步删除服务端题目），不动对话记录 */
+  const clearQuestions = useCallback(() => {
+    if (!sessionIsCurrent()) return
+    const ids = questions.map((q) => q.id)
+    if (ids.length) {
+      void api.batchDeleteQuestions(ids).catch((error: unknown) => {
+        showToast(error instanceof Error ? error.message : '清理服务端题目失败，请刷新后重试', 'error')
+      })
     }
-    if (questions.length) {
-      void api.batchDeleteQuestions(questions.map((question) => question.id)).catch(reportFailure)
-    }
-    if (sessionId) void api.deleteChatSession(sessionId).catch(reportFailure)
     setQuestions([])
+    setFavorites((prev) => prev.filter((q) => !ids.includes(q.id)))
     setSelectedIds([])
     activeBatchRef.current = null
-    showToast('已清空当前题目与对话，正在清理服务端记录')
-  }, [questions, resetChat, sessionIsCurrent, setActiveTab, showToast])
+    showToast(ids.length ? '已清空当前题目，对话记录不受影响' : '当前没有题目')
+  }, [questions, sessionIsCurrent, showToast])
 
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
@@ -1399,8 +1442,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActiveTab: switchTab,
     navCollapsed,
     toggleNav: () => setNavCollapsed((v) => !v),
-    paramsCollapsed,
-    toggleParams: () => setParamsCollapsed((v) => !v),
+    historyCollapsed,
+    toggleHistory: () => setHistoryCollapsed((v) => !v),
     kbs,
     docs,
     spaces,
@@ -1414,15 +1457,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHasUnsavedChanges,
     isSettingsSaving,
     setIsSettingsSaving,
-    typeConfigs,
-    setTypeConfig,
-    difficulty,
-    setDifficulty,
-    knowledgeScope,
-    setKnowledgeScope,
-    generating,
-    genProgress,
-    generate: runGenerate,
     questions,
     favorites,
     favGroups,
@@ -1447,7 +1481,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toggleStar,
     records,
     publishPaper,
-    clearAll,
+    clearQuestions,
     deleteSelected,
     uploadDocument,
     deleteRecord,
@@ -1480,8 +1514,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearPendingSpacePaper,
     messages,
     botThinking,
+    sessionLoading,
     inputDraft,
     setInputDraft,
+    sessions,
+    activeSessionId,
+    openSession,
+    startNewChat,
+    removeSession,
     mode,
     setMode,
     sessionMode,
