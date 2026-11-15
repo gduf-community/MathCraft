@@ -8,7 +8,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | --- | --- |
 | `src/api/` | 认证会话、业务请求、题库、文档预览与模型配置接口 |
 | `src/api/exportDocx.ts` | 通过现有认证会话请求 Word 导出并下载 Blob |
-| `src/api/adminOps.ts`、`src/api/adminOpsDemo.ts` | 旧运维请求适配与 DEV 合成演示，待按新方案收缩；后台查询尚未实现 |
+| `src/api/adminOps.ts` | 管理员 V2 三个只读查询、运行时响应校验和安全错误映射 |
 | `src/components/auth/` | 恢复历史视觉的登录页、学生／教师手动身份选择、邮箱验证码与 Turnstile |
 | `src/components/auth/AuthDialog.tsx` | 复用 `ConfigurationDialog`，提供邮箱登录、绑定引导及两种密码找回方式 |
 | `src/components/auth/LoginEmailBindingDialog.tsx` | 从邮箱登录切换到临时账号认证与邮箱绑定；可返回邮箱登录，撤销失败可重试 |
@@ -19,18 +19,16 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | `src/components/tabs/PreviewTab/ExportModal.tsx` | 已选题目的 Word 导出设置、题型顺序与请求反馈 |
 | `src/components/settings/`、`src/components/admin/` | 个人模型设置与管理员面板 |
 | `src/components/admin/LegacyOverview.tsx` | 原平台资源与历史批次统计，独立读取真实接口 |
-| `src/components/admin/ops/` | 运维概览、运行／依赖／异常页面、运行抽屉、管理员通知及共用查询与展示 |
-| `src/components/admin/ops/OpsExtensions.tsx` | 运维自监控、配置、版本／审核范围证据及告警只读指引 |
-| `src/components/admin/ops/useOpsClock.ts` | 使用服务端快照及页面经过时间复核观测有效期 |
+| `src/components/admin/ops/` | V2 运行概览、筛选与 offset 分页、基本详情及共用只读查询 |
 | `src/components/ui/` | 提示、确认框等共用控件 |
 | `src/components/ui/ConfirmCard.tsx`、`src/components/ui/SegmentedControl.tsx` | 数据操作预览确认与四模式选择 |
 | `src/components/ui/Toast.tsx` | 全站共享提示；已恢复 `0b5d4b4` 历史外观，当前内容与触发逻辑保留 |
 | `src/store/`、`src/types/` | 认证与业务状态、共用类型 |
 | `src/store/ToastContext.tsx` | 按 identity 保持 Provider 挂载，避免退出重试弹窗丢失；提示继续按 generation 隔离 |
-| `src/types/ops.ts` | 运维 v1 前端类型与客户端边界，不代表后端 schema 或 OpenAPI 已新增 |
+| `src/types/ops.ts` | 对齐正式后端 schema 的 V2 摘要、六状态与 nullable 字段 |
 | `src/styles/`、`src/assets/`、`src/lib/` | 样式、静态资源与工具函数 |
 | `vite.config.ts` | 开发代理、环境文件隔离与构建配置 |
-| `*-regression.mjs`、`e2e-auth.mjs` | 会话、组件与浏览器回归脚本 |
+| `*-regression.mjs`、`e2e-auth.mjs` | 会话、组件与浏览器回归；ops-panel 为离线页面边界，ops-ledger 为正式临时台账联调 |
 
 ## 启动
 
@@ -90,7 +88,7 @@ node merge-frontend-regression.mjs
 
 ### 运维后台离线回归
 
-`ops-panel-regression.mjs` 保留为旧页面的离线合成回归，覆盖待删除的依赖状态、异常中心与通知，不能作为新后台或 Phoenix 的验收依据。后续收缩页面时同步调整脚本；本次仅修改文档。
+`ops-panel-regression.mjs` 验证真实 V2 页面、筛选分页、空值、错误、竞态、轮询、窄屏和生产构建；所有 API 在测试边界拦截。`ops-ledger-regression.mjs` 配合 `backend/tests/ops_browser_server.py`，通过正式迁移的独立临时库执行三条实际生成 HTTP 路径，再核对真实查询和页面。脚本需要单独可用的 playwright-core 与 Chromium，可通过 NODE_PATH 和 AUTH_BROWSER 指定，不增加产品依赖。复现命令和验收边界见[前端 V2 与联调](../docs/design/运维后台前端V2适配与联调.md)。
 
 ## 代理和认证配置注意
 
@@ -134,13 +132,13 @@ node merge-frontend-regression.mjs
 
 小于 768px 时导航改为四列，主内容与快速出题面板纵向排列，账号操作允许换行；参数栏可展开或折叠。
 
-### 运维后台前端先行
+### 运维后台 V2
 
-当前前端仍有依赖状态、异常中心、管理员告警通知，以及质量覆盖、自监控和追踪访问演示。**这些能力已从目标方案删除，本轮尚未删除前端代码。**
+管理员保留平台概览、出题运行、账号管理、模型与检索和账号安全。依赖状态、异常中心、管理员告警、质量统计、自监控和追踪访问演示已从当前前端删除。
 
-目标后台只新增概览中的运行摘要、运行列表和基本详情；既有账号管理、模型与检索、账号安全继续保留。后续由本人清理旧页面、演示、类型和请求适配，见[三人分工](../docs/design/运维后台三人实施分工方案.md)。`ops_runs` 和后台查询接口目前尚未实现。
+前端只消费正式 V2 概览、运行列表和基本详情。使用 status/canceled、limit/offset 和 has_more；数量 null 显示未知、0 显示零，批次已保存不表示质量通过。字段以根 OpenAPI 为准，见[前端 V2 与联调](../docs/design/运维后台前端V2适配与联调.md)。
 
-DEV 合成演示仍需管理员真实登录并显式启用；旧平台资源、账号、模型和安全操作仍调用真实接口。请求出错不能自动切换演示，缺少证据不能显示正常或零失败。
+DEV 与生产均只使用真实运维适配器，没有产品内演示开关。有效空结果、无权限、记录不存在及数据不可用分别处理；刷新失败明确标注旧数据。平台资源、账号、模型和安全继续使用既有真实接口。
 
 Phoenix 由后端独立接入，不新增前端必需跳转或正文查看；其可用性不决定业务运行状态，见[独立设计](../docs/design/Phoenix可选扩展.md)。
 

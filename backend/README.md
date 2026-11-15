@@ -40,7 +40,7 @@ backend/
 `/api/admin/ops/runs/{run_id}`，使用 V2 最小摘要、UTC 受理时间筛选和 limit/offset 分页。
 查询读取正式台账模型，两类出题入口已写入运行记录；部署前须升级既有 Alembic 迁移，
 不自动创建生产表。表缺失、契约不兼容或读取失败返回 `503 OPS_DATA_UNAVAILABLE`。
-前端仍待适配 v2；字段和状态见[查询 V2 实现与交接](../docs/design/运维查询V2实现与交接.md)。
+前端已适配 V2，隔离页面联调已完成；部署验收仍待进行。字段和状态见[查询 V2 实现与交接](../docs/design/运维查询V2实现与交接.md)。
 
 需要 Python 3.11 及以上、uv、Redis 7 及以上。以下使用 PowerShell；完整前后端启动说明见 [根 README](../README.md#启动方法)。
 
@@ -134,7 +134,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 `RunLedger.accept/start/fail/cancel/unknown` 使用自己的短事务；`complete_in_transaction` 只参加调用方已有事务。`persist_batch` 在原提交前 flush 业务行并写入完成记录，批次与完成事实一起提交。只有实际出题受理才创建记录，澄清或答疑不会创建。单 worker 下重叠会话消息返回 `CHAT_BUSY/409`；检查点确认取消才记录 canceled。
 
-字段、事务与剩余中断边界见 [运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)。当前进程关闭只封口其登记的在途 ID，硬退出后的历史记录不自动改写。管理员查询已接入，前端待适配；HTTP 契约见 [API 文档](../docs/api.md)。
+字段、事务与剩余中断边界见 [运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)。当前进程关闭只封口其登记的在途 ID，硬退出后的历史记录不自动改写。管理员查询与 V2 前端已接入；HTTP 契约见 [API 文档](../docs/api.md)。
 
 ## 对话、生成与 Word 导出
 

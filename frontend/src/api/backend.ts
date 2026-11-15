@@ -1058,13 +1058,11 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export interface ApiNotification {
   id: string
-  kind: 'bank_ready' | 'bank_failed' | 'ops_alert_trigger' | 'ops_alert_reminder' | 'ops_alert_recovery'
+  kind: 'bank_ready' | 'bank_failed'
   title: string
   body: string
   bank_id?: string | null
   document_name?: string | null
-  ops_alert_id?: string | null
-  ops_episode_no?: number | null
   read: boolean
   created_at: string
 }
