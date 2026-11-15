@@ -1,0 +1,156 @@
+"""真实管理员鉴权 + 注入测试台账的 V2 HTTP 契约验证。"""
+from datetime import timedelta
+
+import pytest
+from sqlalchemy import event, select
+
+from app.api import admin_ops
+from app.main import app
+from app.models import User
+from app.services.ops_queries import OpsDataUnavailable, OpsQueryService
+from ops_fixtures import NOW, ledger, run_row, seed
+from test_admin import admin_headers
+
+PATHS = ("/api/admin/ops/overview", "/api/admin/ops/runs", "/api/admin/ops/runs/run_fixture")
+WINDOW = {"from": NOW.isoformat(), "to": (NOW + timedelta(seconds=1)).isoformat()}
+
+
+@pytest.fixture
+def admin(client, db):
+    return admin_headers(client, db)
+
+
+@pytest.fixture
+def queries(client, ledger):
+    """只替换台账读取依赖；应用鉴权、错误处理与序列化使用正式实现。"""
+    service = OpsQueryService(*ledger)
+    app.dependency_overrides[admin_ops.get_ops_queries] = lambda: service
+    try:
+        yield service
+    finally:
+        app.dependency_overrides.pop(admin_ops.get_ops_queries, None)
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_all_routes_require_auth_before_obtaining_ledger(client, path):
+    response = client.get(path)
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "TOKEN_EXPIRED"
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("role", ["teacher", "student"])
+def test_nonadmins_cannot_access_or_probe_ledger(client, auth, role, path):
+    response = client.get(path, headers=auth(role, role))
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "FORBIDDEN"
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_missing_formal_model_is_503_not_empty_success(client, admin, monkeypatch, path):
+    def unavailable():
+        raise OpsDataUnavailable("synthetic internal integration detail")
+
+    monkeypatch.setattr(admin_ops, "registered_ops_table", unavailable)
+    response = client.get(path, headers=admin)
+    assert response.status_code == 503
+    assert response.json() == {"detail": {
+        "code": "OPS_DATA_UNAVAILABLE", "message": "运行数据暂不可用，请稍后重试",
+    }}
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_success_shapes_nulls_utc_counts_and_read_only_sql(client, admin, ledger, queries):
+    seed(ledger, run_row(), run_row("run_complete", status="completed", delivered_count=2,
+                                 requested_count=3, batch_id="batch_known"))
+    db, table = ledger
+    before = db.execute(select(table)).mappings().all()
+    statements = []
+    event.listen(db.connection(), "before_cursor_execute", lambda c, x, sql, p, ctx, many:
+                 statements.append(sql))
+    overview = client.get(PATHS[0], headers=admin, params=WINDOW)
+    listing = client.get(PATHS[1], headers=admin, params={**WINDOW, "limit": 1})
+    detail = client.get(PATHS[2], headers=admin)
+    for response in (overview, listing, detail):
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json()["schema_version"] == "v2"
+        assert response.json()["generated_at"].endswith("Z")
+        assert "synthetic-private-body" not in response.text
+        assert "execution_status" not in response.text
+    summary = overview.json()
+    assert set(summary) == {"schema_version", "generated_at", "window", "total_runs",
+                            "status_counts", "recent_runs"}
+    assert summary["total_runs"] == 2
+    assert summary["status_counts"]["unknown"] == summary["status_counts"]["completed"] == 1
+    assert listing.json()["page"] == {"limit": 1, "offset": 0, "has_more": True}
+    assert detail.json()["run"]["requested_count"] is None
+    assert detail.json()["run"]["finished_at"] is None
+    assert detail.json()["run"]["last_observed_at"] is None
+    assert all(statement.lstrip().split()[0].upper() in {"SELECT", "WITH"}
+               for statement in statements)
+    assert db.execute(select(table)).mappings().all() == before
+
+
+def test_missing_run_is_safe_404_and_empty_query_is_200(client, admin, queries):
+    response = client.get(PATHS[2], headers=admin)
+    assert response.status_code == 404
+    assert response.json()["detail"] == {"code": "OPS_RUN_NOT_FOUND", "message": "运行记录不存在"}
+    assert client.get(PATHS[0], headers=admin).json()["total_runs"] == 0
+    assert client.get(PATHS[1], headers=admin).json()["items"] == []
+
+
+@pytest.mark.parametrize("params", [
+    {"from": "synthetic-secret-invalid-date"}, {"from": "2026-11-13T12:00:00"},
+    {"from": "9999-12-31T23:59:59Z"}, {**WINDOW, "from": "2026-11-14T00:00:00Z"},
+    {"to": "0001-01-01T00:00:00Z"}, {"status": "cancelled"}, {"entrypoint": "chat"},
+    {"owner_user_id": "u' OR 1=1"}, {"limit": 101}, {"offset": -1}, {"limit": "abc"},
+    {"snapshot": "synthetic-secret-old-contract"},
+])
+def test_invalid_queries_use_safe_422(client, admin, queries, params):
+    response = client.get(PATHS[1], headers=admin, params=params)
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": {
+        "code": "VALIDATION_ERROR", "message": "请求字段格式错误或包含不允许的字段",
+    }}
+    assert "synthetic-secret" not in response.text
+
+
+@pytest.mark.parametrize("mode", ["disabled", "role_changed", "token_revoked"])
+def test_account_and_session_changes_are_honored(client, admin, queries, db, mode):
+    user = db.query(User).filter(User.account == "admin").one()
+    if mode == "disabled":
+        user.status = "disabled"
+    elif mode == "role_changed":
+        user.role = "teacher"
+    else:
+        user.auth_version += 1
+    db.commit()
+    for path in PATHS:
+        response = client.get(path, headers=admin)
+        assert response.status_code in {401, 403}
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_sql_failure_is_masked_for_every_route(client, admin, queries, ledger, path):
+    db, table = ledger
+    table.drop(db.connection())
+    response = client.get(path, headers=admin, params=WINDOW if path != PATHS[2] else None)
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "OPS_DATA_UNAVAILABLE"
+    assert "ops_runs" not in response.text and "SELECT" not in response.text
+
+
+def test_basic_detail_hides_arbitrary_error_text_and_validation_details(
+    client, admin, queries, ledger,
+):
+    seed(ledger, run_row(error_code="synthetic-password=private"))
+    response = client.get(PATHS[2], headers=admin)
+    assert response.status_code == 200
+    assert response.json()["run"]["error_code"] == "UNKNOWN"
+    assert "synthetic-password" not in response.text
+    ledger[0].execute(ledger[1].update().values(status="synthetic-invalid-status"))
+    ledger[0].commit()
+    response = client.get(PATHS[2], headers=admin)
+    assert response.status_code == 503
+    assert "synthetic-invalid-status" not in response.text

@@ -10,10 +10,13 @@ backend/
 │   ├── main.py          # 应用入口
 │   ├── config.py        # 配置定义与 backend/.env 加载
 │   ├── api/             # HTTP 与 WebSocket 路由
+│   │   ├── admin_ops.py # V2 管理员只读运行查询
 │   │   └── export.py    # POST /api/export/docx 与导出请求契约
 │   ├── models/          # 数据库模型
 │   ├── schemas/         # 请求与响应契约
+│   │   └── ops.py      # V2 查询参数与响应模型
 │   └── services/        # 认证、文档、RAG 与教学业务
+│       ├── ops_queries.py # 复用正式 ops_runs 映射，缺少模型时报告不可用
 │       ├── export_docx.py # Word 排版及数学公式转换
 │       ├── phoenix_tracing.py # 可选元数据追踪与线程上下文传递
 │       └── rag/         # 检索与四模式对话
@@ -28,6 +31,12 @@ backend/
 ```
 
 ## 启动与配置
+
+管理员运行查询提供 `/api/admin/ops/overview`、`/api/admin/ops/runs` 和
+`/api/admin/ops/runs/{run_id}`，使用 V2 最小摘要、UTC 受理时间筛选和 limit/offset 分页。
+此基线尚无甲的正式台账模型、迁移和记录接入，查询安全返回 `503 OPS_DATA_UNAVAILABLE`；
+不自动创建生产表。测试在独立临时 SQLite 上注入读取依赖，保留正式管理员鉴权。
+字段、状态与待接入事项见[查询 V2 实现与交接](../docs/design/运维查询V2实现与交接.md)。
 
 需要 Python 3.11 及以上、uv、Redis 7 及以上。以下使用 PowerShell；完整前后端启动说明见 [根 README](../README.md#启动方法)。
 
@@ -174,5 +183,5 @@ uv run ruff check app tests
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
 - [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
-- 后台待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)和[三人实施分工](../docs/design/运维后台三人实施分工方案.md)。覆盖两条出题入口，后续新增最小 `ops_runs`，只做概览和运行查询。
+- 后台范围：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)和[三人实施分工](../docs/design/运维后台三人实施分工方案.md)。V2 查询层已实现；两条入口的正式 `ops_runs` 记录及前端适配待接入。
 - [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/design/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。

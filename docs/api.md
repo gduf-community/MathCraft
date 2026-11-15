@@ -14,9 +14,7 @@
 
 对话支持快速出题、创新命题、知识答疑和数据管理四种模式；图片与数据操作确认的契约和边界见[四模式对话与主线整合](design/对话四模式与主线整合.md)。
 
-后台运行查询接口和 `ops_runs` 尚未实现，不属于当前 OpenAPI。新范围只包含概览、运行列表和基本详情，覆盖对话与参数化出题；前端旧能力尚未删除。职责见[三人分工](design/运维后台三人实施分工方案.md)，范围见[系统方案说明](design/运维后台系统方案说明.md)。
-
-[Phoenix 可选扩展](design/Phoenix可选扩展.md)使用普通 OpenAI 客户端手工导出 OTLP 元数据，不引入 Agent SDK，不采集正文，不新增业务 HTTP 契约。本次只调整文档入口，接口正文和根 OpenAPI 保持现状。
+运维 V2 提供管理员只读概览、运行列表及基本详情，响应 `schema_version` 为 `v2`。查询仅投影正式 SQL 台账，支持受理时间、账号、入口、状态及会话／任务／批次筛选，列表使用 limit/offset；未知与空值保留，不返回正文或质量结论。当前基线缺少甲的正式 ops_runs 模型和记录接入，生产查询返回 `503 OPS_DATA_UNAVAILABLE`，不能用隔离测试数据冒充真实台账。前端仍需从旧 v1 适配到 v2。完整字段、错误和交接边界见[运维查询 V2 实现与交接](design/运维查询V2实现与交接.md)，职责见[三人分工](design/运维后台三人实施分工方案.md)。Phoenix 为独立可选扩展，不作为查询前置条件；依赖监测、告警、质量统计、复杂清理、自监控和正文审计不属于当前接口范围。
 
 ## admin
 
@@ -33,6 +31,14 @@
 | `PUT` | `/api/admin/rag-settings` | Save Settings |
 | `POST` | `/api/admin/rag-settings/rebuild` | Rebuild |
 | `POST` | `/api/admin/rag-settings/test` | Test Service |
+
+## admin-ops
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/admin/ops/overview` | 查询运行概览 |
+| `GET` | `/api/admin/ops/runs` | 查询运行列表 |
+| `GET` | `/api/admin/ops/runs/{run_id}` | 查询运行基本详情 |
 
 ## attempts
 
@@ -208,4 +214,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | 测试 MinerU 连接与鉴权（不验证文件解析） |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 110 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 113 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
