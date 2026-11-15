@@ -35,6 +35,12 @@ GEN_BATCH_WORKERS = 6
 GEN_TOKENS_PER_QUESTION = 3000
 # 单批固定的 JSON 结构开销
 GEN_TOKENS_OVERHEAD = 400
+# 高压长任务阈值：单题型要求达到该数量时启用高压规划与执行策略
+HIGH_PRESSURE_THRESHOLD = 20
+# 高压规划的考点输出预算（token）：50 个具体考点远超默认 800
+HIGH_PRESSURE_PLAN_TOKENS = 2400
+# 执行层补齐轮次上限：每轮按剩余缺口重新拆批并接续考点计划
+MAX_FILL_ROUNDS = 5
 
 TYPE_LABELS: dict[QuestionType, str] = {
     QuestionType.single: "选择题",
@@ -273,6 +279,11 @@ def _gen_batch(
     """一次生成 count 道题：流式输出 + 滚动校验，Schema 失败带错误信息重试一次。"""
     type_label = TYPE_LABELS[tc.type]
     extra = f"- 知识点范围：{scope}" if scope else ""
+    if scope and tc.count >= HIGH_PRESSURE_THRESHOLD:
+        extra += (
+            f"\n- 主题锁定（执行层硬约束）：本题必须严格围绕知识点范围「{scope}」命制，"
+            "考查内容超出该范围的题一律视为废题"
+        )
     if hint:
         extra += (
             f"\n- 本题限定考点：{hint}。同一批的其他题已占用别的考点，"
@@ -356,9 +367,13 @@ def _gen_batch(
     )
 
 
-PLAN_PROMPT = """你是高等数学命题组长。根据下面的教学材料与知识点范围，列出 {count} 个互不相同的细分考点，
-用于命制 {count} 道{difficulty}难度的{type_label}。
-要求：每个考点聚焦不同的概念、方法或题型结构，彼此不重叠，合起来尽量覆盖该范围的不同侧面。
+PLAN_PROMPT = """你是高等数学命题组长（规划层）。任务：为执行层制定命题蓝图——根据教学材料与知识点范围，
+列出 {count} 个互不相同的细分考点，用于命制 {count} 道{difficulty}难度的{type_label}。
+硬性要求：
+1 每个考点必须严格从属于「知识点范围」之内，禁止出现范围外的主题、章节或无关概念；
+2 考点之间互不重叠：分别覆盖不同的概念、方法或题型结构，合起来铺满该范围的不同侧面；
+3 考点必须具体可命题：写清考查角度与方法，例如「利用定积分几何意义求曲线围成面积」，
+  不要写宽泛的「定积分」。
 
 知识点范围：{scope}
 
@@ -376,10 +391,11 @@ def _plan_points(
     hits: list[dict],
     api_key: str | None,
 ) -> list[str]:
-    """先规划 count 个互不重复的考点。
+    """规划层：先产出 count 个互不重复的细分考点，执行层按考点锚定逐题命制。
 
     单题并发时各批互相看不见，模型极易撞到同一个考点（分段函数连续性），
     撞车后被查重砍掉再重出反而更慢，先分摊考点比事后去重便宜得多。
+    高压长任务（count 达到阈值）放大考点输出预算，保证考点写得具体且够数。
     """
     if count < 2:
         return []
@@ -388,16 +404,31 @@ def _plan_points(
         count=count, difficulty=difficulty, type_label=type_label,
         scope=scope or "未限定", context=context,
     )
+    plan_tokens = HIGH_PRESSURE_PLAN_TOKENS if count >= HIGH_PRESSURE_THRESHOLD else 800
     try:
         data = llm.chat_json(
             [{"role": "user", "content": prompt}],
             api_key=api_key,
-            max_tokens=800,
+            max_tokens=plan_tokens,
             thinking_off=True,
         )
     except Exception:  # noqa: BLE001
         return []  # 规划失败就按原来的并行出题，不阻断
-    points = [str(p).strip() for p in (data.get("points") or []) if str(p).strip()]
+    points: list[str] = []
+    seen: set[str] = set()
+    for raw in (data.get("points") or []):
+        text = str(raw).strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            points.append(text)
+    # 规划数量不足时按知识点范围细分兜底，保证执行层每题都有考点锚定
+    while len(points) < count and scope:
+        ordinal = len(points) + 1
+        points.append(
+            f"围绕「{scope}」的第 {ordinal} 个不同考查角度：更换概念、方法或题型结构，"
+            "不得与其他考点重复"
+        )
     return points[:count]
 
 
@@ -451,8 +482,9 @@ def _gen_for_type(
     collected: list[Question] = []
     taken = set(avoid_norm)
     errors: list[Exception] = []
-    # 生成不足时最多补两轮，每轮按剩余数量重新拆批
-    for round_no in range(3):
+    # 执行层补齐：生成不足时最多 MAX_FILL_ROUNDS 轮，每轮按剩余数量重新拆批，
+    # 并从考点计划中接续未使用的考点，高压长任务靠多轮补齐保证数量严格达标
+    for round_no in range(MAX_FILL_ROUNDS):
         need = tc.count - len(collected)
         if need <= 0:
             break

@@ -1,8 +1,18 @@
-"""对话出题编排：槽位抽取 → 缺失追问 → 齐备生成（含 HyDE + 混合检索）。"""
+"""对话出题编排：槽位抽取 → 缺失追问 → 齐备生成（含 HyDE + 混合检索）。
+
+规划层与执行层的分工见 question_gen：规划层（_plan_points）按知识点范围
+制定互不重复的考点蓝图；执行层（_gen_for_type）按蓝图分批并发命制、多轮补齐。
+本模块在其上叠加两层任务闭环：生成后的 ValueError 兜底，以及审核剔除后的
+自动补齐（review_with_refill），保证高压长任务的数量严格达标。
+"""
 from typing import Callable
 
+from app.schemas.question import GenerateParams, Question, TypeCount
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
-from app.services.rag.question_gen import NeedConfirmError, generate_questions
+from app.services.rag.question_gen import (
+    NeedConfirmError,
+    generate_questions,
+)
 from app.services.rag.slots import build_followup, build_params, extract_slots, merge_slots, missing_keys
 
 DONE_REPLY = "题目已生成完成，共 {n} 道，已同步到「题目预览」标签页。还需要生成其他题型吗？"
@@ -113,6 +123,9 @@ def handle_chat(
             "questions": [],
             "done": False,
         }
+    except ValueError as exc:
+        # 检索为空、多轮补齐后数量仍不达标等已可读的失败，转成回复而不是 500
+        return {"reply": str(exc), "slot_state": state, "questions": [], "done": True}
 
     _guard(cancel_check)
     report(78, f"已生成 {len(questions)} 道，正在查重与评估难度")
@@ -195,3 +208,86 @@ def handle_creative(
     report(78, "正在查重与评估难度")
     return {"reply": DONE_REPLY.format(n=len(questions)), "slot_state": state,
             "questions": [q.model_dump() for q in questions], "done": True}
+
+
+# ---------------- 长任务闭环：审核剔除后自动补齐 ----------------
+
+# 审核剔除后的补齐轮次上限；每轮按剩余缺口重新规划考点并分批生成
+MAX_REFILL_ROUNDS = 2
+# 补齐生成在缺口之外多出的余量比例，弥补补出题可能再次被审核剔除
+REFILL_BUFFER_RATIO = 0.2
+
+
+def split_refill_types(types: list[TypeCount], total_need: int) -> list[TypeCount]:
+    """把补齐数量按原题型比例分摊到各题型，保证各题型至少补 1 道。"""
+    total = sum(tc.count for tc in types) or 1
+    out: list[TypeCount] = []
+    allocated = 0
+    for index, tc in enumerate(types):
+        if index == len(types) - 1:
+            count = max(1, total_need - allocated)
+        else:
+            count = max(1, round(total_need * tc.count / total))
+        allocated += count
+        out.append(TypeCount(type=tc.type, count=count))
+    return out
+
+
+def review_with_refill(
+    first_pool: list[Question],
+    params: GenerateParams,
+    requested: int,
+    existing_stems: list[str] | None,
+    review_fn: Callable[[list[Question], GenerateParams, list[str]], tuple[list[Question], object]],
+    gen_fn: Callable[[GenerateParams, list[str], Callable[[float, str], None]], list[Question]],
+    progress_cb: ProgressCB | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[list[Question], object, bool]:
+    """审核 + 补齐的长任务闭环：保证最终数量严格达到 requested。
+
+    规划层与执行层产出的题目先经审核剔除（查重、难度不符、知识错配），
+    剔除后数量不足时自动进入补齐：按剩余缺口与余量比例重新拆分题型数量，
+    复用执行层生成（existing_stems 同步累积，跨轮去重），再送审核。
+    review_fn(candidates, params, existing_stems) -> (passed, stats)；
+    gen_fn(refill_params, existing_stems, progress) -> questions。
+    返回 (accepted, stats, canceled)。
+    """
+
+    def report(percent: int, stage: str) -> None:
+        if progress_cb:
+            progress_cb(percent, stage)
+
+    accepted: list[Question] = []
+    avoid = [s for s in (existing_stems or []) if s]
+    stats = None
+    pool = list(first_pool)
+    canceled = False
+    for round_no in range(MAX_REFILL_ROUNDS + 1):
+        try:
+            if cancel_check and cancel_check():
+                raise ChatCanceled
+            passed, stats = review_fn(pool, params, avoid)
+        except ChatCanceled:
+            canceled = True
+            break
+        accepted.extend(passed)
+        avoid.extend(q.stem for q in passed)
+        if len(accepted) >= requested or round_no >= MAX_REFILL_ROUNDS:
+            break
+        shortfall = requested - len(accepted)
+        need = shortfall + max(1, int(shortfall * REFILL_BUFFER_RATIO))
+        refill_params = params.model_copy(update={"types": split_refill_types(params.types, need)})
+        report(60, f"审核剔除后需补出 {shortfall} 道（已收 {len(accepted)}/{requested}），正在规划补充考点")
+
+        def gen_progress(percent: float, stage: str) -> None:
+            report(60 + int(max(0.0, min(1.0, percent)) * 0.18), stage)
+
+        try:
+            pool = gen_fn(refill_params, avoid, gen_progress)
+        except ValueError as exc:
+            # 补齐轮生成失败：保留已通过的部分，最终数量按实际结果汇报
+            report(78, f"补出未完成（{exc}），按已通过数量交付")
+            pool = []
+            break
+        report(78, f"补出 {len(pool)} 道，正在查重与评估难度")
+    return accepted, stats, canceled

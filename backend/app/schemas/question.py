@@ -129,7 +129,8 @@ class Question(BaseModel):
 
 class TypeCount(BaseModel):
     type: QuestionType
-    count: int = Field(ge=1, le=20)
+    # 高压长任务：单题型上限放宽到 100，由规划层拆批执行
+    count: int = Field(ge=1, le=100)
 
 
 class GenerateParams(BaseModel):

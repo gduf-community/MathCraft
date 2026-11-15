@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class TypeCountBody(BaseModel):
     type: str = Field(pattern="^(single|multiple|judge|blank|compute|essay)$")
-    count: int = Field(ge=1, le=20)
+    # 高压长任务：单题型上限放宽到 100，与 TypeCount 一致
+    count: int = Field(ge=1, le=100)
 
 
 class GenerateStartBody(BaseModel):
