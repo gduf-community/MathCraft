@@ -21,12 +21,49 @@ from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
 from app.services.rag.intent import detect_intent
 from app.services.rag.llm import LLMError, friendly_error
+from app.services.rag.memory import build_short_term_history
 from app.services.rag.modes import DEFAULT_MODE, MODES, mode_label
 from app.services.rag.skills import ChatContext, get_skill
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 WELCOME = "你好，我是出题助手。告诉我知识点范围、题型与数量、题目来源和难度，我来为你出题。"
+
+
+@router.get("/sessions")
+def list_sessions(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """当前账号的历史会话列表：按最近消息倒序，标题取首条用户消息，按账号隔离。"""
+    rows = (
+        db.query(ChatSession)
+        .filter(ChatSession.user_id == user.id)
+        .order_by(ChatSession.last_message_at.desc())
+        .limit(100)
+        .all()
+    )
+    items = []
+    for s in rows:
+        first = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == s.id, ChatMessage.role == "user")
+            .order_by(ChatMessage.created_at)
+            .first()
+        )
+        doc = db.get(Document, s.document_id)
+        raw_title = (first.content if first else "").strip().replace("\n", " ")
+        title = raw_title[:24] if raw_title else ((doc.name if doc else "") or "未命名对话")
+        items.append({
+            "session_id": s.id,
+            "title": title,
+            "bank_id": s.bank_id,
+            "document_id": s.document_id,
+            "document_name": doc.name if doc else None,
+            "last_message_at": s.last_message_at,
+            "created_at": s.created_at,
+        })
+    return {"items": items}
 
 
 def _slot_key(session_id: str) -> str:
@@ -216,16 +253,17 @@ def send_message(
         db.commit()
         return _base_result(reply=reply, kind="mode_confirm", suggested_template=detected["intent"])
 
-    history = [
+    # 短期记忆：最近 3-5 轮完整对话（一轮 = user + assistant），按轮截取保证语境完整
+    history = build_short_term_history([
         {"role": m.role, "text": m.content}
         for m in (
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == s.id)
             .order_by(ChatMessage.created_at.desc())
-            .limit(6)
+            .limit(12)
             .all()
         )[::-1]
-    ]
+    ])
 
     # HyDE：scope 未知时先无 HyDE 检索；slot_state 里可能已有 scope
     hyde_text = None
@@ -266,12 +304,13 @@ def send_message(
     db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
     batch_id = None
     if result["questions"]:
-        questions = [Question.model_validate(q) for q in result["questions"]]
+        from app.services import question_review
         from app.services.generation import build_params_from_slots
+        from app.services.rag.question_gen import generate_questions
 
+        first_pool = [Question.model_validate(q) for q in result["questions"]]
         params = build_params_from_slots(result["slot_state"], s.bank_id, s.document_id)
         requested = sum(t.count for t in params.types)
-        from app.services import question_review
 
         def review_progress(percent: int, stage: str) -> None:
             if _is_canceled(r, s.id):
@@ -279,25 +318,40 @@ def send_message(
             # 审核阶段自报 78~98，直接透传，避免长时间停在同一个数字上像卡死
             _write_progress(r, s.id, min(99, max(78, percent)), stage)
 
-        try:
-            questions, stats = question_review.review_questions(
-                db, user.id, questions, params, doc.name, api_key, hyde_text,
+        def review_fn(candidates, refill_params, stems):
+            return question_review.review_questions(
+                db, user.id, candidates, refill_params, doc.name, api_key, hyde_text,
                 progress=review_progress,
             )
-        except ChatCanceled:
+
+        def gen_fn(refill_params, stems, progress):
+            # 补齐轮复用执行层：规划层按剩余缺口重新分配考点，跨轮累积题干去重
+            return generate_questions(
+                refill_params, doc.name, scope=refill_params.scope,
+                existing_stems=stems, api_key=api_key, hyde_text=hyde_text,
+                progress_cb=progress,
+            )
+
+        # 长任务闭环：审核剔除后自动补出，直至数量严格达标或补齐轮次用尽
+        accepted, stats, canceled = chat_flow.review_with_refill(
+            first_pool, params, requested, body.existing_stems,
+            review_fn, gen_fn,
+            cancel_check=lambda: _is_canceled(r, s.id),
+        )
+        if canceled or _is_canceled(r, s.id):
             result["reply"] = chat_flow.PAUSED_REPLY
             result["questions"] = []
-            questions, stats = [], None
-        if _is_canceled(r, s.id):
-            result["reply"] = chat_flow.PAUSED_REPLY
-            result["questions"] = []
-            questions = []
-        if questions:
+            accepted, stats = [], None
+        if accepted:
             _write_progress(r, s.id, 98, "正在写入题目")
-            batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions)
+            batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, accepted)
             batch_id = batch.id
-        result["questions"] = [q.model_dump() for q in questions]
-        result["reply"] = build_result_reply(len(questions), requested, stats)
+            # 任务交付即清题型数量槽位（保留难度与范围作语境）。
+            # 已交付任务的题型残留会让下一轮换题型的请求出现数量累加（如 5+12=17）；
+            # 同题型“再来一批”由短期记忆沿用上一轮数量，未说明数量时照常追问。
+            result["slot_state"]["types"] = []
+        result["questions"] = [q.model_dump() for q in accepted]
+        result["reply"] = build_result_reply(len(accepted), requested, stats)
     db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=result["reply"], batch_id=batch_id))
     s.slot_state_json = json.dumps(result["slot_state"], ensure_ascii=False)
     s.last_message_at = utcnow()

@@ -272,7 +272,8 @@ def test_expired_confirmation_cannot_mutate(owner, db, monkeypatch, isolated_red
     confirm = _preview(db, owner, monkeypatch)
     key = data_agent._confirm_key(confirm["id"])
     assert 0 < isolated_redis.ttl(key) <= data_agent.CONFIRM_TTL_SECONDS
-    isolated_redis.pexpire(key, 0)
+    # 直接删除模拟过期：pexpire(key, 0) 在 fakeredis 上处于惰性删除的时钟边界，不可靠
+    isolated_redis.delete(key)
     with pytest.raises(AppError) as error:
         data_agent.execute_confirmed(db, owner, confirm["id"], True)
     assert error.value.code == "CONFIRM_EXPIRED"
