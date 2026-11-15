@@ -8,10 +8,8 @@ import {
 import { useOpsQuery } from './useOpsQuery'
 
 interface RunDrawerProps { client: OpsClient; runId: string; onClose: () => void }
-export function RunDrawer(props: RunDrawerProps) { return <RunDrawerContent key={props.runId} {...props} /> }
-
 /** 原生模态框隔离背景；关闭后恢复原页面焦点与滚动。 */
-function RunDrawerContent({ client, runId, onClose }: RunDrawerProps) {
+export function RunDrawer({ client, runId, onClose }: RunDrawerProps) {
   const dialog = useRef<HTMLDialogElement>(null), closeButton = useRef<HTMLButtonElement>(null)
   const titleId = useId(), descriptionId = useId()
   const load = useCallback((signal: AbortSignal) => client.getRun(runId, signal), [client, runId])

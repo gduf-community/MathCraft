@@ -137,12 +137,32 @@ try {
         invalid: [{ ...sample, status: 'cancelled' }, { ...sample, requested_count: 0 },
           { ...sample, delivered_count: -1 }, { ...sample, delivered_count: '0' }, { ...sample, task_id: undefined },
           { ...sample, run_id: 'x'.repeat(129) }, { ...sample, run_id: 'bad/id' },
-          { ...sample, accepted_at: '2026-11-15T00:00:00' }, { ...sample, quality: {} },
+          { ...sample, accepted_at: '2026-11-15T00:00:00' },
           { ...sample, error_code: 'synthetic-private-error-do-not-echo' }].map(reject),
       }
     }, fixture[0])
     assert.deepEqual(result.states, statuses); assert.equal(result.counts.requested_count, null)
     assert.equal(result.counts.delivered_count, 0); assert.ok(result.invalid.every(Boolean))
+    const projection = await page.evaluate(async sample => {
+      const api = await import('/src/api/adminOps.ts')
+      const extra = { unused_extension: { internal_note: 'test-only-do-not-render' } }
+      const run = { ...sample, ...extra, quality: { unused: true } }
+      const meta = { schema_version: 'v2', generated_at: sample.accepted_at, ...extra }
+      const window = { from: new Date(Date.parse(sample.accepted_at) - 1000).toISOString(),
+        to: new Date(Date.parse(sample.accepted_at) + 1000).toISOString(), time_basis: 'accepted_at', ...extra }
+      const list = api.parseOpsRuns({ ...meta, window, items: [run],
+        page: { limit: 20, offset: 0, has_more: false, ...extra } })
+      const overview = api.parseOpsOverview({ ...meta, window, total_runs: 1,
+        status_counts: { ...Object.fromEntries(['accepted', 'running', 'completed', 'failed', 'canceled', 'unknown']
+          .map(status => [status, status === sample.status ? 1 : 0])), ...extra }, recent_runs: [run] })
+      const detail = api.parseOpsRunDetail({ ...meta, run })
+      return { list, overview, detail }
+    }, fixture[0])
+    assert.equal(JSON.stringify(projection).includes('unused_extension'), false)
+    assert.equal(JSON.stringify(projection).includes('quality'), false)
+    assert.equal(projection.detail.run.run_id, fixture[0].run_id)
+    assert.equal(projection.overview.total_runs, 1)
+
   })
   await nav('出题运行').click(); await rows().nth(19).waitFor()
   await check('offset 前后页、固定窗口及每页数量重置', async () => {

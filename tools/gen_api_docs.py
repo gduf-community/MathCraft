@@ -64,7 +64,7 @@ def main() -> int:
         "无错误保留 null，旧分类和自由文本不直接透传。",
         "正式模型、增量迁移和两类出题入口已在本地与查询层整合；部署须先升级迁移，",
         "表缺失、契约不兼容或读取失败返回 `503 OPS_DATA_UNAVAILABLE`，不回退合成数据。",
-        "前端仍需从旧 v1 适配到 v2。完整字段、错误和交接边界见",
+        "前端已完成 V2 适配及隔离页面联调，主线合入与部署尚未执行。完整字段、错误和交接边界见",
         "[运维查询 V2 实现与交接](design/运维查询V2实现与交接.md)，",
         "职责见[三人分工](design/运维后台三人实施分工方案.md)。",
         "Phoenix 为独立可选扩展，不作为查询前置条件；依赖监测、告警、质量统计、",
@@ -74,7 +74,7 @@ def main() -> int:
         parts.append(f"## {tag}\n\n| 方法 | 路径 | 说明 |\n| --- | --- | --- |\n")
         parts.append("\n".join(rows) + "\n\n")
     parts.append(f"共 {count} 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。\n")
-    (ROOT / "docs" / "api.md").write_text("".join(parts), encoding="utf-8")
+    (ROOT / "docs" / "api.md").write_text("".join(parts), encoding="utf-8", newline="\n")
     print(f"已生成 docs/api.md，覆盖 {count} 个 HTTP 操作")
     return 0
 

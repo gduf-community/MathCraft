@@ -59,10 +59,7 @@ export function OpsOverviewPanel({ client, onOpenRuns, onOpenRun }: {
   </section>
 }
 interface RunsProps { client: OpsClient; initialQuery?: Filters; onOpenRun: (id: string) => void }
-export function RunsPanel(props: RunsProps) {
-  return <RunsContent key={JSON.stringify(props.initialQuery ?? {})} {...props} />
-}
-function RunsContent({ client, initialQuery, onOpenRun }: RunsProps) {
+export function RunsPanel({ client, initialQuery, onOpenRun }: RunsProps) {
   const [query, setQuery] = useState<Filters>(initialQuery ?? {})
   const [limit, setLimit] = useState(20), [offset, setOffset] = useState(0)
   const [paging, setPaging] = useState(false)
@@ -74,7 +71,7 @@ function RunsContent({ client, initialQuery, onOpenRun }: RunsProps) {
     if (!signal.aborted) anchor.current = result.window
     return result
   }, [client, query, limit, offset, paging])
-  const result = useOpsQuery(load, true, paging ? 0 : 15000)
+  const result = useOpsQuery(load, paging ? 0 : 15000)
   const data = result.data
   const apply = (next: Filters) => { anchor.current = null; setPaging(false); setOffset(0); setQuery(next) }
   const refresh = () => { if (paging) { setPaging(false); setOffset(0) } else result.refresh() }

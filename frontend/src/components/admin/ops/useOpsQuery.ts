@@ -10,10 +10,10 @@ interface QueryState<T> {
 
 /** 可取消的单飞只读查询；后台刷新保留旧结果，隐藏页面暂停轮询。 */
 export function useOpsQuery<T>(
-  load: (signal: AbortSignal) => Promise<T>, enabled = true, intervalMs = 15000,
+  load: (signal: AbortSignal) => Promise<T>, intervalMs = 15000,
 ) {
   const [state, setState] = useState<QueryState<T>>({
-    data: null, loading: enabled, error: '', lastSuccess: null,
+    data: null, loading: true, error: '', lastSuccess: null,
   })
   const runCurrent = useRef<() => void>(() => {})
   const refresh = useCallback(() => runCurrent.current(), [])
@@ -21,15 +21,15 @@ export function useOpsQuery<T>(
     let active = true
     let timer: number | undefined
     let controller: AbortController | undefined
-    setState({ data: null, loading: enabled, error: '', lastSuccess: null })
+    setState({ data: null, loading: true, error: '', lastSuccess: null })
     const schedule = () => {
       window.clearTimeout(timer)
-      if (active && enabled && intervalMs > 0 && !document.hidden) {
+      if (active && intervalMs > 0 && !document.hidden) {
         timer = window.setTimeout(() => void run(), intervalMs)
       }
     }
     async function run() {
-      if (!active || !enabled || controller) return
+      if (!active || controller) return
       window.clearTimeout(timer)
       const request = new AbortController()
       controller = request
@@ -56,10 +56,8 @@ export function useOpsQuery<T>(
       if (!document.hidden && intervalMs > 0) void run()
     }
     runCurrent.current = () => { void run() }
-    if (enabled) {
-      void run()
-      document.addEventListener('visibilitychange', visibilityChanged)
-    }
+    void run()
+    document.addEventListener('visibilitychange', visibilityChanged)
     return () => {
       active = false
       controller?.abort()
@@ -67,6 +65,6 @@ export function useOpsQuery<T>(
       document.removeEventListener('visibilitychange', visibilityChanged)
       runCurrent.current = () => {}
     }
-  }, [load, enabled, intervalMs])
+  }, [load, intervalMs])
   return { ...state, refresh }
 }

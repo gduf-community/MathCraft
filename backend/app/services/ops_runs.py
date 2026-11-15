@@ -191,7 +191,7 @@ class RunLedger:
             count = db.scalar(select(func.count()).select_from(Question).where(
                 Question.batch_id == batch_id
             ))
-            if count != batch.question_count or count is None:
+            if count != batch.question_count:
                 raise RunConflictError("批次数量与已写入题目不一致，请先 flush 全部业务行")
             _write(db, row, RunStatus.COMPLETED, at, started_at=row.started_at,
                    finished_at=at, batch_id=batch_id, delivered_count=count)

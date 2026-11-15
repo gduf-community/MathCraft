@@ -44,7 +44,6 @@ export default function AdminPanel() {
   const { showToast } = useToast()
   const [section, setSection] = useState<AdminSection>('overview')
   const [runQuery, setRunQuery] = useState<OpsFilters>()
-  const [navigationVersion, setNavigationVersion] = useState(0)
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
   const [ragDirty, setRagDirty] = useState(false)
   const [ragBusy, setRagBusy] = useState(false)
@@ -192,7 +191,6 @@ export default function AdminPanel() {
     if (!canLeaveRag()) return
     setSelectedRun(null)
     setRunQuery(nextQuery)
-    setNavigationVersion(value => value + 1)
     setSection('runs')
   }
 
@@ -230,7 +228,7 @@ export default function AdminPanel() {
           </aside>
           <main id="admin-content" className="min-w-0 space-y-5" aria-label={NAV_ITEMS.find(item => item.id === section)?.label}>
 
-            {section === 'runs' && <RunsPanel key={navigationVersion}
+            {section === 'runs' && <RunsPanel
               client={realOpsClient} initialQuery={runQuery} onOpenRun={setSelectedRun} />}
 
             <div hidden={section !== 'security'} className="space-y-5">
@@ -304,7 +302,7 @@ export default function AdminPanel() {
           </main>
         </div>
       </div>
-      {selectedRun && <RunDrawer client={realOpsClient} runId={selectedRun}
+      {selectedRun && <RunDrawer key={selectedRun} client={realOpsClient} runId={selectedRun}
         onClose={() => setSelectedRun(null)} />}
     </div>
   )

@@ -1,7 +1,7 @@
 /** V2 只读查询；复用认证会话，外部响应从 unknown 逐项校验。 */
 import { opsEntrypoints, opsErrorCodes, opsStatuses } from '../types/ops'
 import type {
-  OpsClient, OpsFilters, OpsMeta, OpsOverview, OpsQuery, OpsRun, OpsRunDetail, OpsRuns, OpsWindow,
+  OpsClient, OpsMeta, OpsOverview, OpsQuery, OpsRun, OpsRunDetail, OpsRuns, OpsWindow,
 } from '../types/ops'
 import { ApiError, request } from './session'
 
@@ -12,11 +12,9 @@ const timestamp = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]
 function invalid(): never {
   throw new ApiError('运行响应格式无效，请刷新或联系管理员', 'INVALID_OPS_RESPONSE')
 }
-function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
+function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return invalid()
-  const result = Object.fromEntries(Object.entries(value))
-  if (Object.keys(result).length !== keys.length || keys.some(key => !Object.prototype.hasOwnProperty.call(result, key))) return invalid()
-  return result
+  return Object.fromEntries(Object.entries(value))
 }
 function choice<T extends string>(value: unknown, options: readonly T[]): T {
   for (const option of options) if (option === value) return option
@@ -46,18 +44,14 @@ function meta(item: Record<string, unknown>): OpsMeta {
   return { schema_version: choice(item.schema_version, ['v2']), generated_at: time(item.generated_at) }
 }
 function windowValue(value: unknown): OpsWindow {
-  const item = object(value, ['from', 'to', 'time_basis'])
+  const item = object(value)
   const from = time(item.from), to = time(item.to)
   if (Date.parse(from) >= Date.parse(to)) return invalid()
   return { from, to, time_basis: choice(item.time_basis, ['accepted_at']) }
 }
 
 export function parseOpsRun(value: unknown): OpsRun {
-  const item = object(value, [
-    'run_id', 'entrypoint', 'owner_user_id', 'session_id', 'task_id', 'bank_id', 'document_id',
-    'batch_id', 'status', 'requested_count', 'delivered_count', 'error_code', 'accepted_at',
-    'started_at', 'finished_at', 'last_observed_at',
-  ])
+  const item = object(value)
   return {
     run_id: id(item.run_id), entrypoint: choice(item.entrypoint, opsEntrypoints),
     owner_user_id: id(item.owner_user_id), session_id: nullable(item.session_id, id),
@@ -72,8 +66,8 @@ export function parseOpsRun(value: unknown): OpsRun {
   }
 }
 export function parseOpsOverview(value: unknown): OpsOverview {
-  const item = object(value, ['schema_version', 'generated_at', 'window', 'total_runs', 'status_counts', 'recent_runs'])
-  const counts = object(item.status_counts, opsStatuses)
+  const item = object(value)
+  const counts = object(item.status_counts)
   const status_counts = {
     accepted: integer(counts.accepted), running: integer(counts.running), completed: integer(counts.completed),
     failed: integer(counts.failed), canceled: integer(counts.canceled), unknown: integer(counts.unknown),
@@ -84,8 +78,8 @@ export function parseOpsOverview(value: unknown): OpsOverview {
   return { ...meta(item), window: windowValue(item.window), total_runs, status_counts, recent_runs }
 }
 export function parseOpsRuns(value: unknown): OpsRuns {
-  const item = object(value, ['schema_version', 'generated_at', 'window', 'items', 'page'])
-  const page = object(item.page, ['limit', 'offset', 'has_more'])
+  const item = object(value)
+  const page = object(item.page)
   const limit = integer(page.limit, 1, 100), offset = integer(page.offset, 0, 2_147_483_647)
   const items = runs(item.items)
   if (typeof page.has_more !== 'boolean' || items.length > limit) return invalid()
@@ -93,16 +87,13 @@ export function parseOpsRuns(value: unknown): OpsRuns {
     page: { limit, offset, has_more: page.has_more } }
 }
 export function parseOpsRunDetail(value: unknown): OpsRunDetail {
-  const item = object(value, ['schema_version', 'generated_at', 'run'])
+  const item = object(value)
   return { ...meta(item), run: parseOpsRun(item.run) }
 }
 
-function queryString(query: OpsQuery, paginated: boolean): string {
+function queryString(query: OpsQuery): string {
   const params = new URLSearchParams()
-  const allowed = ['from', 'to', 'owner_user_id', 'entrypoint', 'status', 'session_id', 'task_id', 'batch_id',
-    ...(paginated ? ['limit', 'offset'] : [])]
   for (const [key, value] of Object.entries(query)) {
-    if (!allowed.includes(key)) throw new ApiError('查询参数无效，请检查筛选条件', 'VALIDATION_ERROR', 422)
     if (value !== undefined) params.set(key, String(value))
   }
   const encoded = params.toString()
@@ -132,11 +123,11 @@ async function safeRequest(path: string, signal: AbortSignal, detail = false): P
   }
 }
 export const realOpsClient: OpsClient = {
-  async getOverview(query: OpsFilters, signal) {
-    return parseOpsOverview(await safeRequest(`${BASE}/overview${queryString(query, false)}`, signal))
+  async getOverview(query, signal) {
+    return parseOpsOverview(await safeRequest(`${BASE}/overview${queryString(query)}`, signal))
   },
   async listRuns(query, signal) {
-    return parseOpsRuns(await safeRequest(`${BASE}/runs${queryString(query, true)}`, signal))
+    return parseOpsRuns(await safeRequest(`${BASE}/runs${queryString(query)}`, signal))
   },
   async getRun(runId, signal) {
     if (!identifier.test(runId)) throw new ApiError('运行 ID 格式无效', 'VALIDATION_ERROR', 422)

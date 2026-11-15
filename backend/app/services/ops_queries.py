@@ -3,7 +3,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 
-from pydantic import ValidationError
 from sqlalchemy import Table, func, select, true
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import SQLAlchemyError
@@ -55,7 +54,7 @@ def _result_boundary() -> Iterator[None]:
 def _query_boundary() -> Iterator[None]:
     try:
         yield
-    except (SQLAlchemyError, ValidationError, ValueError, TypeError, OverflowError) as exc:
+    except (SQLAlchemyError, ValueError, TypeError, OverflowError) as exc:
         # 不把 SQL、参数、连接信息或无效行值附加到面向调用方的消息。
         raise OpsDataUnavailable("ops query could not be completed") from exc
 

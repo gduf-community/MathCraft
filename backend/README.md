@@ -195,5 +195,5 @@ uv run ruff check app tests
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
 - [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
-- 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)和[查询 V2](../docs/design/运维查询V2实现与交接.md)。台账、两类入口与管理员查询已接通，前端待适配。
+- 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)和[查询 V2](../docs/design/运维查询V2实现与交接.md)。台账、两类入口、管理员查询与 V2 前端已接通并完成隔离联调，部署待验收。
 - [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/design/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。
