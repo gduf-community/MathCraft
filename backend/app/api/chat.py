@@ -10,12 +10,15 @@ from app.deps import get_current_user, resolve_bank_access
 from app.errors import AppError
 from app.models import ChatMessage, ChatSession, Document, User
 from app.models.base import new_id, utcnow
+from app.models.ops_run import RunEntrypoint, RunErrorCode
 from app.schemas.api import ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody
+from app.schemas.auth import ErrorResponse
 from app.schemas.question import Question
 from app.services import cache
-from app.services.phoenix_tracing import trace_run
 from app.services.generation import persist_batch
+from app.services.generation_lifecycle import GenerationRun, conversation_turn, error_code
 from app.services.model_settings import get_effective_deepseek_key
+from app.services.phoenix_tracing import trace_run
 from app.services.rag import chat_flow, hyde
 from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
@@ -71,13 +74,15 @@ def create_session(
     if doc.status != "ready":
         raise AppError("DOCUMENT_NOT_READY", f"文档尚未完成入库（当前状态 {doc.status}）", status_code=400)
 
-    s = ChatSession(id=new_id("chat"), user_id=user.id, bank_id=body.bank_id, document_id=body.document_id)
+    s = ChatSession(id=new_id("chat"), user_id=user.id, bank_id=body.bank_id,
+                    document_id=body.document_id)
     db.add(s)
     db.commit()
     r = cache.get_redis()
     r.hset(_slot_key(s.id), mapping={"slot_state": "{}"})
     r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
-    return {"session_id": s.id, "bank_id": s.bank_id, "document_id": s.document_id, "welcome": WELCOME}
+    return {"session_id": s.id, "bank_id": s.bank_id, "document_id": s.document_id,
+            "welcome": WELCOME}
 
 
 @router.get("/sessions/{session_id}")
@@ -99,13 +104,16 @@ def get_session(
         "bank_id": s.bank_id,
         "document_id": s.document_id,
         "messages": [
-            {"id": m.id, "role": m.role, "text": m.content, "batch_id": m.batch_id, "created_at": m.created_at}
+            {"id": m.id, "role": m.role, "text": m.content, "batch_id": m.batch_id,
+             "created_at": m.created_at}
             for m in messages
         ],
     }
 
 
-@router.post("/sessions/{session_id}/messages")
+@router.post("/sessions/{session_id}/messages", responses={
+    409: {"model": ErrorResponse, "description": "当前会话正在处理消息，请稍后再试"},
+})
 @trace_run("conversation")
 def send_message(
     session_id: str,
@@ -127,6 +135,19 @@ def send_message(
             status_code=400,
         )
 
+    with conversation_turn(s.id):
+        run = GenerationRun(
+            RunEntrypoint.CONVERSATION, user.id, s.bank_id, s.document_id, session_id=s.id,
+        )
+        with run.observe(db):
+            return _send_message(s, body, user, db, api_key, run, doc.name)
+
+
+def _send_message(
+    s: ChatSession, body: ChatMessageBody, user: User, db: Session, api_key: str,
+    run: GenerationRun, doc_name: str,
+) -> dict:
+    """已鉴权的单会话消息执行体；有效参数回调才受理出题。"""
     r = cache.get_redis()
     slot_raw = r.hget(_slot_key(s.id), "slot_state")
     slot_state = json.loads(slot_raw) if slot_raw else {}
@@ -231,7 +252,8 @@ def send_message(
     hyde_text = None
     if slot_state.get("scope"):
         hyde_text = hyde.get_hyde(
-            r, s.bank_id, s.document_id, str(slot_state["scope"]), str(slot_state.get("difficulty", "中")), api_key
+            r, s.bank_id, s.document_id, str(slot_state["scope"]),
+            str(slot_state.get("difficulty", "中")), api_key,
         )
 
     r.delete(_cancel_key(s.id))
@@ -243,21 +265,28 @@ def send_message(
     # Router+Skill 分发：显式模式直接查表进入对应技能，Router 统一兜底可恢复异常
     skill = get_skill(session_mode)
     ctx = ChatContext(
-        db=db, user=user, session=s, doc_name=doc.name, message=body.message,
+        db=db, user=user, session=s, doc_name=doc_name, message=body.message,
         history=history, slot_state=slot_state, existing_stems=body.existing_stems,
         api_key=api_key, hyde_text=hyde_text, images=body.images,
         progress_cb=_progress, cancel_check=lambda: _is_canceled(r, s.id),
+        on_generate=run.begin,
     )
     try:
         result = _base_result(**skill.run(ctx))
     except ChatCanceled:
+        run.cancel()
         result = _base_result(reply=chat_flow.PAUSED_REPLY)
     except chat_flow.NeedConfirmError as exc:  # handle_chat 内部已处理，此处兜底
+        run.fail(RunErrorCode.NEED_CONFIRM)
         result = _base_result(
             reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式",
         )
     except LLMError as exc:  # 模型不可用（余额不足、密钥失效、超时）回一条可读消息，不抛 500
+        run.fail(error_code(exc))
         result = _base_result(reply=friendly_error(exc))
+
+    if result.get("generation_error") == RunErrorCode.NEED_CONFIRM:
+        run.fail(RunErrorCode.NEED_CONFIRM)
 
     if switch_prefix:
         result["reply"] = switch_prefix + (result["reply"] or "")
@@ -279,32 +308,46 @@ def send_message(
             # 审核阶段自报 78~98，直接透传，避免长时间停在同一个数字上像卡死
             _write_progress(r, s.id, min(99, max(78, percent)), stage)
 
+        canceled = False
         try:
             questions, stats = question_review.review_questions(
-                db, user.id, questions, params, doc.name, api_key, hyde_text,
+                db, user.id, questions, params, doc_name, api_key, hyde_text,
                 progress=review_progress,
             )
         except ChatCanceled:
+            run.cancel()
+            canceled = True
             result["reply"] = chat_flow.PAUSED_REPLY
             result["questions"] = []
             questions, stats = [], None
         if _is_canceled(r, s.id):
+            run.cancel()
+            canceled = True
             result["reply"] = chat_flow.PAUSED_REPLY
             result["questions"] = []
             questions = []
         if questions:
             _write_progress(r, s.id, 98, "正在写入题目")
-            batch = persist_batch(db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions)
+            batch = persist_batch(
+                db, user.id, s.bank_id, s.document_id, "chat", params, hyde_text, questions,
+                run=run,
+            )
             batch_id = batch.id
         result["questions"] = [q.model_dump() for q in questions]
-        result["reply"] = build_result_reply(len(questions), requested, stats)
-    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=result["reply"], batch_id=batch_id))
+        if canceled:
+            result["done"] = False
+        else:
+            result["reply"] = build_result_reply(len(questions), requested, stats)
+    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant",
+                       content=result["reply"], batch_id=batch_id))
     s.slot_state_json = json.dumps(result["slot_state"], ensure_ascii=False)
     s.last_message_at = utcnow()
     db.commit()
 
     # Redis 保存最新槽位
-    r.hset(_slot_key(s.id), mapping={"slot_state": json.dumps(result["slot_state"], ensure_ascii=False)})
+    r.hset(_slot_key(s.id), mapping={
+        "slot_state": json.dumps(result["slot_state"], ensure_ascii=False),
+    })
     r.expire(_slot_key(s.id), settings.chat_session_ttl_seconds)
     r.delete(_progress_key(s.id), _cancel_key(s.id))
 
