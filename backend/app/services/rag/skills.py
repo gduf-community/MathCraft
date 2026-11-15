@@ -83,6 +83,7 @@ def run_qa(ctx: ChatContext) -> dict:
         reply = answer_question(
             ctx.session.bank_id, ctx.session.document_id, ctx.message,
             ctx.history, api_key=ctx.api_key, progress_cb=ctx.progress_cb,
+            mode="qa", doc_name=ctx.doc_name,
         )
     except ChatCanceled:
         return {"reply": "已暂停本次生成，未写入题目预览。", "done": True}

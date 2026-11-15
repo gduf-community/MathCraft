@@ -1,7 +1,11 @@
-"""知识答疑：RAG 检索教学材料，回答标注知识点所属章节，问什么答什么。"""
+"""知识答疑：RAG 检索教学材料，回答标注知识点所属章节，问什么答什么。
+
+短期记忆：QA_SYSTEM + 记忆使用说明为系统 Prompt，携带最近 3-5 轮完整对话。
+"""
 from typing import Callable
 
 from app.services.rag.llm import chat_text
+from app.services.rag.memory import build_memory_system, build_short_term_history
 from app.services.rag.retrieval import retrieve_for_generation
 from app.services.rag.prompts import QA_SYSTEM
 
@@ -25,6 +29,8 @@ def answer_question(
     history: list[dict],
     api_key: str | None = None,
     progress_cb: ProgressCB | None = None,
+    mode: str = "qa",
+    doc_name: str = "当前文档",
 ) -> str:
     """检索并回答；返回纯文本回复，引用以（见「文档 · 章节」）内联标注。"""
 
@@ -37,8 +43,9 @@ def answer_question(
     if not chunks:
         return _EMPTY_REPLY
     report(48, "正在组织答案")
-    messages: list[dict] = [{"role": "system", "content": QA_SYSTEM}]
-    for h in history[-4:]:
+    system = QA_SYSTEM + "\n\n" + build_memory_system(mode, doc_name)
+    messages: list[dict] = [{"role": "system", "content": system}]
+    for h in build_short_term_history(history):
         role = h.get("role")
         if role in ("user", "assistant") and h.get("text"):
             messages.append({"role": role, "content": str(h["text"])})
