@@ -2,6 +2,15 @@
 
 读操作直接执行；删除/修改先生成影响预览存 Redis，前端确认后才执行。
 不做裸 SQL，全部走字段白名单映射，杜绝注入面。
+
+人工审批与状态复苏三要素（审批后状态复苏机制）：
+1. Thread ID：确认快照封存发起对话的 thread_id（即 ChatSession.id），
+   审批执行时强制校验当前会话与封印值一致，跨对话复苏一律拒绝。
+2. 审批意见结果：accepted（同意/拒绝）在原子消费封印快照时确定，
+   执行结果与审批意见共同写回对话消息（chat.py），作为复苏后的可见凭证。
+3. State 强制溯源防御：执行所引用的全部结构体（target_ids、set_name、样本）
+   强制来自封印快照（sealed snapshot），严禁重新执行 DSL 抓取当下内存数据；
+   快照缺失 target_ids 的旧版确认直接判过期，要求重新预览。
 """
 import json
 import re
@@ -20,7 +29,7 @@ from app.models import (
     StudySpace,
     User,
 )
-from app.models.base import new_id
+from app.models.base import new_id, utcnow
 from app.services.rag.llm import chat_json
 from app.services.rag.prompts import DATA_SYSTEM
 
@@ -303,9 +312,22 @@ def run_data_request(
         return {"reply": "没有找到符合条件的数据，无需执行该操作。", "questions": [], "done": True}
 
     confirm_id = new_id("cfm")
-    payload = {"confirm_id": confirm_id, "action": action, "entity": entity,
-               "target_ids": target_ids, "set_name": new_name,
-               "user_id": user.id, "session_id": session_id}
+    # 历史封印快照（sealed snapshot）：审批执行所引用的全部结构体都来自这里。
+    # 快照一经封存不可变更；审批后的状态复苏只读取这份快照，严禁重新执行 DSL
+    # 或从当下内存、slot_state 抓取数据。
+    payload = {
+        "confirm_id": confirm_id,
+        "thread_id": session_id,           # 要素一：Thread ID，发起该操作的对话
+        "session_id": session_id,          # 旧字段名，兼容既有校验逻辑
+        "user_id": user.id,
+        "sealed_at": utcnow().isoformat(), # 封印时间，用于溯源与排障
+        "action": action,
+        "entity": entity,
+        "target_ids": target_ids,          # 要素三：State 封印（受影响记录的 ID 快照）
+        "set_name": new_name,
+        "samples": samples,                # 封存的影响样本，复苏时直接复用
+        "explanation": explanation,
+    }
     cache.get_redis().set(_confirm_key(confirm_id),
                           json.dumps(payload, ensure_ascii=False), ex=CONFIRM_TTL_SECONDS)
     verb = "删除" if action == "delete" else "改名"
@@ -322,16 +344,30 @@ def execute_confirmed(
     db: Session, user: User, confirm_id: str, accepted: bool,
     *, session_id: str | None = None,
 ) -> str:
-    """校验账号与会话后原子消费确认，仅修改预览 ID 中仍归本人的记录。"""
+    """按状态复苏三要素执行审批结果。
+
+    复苏流程（全部只读封印快照，严禁抓取当下内存数据）：
+    1. 读取封印快照；缺失即过期，要求重新发起（不存在无快照的复苏路径）。
+    2. Thread ID 校验：快照 thread_id 必须与当前会话一致，跨对话拒绝。
+    3. 账号校验：快照 user_id 必须与当前账号一致。
+    4. State 溯源防御：target_ids 强制取自快照；快照缺失目标列表（旧版格式）
+       直接判过期，绝不重新执行 DSL 补算。
+    5. 原子消费封印快照（Lua GET+DEL），随后落实审批意见结果：
+       accepted=False 仅回复取消文案；accepted=True 才对快照 ID 列表执行写操作，
+       且执行时再次按 user_id 过滤，防止封印后数据归属发生变化。
+    """
     r = cache.get_redis()
     raw = r.get(_confirm_key(confirm_id))
     if not raw:
         raise AppError("CONFIRM_EXPIRED", "确认已过期，请重新发起该操作", status_code=400)
     payload = json.loads(raw)
+    # 要素一：Thread ID 强校验（兼容旧快照的 session_id 字段名）
+    sealed_thread = payload.get("thread_id") or payload.get("session_id")
+    if sealed_thread != session_id:
+        raise AppError("CONFIRM_FORBIDDEN", "该确认不属于当前对话", status_code=403)
     if payload.get("user_id") != user.id:
         raise AppError("CONFIRM_FORBIDDEN", "该确认不属于当前账号", status_code=403)
-    if payload.get("session_id") != session_id:
-        raise AppError("CONFIRM_FORBIDDEN", "该确认不属于当前对话", status_code=403)
+    # 要素三：State 强制溯源——唯一合法的目标集合来自封印快照
     target_ids = payload.get("target_ids")
     if not isinstance(target_ids, list) or not target_ids or not all(
         isinstance(target_id, str) and target_id for target_id in target_ids
@@ -340,6 +376,7 @@ def execute_confirmed(
         raise AppError("CONFIRM_EXPIRED", "确认已过期，请重新发起该操作", status_code=400)
     if not r.eval(_CONSUME_CONFIRM, 1, _confirm_key(confirm_id), raw):
         raise AppError("CONFIRM_EXPIRED", "确认已过期，请重新发起该操作", status_code=400)
+    # 要素二：审批意见结果在原子消费时固定，后续行为只由它决定
     if not accepted:
         return "已取消该操作，数据未做任何改动。"
 
