@@ -154,8 +154,8 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
     if (ok) onClose()
   }
 
-  const saveDraft = () => {
-    // 暂不发布：做题时间不必填
+  const saveDraft = async () => {
+    // 暂不发布：做题时间不必填；草稿同样按复选框写入组卷记录
     const examWindow: ExamWindow | null = noTimeLimit ? null : timeStart && timeEnd ? { start: timeStart, end: timeEnd } : null
     const name = uniqueName(paperName.trim() || `试卷_${new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}`)
     if (editingRecord) {
@@ -173,8 +173,9 @@ export default function AssembleModal({ onClose, poolOverride, editingRecord }: 
       onClose()
       return
     }
-    void publishPaper(modules, [], false, name, false, pool, examWindow)
-    onClose()
+    // 等待保存完成再关闭弹窗，失败时保留弹窗并提示错误
+    const ok = await publishPaper(modules, [], isStudent ? true : saveRecord, name, false, pool, examWindow)
+    if (ok) onClose()
   }
 
   return (
