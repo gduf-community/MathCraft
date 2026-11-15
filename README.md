@@ -215,6 +215,7 @@ npm run build
 - [账号与权限](docs/design/账号系统整合与审查修复.md)、[认证与账号安全](docs/design/登录视觉恢复与历史前端对照.md)。
 - [模型配置](docs/design/模型配置来源与普通知识库流程.md)、[知识库](docs/design/知识库模块说明.md)。
 - [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
+- [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/design/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/design/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
 - [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/design/运维后台运行手册.md)、[可选追踪](docs/design/Phoenix可选扩展.md)。
 - [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)。
 
