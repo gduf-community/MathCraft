@@ -1,10 +1,14 @@
-"""切片策略：练习卷按题号切，通用文档按长度聚合。
+"""切片策略：练习卷按题号切，教材与知识点文档按二级标题切，其余按长度聚合。
 
 题号切片对「导数与微分_50题练习卷」这类文件效果最好：一道题一个 chunk，
 检索命中即为完整题目，出题时模型参考的是原题全文而不是半道题。
 行级判定：任何一行以「12.」「3、」开头即计入题号；大题标题（一、二、…）
 独立起块并作为后续题目的上下文；「参考答案」之后的内容整段聚合，
 保证原题模式下答案可被检索到。
+
+二级标题切片对教材与知识点文档效果最好：一个节（##/### 级标题）一个 chunk，
+检索命中即为完整一节，公式与例题不会被滑窗拦腰截断；#### 及正文归属当前节；
+「目录」区域整体跳过（纯标题与锚点链接，对检索有害）；超长节内部滑窗兜底。
 
 每个 chunk 携带元信息（chunk_type / section），供原题数量统计使用。
 """
@@ -20,6 +24,13 @@ QUESTION_NO = re.compile(r"^\s{0,4}\d{1,3}\s*[\.、．]\s*\S")
 SECTION_NO = re.compile(r"^\s{0,4}[一二三四五六七八九十]{1,3}\s*[、.．]\s*\S")
 ANSWER_START = re.compile(r"^\s*参考答案")
 QUESTION_NO_MIN_HITS = 5
+
+# 标题锚点：## 章与 ### 节作为切分点，#### 及正文归属当前节
+HEADING_H2 = re.compile(r"^##\s+(?!#)\S")
+HEADING_H3 = re.compile(r"^###\s+(?!#)\S")
+HEADING_H4 = re.compile(r"^####\s+\S")
+HEADING_TOC = re.compile(r"^#{2,3}\s*目\s*录\s*$")
+HEADING_ANCHOR_MIN_HITS = 2
 
 
 @dataclass
@@ -126,9 +137,56 @@ def _chunk_generic(blocks: list[ParsedBlock]) -> list[Chunk]:
     return [c for c in chunks if c.text]
 
 
+def _chunk_by_headings(blocks: list[ParsedBlock]) -> list[Chunk]:
+    """教材/知识点文档：以二级标题（## 章与 ### 节）为切分点，一节一个 chunk。
+
+    章标题（##）作为其后各节的上下文前缀；目录区域整体跳过；
+    超长节内部用滑窗兜底，保证单节内容完整地落在同一个或相邻 chunk 中。
+    """
+    lines = [ln.strip() for b in blocks for ln in b.text.splitlines() if ln.strip()]
+    chunks: list[Chunk] = []
+    cur: list[str] = []
+    cur_section = ""
+    chapter = ""  # 最近一级标题（## 章），作为节的上下文前缀
+    in_toc = False
+
+    for line in lines:
+        if HEADING_TOC.match(line):
+            _flush(chunks, cur, {"chunk_type": "general", "section": cur_section})
+            in_toc = True
+            continue
+        if in_toc and (HEADING_H2.match(line) or HEADING_H3.match(line)):
+            # 目录结束：该标题是正文第一级标题，作为上下文前缀
+            in_toc = False
+        if in_toc:
+            continue  # 目录区内容跳过
+        if HEADING_H2.match(line):
+            _flush(chunks, cur, {"chunk_type": "general", "section": cur_section})
+            chapter = line
+            cur_section = line
+            cur = [line]
+            continue
+        if HEADING_H3.match(line):
+            _flush(chunks, cur, {"chunk_type": "general", "section": cur_section})
+            cur_section = f"{chapter} · {line}" if chapter else line
+            cur = [line]
+            continue
+        cur.append(line)
+
+    _flush(chunks, cur, {"chunk_type": "general", "section": cur_section})
+    return chunks
+
+
 def chunk_blocks(blocks: list[ParsedBlock]) -> list[Chunk]:
     if not blocks:
         return []
     if _looks_like_exam(blocks):
         return _chunk_exam(blocks)
+    # 教材与知识点文档：存在章节标题锚点时按二级标题切分
+    anchor_hits = sum(
+        1 for b in blocks for ln in b.text.splitlines()
+        if HEADING_H2.match(ln.strip()) or HEADING_H3.match(ln.strip())
+    )
+    if anchor_hits >= HEADING_ANCHOR_MIN_HITS:
+        return _chunk_by_headings(blocks)
     return _chunk_generic(blocks)

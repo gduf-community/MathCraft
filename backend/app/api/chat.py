@@ -16,7 +16,7 @@ from app.services import cache
 from app.services.phoenix_tracing import trace_run
 from app.services.generation import persist_batch
 from app.services.model_settings import get_effective_deepseek_key
-from app.services.rag import chat_flow, hyde
+from app.services.rag import chat_flow
 from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
 from app.services.rag.intent import detect_intent
@@ -276,12 +276,8 @@ def send_message(
         db.commit()
         return _base_result(reply=reply, kind="reply", done=True)
 
-    # HyDE：scope 未知时先无 HyDE 检索；slot_state 里可能已有 scope
+    # 检索策略：以原始查询精准检索为准，不再使用 HyDE 查询改写
     hyde_text = None
-    if slot_state.get("scope"):
-        hyde_text = hyde.get_hyde(
-            r, s.bank_id, s.document_id, str(slot_state["scope"]), str(slot_state.get("difficulty", "中")), api_key
-        )
 
     r.delete(_cancel_key(s.id))
     _write_progress(r, s.id, 1, "正在准备")
