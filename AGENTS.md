@@ -80,13 +80,13 @@ chore(deps): 升级 fastapi 至 0.115
 - 仅清理本任务创建且已确认合并、无未保存工作的临时分支和 worktree。其他任务或他人的分支不擅自删除，收尾报告未清理项及原因。
 
 ## 4. 代码与测试
-
-- 当前 Python 后端位于 `backend/app/`，import 名为 `app`；ASGI 入口是 `app.main:app`。从 `backend/` 执行 `uv sync` 安装依赖，执行 `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1` 启动。仓库根 `.venv` 的测试与静态检查配置由根 `pyproject.toml` 管理；不要混用旧的 `MathCraft` 包入口。
+  - 测试要求:需要减少一次性的重复的测试,尽量保留可重复使用的测试,如果需要临时编写测试脚本测试,请在测试完成后清理.
+- 当前 Python 后端位于 `backend/app/`，import 名为 `app`；ASGI 入口是 `app.main:app`。从 `backend/` 执行 `uv sync` 安装依赖，执行 `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1` 启动。仓库根 `.venv` 的测试与静态检查配置由根 `pyproject.toml` 管理；
 - 数据库使用 SQLAlchemy + Alembic，登录与任务缓存依赖 Redis；账号已按教师、学生区分，不再遵循历史单租户替身约束。保护现有登录、角色校验和资源归属校验；新增注册、管理员、组织或角色能力前先确认需求与设计。
 - 后端路由放 `backend/app/api/`，业务服务放 `backend/app/services/`，模型与请求契约分别放 `backend/app/models/`、`backend/app/schemas/`；在既有领域边界内扩展，不复制整段模块。
 - 可选依赖保持惰性导入；缺少可选能力时报告 unavailable，不因引入新可选依赖导致应用启动失败。
 - 验证按改动范围选择：纯文档修改检查差异、路径和命令；可逆且低影响的改动不编写复述实现的测试。后端行为变更运行相关接口测试；涉及认证、授权、数据隔离、数据库迁移或共享核心链路时，在确认测试 Redis 隔离后运行 `.venv\Scripts\python.exe -m pytest -q`。检查通过后，仅因新改动、失败或未解决风险而扩大或重复测试。
-
+- 代码可以不要注释,特别是不要模棱两可的注释误导其他agent工作.
 ### 4.1 Python 语言规范与风格
 
 - 遵循 PEP 8、PEP 257 和现有 `pyproject.toml` 配置；使用 4 个空格缩进，行宽保持在 100 字符以内，命名分别采用 `snake_case`、`PascalCase` 和 `UPPER_SNAKE_CASE`。
