@@ -48,15 +48,21 @@ SdkTransport = Callable[[TransportHandler], None]
 def sdk_transport(
     fake_models: None, monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[SdkTransport]:
-    """恢复待测入口，仅将 SDK 的 HTTP 传输替换为 MockTransport。"""
+    """恢复待测入口，仅将 SDK 的 HTTP 传输替换为 MockTransport。
+
+    客户端缓存键为 (api_key, base_url, model)：桩键按 resolve_runtime 对个人 Key
+    的解析结果（平台未配置时回退部署环境值）构造，保证命中同一实例。
+    """
     monkeypatch.setattr(llm, "chat_text", REAL_CHAT_TEXT)
     monkeypatch.setattr(llm, "chat_json", REAL_CHAT_JSON)
     monkeypatch.setattr(llm, "chat_stream", REAL_CHAT_STREAM)
-    clients: dict[str, OpenAI] = {}
+    monkeypatch.setattr(llm, "get_platform_llm", lambda: None)
+    clients: dict[tuple[str, str, str], OpenAI] = {}
     monkeypatch.setattr(llm, "_clients", clients)
 
     def install(handler: TransportHandler) -> None:
-        clients[FAKE_KEY] = OpenAI(
+        cache_key = (FAKE_KEY, settings.deepseek_base_url, settings.deepseek_model)
+        clients[cache_key] = OpenAI(
             api_key=FAKE_KEY, base_url="https://model.example.test/v1", max_retries=0,
             http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
