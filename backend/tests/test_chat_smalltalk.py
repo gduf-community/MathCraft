@@ -100,3 +100,6 @@ def test_smalltalk_never_triggers_mode_mismatch(client, teacher, monkeypatch):
     # 不出现模式切换建议文案，且走到了自由对话
     assert "分段控制器" not in data["reply"]
     assert captured["message"] == "你好"
+    # confirm/batch_id 必须显式存在：缺失（undefined）会锁死前端的发送与历史切换
+    assert data["confirm"] is None
+    assert "batch_id" in data

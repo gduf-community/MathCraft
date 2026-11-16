@@ -194,8 +194,11 @@ def send_message(
             r.hdel(_slot_key(s.id), "pending_message", "pending_images")
 
     def _base_result(**overrides) -> dict:
+        # confirm 与 batch_id 必须显式给出：缺失会让前端拿到 undefined，
+        # 而 pendingConfirm 的禁用判断是「!== null」，undefined 会把输入区永久锁死
         out = {"reply": "", "questions": [], "done": False, "slot_state": slot_state,
-               "kind": "reply", "mode": session_mode, "mode_changed": mode_changed}
+               "kind": "reply", "mode": session_mode, "mode_changed": mode_changed,
+               "confirm": None, "batch_id": None}
         out.update(overrides)
         return out
 

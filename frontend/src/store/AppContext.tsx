@@ -752,7 +752,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           res.kind === 'mode_mismatch' && res.suggested_template
           && isChatMode(res.suggested_template) ? res.suggested_template : null,
         )
-        setPendingConfirm(res.confirm)
+        // nullish 兜底：后端历史响应缺 confirm 字段时不能让 undefined 混进状态，
+        // 禁用判断都是「!== null」，undefined 会把发送、重生成与历史切换永久锁死
+        setPendingConfirm(res.confirm ?? null)
         setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
         if (res.questions.length) {
           const incoming = res.questions.map(api.mapQuestion)
