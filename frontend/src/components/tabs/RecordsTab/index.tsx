@@ -28,6 +28,12 @@ interface OpenTab {
 
 /** 状态标签：教师看发布状态，学生看作答状态 */
 function StatusTag({ record, isStudent }: { record: AssembleRecord; isStudent: boolean }) {
+  if (record.deleted) return (
+    <span className="inline-flex items-center rounded-full bg-page px-2 py-0.5 text-[11px] font-semibold text-ink-3">已删除·历史</span>
+  )
+  if (record.closed) return (
+    <span className="inline-flex items-center rounded-full bg-page px-2 py-0.5 text-[11px] font-semibold text-ink-3">已关闭</span>
+  )
   if (isStudent) {
     return record.answered ? (
       <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-600">
@@ -50,11 +56,31 @@ function StatusTag({ record, isStudent }: { record: AssembleRecord; isStudent: b
   )
 }
 
+export function PaperClosedButton({ record, disabled = false }: { record: AssembleRecord; disabled?: boolean }) {
+  const { setRecordClosed } = useApp()
+  const [busy, setBusy] = useState(false)
+  return (
+    <button
+      type="button"
+      disabled={busy || disabled || record.deleted}
+      aria-busy={busy}
+      title="关闭禁止开始作答和交卷；恢复开放后仍遵循各空间的停止状态"
+      onClick={async () => {
+        setBusy(true)
+        try { await setRecordClosed(record.id, !record.closed) } finally { setBusy(false) }
+      }}
+      className="inline-flex items-center gap-1 rounded-md border border-line px-2.5 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {busy ? '更新中…' : record.closed ? '恢复开放' : '关闭试卷'}
+    </button>
+  )
+}
+
 export default function RecordsTab() {
   const { records: allRecords, role, deleteRecord, deleteRecords, deleteRecordQuestions, showToast, openPaperId, clearOpenPaper } = useApp()
   const isStudent = role === 'student'
-  // 发布时未勾选「保存到组卷记录」的记录仅用于学习空间展示，不进本页列表
-  const records = useMemo(() => allRecords.filter((r) => r.savedToRecords !== false), [allRecords])
+  // 已删除的个人已答试卷保留复盘入口，不受「保存到组卷记录」影响。
+  const records = useMemo(() => allRecords.filter((r) => r.deleted ? r.answered : r.savedToRecords !== false), [allRecords])
   // 第一个标签为组卷记录列表，固定不可关闭
   const [openedTabs, setTabs] = useState<OpenTab[]>([])
   const tabs = useMemo(() => openedTabs.flatMap(tab => {
@@ -68,6 +94,7 @@ export default function RecordsTab() {
   const [batchConfirm, setBatchConfirm] = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [editingRecord, setEditingRecord] = useState<AssembleRecord | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const openRecord = (record: AssembleRecord) => {
     if (tabs.some((t) => t.id === record.id)) {
@@ -80,9 +107,13 @@ export default function RecordsTab() {
 
   /** 学生作答：新开标签打开答题页，交卷 AI 批卷后可查看答案与解析；已过作答时间禁止进入 */
   const startPractice = (record: AssembleRecord) => {
-    if (record.examWindow) {
-      const end = new Date(record.examWindow.end).getTime()
-      if (Date.now() >= end) {
+    if (!record.answered && (record.closed || record.deleted)) {
+      showToast('试卷已关闭，无法开始作答', 'error')
+      return
+    }
+    if (!record.answered && record.examWindow) {
+      const end = record.examWindow.end ? new Date(record.examWindow.end).getTime() : null
+      if (end !== null && Date.now() >= end) {
         showToast('已过作答时间')
         return
       }
@@ -158,16 +189,17 @@ export default function RecordsTab() {
           onStartPractice={startPractice}
           onBatchDelete={() => setBatchConfirm(true)}
           isStudent={isStudent}
+          busy={busy}
         />
       ) : active ? (
-        activeTabObj?.practice ? (
+        activeTabObj?.practice || (active.deleted && active.answered) ? (
           <AnswerView key={active.id} record={active} />
         ) : (
-          <PaperDetail record={active} onDeleteQuestions={(ids) => deleteRecordQuestions(active.id, ids)} />
+          <PaperDetail key={active.id} record={active} onDeleteQuestions={(ids) => deleteRecordQuestions(active.id, ids)} />
         )
       ) : null}
 
-      {editingRecord && records.some(record => record.id === editingRecord.id) && (
+      {editingRecord && records.some(record => record.id === editingRecord.id && !record.deleted) && (
         <AssembleModal
           editingRecord={editingRecord}
           onClose={() => setEditingRecord(null)}
@@ -176,11 +208,14 @@ export default function RecordsTab() {
       {confirmDelete && deleting && (
         <ConfirmDialog
           title="删除组卷记录"
-          message={`确定删除试卷「${records.find((r) => r.id === deleting)?.name ?? ''}」吗？删除后不可恢复。`}
+          message={`确定移除「${records.find((r) => r.id === deleting)?.name ?? ''}」的组卷记录吗？已发布试卷仍保留在空间；未发布试卷须先关闭，删除后保留历史作答。`}
           confirmText="确认删除"
           onConfirm={async () => {
-            await deleteRecord(deleting)
-            setChecked((prev) => prev.filter((id) => id !== deleting))
+            if (busy) return
+            setBusy(true)
+            try {
+              if (await deleteRecord(deleting)) setChecked((prev) => prev.filter((id) => id !== deleting))
+            } finally { setBusy(false) }
           }}
           onClose={() => setConfirmDelete(false)}
         />
@@ -188,12 +223,14 @@ export default function RecordsTab() {
       {batchConfirm && (
         <ConfirmDialog
           title="批量删除组卷记录"
-          message={`确定删除选中的 ${checked.length} 份试卷吗？删除后不可恢复。`}
+          message={`确定移除选中的 ${checked.length} 条组卷记录吗？已发布试卷仍保留在空间；未发布试卷须先关闭，删除后保留历史作答。`}
           confirmText="全部删除"
           onConfirm={async () => {
-            const ids = [...checked]
-            await deleteRecords(ids)
-            setChecked([])
+            if (busy) return
+            setBusy(true)
+            try {
+              if (await deleteRecords([...checked])) setChecked([])
+            } finally { setBusy(false) }
           }}
           onClose={() => setBatchConfirm(false)}
         />
@@ -239,6 +276,7 @@ function RecordList({
   onStartPractice,
   onBatchDelete,
   isStudent,
+  busy,
 }: {
   records: AssembleRecord[]
   checked: string[]
@@ -249,8 +287,11 @@ function RecordList({
   onStartPractice: (r: AssembleRecord) => void
   onBatchDelete: () => void
   isStudent: boolean
+  busy: boolean
 }) {
-  const allChecked = records.length > 0 && records.every((r) => checked.includes(r.id))
+  const deletable = records.filter(record => !record.deleted && ((record.published && record.publications?.length) || record.closed))
+  const allChecked = deletable.length > 0 && deletable.every((r) => checked.includes(r.id))
+  const canBatchDelete = checked.length > 0 && checked.every(id => deletable.some(record => record.id === id))
   const viewBtn = 'inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary-light/50 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary-light'
   const delBtn = 'inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-500 transition-colors hover:bg-red-100'
 
@@ -263,22 +304,25 @@ function RecordList({
               type="checkbox"
               className="h-4 w-4 accent-primary"
               checked={allChecked}
-              onChange={(e) => setChecked(e.target.checked ? records.map((r) => r.id) : [])}
+              disabled={busy || !deletable.length}
+              onChange={(e) => setChecked(e.target.checked ? deletable.map((r) => r.id) : [])}
             />
             全选
           </label>
           <button
             type="button"
-            disabled={!checked.length}
+            disabled={busy || !canBatchDelete}
+            aria-busy={busy}
+            title="未发布试卷须先关闭，已发布试卷仅移除组卷记录"
             onClick={onBatchDelete}
             className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-              checked.length
+              canBatchDelete && !busy
                 ? 'border-red-200 bg-red-50 text-red-500 hover:bg-red-100'
                 : 'cursor-not-allowed border-line bg-page text-ink-3 opacity-60'
             }`}
           >
             <Trash2 size={12} />
-            批量删除
+            {busy ? '删除中…' : '批量删除'}
           </button>
         </div>
 
@@ -307,6 +351,8 @@ function RecordList({
                     type="checkbox"
                     className="h-4 w-4 accent-primary"
                     checked={checked.includes(r.id)}
+                    aria-label={`选择组卷记录 ${r.name}`}
+                    disabled={busy || !deletable.includes(r)}
                     onChange={(e) =>
                       setChecked(e.target.checked ? [...checked, r.id] : checked.filter((v) => v !== r.id))
                     }
@@ -326,31 +372,34 @@ function RecordList({
                 </td>
                 <td className="px-5 py-3.5">
                   <div className="flex items-center justify-end gap-2">
-                    {isStudent ? (
+                    {isStudent || (r.deleted && r.answered) ? (
                       <button
                         type="button"
                         onClick={() => onStartPractice(r)}
-                        title="新开标签页作答，交卷 AI 批卷后可查看答案与解析"
-                        className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-100"
+                        disabled={!r.answered && (r.closed || r.deleted)}
+                        title={r.deleted ? '查看历史作答与解析' : '新开标签页作答，交卷 AI 批卷后可查看答案与解析'}
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Pencil size={12} /> 作答
+                        <Pencil size={12} /> {r.deleted ? '复盘' : r.answered ? '查看作答' : '作答'}
                       </button>
                     ) : (
                       <button
                         type="button"
                         onClick={() => onEdit(r)}
+                        disabled={busy || r.closed || r.deleted}
                         title="编辑试卷信息并发布"
-                        className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-100"
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Users size={12} /> 发布
                       </button>
                     )}
-                    {!isStudent && (
+                    {!isStudent && !r.deleted && (
                       <button type="button" onClick={() => onOpen(r)} className={viewBtn}>
                         <Pencil size={12} /> 查看
                       </button>
                     )}
-                    <button type="button" onClick={() => onDelete(r.id)} className={delBtn}>
+                    <PaperClosedButton record={r} disabled={busy} />
+                    <button type="button" disabled={busy || !deletable.includes(r)} title={!deletable.includes(r) ? '请先关闭试卷再删除' : '移除组卷记录；已发布试卷保留在空间'} onClick={() => onDelete(r.id)} className={`${delBtn} disabled:cursor-not-allowed disabled:opacity-50`}>
                       <Trash2 size={12} /> 删除
                     </button>
                   </div>
@@ -370,12 +419,28 @@ function PaperDetail({
   onDeleteQuestions,
 }: {
   record: AssembleRecord
-  onDeleteQuestions: (ids: string[]) => void
+  onDeleteQuestions: (ids: string[]) => Promise<boolean>
 }) {
-  const { unfavoriteQuestion } = useApp()
-  const questions = record.questions ?? []
+  const { unfavoriteQuestion, showToast } = useApp()
+  const questions = useMemo(() => record.questions ?? [], [record.questions])
   const [checked, setChecked] = useState<string[]>([])
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
+  const [busy, setBusy] = useState(false)
+  const removeQuestions = async (ids: string[]) => {
+    if (busy) return
+    if (record.deleted) {
+      showToast('已删除试卷仅可查看历史', 'error')
+      return
+    }
+    if (!record.closed) {
+      showToast('请先关闭试卷，再删除题目', 'error')
+      return
+    }
+    setBusy(true)
+    try {
+      if (await onDeleteQuestions(ids)) setChecked(prev => prev.filter(id => !ids.includes(id)))
+    } finally { setBusy(false) }
+  }
 
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: questions.length }
@@ -394,10 +459,8 @@ function PaperDetail({
     toggleSelect: (id: string) =>
       setChecked((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id])),
     updateQuestion: () => undefined,
-    deleteQuestion: (id: string) => {
-      onDeleteQuestions([id])
-      setChecked((prev) => prev.filter((v) => v !== id))
-    },
+    deleteQuestion: (id: string) => removeQuestions([id]),
+    deleteDisabled: record.deleted || !record.closed || busy,
     // 快照题目取消收藏：同步熄灭全局与快照星标
     toggleStar: (id: string) => {
       unfavoriteQuestion(id)
@@ -424,37 +487,40 @@ function PaperDetail({
             type="checkbox"
             className="h-4 w-4 accent-primary"
             checked={allChecked}
+            disabled={record.deleted || busy}
             onChange={(e) => setChecked(e.target.checked ? filtered.map((q) => q.id) : [])}
           />
           全选
         </label>
         <button
           type="button"
-          disabled={!checked.length}
-          onClick={() => {
-            onDeleteQuestions(checked)
-            setChecked([])
-          }}
+          disabled={record.deleted || !checked.length || !record.closed || busy}
+          aria-busy={busy}
+          title={record.closed ? '删除所选题目，历史作答保留' : '请先关闭试卷，再删除题目'}
+          onClick={() => void removeQuestions(checked)}
           className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors ${
-            checked.length
+            checked.length && record.closed && !record.deleted && !busy
               ? 'border-red-200 bg-red-50 text-red-500 hover:bg-red-100'
               : 'cursor-not-allowed border-line bg-page text-ink-3 opacity-60'
           }`}
         >
           <Trash2 size={12} />
-          删除
+          {busy ? '删除中…' : '删除'}
         </button>
         <span className="text-sm text-ink-3">共 {filtered.length} 道题</span>
         <div className="flex-1" />
         <div className="flex items-center gap-2 text-sm text-ink-2">
           <span className="text-xs text-ink-3">创建于 {record.createdAt}</span>
           <StatusTag record={record} isStudent={false} />
+          <PaperClosedButton record={record} disabled={busy} />
         </div>
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-8 pt-4">
         {filtered.map((q, idx) => (
-          <QuestionCard key={q.id} q={q} index={idx + 1} snapshot={snapshot} />
+          <fieldset key={q.id} disabled={busy || record.deleted} className="min-w-0" title={record.deleted ? '已删除试卷仅可查看历史' : record.closed ? undefined : '删除题目前须先关闭试卷'}>
+            <QuestionCard q={q} index={idx + 1} snapshot={snapshot} />
+          </fieldset>
         ))}
         {!filtered.length && <div className="py-16 text-center text-sm text-ink-3">当前筛选条件下没有题目</div>}
       </div>

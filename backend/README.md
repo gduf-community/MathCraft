@@ -125,6 +125,10 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 已有部署升级前备份 SQLite、Chroma 与文件目录，先在受控副本迁移并审计，再在维护窗口升级目标库。SQLite 备份需包含已提交的 WAL 数据，可使用 backup API；SQL 备份不包含向量、上传原件、OCR、头像或 Redis。
 
+迁移 `j5e6f7a8b901` 增加试卷关闭与历史快照字段、持久出题任务及删除操作记录；升级后未完成运行在启动时标记中断，删除继续恢复。完整边界见 [数据库与 ACID 修复记录](../docs/design/数据库与ACID审查修复记录.md)。
+
+迁移链保留正文证据版本 `j5e6f7a89012` 和出题运行版本 `k6f7a8b90123`，并通过 `m8f9a0b12345` 与 ACID 分支合并。
+
 以下示例在独立 PowerShell 终端、`backend/` 目录执行。将示例绝对路径替换为实际副本路径，确认环境变量指向副本后再执行迁移：
 
 ```powershell
@@ -141,7 +145,7 @@ uv run python scripts/auth_migration.py audit --operator-confirmed --database 'C
 
 - **认证配置不可用**：确认两项认证密钥已初始化。本机使用 `APP_ENV=development`、`TURNSTILE_ENABLED=false` 并按上述回环地址启动；生产需要完整 Turnstile 配置。环境变量可覆盖 `.env`。
 - **邮箱功能不可用**：配置 SMTP；人机验证开关不替代邮件验证码或邮件服务。
-- **删除资料提示数据库繁忙（`DATABASE_BUSY`）**：删除会先预热 Chroma，并对 SQLite 短暂写锁做有限重试；持续占锁时保留资料和原件，稍后重试。检查并发写入或其他进程是否长期持有数据库事务。失败状态或零切片计数不代表没有残余索引，不能通过跳过向量清理强制删除。
+- **删除资料提示 `DATABASE_BUSY` 或 `DELETION_PENDING`**：删除先预热 Chroma，再登记持久删除意图；短暂写锁有限重试。意图提交后资源进入 `deleting`，部分清理失败可重试，启动时也会继续恢复。只有完整清理成功才返回 204，不能根据零切片计数跳过向量清理。
 - **删除资料时全文索引报 `SQLITE_CANTOPEN / 14`**：这不是写锁错误。SQLite 连接已配置 `temp_store=MEMORY`，避免 FTS5 临时结构依赖进程临时目录；数据库及 WAL 仍保存在磁盘。更新后须重启后端，临时结构较大时会增加内存占用。该设置不能修复数据库自身路径不可访问的问题。
 - **Chroma 报 `code 14` 或向量写入失败**：除数据路径权限外，检查启动进程的 `TEMP/TMP` 能否实际创建文件；目录存在或权限标志显示可写，不代表文件操作一定成功。临时目录故障也可能表现为元数据段 compaction 失败，且心跳和嵌入探测仍正常。Windows 可在 `backend/` 启动前为当前终端指定可写目录：
 

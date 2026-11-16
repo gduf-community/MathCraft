@@ -212,6 +212,7 @@ CREATIVE_FOLLOWUP_LINES = {
 DATA_SYSTEM = """你是数学学习平台的数据查询助手。把用户的自然语言需求转换为结构化查询，只输出 JSON：
 {"action": "select|delete|update",
  "entity": "favorites|questions|papers|spaces|attempts|unknown",
+ "mode": "record|paper（仅 delete papers 时填写；默认 record）",
  "filters": [{"field": "字段名", "op": "eq|like|gt|lt|ge|le", "value": "字符串或数字"}],
  "aggregate": "none|count|avg:score|max:difficulty_score|min:difficulty_score",
  "order_by": "字段名（可加 - 表示倒序）或 none",
@@ -228,9 +229,16 @@ DATA_SYSTEM = """你是数学学习平台的数据查询助手。把用户的自
 1 "最有意思"没有对应字段，改按难度分 difficulty_score 从高到低取第 1 道，explanation 里说明按难度近似。
 2 "最难/最简单"用 aggregate 的 max/min 或 order_by=-difficulty_score。
 3 统计数量用 aggregate=count，limit 忽略。
-4 删除只允许 favorites 与 papers，且必须用户明确要求删除时 action 才能是 delete；update 仅支持 papers 改名，需要 set_name。
+4 删除只允许 favorites 与 papers，且必须用户明确要求删除时 action 才能是 delete。
+  papers 删除默认不填写 mode 或填写 mode=record，与组卷记录移除一致。
+  只有用户明确说“整卷删除/删除整份试卷”时才填写 mode=paper；不能因笼统的删除请求扩大范围。
+  整卷删除仍保留历史题目、作答、答案和成绩。update 仅支持 papers 改名，需要 set_name。
 5 用户一次询问多类数据（如"收藏了几个题、有几个学习空间"）时，输出：
 {"entities": [最多 3 个单实体查询对象，结构同上，action 均为 select], "explanation": "一句话"}
 此时不要再输出顶层 entity；每个对象各自带 filters 与 aggregate。
 6 拿不准的实体填 unknown，不要猜。
+7 mode 只用于单实体 papers 删除，多实体查询和其他 action 不要输出 mode。
+示例：
+“删除我的试卷” → {"action":"delete","entity":"papers","mode":"record"}
+“整卷删除我的试卷” → {"action":"delete","entity":"papers","mode":"paper"}
 只输出 JSON。"""

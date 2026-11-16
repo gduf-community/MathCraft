@@ -53,8 +53,14 @@ async def lifespan(_app: FastAPI):
     from app.db import SessionLocal
     from app.models import Document
     from app.services.rag_settings import recover_interrupted_rebuild
+    from app.services.generation import recover_interrupted_generation
+    from app.services.attempts import recover_interrupted_grading
+    from app.services.banks import recover_pending_deletions
 
     recover_interrupted_rebuild()
+    recover_interrupted_generation()
+    recover_interrupted_grading()
+    recover_pending_deletions()
 
     db = SessionLocal()
     try:

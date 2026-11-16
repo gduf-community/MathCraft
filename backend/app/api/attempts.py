@@ -6,22 +6,34 @@ from app.db import get_db
 from app.deps import require_student
 from app.errors import AppError
 from app.models import PaperAttempt, User
-from app.schemas.paper import AttemptCreateBody, AttemptSubmitBody
+from app.schemas.paper import (
+    AttemptCreateBody,
+    AttemptPayloadRead,
+    AttemptSubmitBody,
+    AttemptSubmitRead,
+)
 from app.services import attempts
 
 router = APIRouter(prefix="/api", tags=["attempts"])
 
 
-@router.get("/papers/{paper_id}/attempt")
+@router.get(
+    "/papers/{paper_id}/attempt",
+    response_model=AttemptPayloadRead,
+    response_model_exclude_unset=True,
+)
 def get_attempt(
     paper_id: str,
     space_id: str | None = None,
     student: User = Depends(require_student),
     db: Session = Depends(get_db),
 ):
-    # 已交卷的作答允许在时间窗结束后打开复盘；未交卷时必须处于作答时间内
+    # 关闭、删除或本空间停止时只选历史提交；开放时继续当前未提交的重做。
     paper, pub, space = attempts.attempt_access(db, student, paper_id, space_id, require_open_window=False)
-    latest = attempts.latest_attempt(db, paper.id, student.id, space_id)
+    latest = attempts.latest_attempt(
+        db, paper.id, student.id, space_id,
+        submitted_only=paper.closed or paper.deleted or bool(pub and pub.stopped),
+    )
     if latest is None or latest.status == "answering":
         attempts.check_window(paper, pub)
     if latest is None:
@@ -29,7 +41,12 @@ def get_attempt(
     return attempts.attempt_payload(db, latest, paper, space)
 
 
-@router.post("/papers/{paper_id}/attempts", status_code=201)
+@router.post(
+    "/papers/{paper_id}/attempts",
+    status_code=201,
+    response_model=AttemptPayloadRead,
+    response_model_exclude_unset=True,
+)
 def start_attempt(
     paper_id: str,
     body: AttemptCreateBody,
@@ -41,7 +58,11 @@ def start_attempt(
     return attempts.attempt_payload(db, attempt, paper, space)
 
 
-@router.post("/attempts/{attempt_id}/submit")
+@router.post(
+    "/attempts/{attempt_id}/submit",
+    response_model=AttemptSubmitRead,
+    response_model_exclude_unset=True,
+)
 def submit_attempt(
     attempt_id: str,
     body: AttemptSubmitBody,
@@ -54,7 +75,11 @@ def submit_attempt(
     return attempts.submit_attempt(db, attempt, student, body.answers)
 
 
-@router.get("/attempts/{attempt_id}/review")
+@router.get(
+    "/attempts/{attempt_id}/review",
+    response_model=AttemptPayloadRead,
+    response_model_exclude_unset=True,
+)
 def review_attempt(
     attempt_id: str,
     student: User = Depends(require_student),

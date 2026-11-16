@@ -21,6 +21,8 @@ from app.models import (
     User,
 )
 from app.models.base import new_id
+from app.services import papers
+from app.services.paper_state import lock_paper
 from app.services.rag.llm import chat_json
 from app.services.rag.prompts import DATA_SYSTEM
 
@@ -113,7 +115,7 @@ def _collect_rows(
         field_map = {"type": "type", "difficulty": "difficulty", "knowledge_point": "knowledge_point",
                      "difficulty_score": "difficulty_score"}
     elif entity == "papers":
-        q = (db.query(Paper).filter(Paper.owner_id == user.id)
+        q = (db.query(Paper).filter(Paper.owner_id == user.id, Paper.deleted.is_(False))
              .order_by(Paper.created_at.desc()))
         for paper in q:
             rows.append({
@@ -269,6 +271,7 @@ def run_data_request(
     entity = str(dsl.get("entity"))
     action = str(dsl.get("action") or "select")
     explanation = str(dsl.get("explanation") or "")
+    delete_mode = "paper" if dsl.get("mode") == "paper" else "record"
 
     if action == "select":
         aggregate = str(dsl.get("aggregate") or "none")
@@ -302,10 +305,21 @@ def run_data_request(
     if affected == 0:
         return {"reply": "没有找到符合条件的数据，无需执行该操作。", "questions": [], "done": True}
 
+    if action == "delete" and entity == "papers":
+        impact = (
+            "整卷删除：须先关闭试卷、停止所有发布空间的作答，且无正在批卷的作答。"
+            "删除后保留历史题目、作答、答案与成绩。"
+            if delete_mode == "paper" else
+            "移除组卷记录：已发布且仍有发布关系的试卷仅从组卷记录隐藏，"
+            "空间发布与历史作答继续保留；草稿等无有效发布的试卷按整卷删除处理，"
+            "须先关闭、停止所有发布空间的作答，且无正在批卷的作答，历史数据保留。"
+        )
+        explanation = f"{impact} {explanation}".strip()
+
     confirm_id = new_id("cfm")
     payload = {"confirm_id": confirm_id, "action": action, "entity": entity,
                "target_ids": target_ids, "set_name": new_name,
-               "user_id": user.id, "session_id": session_id}
+               "user_id": user.id, "session_id": session_id, "mode": delete_mode}
     cache.get_redis().set(_confirm_key(confirm_id),
                           json.dumps(payload, ensure_ascii=False), ex=CONFIRM_TTL_SECONDS)
     verb = "删除" if action == "delete" else "改名"
@@ -353,16 +367,38 @@ def execute_confirmed(
             db.commit()
             return f"已删除 {n} 条收藏记录。"
         if entity == "papers":
-            n = db.query(Paper).filter(
-                Paper.id.in_(target_ids), Paper.owner_id == user.id,
-            ).delete(synchronize_session=False)
-            db.commit()
-            return f"已删除 {n} 份试卷及其关联记录。"
+            rows = db.query(Paper).filter(
+                Paper.id.in_(target_ids), Paper.owner_id == user.id, Paper.deleted.is_(False),
+            ).order_by(Paper.id).all()
+            mode = "paper" if payload.get("mode") == "paper" else "record"
+            try:
+                for paper in rows:
+                    papers.delete_paper(db, paper, mode, commit=False)
+                    db.flush()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            if mode == "paper":
+                return f"已整卷删除 {len(rows)} 份试卷，历史题目、作答、答案与成绩已保留。"
+            return f"已移除 {len(rows)} 份试卷的组卷记录；无有效发布的试卷按整卷删除，历史数据已保留。"
     if action == "update" and entity == "papers":
         new_name = payload["set_name"]
-        n = db.query(Paper).filter(
-            Paper.id.in_(target_ids), Paper.owner_id == user.id,
-        ).update({"name": new_name}, synchronize_session=False)
-        db.commit()
-        return f"已把 {n} 份试卷改名为「{new_name}」。"
+        try:
+            rows = db.query(Paper.id).filter(
+                Paper.id.in_(target_ids), Paper.owner_id == user.id,
+            ).order_by(Paper.id).all()
+            locked_papers: list[Paper] = []
+            for (paper_id,) in rows:
+                # 不过滤 deleted：过期预览必须经过写门禁拒绝，不能静默部分改名。
+                paper = lock_paper(db, paper_id)
+                if paper.owner_id == user.id:
+                    locked_papers.append(paper)
+            for paper in locked_papers:
+                paper.name = new_name
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return f"已把 {len(locked_papers)} 份试卷改名为「{new_name}」。"
     raise AppError("CONFIRM_ACTION", "不支持的操作类型", status_code=400)

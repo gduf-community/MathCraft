@@ -17,6 +17,7 @@ const DOC_STATUS_LABELS: Record<string, string> = {
   chunking: '正在切片',
   embedding: '正在向量化',
   failed: '入库失败',
+  deleting: '删除中',
 }
 
 /** 右侧「快速出题」面板：仅出现在智能生成标签页，可向右折叠，左缘可拖拽调宽 */
@@ -136,7 +137,7 @@ export default function ParamsSidebar() {
           <ul className="mt-2 space-y-1.5">
             {docs.map((d) => {
               const selected = d.id === selectedDocId
-              // 入库未完成的文档置灰不可选，但仍显示在列表中
+              // 入库未完成或正在删除的文档仍展示状态，禁止用于出题
               const status = d.status
               const ready = status === 'ready' || !status
               const failed = status === 'failed'
@@ -164,7 +165,7 @@ export default function ParamsSidebar() {
                     </span>
                     {!ready && (
                       <span className={`shrink-0 text-[11px] ${failed ? 'text-red-400' : 'text-primary/70'}`}>
-                        {failed ? '入库失败' : `${DOC_STATUS_LABELS[status] ?? '处理中'} ${d.progress ?? 0}%`}
+                        {failed ? '入库失败' : status === 'deleting' ? '删除中' : `${DOC_STATUS_LABELS[status] ?? '处理中'} ${d.progress ?? 0}%`}
                       </span>
                     )}
                     {selected && <span className="rounded bg-primary px-1.5 py-0.5 text-[11px] text-white">已选</span>}
@@ -175,7 +176,7 @@ export default function ParamsSidebar() {
             {!docs.length && <li className="py-3 text-center text-xs text-ink-3">该题库暂无文档，可在题库管理中上传</li>}
             {docs.some((d) => {
               const s = d.status
-              return s && s !== 'ready' && s !== 'failed'
+              return s && s !== 'ready' && s !== 'failed' && s !== 'deleting'
             }) && (
               <li className="py-1 text-center text-[11px] text-ink-3">处理中的文档在入库完成后即可选题出题</li>
             )}

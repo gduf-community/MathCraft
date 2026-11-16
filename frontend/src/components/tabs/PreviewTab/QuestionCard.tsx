@@ -17,6 +17,8 @@ interface Props {
     toggleSelect: (id: string) => void
     updateQuestion: (q: Question) => Promise<unknown> | unknown
     deleteQuestion: (id: string) => Promise<unknown> | unknown
+    /** 试卷未关闭或删除请求进行中时禁用单题删除。 */
+    deleteDisabled?: boolean
     toggleStar: (id: string, starred?: boolean) => Promise<unknown> | unknown
   }
   /** 刷题模式：答案与解析锁定 */
@@ -230,8 +232,10 @@ export default function QuestionCard({ q, index, snapshot, disableAnswer = false
                 </button>
                 <button
                   type="button"
+                  disabled={snapshot?.deleteDisabled}
+                  title={snapshot?.deleteDisabled ? '请先关闭试卷，并等待当前操作完成后再删除' : undefined}
                   onClick={() => void deleteQuestion(q.id)}
-                  className="flex items-center gap-1 rounded-full border border-danger/40 bg-white px-3.5 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-[#fef2f2]"
+                  className="flex items-center gap-1 rounded-full border border-danger/40 bg-white px-3.5 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-[#fef2f2] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Trash2 size={13} /> 删除
                 </button>

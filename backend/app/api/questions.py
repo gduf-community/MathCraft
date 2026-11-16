@@ -7,20 +7,31 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import get_current_user
 from app.errors import AppError
-from app.models import Document, Favorite, Question, User
+from app.models import Bank, Document, Favorite, Question, User
 from app.schemas.api import BatchDeleteBody, QuestionUpdateBody
 from app.services.generation import question_to_api
+from app.services.rag_settings import assert_mutations_allowed
 
 router = APIRouter(prefix="/api/questions", tags=["questions"])
 
 
 def _get_owned_question(question_id: str, user: User, db: Session) -> Question:
-    q = db.get(Question, question_id)
+    q = db.get(Question, question_id, populate_existing=True)
     if q is None:
         raise AppError("QUESTION_NOT_FOUND", "题目不存在或已被删除", status_code=404)
     if q.created_by != user.id:
         raise AppError("FORBIDDEN", "只能操作自己生成的题目", status_code=403)
+    _assert_question_material_available(db, q)
     return q
+
+
+def _assert_question_material_available(db: Session, question: Question) -> None:
+    """调用方持有资料变更门禁，避免对删除中的资源确认题目写入。"""
+    bank = db.get(Bank, question.bank_id, populate_existing=True)
+    document = db.get(Document, question.document_id, populate_existing=True)
+    if (bank is None or bank.status != "active" or document is None
+            or document.bank_id != question.bank_id or document.status == "deleting"):
+        raise AppError("QUESTION_RESOURCE_UNAVAILABLE", "题目所属资料正在删除或已不可用", 409)
 
 
 @router.get("")
@@ -35,8 +46,17 @@ def list_questions(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """当前用户的题目列表（分页），带收藏状态。"""
-    q = db.query(Question).filter(Question.created_by == user.id)
+    """本人题目分页及收藏状态；过滤删除中、已删除或归属不符的源资料。"""
+    q = (
+        db.query(Question)
+        .join(Bank, Bank.id == Question.bank_id)
+        .join(Document, (Document.id == Question.document_id) & (Document.bank_id == Bank.id))
+        .filter(
+            Question.created_by == user.id,
+            Bank.status == "active",
+            Document.status != "deleting",
+        )
+    )
     if batch_id:
         q = q.filter(Question.batch_id == batch_id)
     if bank_id:
@@ -85,6 +105,7 @@ def update_question(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_mutations_allowed(db)
     q = _get_owned_question(question_id, user, db)
     if body.type is not None:
         q.type = body.type
@@ -114,6 +135,7 @@ def delete_question(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_mutations_allowed(db)
     q = _get_owned_question(question_id, user, db)
     db.query(Favorite).filter(Favorite.question_id == q.id).delete(synchronize_session=False)
     db.delete(q)
@@ -127,7 +149,12 @@ def batch_delete(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = db.query(Question).filter(Question.id.in_(body.question_ids), Question.created_by == user.id).all()
+    assert_mutations_allowed(db)
+    rows = db.query(Question).filter(
+        Question.id.in_(body.question_ids), Question.created_by == user.id,
+    ).populate_existing().all()
+    for row in rows:
+        _assert_question_material_available(db, row)
     if rows:
         db.query(Favorite).filter(Favorite.question_id.in_([r.id for r in rows])).delete(synchronize_session=False)
         for r in rows:

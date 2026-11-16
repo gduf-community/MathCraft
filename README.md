@@ -10,6 +10,10 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 对话提供快速出题、创新命题、知识答疑和数据管理四模式。生成阶段在后端流式解析并校验题目，界面通过进度轮询等待审核后的结果；题目预览中勾选题目后可导出 Word，设置题型顺序、答案和解析的位置。
 
+试卷支持关闭和恢复作答，删除保留已有作答及成绩；出题状态存入 SQL，服务重启后未完成运行标为中断，用户可重新发起。
+
+学习空间可在停止作答后移除尚无作答记录的发布；已有作答保留历史入口。删除未完成的题库与资料在管理页提供继续清理入口。
+
 ## 目录结构
 
 以下列出主要源码、配置与文档入口：
@@ -176,7 +180,7 @@ docker compose down             # 移除容器，保留数据卷
 - 登录按钮显示“认证配置不可用”：确认认证密钥已初始化，开发配置为 `APP_ENV=development`、`TURNSTILE_ENABLED=false`，按上述回环地址与 `--no-proxy-headers` 启动，然后重启后端、刷新页面。检查启动环境变量是否覆盖 `.env`。
 - 前端请求失败：确认后端 8000 端口和 Redis 均已启动；邮件、向量、OCR 等依赖的状态可从健康检查查看。
 - Chroma 在 Windows 报 `code 14`：核对启动进程的 `TEMP/TMP` 是否可写，处理步骤见 [后端说明](backend/README.md)。
-- 删除资料提示 `DATABASE_BUSY`：短暂写锁会自动有限重试；持续占锁时保留资料与原件，请稍后重试并检查其他写入进程。不要根据失败状态或零切片计数跳过索引清理，见 [删除与锁竞争说明](docs/design/知识库模块说明.md#删除写锁竞争修复2026-11-12)。
+- 删除资料提示 `DATABASE_BUSY` 或 `DELETION_PENDING`：短暂写锁会有限重试；已登记删除的资源进入不可用状态，重试或重启后继续清理，见 [删除与恢复边界](docs/design/数据库与ACID审查修复记录.md)。
 - 删除资料的全文索引清理出现 `SQLITE_CANTOPEN / 14`：更新后重启后端以应用 SQLite 内存临时存储配置；数据库与 WAL 仍保存在磁盘。该错误与写锁竞争分别处理，见 [后端排错说明](backend/README.md#常见问题)。
 
 生产部署需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true` 并配置 Cloudflare 站点信息，关闭开发账号能力，配置持久化路径与备份。服务器通过 SSH 连接，部署前按 [后端迁移说明](backend/README.md#迁移与验证) 完成备份、迁移与审计。
@@ -212,6 +216,7 @@ npm run build
 
 - [后端说明](backend/README.md)、[前端说明](frontend/README.md)：开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
+- [数据库与 ACID 修复记录](docs/design/数据库与ACID审查修复记录.md)：关闭与历史作答、任务持久化、删除恢复及缓存完整性。
 - [账号与权限](docs/design/账号系统整合与审查修复.md)、[认证与账号安全](docs/design/登录视觉恢复与历史前端对照.md)。
 - [模型配置](docs/design/模型配置来源与普通知识库流程.md)、[知识库](docs/design/知识库模块说明.md)。
 - [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。

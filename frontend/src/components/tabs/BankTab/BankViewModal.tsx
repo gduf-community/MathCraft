@@ -18,6 +18,7 @@ import { assertCurrentSession, getSessionGeneration } from '../../../api/session
 import { useApp } from '../../../store/AppContext'
 import { Avatar, DocumentDropZone, DocumentFailure, FormatBadge, SectionTitle } from './shared'
 import { useDocUpload } from './useDocUpload'
+import { useDocDeletion } from './useDocDeletion'
 import DocPreviewModal from './DocPreviewModal'
 
 export default function BankViewModal({
@@ -31,6 +32,7 @@ export default function BankViewModal({
 }) {
   const { showToast } = useApp()
   const [docs, setDocs] = useState(bank.docs)
+  const { remove: removeDoc, pendingIds } = useDocDeletion(bank.id, setDocs, onChanged)
   const [preview, setPreview] = useState<BankDoc | null>(null)
   const session = useRef(getSessionGeneration())
   const roleLabel = bank.myRole === 'creator' ? '创建者' : bank.myRole === 'editor' ? '可编辑' : '只读'
@@ -44,7 +46,7 @@ export default function BankViewModal({
       .catch((err) => showToast(err instanceof Error ? err.message : '刷新文档失败', 'error'))
   }, showToast)
 
-  const processing = docs.some((doc) => doc.status && !['ready', 'failed'].includes(doc.status))
+  const processing = docs.some((doc) => doc.status && !['ready', 'failed', 'deleting'].includes(doc.status))
   useEffect(() => {
     if (!processing) return
     const timer = window.setInterval(() => {
@@ -155,7 +157,9 @@ export default function BankViewModal({
             {docs.length === 0 && <p className="text-xs text-ink-3">暂无文档</p>}
             <ul className="space-y-1.5">
               {docs.map((d) => {
-                const busy = d.status && !['ready', 'failed'].includes(d.status)
+                const deleting = d.status === 'deleting'
+                const deletingNow = pendingIds.has(d.id)
+                const busy = d.status && !['ready', 'failed', 'deleting'].includes(d.status)
                 const failed = d.status === 'failed'
                 return (
                   <li key={d.id} className="rounded-lg border border-line px-3 py-2">
@@ -165,14 +169,16 @@ export default function BankViewModal({
                     <span
                       title={failed ? d.stage ?? '' : undefined}
                       className={`mr-3 text-xs ${
-                        failed ? 'text-red-500' : busy ? 'text-primary' : 'text-emerald-600'
+                        deleting || deletingNow ? 'text-amber-700' : failed ? 'text-red-500' : busy ? 'text-primary' : 'text-emerald-600'
                       }`}
                     >
-                      {failed ? '入库失败' : busy ? `${d.stage ?? '处理中'} ${d.progress ?? 0}%` : '可用'}
+                      {deleting || deletingNow ? '删除中' : failed ? '入库失败' : busy ? `${d.stage ?? '处理中'} ${d.progress ?? 0}%` : '可用'}
                     </span>
                     <button
                       type="button"
                       title="查看文档"
+                      aria-label={`查看文档 ${d.name}`}
+                      disabled={deleting || deletingNow}
                       onClick={() => {
                         const format = d.format.toUpperCase()
                         if (format === 'PDF') {
@@ -183,40 +189,36 @@ export default function BankViewModal({
                           showToast(`${format} 暂不支持内联预览，请使用下载按钮`, 'info')
                         }
                       }}
-                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <Eye size={14} />
                     </button>
                     <button
                       type="button"
                       title="下载文档"
+                      aria-label={`下载文档 ${d.name}`}
+                      disabled={deleting || deletingNow}
                       onClick={() => void bankApi.downloadDoc(bank.id, d.id, d.name).catch((err) => showToast(err instanceof Error ? err.message : '下载失败', 'error'))}
-                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+                      className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <Download size={14} />
                     </button>
                   {bank.canDeleteDoc && (
                     <button
                       type="button"
-                      title="删除文档"
-                      onClick={async () => {
-                        try {
-                          await bankApi.removeDoc(bank.id, d.id)
-                          assertCurrentSession(session.current)
-                          setDocs((prev) => prev.filter((x) => x.id !== d.id))
-                          onChanged(d.id)
-                        } catch (err) {
-                          showToast(err instanceof Error ? err.message : '删除文档失败', 'error')
-                        }
-                      }}
-                      className="rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500"
+                      title={deleting ? '继续清理' : '删除文档'}
+                      aria-label={`${deleting ? '继续清理' : '删除文档'} ${d.name}`}
+                      disabled={deletingNow || !!busy}
+                      onClick={() => void removeDoc(d)}
+                      className="inline-flex items-center rounded p-1 text-ink-3 transition-colors hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <Ban size={14} />
+                      {deleting && <span className="ml-1 text-xs">继续清理</span>}
                     </button>
                   )}
                     </div>
-                    {['DOCX', 'XLSX'].includes(d.format.toUpperCase()) && <p className="mt-1 text-xs text-ink-3">暂不支持内联预览，请使用下载按钮。</p>}
-                    <DocumentFailure doc={d} onRetry={bank.canUpload ? async () => {
+                    {!deleting && !deletingNow && ['DOCX', 'XLSX'].includes(d.format.toUpperCase()) && <p className="mt-1 text-xs text-ink-3">暂不支持内联预览，请使用下载按钮。</p>}
+                    <DocumentFailure doc={d} onRetry={bank.canUpload && !deletingNow ? async () => {
                       try {
                         await bankApi.reprocessDoc(bank.id, d.id)
                         assertCurrentSession(session.current)

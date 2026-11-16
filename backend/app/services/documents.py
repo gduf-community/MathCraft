@@ -3,6 +3,7 @@
 状态机：uploaded → parsing → ocr → chunking → embedding → ready / failed
 进度同时写 Redis（ingest:task:{document_id}）与 documents 行，前端轮询文档详情接口。
 """
+import hashlib
 import logging
 import math
 import time
@@ -16,8 +17,9 @@ from sqlalchemy.orm import Session
 from app import local_secrets
 from app.config import BASE_DIR, settings
 from app.db import SessionLocal
+from app.deps import refresh_bank_access, require_bank_admin
 from app.errors import AppError
-from app.models import Document, DocumentChunk
+from app.models import Document, DocumentChunk, User
 from app.models.base import new_id
 from app.services import cache, mineru
 from app.services import knowledge_simplify
@@ -87,9 +89,12 @@ def queue_upload(
     mineru_token: str | None,
     *,
     deepseek_api_key: str | None = None,
+    actor: User | None = None,
 ) -> dict:
-    """保存文档、建 Document 行并投递后台入库任务；立即返回，含预计耗时。"""
+    """门禁内重新授权后保存文件与文档；失败回滚并移除未登记原件。"""
+    expected_actor = _mutation_actor(db, uploader_id, actor)
     assert_mutations_allowed(db)
+    require_bank_admin(refresh_bank_access(db, *expected_actor, bank_id))
     suffix = Path(filename or "").suffix.lower()
     if suffix not in UPLOAD_FORMATS:
         raise AppError(
@@ -104,9 +109,7 @@ def queue_upload(
 
     doc_id = new_id("doc")
     store_dir = settings.upload_path() / bank_id
-    store_dir.mkdir(parents=True, exist_ok=True)
     store_path = store_dir / f"{doc_id}{suffix}"
-    store_path.write_bytes(content)
     # 存路径：位于 backend 目录内时存相对路径，否则存绝对路径（便于整体迁移与自定义目录）
     try:
         rel_path = store_path.relative_to(BASE_DIR).as_posix()
@@ -124,8 +127,15 @@ def queue_upload(
         stage="已上传，等待解析",
         uploader_id=uploader_id,
     )
-    db.add(doc)
-    db.commit()
+    try:
+        store_dir.mkdir(parents=True, exist_ok=True)
+        store_path.write_bytes(content)
+        db.add(doc)
+        db.commit()
+    except Exception:
+        db.rollback()
+        store_path.unlink(missing_ok=True)
+        raise
 
     background.add_task(run_ingestion, doc_id, mineru_token, deepseek_api_key=deepseek_api_key)
     return {
@@ -136,6 +146,14 @@ def queue_upload(
         "progress": 0,
         "eta_minutes": estimate_eta_minutes(doc.name, content),
     }
+
+
+def _mutation_actor(db: Session, user_id: str, actor: User | None) -> tuple[str, int]:
+    """进入门禁前保留原认证版本，避免刷新账号后接受并发撤销的新版本。"""
+    user = actor if actor is not None else db.get(User, user_id)
+    if user is None or user.id != user_id:
+        raise AppError("SESSION_REVOKED", "认证状态已变更，请重新登录", 401)
+    return user.id, user.auth_version
 
 
 def _set_stage(db: Session, doc: Document, status: str, stage: str, progress: int, **fields) -> None:
@@ -215,8 +233,18 @@ def _purge_chunks(db: Session, doc: Document) -> None:
     db.commit()
 
 
-def requeue_document(db: Session, doc: Document) -> None:
-    """重置上轮处理状态并同步队列进度，保留磁盘 OCR 缓存供后续复用。"""
+def requeue_document(db: Session, doc: Document, *, actor: User | None = None) -> None:
+    """门禁内刷新权限和文档状态，再重置上轮处理状态及队列进度。"""
+    bank_id, doc_id = doc.bank_id, doc.id
+    expected_actor = _mutation_actor(db, actor.id if actor is not None else doc.uploader_id, actor)
+    assert_mutations_allowed(db)
+    require_bank_admin(refresh_bank_access(db, *expected_actor, bank_id))
+    current = db.get(Document, doc_id, populate_existing=True)
+    if current is None or current.bank_id != bank_id:
+        raise AppError("DOCUMENT_NOT_FOUND", "文档不存在或已被删除", 404)
+    doc = current
+    if doc.status not in ("failed", "ready"):
+        raise AppError("BAD_STATE", "仅失败或已完成的文档可重新解析", 400)
     original = original_upload_path(doc)
     if original is not None:
         doc.format = "PDF"
@@ -276,9 +304,9 @@ def run_ingestion(
                     return
                 # ---------- 2. OCR（已有缓存结果直接复用，避免重复消耗 MinerU 额度） ----------
                 result_dir = settings.ocr_path() / doc_id
-                cached = result_dir / "full.md"
-                if cached.exists():
-                    markdown = cached.read_text(encoding="utf-8", errors="ignore")
+                cached = mineru.read_cached_markdown(file_path, result_dir)
+                if cached is not None:
+                    markdown = cached
                     doc.ocr_result_path = str(result_dir)
                     doc.ocr_task_id = "local"
                     _set_stage(db, doc, "chunking", "复用已有 OCR 结果，正在生成简化知识点文档", 45, ocr_status="done", text_source="ocr")
@@ -307,15 +335,21 @@ def run_ingestion(
                 # 题库的入库、检索、向量化对象统一为简化版知识点文档，PDF 原件仅留作重新解析源
                 llm_usage: dict = {}
                 simplified_path = settings.upload_path() / doc.bank_id / f"{doc.id}_simplified.md"
+                manifest_name = simplified_path.with_suffix(".manifest.json").name
+                identity: dict[str, object] = {
+                    "version": 1, "kind": "knowledge_simplified",
+                    "ocr_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+                }
                 simplified = ""
                 simplified_ok = True
                 # 重新解析时复用已生成的简化文档，避免重复消耗 LLM 额度（回退原文的产物不复用）
-                if simplified_path.exists():
-                    cached_md = simplified_path.read_text(encoding="utf-8", errors="ignore")
-                    if cached_md.startswith("# 《") and "知识点简化版" in cached_md[:300]:
-                        simplified = cached_md
-                        _set_stage(db, doc, "chunking", "复用已生成的简化知识点文档，正在切片", 56)
-                        logger.info("[ingest:%s] 复用简化文档 %d 字", doc.id, len(cached_md))
+                cached_simplified = mineru._read_cached_markdown(
+                    simplified_path.parent, identity, manifest_name=manifest_name,
+                )
+                if cached_simplified is not None:
+                    simplified = cached_simplified[0]
+                    _set_stage(db, doc, "chunking", "复用已生成的简化知识点文档，正在切片", 56)
+                    logger.info("[ingest:%s] 复用简化文档 %d 字", doc.id, len(simplified))
                 try:
                     if simplified:
                         pass
@@ -344,8 +378,12 @@ def run_ingestion(
                     simplified_ok = False
 
                 logger.info("[ingest:%s] 简化文档生成完成 用时 %s", doc.id, _elapsed())
-                simplified_path.parent.mkdir(parents=True, exist_ok=True)
-                simplified_path.write_text(simplified, encoding="utf-8")
+                # 发布失败按入库失败处理；不能当成内容失败回退并覆盖旧的完整产物。
+                mineru._publish_markdown(
+                    simplified_path.parent, simplified,
+                    identity if simplified_ok else {**identity, "kind": "ocr_fallback"},
+                    relative=Path(simplified_path.name), manifest_name=manifest_name,
+                )
                 if simplified_ok:
                     # 幂等：重复解析时避免后缀叠加
                     base_name = Path(doc.name).stem.replace("_知识点简化版", "")

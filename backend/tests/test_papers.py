@@ -128,6 +128,7 @@ def test_update_paper_name_and_remove_question(client, teacher, db):
     assert resp.json()["name"] == "新名字"
     assert resp.json()["exam_window"]["start"] is not None
 
+    assert client.post(f"/api/papers/{paper['id']}/close", headers=teacher).status_code == 200
     resp = client.post(
         f"/api/papers/{paper['id']}/questions/remove",
         json={"paper_question_ids": [pq_ids[0]]},
@@ -162,7 +163,8 @@ def test_stop_resume_and_delete_publication(client, teacher, student, db):
     resp = client.delete(
         f"/api/papers/{paper['id']}/publications/{space['id']}", headers=teacher
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "PAPER_PUBLICATION_OPEN"
 
     assert client.post(
         f"/api/papers/{paper['id']}/publications/{space['id']}/stop", headers=teacher
@@ -217,6 +219,8 @@ def test_batch_delete_papers(client, teacher, db):
     p1 = _create_paper(client, teacher, qids, published=False, name="卷1")
     p2 = _create_paper(client, teacher, qids, published=False, name="卷2")
 
+    for row in (p1, p2):
+        assert client.post(f"/api/papers/{row['id']}/close", headers=teacher).status_code == 200
     resp = client.post(
         "/api/papers/batch-delete", json={"paper_ids": [p1["id"], p2["id"]]}, headers=teacher
     )
@@ -228,6 +232,7 @@ def test_delete_paper(client, teacher, db):
     teacher_id = _me(client, teacher)["id"]
     qids = make_questions(db, teacher_id, [("single", "A", 5)])
     paper = _create_paper(client, teacher, qids, published=False)
+    assert client.post(f"/api/papers/{paper['id']}/close", headers=teacher).status_code == 200
     assert client.delete(f"/api/papers/{paper['id']}", headers=teacher).status_code == 204
     assert client.get(f"/api/papers/{paper['id']}", headers=teacher).status_code == 404
 
@@ -247,7 +252,11 @@ def test_delete_record_keeps_published_paper(client, teacher, student, db):
     space_papers = client.get(f"/api/spaces/{space['id']}/papers", headers=student).json()
     assert [p["id"] for p in space_papers] == [paper["id"]]
 
-    # mode=paper：整卷删除
+    # mode=paper：关闭整卷并停止所有空间后才能删除。
+    assert client.post(f"/api/papers/{paper['id']}/close", headers=teacher).status_code == 200
+    assert client.post(
+        f"/api/papers/{paper['id']}/publications/{space['id']}/stop", headers=teacher,
+    ).status_code == 204
     assert client.delete(f"/api/papers/{paper['id']}?mode=paper", headers=teacher).status_code == 204
     assert client.get(f"/api/papers/{paper['id']}", headers=teacher).status_code == 404
     assert client.get(f"/api/spaces/{space['id']}/papers", headers=student).json() == []

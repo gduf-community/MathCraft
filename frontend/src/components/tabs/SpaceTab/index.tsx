@@ -23,23 +23,28 @@ import { stopPublication, resumePublication } from '../../../api/backend'
 import ConfirmDialog from '../../ui/ConfirmDialog'
 import ExplainView from './ExplainView'
 import AnswerView from '../RecordsTab/AnswerView'
+import { PaperClosedButton } from '../RecordsTab'
 
 interface OpenTab {
   id: string
   name: string
   /** 打开标签时固定的组卷记录（学生看到的可能是空间发布卷，不在其组卷记录内） */
   record?: AssembleRecord
+  spaceId?: string
 }
 
 /** 空间发布卷 → 组卷记录视图模型（题目由作答/讲解接口按需拉取） */
-function spacePaperToRecord(p: api.ApiSpacePaper, spaceName: string): AssembleRecord {
+function spacePaperToRecord(p: api.ApiSpacePaper, space: StudySpace): AssembleRecord {
   return {
     id: p.id,
+    closed: p.closed,
+    deleted: p.deleted,
     name: p.name,
     createdAt: api.formatDateTime(p.created_at),
     questionCount: p.question_count,
     totalScore: p.total_score,
-    spaces: [spaceName],
+    spaces: [space.name],
+    publications: [{ spaceId: space.id, stopped: p.stopped }],
     published: p.status === 'published',
     questions: [],
     examWindow: p.exam_window
@@ -74,14 +79,17 @@ interface RemainInfo {
 
 /** 剩余作答时间：按 结束时间 − 当前时间 计算；未开始不倒计时，不足一天按小时/分钟显示 */
 function remainInfo(record: AssembleRecord): RemainInfo {
+  if (record.deleted) return { label: '已删除·历史', muted: true }
+  if (record.closed) return { label: '试卷已关闭', muted: true }
   if (record.stopped) return { label: '已停止作答', muted: true }
   if (!record.examWindow) return { label: '不限时间' }
-  const start = new Date(record.examWindow.start).getTime()
-  const end = new Date(record.examWindow.end).getTime()
+  const start = record.examWindow.start ? new Date(record.examWindow.start).getTime() : null
+  const end = record.examWindow.end ? new Date(record.examWindow.end).getTime() : null
   const now = Date.now()
   // 作答窗口尚未开始：直接显示未开始，不提前倒计时
-  if (now < start) return { label: '未开始' }
-  if (now >= end) return { label: '已结束', muted: true }
+  if (start !== null && now < start) return { label: '未开始' }
+  if (end !== null && now >= end) return { label: '已结束', muted: true }
+  if (end === null) return { label: '不限结束时间' }
   const diff = end - now
   const days = Math.floor(diff / 86400000)
   if (days >= 1) return { label: '剩余', num: String(days), unit: '天' }
@@ -120,28 +128,35 @@ export default function SpaceTab() {
   }
 
   /** 教师：讲解题目，新开标签页（左侧题目 + 右侧导航与作答分布） */
-  const openExplain = (record: AssembleRecord) => {
-    const tabId = `explain-${record.id}`
-    if (tabs.some((t) => t.id === tabId)) {
+  const openExplain = async (record: AssembleRecord, spaceId: string) => {
+    const tabId = `explain-${spaceId}-${record.id}`
+    try {
+      const historicalRecord = api.mapPaper(await api.getPaperApi(record.id, true))
+      setTabs((prev) => {
+        const tab = { id: tabId, name: historicalRecord.name, record: historicalRecord, spaceId }
+        return prev.some((t) => t.id === tabId)
+          ? prev.map((t) => t.id === tabId ? tab : t)
+          : [...prev, tab]
+      })
       setActiveTab(tabId)
-      return
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '加载历史试卷失败', 'error')
     }
-    setTabs((prev) => [...prev, { id: tabId, name: record.name, record }])
-    setActiveTab(tabId)
   }
 
   /** 学生：作答空间内发布的试卷，新开标签页（答题 + AI 批卷）；已过作答时间禁止进入 */
-  const openAnswer = (record: AssembleRecord) => {
-    if (remainInfo(record).label === '已结束') {
-      showToast('已过作答时间')
+  const openAnswer = (record: AssembleRecord, spaceId: string) => {
+    if (!record.answered && (record.deleted || record.closed || record.stopped || remainInfo(record).label === '已结束')) {
+      showToast(record.deleted ? '试卷已删除，仅可查看历史作答' : record.closed ? '试卷已关闭' : record.stopped ? '本空间已停止作答' : '已过作答时间')
       return
     }
-    const tabId = `answer-${record.id}`
+    const tabId = `answer-${spaceId}-${record.id}`
     if (tabs.some((t) => t.id === tabId)) {
+      setTabs(previous => previous.map(tab => tab.id === tabId ? { ...tab, name: record.name, record } : tab))
       setActiveTab(tabId)
       return
     }
-    setTabs((prev) => [...prev, { id: tabId, name: record.name, record }])
+    setTabs((prev) => [...prev, { id: tabId, name: record.name, record, spaceId }])
     setActiveTab(tabId)
   }
 
@@ -170,11 +185,11 @@ export default function SpaceTab() {
           showToast('该试卷不存在或已被删除')
           return
         }
-        const record = spacePaperToRecord(p, space.name)
-        const tabId = `answer-${paperId}`
+        const record = spacePaperToRecord(p, space)
+        const tabId = `answer-${spaceId}-${paperId}`
         setTabs((prev) => {
           let next = prev.some((t) => t.id === spaceId) ? prev : [...prev, { id: spaceId, name: space.name }]
-          if (!next.some((t) => t.id === tabId)) next = [...next, { id: tabId, name: record.name, record }]
+          if (!next.some((t) => t.id === tabId)) next = [...next, { id: tabId, name: record.name, record, spaceId }]
           return next
         })
         setActiveTab(tabId)
@@ -188,7 +203,14 @@ export default function SpaceTab() {
 
   const activeTabObj = tabs.find((t) => t.id === activeTab)
   const active = spaces.find((s) => s.id === activeTab)
-  const explainRecord = activeTabObj?.record
+  const latestRecord = records.find(record => record.id === activeTabObj?.record?.id)
+  const paperSpace = spaces.find(space => space.id === activeTabObj?.spaceId)
+  // 讲解标签保留 history=true 的完整快照，不能被普通详情中的 active 题目覆盖。
+  const paperRecord = activeTab.startsWith('explain-') ? activeTabObj?.record : latestRecord ?? activeTabObj?.record
+  const explainRecord = paperRecord ? {
+    ...paperRecord,
+    stopped: paperRecord.publications?.find(publication => publication.spaceId === paperSpace?.id)?.stopped ?? paperRecord.stopped,
+  } : undefined
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -288,10 +310,10 @@ export default function SpaceTab() {
         )}
       </div>
 
-      {activeTab.startsWith('answer-') && explainRecord ? (
-        <AnswerView key={explainRecord.id} record={explainRecord} />
-      ) : activeTab.startsWith('explain-') && explainRecord ? (
-        <ExplainView record={explainRecord} space={active ?? spaces[0]} />
+      {activeTab.startsWith('answer-') && explainRecord && paperSpace ? (
+        <AnswerView key={activeTab} record={explainRecord} spaceId={paperSpace.id} />
+      ) : activeTab.startsWith('explain-') && explainRecord && paperSpace ? (
+        <ExplainView key={activeTab} record={explainRecord} space={paperSpace} />
       ) : activeTab === 'list' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="grid grid-cols-4 gap-4">
@@ -307,7 +329,10 @@ export default function SpaceTab() {
           </div>
         </div>
       ) : active ? (
-        <SpaceDetail space={active} records={records} onExplain={openExplain} onAnswer={openAnswer} />
+        <SpaceDetail key={active.id} space={active} records={records} onExplain={openExplain} onAnswer={openAnswer}
+          onPublicationRemoved={(paperId) => {
+            setTabs(previous => previous.filter(tab => tab.spaceId !== active.id || tab.record?.id !== paperId))
+          }} />
       ) : null}
 
       {createOpen && (
@@ -428,13 +453,15 @@ function SpaceDetail({
   records,
   onExplain,
   onAnswer,
+  onPublicationRemoved,
 }: {
   space: StudySpace
   records: AssembleRecord[]
-  onExplain: (r: AssembleRecord) => void
-  onAnswer: (r: AssembleRecord) => void
+  onExplain: (r: AssembleRecord, spaceId: string) => Promise<void>
+  onAnswer: (r: AssembleRecord, spaceId: string) => void
+  onPublicationRemoved: (paperId: string) => void
 }) {
-  const { role, spaces, showToast, updateRecord, deleteRecord, removeSpaceMember, renameSpace } = useApp()
+  const { role, showToast, refreshRecord, deleteRecord, removeSpaceMember, renameSpace } = useApp()
   const isStudent = role === 'student'
   // 学生人数：不含创建者（老师）
   const studentCount = Math.max(0, space.memberCount - 1)
@@ -442,26 +469,38 @@ function SpaceDetail({
   const [nameDraft, setNameDraft] = useState(space.name)
   const [memberModal, setMemberModal] = useState(false)
   const [deletingPaper, setDeletingPaper] = useState<AssembleRecord | null>(null)
+  const [removingPublication, setRemovingPublication] = useState<AssembleRecord | null>(null)
 
-  // 组卷记录按账号隔离：学生看空间发布卷走独立接口，教师看自己创建的试卷（来自组卷记录）
+  // 空间接口按本空间 submitted 历史筛选已删除试卷；教师补充完整发布状态以判断写操作。
   const [spacePapers, setSpacePapers] = useState<AssembleRecord[]>([])
+  const [loadingPapers, setLoadingPapers] = useState(true)
+  const [papersError, setPapersError] = useState<string | null>(null)
+  const [busyPaperId, setBusyPaperId] = useState<string | null>(null)
+  const [explainingPaperId, setExplainingPaperId] = useState<string | null>(null)
   useEffect(() => {
-    if (!isStudent) return
     let cancelled = false
+    setLoadingPapers(true)
+    setPapersError(null)
     api
       .listSpacePapers(space.id)
       .then((rows) => {
-        if (!cancelled) setSpacePapers(rows.map((p) => spacePaperToRecord(p, space.name)))
+        if (!cancelled) setSpacePapers(rows.map((p) => spacePaperToRecord(p, space)))
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        if (!cancelled) setPapersError(error instanceof Error ? error.message : '加载空间试卷失败')
+      })
+      .finally(() => { if (!cancelled) setLoadingPapers(false) })
     return () => {
       cancelled = true
     }
-  }, [isStudent, space.id, space.name])
+  }, [records, space])
 
   const papers = useMemo(
-    () => (isStudent ? spacePapers : records.filter((r) => r.published && r.spaces.includes(space.name))),
-    [isStudent, spacePapers, records, space.name],
+    () => spacePapers.map(paper => {
+      const record = !isStudent ? records.find(row => row.id === paper.id) : undefined
+      return record ? { ...record, ...paper, questions: record.questions, publications: record.publications } : paper
+    }),
+    [isStudent, spacePapers, records],
   )
 
   const startEdit = () => {
@@ -482,9 +521,9 @@ function SpaceDetail({
   /** 催交：24 小时冷却，成功后本地同步最近催交时间 */
   const [urgeAtMap, setUrgeAtMap] = useState<Record<string, string>>({})
   const urge = (record: AssembleRecord) => {
-    const spaceId = spaces.find((s) => s.name === record.spaces[0])?.id ?? space.id
+    if (record.deleted) return
     void api
-      .urgePaper(record.id, spaceId)
+      .urgePaper(record.id, space.id)
       .then(() => {
         const nowIso = new Date().toISOString()
         setUrgeAtMap((prev) => ({ ...prev, [record.id]: nowIso }))
@@ -496,25 +535,46 @@ function SpaceDetail({
   const lastUrgeOf = (record: AssembleRecord) => urgeAtMap[record.id] ?? record.lastUrgeAt ?? null
 
   /** 停止 / 恢复作答切换 */
-  const toggleStop = (record: AssembleRecord) => {
+  const toggleStop = async (record: AssembleRecord) => {
+    if (record.deleted || busyPaperId) return
     const next = !record.stopped
-    const target = spaces.find((s) => record.spaces.includes(s.name))
-    if (!target) {
-      showToast('找不到试卷所属空间')
-      return
+    setBusyPaperId(record.id)
+    try {
+      await (next ? stopPublication(record.id, space.id) : resumePublication(record.id, space.id))
+      await refreshRecord(record.id)
+      showToast(next ? '本空间已停止作答' : record.closed ? '本空间已恢复，试卷仍关闭' : '本空间已恢复作答', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '操作失败，请刷新后重试', 'error')
+    } finally {
+      setBusyPaperId(null)
     }
-    void (next ? stopPublication(record.id, target.id) : resumePublication(record.id, target.id))
-      .then(() => updateRecord({ ...record, stopped: next }))
-      .catch((err) => showToast(err instanceof Error ? err.message : '操作失败'))
   }
 
-  const deletePaper = (record: AssembleRecord) => {
+  const deletePaper = async (record: AssembleRecord) => {
+    if (record.deleted || busyPaperId) return
     // 空间侧删除为整卷删除（组卷记录一并移除）
-    void deleteRecord(record.id, { withPaper: true })
-    showToast(`已删除试卷「${record.name}」`)
+    setBusyPaperId(record.id)
+    try { await deleteRecord(record.id, { withPaper: true }) } finally { setBusyPaperId(null) }
   }
 
-  const iconBtn = 'inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors'
+  const removePublication = async (record: AssembleRecord) => {
+    setBusyPaperId(record.id)
+    try {
+      await api.deletePublication(record.id, space.id)
+      setSpacePapers(previous => previous.filter(paper => paper.id !== record.id))
+      onPublicationRemoved(record.id)
+      showToast('已从本空间移除，试卷及其他空间的发布保留', 'success')
+      try {
+        await refreshRecord(record.id)
+      } catch (error) {
+        showToast(error instanceof Error ? `已移除，但刷新试卷状态失败：${error.message}` : '已移除，请重新进入页面刷新试卷状态', 'error')
+      }
+    } finally {
+      setBusyPaperId(null)
+    }
+  }
+
+  const iconBtn = 'inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50'
 
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
@@ -587,16 +647,19 @@ function SpaceDetail({
           <FolderOpen size={15} className="text-primary" />
           发布到本空间的试卷（{papers.length}）
         </h3>
-        {papers.length === 0 ? (
+        {loadingPapers ? <p role="status" className="text-sm text-ink-3">正在加载试卷…</p>
+          : papersError ? <p role="alert" className="text-sm text-danger">{papersError}</p>
+          : papers.length === 0 ? (
           <div className="rounded-xl border border-dashed border-line bg-page px-4 py-8 text-center text-sm text-ink-3">
             暂无发布的试卷，可在组卷发布时选择本空间
           </div>
         ) : (
           <ul className="space-y-2.5">
             {papers.map((r) => {
-              const started = r.examWindow ? new Date(r.examWindow.start).toLocaleString('zh-CN', { hour12: false }) : null
-              const ended = r.examWindow ? new Date(r.examWindow.end).toLocaleString('zh-CN', { hour12: false }) : null
+              const started = r.examWindow?.start ? new Date(r.examWindow.start).toLocaleString('zh-CN', { hour12: false }) : '不限'
+              const ended = r.examWindow?.end ? new Date(r.examWindow.end).toLocaleString('zh-CN', { hour12: false }) : '不限'
               const stopped = !!r.stopped
+              const canDelete = !r.deleted && r.closed && (r.publications?.every(publication => publication.stopped) ?? false)
               const remain = remainInfo(r)
               // 作答进度：已交卷人数 / 空间学生数
               const pct = studentCount > 0 ? Math.min(100, Math.round(((r.submittedCount ?? 0) / studentCount) * 100)) : 0
@@ -620,6 +683,7 @@ function SpaceDetail({
                         <p className="mt-0.5 truncate text-xs text-ink-3">
                           {r.examWindow ? `开始 ${started} · 结束 ${ended}` : '不限时间'}
                         </p>
+                        {r.closed && <p className="mt-1 text-xs text-ink-3">试卷已关闭 · 本空间{stopped ? '已停止' : '未停止'}作答</p>}
                       </div>
                     </div>
                     <div className="min-w-0">
@@ -652,10 +716,11 @@ function SpaceDetail({
                         // 学生：只保留作答入口
                         <button
                           type="button"
-                          onClick={() => onAnswer(r)}
+                          onClick={() => onAnswer(r, space.id)}
+                          disabled={!r.answered && (r.deleted || r.closed || stopped || remain.muted)}
                           className={`${iconBtn} border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100`}
                         >
-                          作答
+                          {r.deleted ? '查看历史作答' : r.answered ? '查看作答' : '作答'}
                         </button>
                       ) : (
                         <>
@@ -664,6 +729,7 @@ function SpaceDetail({
                             return (
                               <button
                                 type="button"
+                                disabled={r.deleted || r.closed || stopped || !!busyPaperId}
                                 title={coolHours ? `还有 ${coolHours} 小时可再次点击` : '催促未交卷的学生提交'}
                                 onClick={() => {
                                   // 冷却期内不禁用按钮，点击仅提示剩余等待时间
@@ -682,29 +748,47 @@ function SpaceDetail({
                           })()}
                           <button
                             type="button"
-                            onClick={() => toggleStop(r)}
+                            onClick={() => void toggleStop(r)}
+                            disabled={r.deleted || !!busyPaperId}
+                            aria-busy={busyPaperId === r.id}
                             className={`${iconBtn} ${
                               stopped
                                 ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
                                 : 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
                             }`}
                           >
-                            {stopped ? '恢复作答' : '停止作答'}
+                            {busyPaperId === r.id ? '处理中…' : stopped ? '恢复作答' : '停止作答'}
+                          </button>
+                          <PaperClosedButton record={r} disabled={!!busyPaperId} />
+                          <button
+                            type="button"
+                            disabled={r.deleted || !stopped || !!busyPaperId}
+                            title={stopped ? '仅移除本空间发布；已有作答时保留历史，请使用停止作答' : '请先停止本空间作答'}
+                            onClick={() => setRemovingPublication(r)}
+                            className={`${iconBtn} border-line text-ink-2 hover:bg-page`}
+                          >
+                            从本空间移除
                           </button>
                           <button
                             type="button"
-                            onClick={() => onExplain(r)}
+                            disabled={explainingPaperId !== null}
+                            aria-busy={explainingPaperId === r.id}
+                            onClick={async () => {
+                              if (explainingPaperId !== null) return
+                              setExplainingPaperId(r.id)
+                              try { await onExplain(r, space.id) } finally { setExplainingPaperId(null) }
+                            }}
                             className={`${iconBtn} border border-primary/30 bg-primary-light/50 text-primary hover:bg-primary-light`}
                           >
-                            讲解题目
+                            {explainingPaperId === r.id ? '加载中…' : '讲解题目'}
                           </button>
                           <button
                             type="button"
-                            disabled={!stopped}
-                            title={stopped ? undefined : '请先停止作答，才能删除试卷'}
+                            disabled={!canDelete || !!busyPaperId}
+                            title={canDelete ? '整卷删除，历史作答保留' : '请先关闭试卷，并停止所有发布空间的作答'}
                             onClick={() => setDeletingPaper(r)}
                             className={`${iconBtn} border-red-200 bg-red-50 text-red-500 hover:bg-red-100 ${
-                              stopped ? '' : 'cursor-not-allowed opacity-50'
+                              canDelete ? '' : 'cursor-not-allowed opacity-50'
                             }`}
                           >
                             删除
@@ -734,10 +818,19 @@ function SpaceDetail({
       {deletingPaper && (
         <ConfirmDialog
           title="删除试卷"
-          message={`确定从本空间删除试卷「${deletingPaper.name}」吗？该组卷记录将一并删除。`}
+          message={`确定删除试卷「${deletingPaper.name}」吗？该试卷将从所有空间及组卷记录移除，历史作答和成绩保留。`}
           confirmText="确认删除"
           onConfirm={() => deletePaper(deletingPaper)}
           onClose={() => setDeletingPaper(null)}
+        />
+      )}
+      {removingPublication && (
+        <ConfirmDialog
+          title="从本空间移除试卷"
+          message={`确定从「${space.name}」移除试卷「${removingPublication.name}」吗？试卷和其他空间的发布会保留。本空间已有任何作答时不能移除，请保留“停止作答”状态以便查看历史。`}
+          confirmText="确认移除"
+          onConfirm={() => removePublication(removingPublication)}
+          onClose={() => setRemovingPublication(null)}
         />
       )}
     </div>

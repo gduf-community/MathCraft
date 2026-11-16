@@ -64,7 +64,9 @@ def simplify_probe(monkeypatch) -> _SimplifyProbe:
         probe.ocr_documents.append(file_path.stem)
         result_dir.mkdir(parents=True, exist_ok=True)
         markdown = _ocr_markdown(file_path.stem)
-        (result_dir / "full.md").write_text(markdown, encoding="utf-8")
+        with fitz.open(file_path) as pdf:
+            identity = mineru._cache_identity(file_path, pdf.page_count)
+        mineru._publish_markdown(result_dir, markdown, identity)
         return markdown, result_dir
 
     def fake_get_client(api_key=None):
@@ -414,7 +416,9 @@ def test_scanned_pdf_uses_mineru(client, teacher, monkeypatch):
     def fake_extract(token, file_path, result_dir, on_progress=None):
         result_dir.mkdir(parents=True, exist_ok=True)
         md = result_dir / "full.md"
-        md.write_text("# OCR 结果\n\n导数的定义与求导法则。", encoding="utf-8")
+        with fitz.open(file_path) as pdf:
+            identity = mineru._cache_identity(file_path, pdf.page_count)
+        mineru._publish_markdown(result_dir, "# OCR 结果\n\n导数的定义与求导法则。", identity)
         return md.read_text(encoding="utf-8"), result_dir
 
     def fake_simplify(markdown, source_name="教材", on_progress=None, *, api_key=None):

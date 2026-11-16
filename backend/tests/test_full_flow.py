@@ -102,12 +102,17 @@ def test_full_teacher_student_flow(client, teacher, student):
     assert len(data["questions"]) == 2
     assert data["questions"][0]["option_counts"][0] == {"label": "A", "count": 1}
 
-    # 8. 教师停止作答，学生不能再作答
+    # 8. 教师停止作答，已交卷学生仍可复盘，但不能开始新作答
     assert client.post(
         f"/api/papers/{paper['id']}/publications/{space['id']}/stop", headers=teacher
     ).status_code == 204
-    blocked = client.get(
+    historical = client.get(
         f"/api/papers/{paper['id']}/attempt?space_id={space['id']}", headers=student
+    )
+    assert historical.status_code == 200, historical.text
+    assert historical.json()["attempt"]["status"] == "submitted"
+    blocked = client.post(
+        f"/api/papers/{paper['id']}/attempts", headers=student, json={"space_id": space["id"]},
     )
     assert blocked.status_code == 403
     assert blocked.json()["detail"]["code"] == "PAPER_STOPPED"

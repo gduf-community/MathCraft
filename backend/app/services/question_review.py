@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 
 import json_repair
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -586,6 +587,8 @@ def review_questions(
     """中间件主流程，返回通过校验的题目与统计。
 
     progress(percent, stage) 用于向出题任务写阶段进度；不传则静默执行。
+    db 必须没有活动事务和待写变更。语料在本函数拥有的短读事务内物化，
+    该事务在任何模型或 progress 调用前结束；不提交或回滚调用者的业务事务。
     """
     stats = ReviewStats()
     if not questions:
@@ -597,7 +600,13 @@ def review_questions(
 
     target = params.difficulty
     scope = params.scope or ""
-    corpus = load_corpus(db, user_id, params.kb_id)
+    if db.in_transaction() or db.new or db.dirty or db.deleted:
+        # 连已 flush 的变更也通过活动事务拒绝，不能只检查 new/dirty/deleted 后 rollback。
+        raise InvalidRequestError(
+            "review_questions requires a clean Session without an active transaction"
+        )
+    with db.begin():
+        corpus = load_corpus(db, user_id, params.kb_id)
     groups: dict[QuestionType, list[Question]] = {}
     for question in questions:
         groups.setdefault(question.type, []).append(question)

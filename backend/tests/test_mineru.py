@@ -34,14 +34,19 @@ def _make_pdf(page_count: int) -> bytes:
         return pdf.tobytes()
 
 
-def _cache_parts(result_dir: Path, count: int) -> list[str]:
-    """在临时目录写入已经成功的分片缓存。"""
+def _cache_parts(source: Path, result_dir: Path, count: int) -> list[str]:
+    """按真实源 PDF 和分片范围发布已完成缓存，包含有效完成清单。"""
+    with pymupdf.open(source) as pdf:
+        page_count = pdf.page_count
+    identity = mineru._cache_identity(source, page_count)
+    plan = mineru._plan_parts(page_count)
     contents: list[str] = []
     for index in range(count):
-        target = result_dir / f"part_{index:02d}" / "full.md"
-        target.parent.mkdir(parents=True, exist_ok=True)
         text = f"# Cached part {index:02d}\n\nFake cached OCR content."
-        target.write_text(text, encoding="utf-8")
+        part_identity = identity | {
+            "page_start": plan[index][0], "page_end": plan[index][1], "part_index": index,
+        }
+        mineru._publish_markdown(result_dir / f"part_{index:02d}", text, part_identity)
         contents.append(text)
     return contents
 
@@ -139,7 +144,7 @@ def test_extract_pdf_cached_parts_preserve_failed_part_identity(
     source = tmp_path / "fake-scan.pdf"
     source.write_bytes(_make_pdf(page_count))
     result_dir = tmp_path / "ocr"
-    cached = _cache_parts(result_dir, 4)
+    cached = _cache_parts(source, result_dir, 4)
     progress: list[tuple[int, int]] = []
 
     with pytest.raises(mineru.MinerUError) as error:
@@ -175,7 +180,7 @@ def test_extract_pdf_merges_cached_and_downloaded_parts_in_page_order(
     source = tmp_path / "fake-scan.pdf"
     source.write_bytes(_make_pdf(page_count))
     result_dir = tmp_path / "ocr"
-    cached = _cache_parts(result_dir, 4)
+    cached = _cache_parts(source, result_dir, 4)
     mineru_server.fail_parse = False
     progress: list[tuple[int, int]] = []
 

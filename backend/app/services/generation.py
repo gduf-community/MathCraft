@@ -1,15 +1,22 @@
-"""出题任务编排：HyDE → 混合检索 → 分题型生成 → 中间件校验 → 批次/题目落库 → Redis 进度。"""
+"""持久出题任务：无写锁调用模型，SQL 原子发布批次与终态，Redis 仅作缓存。"""
 import json
 import logging
 
+from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import GenerationBatch, Question
+from app.deps import resolve_bank_access
+from app.errors import AppError
+from app.models import Document, GenerationBatch, Question, User
+from app.models.chat import ChatSession
 from app.models.base import new_id
+from app.models.generation_task import GenerationTask
+from app.schemas.api import GenerateStartBody
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
-from app.services import cache, question_review
+from app.schemas.question import Question as GeneratedQuestion
+from app.services import auth, cache, question_review, rag_settings
 from app.services.phoenix_tracing import trace_run
 from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import NeedConfirmError
@@ -21,12 +28,158 @@ def _task_key(task_id: str) -> str:
     return cache.PREFIX_GEN_TASK.format(task_id=task_id)
 
 
-def _write_progress(task_id: str, percent: int, stage: str, **fields) -> None:
-    r = cache.get_redis()
-    mapping = {"progress": int(percent), "stage": stage}
-    mapping.update({k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else str(v)) for k, v in fields.items()})
-    r.hset(_task_key(task_id), mapping=mapping)
-    r.expire(_task_key(task_id), settings.generate_task_ttl_seconds)
+ACTIVE_TASK_STATUSES = ("queued", "running")
+_LEASE_SECONDS = 120
+_RENEW_LEASE = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+_RELEASE_LEASE = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+
+def acquire_lock(user_id: str, token: str) -> bool:
+    """取得辅助租约；Redis 不可用时由持久 SQL 门禁保证互斥。"""
+    try:
+        return bool(cache.get_redis().set(
+            cache.PREFIX_GEN_LOCK.format(user_id=user_id), token, nx=True, ex=_LEASE_SECONDS,
+        ))
+    except RedisError:
+        return False
+
+
+def renew_lock(user_id: str, token: str) -> bool:
+    """只有持有同一 task/run token 的执行者可以续租。"""
+    try:
+        return bool(cache.get_redis().eval(
+            _RENEW_LEASE, 1, cache.PREFIX_GEN_LOCK.format(user_id=user_id),
+            token, _LEASE_SECONDS,
+        ))
+    except RedisError:
+        return False
+
+
+def release_lock(user_id: str, token: str) -> bool:
+    """比较并释放，旧任务不能删除后继任务租约。"""
+    try:
+        return bool(cache.get_redis().eval(
+            _RELEASE_LEASE, 1, cache.PREFIX_GEN_LOCK.format(user_id=user_id), token,
+        ))
+    except RedisError:
+        return False
+
+
+def validate_resources(db: Session, user_id: str, bank_id: str, document_id: str) -> Document:
+    """从 SQL 重新验证账号、题库成员与 ready 文档。最终写入须先取得资料门禁。"""
+    user = db.get(User, user_id, populate_existing=True)
+    if user is None or user.status != "active":
+        raise AppError("FORBIDDEN", "账号不可用", 403)
+    db.expire_all()
+    resolve_bank_access(db, user, bank_id)
+    doc = db.get(Document, document_id, populate_existing=True)
+    if doc is None or doc.bank_id != bank_id:
+        raise AppError("DOCUMENT_NOT_FOUND", "文档不存在或已被删除", 404)
+    if doc.status != "ready":
+        raise AppError("DOCUMENT_NOT_READY", "文档不可用，请重新上传", 400)
+    return doc
+
+
+def accept_task(
+    db: Session, user_id: str, body: GenerateStartBody, mode: str = "parametric",
+    *, auth_version: int | None = None,
+) -> GenerationTask:
+    """串行化同一用户受理，并在返回 task_id 前提交 SQL。"""
+    bank_id = body.bank_id or body.kb_id or ""
+    document_id = body.document_id or body.doc_id or ""
+    if auth_version is None:
+        user = db.get(User, user_id)
+        auth_version = user.auth_version if user else -1
+    db.rollback()
+    # 复用账号门禁，同时核对请求原认证版本，不能采用 rollback 后刷新的版本。
+    auth.assert_version(db, user_id, auth_version)
+    validate_resources(db, user_id, bank_id, document_id)
+    if db.query(GenerationTask.id).filter(
+        GenerationTask.user_id == user_id, GenerationTask.status.in_(ACTIVE_TASK_STATUSES),
+    ).first():
+        db.rollback()
+        raise AppError("GENERATION_BUSY", "你已有进行中的出题任务，请等待完成后再试", 409)
+    task = GenerationTask(
+        id=new_id("task"), run_id=new_id("run"), user_id=user_id,
+        bank_id=bank_id, document_id=document_id, mode=mode, params_json=body.model_dump_json(),
+    )
+    db.add(task)
+    db.commit()
+    # 缓存失败或残留租约不能推翻已提交的任务受理。
+    acquire_lock(user_id, f"{task.id}:{task.run_id}")
+    _cache_task(task)
+    return task
+
+
+def _cache_task(task: GenerationTask) -> None:
+    """SQL 提交后的尽力缓存，不参与完成判定或权限判定。"""
+    try:
+        r = cache.get_redis()
+        r.hset(_task_key(task.id), mapping={
+            "user_id": task.user_id, "run_id": task.run_id, "status": task.status,
+            "progress": task.progress, "stage": task.stage,
+        })
+        r.expire(_task_key(task.id), settings.generate_task_ttl_seconds)
+    except RedisError:
+        logger.debug("出题进度缓存不可用；进度继续从 SQL 读取")
+
+
+def _write_progress(
+    task_id: str, percent: int, stage: str, *, run_id: str,
+) -> None:
+    """短事务更新运行中的持久进度；过期执行者不能覆盖终态。"""
+    with SessionLocal() as db:
+        query = db.query(GenerationTask).filter(
+            GenerationTask.id == task_id, GenerationTask.status == "running",
+            GenerationTask.run_id == run_id,
+        )
+        if not query.update({"progress": min(99, max(0, percent)), "stage": stage},
+                            synchronize_session=False):
+            db.rollback()
+            return
+        db.commit()
+        task = db.get(GenerationTask, task_id, populate_existing=True)
+        if task is not None:
+            _cache_task(task)
+            renew_lock(task.user_id, f"{task_id}:{run_id}")
+
+
+def get_hyde(params: GenerateParams, body: GenerateStartBody, api_key: str) -> str | None:
+    """可选 HyDE 缓存故障不阻断题目生成。"""
+    return get_cached_hyde(params.kb_id, params.doc_id, body.scope, body.difficulty, api_key)
+
+
+def get_cached_hyde(
+    bank_id: str, document_id: str, scope: str, difficulty: str, api_key: str,
+) -> str | None:
+    """复用 HyDE 生成与键格式；缓存读写失败不丢弃本轮生成结果。"""
+    scope = scope.strip()
+    if not scope or not api_key:
+        return None
+    key = cache.PREFIX_HYDE.format(digest=hyde._digest(bank_id, document_id, scope, difficulty))
+    try:
+        cached = cache.get_redis().get(key)
+        if isinstance(cached, str) and cached:
+            return cached
+    except RedisError:
+        logger.warning("HyDE 缓存读取失败，继续本轮生成")
+    generated = hyde.generate_hyde(scope, api_key)
+    if generated:
+        try:
+            cache.get_redis().set(key, generated, ex=hyde._HYDE_TTL)
+        except RedisError:
+            logger.warning("HyDE 缓存写入失败，保留本轮生成结果")
+    return generated
 
 
 def persist_batch(
@@ -37,9 +190,11 @@ def persist_batch(
     mode: str,
     params: GenerateParams,
     hyde_text: str | None,
-    questions: list,
+    questions: list[GeneratedQuestion],
+    *,
+    commit: bool = True,
 ) -> GenerationBatch:
-    """把生成结果写入 generation_batches + questions，返回批次。"""
+    """写入批次与题目；commit=False 时由调用者连同任务/消息一起提交。"""
     batch = GenerationBatch(
         id=new_id("batch"),
         user_id=user_id,
@@ -75,7 +230,10 @@ def persist_batch(
                 created_by=user_id,
             )
         )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return batch
 
 
@@ -108,9 +266,10 @@ def question_to_api(
     }
 
 
-def build_params(body) -> GenerateParams:
-    bank_id = body.bank_id or body.kb_id
-    document_id = body.document_id or body.doc_id
+def build_params(body: GenerateStartBody) -> GenerateParams:
+    """将兼容 HTTP 请求统一转换为内部出题参数。"""
+    bank_id = body.bank_id or body.kb_id or ""
+    document_id = body.document_id or body.doc_id or ""
     return GenerateParams(
         kb_id=bank_id,
         doc_id=document_id,
@@ -131,109 +290,179 @@ def build_params_from_slots(slot_state: dict, bank_id: str, document_id: str) ->
 
 
 @trace_run("parameterized")
-def run_generation_task(task_id: str, user_id: str, api_key: str, body, mode: str = "parametric") -> None:
-    """后台任务：HyDE → 混合检索 → 生成 → 落库 → 更新 Redis 进度到完成。"""
-    r = cache.get_redis()
+def run_generation_task(
+    task_id: str, user_id: str, api_key: str, body: GenerateStartBody,
+    mode: str = "parametric", *, run_id: str | None = None,
+    auth_version: int | None = None,
+) -> None:
+    """先持久认领，再无写锁调用模型；批次与任务完成在同一 SQL 事务提交。"""
+    # 后台分发带有任务 run；认领前读取异常时也必须能把 queued 收束为 failed，
+    # 否则受理门禁会永久认为存在进行中任务。
+    owns_run = run_id is not None
+    claimed = False
     try:
+        with SessionLocal() as db:
+            task = db.get(GenerationTask, task_id)
+            if (task is None or task.user_id != user_id or task.status != "queued"
+                    or (run_id and task.run_id != run_id)):
+                owns_run = False
+                return
+            run_id = task.run_id
+            owns_run = True
+            body = GenerateStartBody.model_validate_json(task.params_json)
+            mode = task.mode
+            if auth_version is None:
+                user = db.get(User, user_id)
+                auth_version = user.auth_version if user else -1
+            auth.assert_version(db, user_id, auth_version)
+            changed = db.query(GenerationTask).filter(
+                GenerationTask.id == task_id, GenerationTask.user_id == user_id,
+                GenerationTask.run_id == run_id, GenerationTask.status == "queued",
+            ).update({"status": "running", "stage": "准备生成"}, synchronize_session=False)
+            if not changed:
+                owns_run = False
+                return
+            db.commit()
+            claimed = True
         params = build_params(body)
-        _write_progress(task_id, 2, "准备生成")
-
-        # HyDE（有 scope 且有密钥时）
-        hyde_text = hyde.get_hyde(
-            r, params.kb_id, params.doc_id, body.scope, body.difficulty, api_key
-        )
+        _write_progress(task_id, 2, "准备生成", run_id=run_id)
+        with SessionLocal() as db:
+            doc_name = validate_resources(db, user_id, params.kb_id, params.doc_id).name
+        hyde_text = get_hyde(params, body, api_key)
         if body.scope and hyde_text:
-            _write_progress(task_id, 5, "已生成假设文档（HyDE），正在混合检索")
-
-        doc_name = body.doc_name or ""
-        if not doc_name:
-            db = SessionLocal()
-            try:
-                from app.models import Document
-
-                d = db.get(Document, params.doc_id)
-                doc_name = d.name if d else ""
-            finally:
-                db.close()
-
+            _write_progress(task_id, 5, "已生成假设文档（HyDE），正在混合检索", run_id=run_id)
+        def progress(percent: int, stage: str) -> None:
+            _write_progress(task_id, percent, stage, run_id=run_id)
         questions = question_gen.generate_questions(
-            params,
-            doc_name,
-            scope=body.scope or None,
-            existing_stems=body.existing_stems,
-            progress_cb=lambda p, s: _write_progress(task_id, p, s),
-            api_key=api_key,
-            hyde_text=hyde_text,
+            params, doc_name, scope=body.scope or None, existing_stems=body.existing_stems,
+            progress_cb=progress, api_key=api_key, hyde_text=hyde_text,
         )
-
-        db = SessionLocal()
-        try:
-            # 中间件：查重 → 难度评分与重出 → 生成解析，通过后才落库并交给预览
+        with SessionLocal() as db:
             questions, stats = question_review.review_questions(
-                db, user_id, questions, params, doc_name, api_key, hyde_text,
-                progress=lambda p, s: _write_progress(task_id, p, s),
+                db, user_id, questions, params, doc_name, api_key, hyde_text, progress=progress,
             )
-            if stats.summary():
-                logger.info("[gen:%s] 中间件：%s", task_id, stats.summary())
-            batch = persist_batch(db, user_id, params.kb_id, params.doc_id, mode, params, hyde_text, questions)
-            payload = [q.model_dump() for q in questions]
-            r.hset(_task_key(task_id), mapping={
-                "progress": 100, "stage": "生成完成", "status": "done",
-                "done": "1", "batch_id": batch.id,
-                "questions": json.dumps(payload, ensure_ascii=False),
-                "review": json.dumps({
-                    "duplicates": stats.duplicates,
-                    "repaired": stats.repaired,
-                    "regenerated": stats.regenerated,
-                    "solved": stats.solved,
-                }, ensure_ascii=False),
-            })
-            r.expire(_task_key(task_id), settings.generate_task_ttl_seconds)
-        finally:
-            db.close()
+            # 审核仅作读操作；结束旧快照后再进入短写事务。
+            db.rollback()
+            auth.assert_version(db, user_id, auth_version)
+            rag_settings.assert_mutations_allowed(db)
+            current = db.query(GenerationTask).filter(
+                GenerationTask.id == task_id, GenerationTask.user_id == user_id,
+                GenerationTask.run_id == run_id, GenerationTask.status == "running",
+            ).update({"stage": "正在写入题目"}, synchronize_session=False)
+            if not current:
+                db.rollback()
+                return
+            validate_resources(db, user_id, params.kb_id, params.doc_id)
+            task = db.get(GenerationTask, task_id, populate_existing=True)
+            if task is None or task.bank_id != params.kb_id or task.document_id != params.doc_id:
+                raise AppError("TASK_NOT_FOUND", "任务资源已变更", 409)
+            batch = persist_batch(
+                db, user_id, params.kb_id, params.doc_id, mode, params, hyde_text, questions,
+                commit=False,
+            )
+            task.status = "done"
+            task.progress = 100
+            task.stage = "生成完成"
+            task.batch_id = batch.id
+            task.result_json = json.dumps([q.model_dump() for q in questions], ensure_ascii=False)
+            task.review_json = json.dumps({
+                "duplicates": stats.duplicates, "repaired": stats.repaired,
+                "regenerated": stats.regenerated, "solved": stats.solved,
+            }, ensure_ascii=False)
+            task.error_json = None
+            db.commit()
+            _cache_task(task)
     except NeedConfirmError as exc:
-        type_label = next(
-            (label for label in question_gen.TYPE_LABELS.values() if label == exc.type_label),
-            "材料",
-        )
-        r.hset(_task_key(task_id), mapping={
-            "status": "failed", "done": "1",
-            "error": json.dumps({
+        label = exc.type_label if exc.type_label in question_gen.TYPE_LABELS.values() else "材料"
+        if owns_run and run_id is not None:
+            _fail_task(task_id, run_id, {
                 "kind": "need_confirm",
-                "message": f"{type_label}原题仅 {exc.available} 道，不足 {exc.requested} 道",
+                "message": f"{label}原题仅 {exc.available} 道，不足 {exc.requested} 道",
                 "available": exc.available, "requested": exc.requested,
-            }, ensure_ascii=False),
-        })
+            }, user_id=user_id)
     except Exception as exc:
-        r.hset(_task_key(task_id), mapping={
-            "status": "failed", "done": "1",
-            "error": json.dumps({"message": llm.friendly_error(exc)}, ensure_ascii=False),
-        })
+        if owns_run and run_id is not None:
+            changed = _fail_task(
+                task_id, run_id, {"message": llm.friendly_error(exc)}, user_id=user_id,
+                statuses=("running",) if claimed else ("queued",),
+            )
+            if not claimed:
+                owns_run = changed
     finally:
-        # 释放同用户生成锁
-        r.delete(cache.PREFIX_GEN_LOCK.format(user_id=user_id))
+        if owns_run and run_id is not None:
+            release_lock(user_id, f"{task_id}:{run_id}")
+
+
+def _fail_task(
+    task_id: str, run_id: str, error: dict, *, user_id: str,
+    statuses: tuple[str, ...] = ACTIVE_TASK_STATUSES,
+) -> bool:
+    """仅当前执行者能够写失败状态，不能覆盖已提交结果或恢复后的中断状态。"""
+    with SessionLocal() as db:
+        changed = db.query(GenerationTask).filter(
+            GenerationTask.id == task_id, GenerationTask.run_id == run_id,
+            GenerationTask.user_id == user_id,
+            GenerationTask.status.in_(statuses),
+        ).update({"status": "failed", "stage": "生成失败",
+                  "error_json": json.dumps(error, ensure_ascii=False)}, synchronize_session=False)
+        db.commit()
+        if changed:
+            task = db.get(GenerationTask, task_id, populate_existing=True)
+            if task is not None:
+                _cache_task(task)
+        return bool(changed)
 
 
 def read_task(task_id: str, user_id: str | None = None) -> dict | None:
-    """读任务进度；user_id 不匹配视为不存在。"""
-    r = cache.get_redis()
-    data = r.hgetall(_task_key(task_id))
-    if not data:
+    """只依据 SQL 所有者返回完整状态；缺少归属或身份时默认拒绝。"""
+    if not user_id:
         return None
-    if user_id and data.get("user_id") and data["user_id"] != user_id:
-        return None
-    error = json.loads(data["error"]) if data.get("error") else None
-    questions = json.loads(data["questions"]) if data.get("questions") else []
-    return {
-        "progress": int(data.get("progress", 0)),
-        "stage": data.get("stage", ""),
-        "review": json.loads(data["review"]) if data.get("review") else None,
-        "done": data.get("done") == "1" or data.get("status") in ("done", "failed"),
-        "batch_id": data.get("batch_id"),
-        "questions": questions,
-        "error": error,
-    }
+    with SessionLocal() as db:
+        task = db.query(GenerationTask).filter(
+            GenerationTask.id == task_id, GenerationTask.user_id == user_id,
+        ).one_or_none()
+        if task is None:
+            return None
+        try:
+            validate_resources(db, user_id, task.bank_id, task.document_id)
+        except AppError:
+            return None
+        batch_id = task.batch_id
+        questions = json.loads(task.result_json) if task.result_json else []
+        review = json.loads(task.review_json) if task.review_json else None
+        error = json.loads(task.error_json) if task.error_json else None
+        if task.status == "done":
+            batch = db.get(GenerationBatch, batch_id) if batch_id else None
+            if (batch is None or batch.user_id != user_id or batch.status != "done"
+                    or batch.bank_id != task.bank_id or batch.document_id != task.document_id
+                    or db.query(Question).filter(Question.batch_id == batch_id).count()
+                    != len(questions)):
+                batch_id, questions, review = None, [], None
+                error = {"message": "生成结果已删除或失效，请检查最近批次或重新生成"}
+        return {
+            "progress": task.progress, "stage": task.stage,
+            "review": review,
+            "done": task.status not in ACTIVE_TASK_STATUSES,
+            "batch_id": batch_id,
+            "questions": questions,
+            "error": error,
+        }
 
 
-def acquire_lock(user_id: str) -> bool:
-    return bool(cache.get_redis().set(cache.PREFIX_GEN_LOCK.format(user_id=user_id), "1", nx=True, ex=60))
+def recover_interrupted_generation() -> None:
+    """单 worker 启动时标记中断，不重新调用模型，由用户显式重试。"""
+    with SessionLocal() as db:
+        tasks = db.query(GenerationTask).filter(
+            GenerationTask.status.in_(ACTIVE_TASK_STATUSES),
+        ).all()
+        for task in tasks:
+            task.status = "interrupted"
+            task.stage = "服务重启，生成已中断"
+            task.error_json = json.dumps({"message": "服务重启，请重新发起生成"}, ensure_ascii=False)
+        db.query(ChatSession).filter(ChatSession.run_status == "running").update({
+            "run_status": "interrupted", "run_stage": "服务重启，请重新发送消息",
+        }, synchronize_session=False)
+        db.commit()
+        for task in tasks:
+            release_lock(task.user_id, f"{task.id}:{task.run_id}")
+            _cache_task(task)

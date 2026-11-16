@@ -139,9 +139,11 @@ interface AppState {
   clearAll: () => void
   deleteSelected: () => Promise<void>
   uploadDocument: (file: File) => Promise<void>
-  deleteRecord: (id: string, opts?: { withPaper?: boolean }) => Promise<void>
-  deleteRecords: (ids: string[]) => Promise<void>
-  deleteRecordQuestions: (recordId: string, ids: string[]) => void
+  deleteRecord: (id: string, opts?: { withPaper?: boolean }) => Promise<boolean>
+  deleteRecords: (ids: string[]) => Promise<boolean>
+  deleteRecordQuestions: (recordId: string, ids: string[]) => Promise<boolean>
+  setRecordClosed: (id: string, closed: boolean) => Promise<boolean>
+  refreshRecord: (id: string) => Promise<void>
   publishRecords: (ids: string[]) => void
   role: AuthRole | null
   createSpace: (name: string, capacity: number) => Promise<StudySpace>
@@ -382,8 +384,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const details = await Promise.all(
       rows.map(async (p) => {
         try {
-          return await api.getPaperApi(p.id)
-        } catch {
+          return await api.getPaperApi(p.id, p.deleted)
+        } catch (error) {
+          console.error('加载试卷详情失败', error)
           return p
         }
       }),
@@ -423,7 +426,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let version: number | undefined
     let target: string | undefined
     try {
-      const bankRows = await api.listBanks('all')
+      const bankRows = (await api.listBanks('all')).filter(bank => bank.status === 'active')
       if (!sessionIsCurrent() || bankVersion !== bankRequestVersion.current) return
       setKbs(bankRows.map(api.mapBankToKnowledgeBase))
       target = selectedKbRef.current
@@ -595,7 +598,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const [bankRows, latest] = await Promise.all([api.listBanks('all'), api.latestBatch()])
         if (!sessionIsCurrent()) return
-        setKbs(bankRows.map(api.mapBankToKnowledgeBase))
+        setKbs(bankRows.filter(bank => bank.status === 'active').map(api.mapBankToKnowledgeBase))
         await Promise.all([loadFavorites(), loadRecords(), refreshSpaces()])
         if (!sessionIsCurrent()) return
         if (latest.batch_id) {
@@ -692,13 +695,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
           existing_stems: questions.map((q) => q.stem),
         })
         if (!isActive()) return false
-        let state = await api.getGenerationProgress(started.task_id)
-        while (!state.done) {
+        let state: api.GenerateProgress
+        for (;;) {
           if (!isActive()) return false
+          try {
+            state = await api.getGenerationProgress(started.task_id)
+          } catch (error) {
+            if (!isActive()) return false
+            const unavailable = error instanceof TypeError
+              || (error instanceof api.ApiError && (error.status === 0 || error.status >= 500))
+            if (!unavailable) throw error
+            setGenProgress({ percent: 0, stage: '连接中断，正在恢复任务进度…' })
+            await new Promise(resolve => window.setTimeout(resolve, 2000))
+            continue
+          }
+          if (state.done) break
           setGenProgress({ percent: state.progress, stage: state.stage })
           await new Promise((r) => setTimeout(r, 500))
-          if (!isActive()) return false
-          state = await api.getGenerationProgress(started.task_id)
         }
         if (!isActive()) return false
         if (state.error?.message) throw new Error(state.error.message)
@@ -1178,40 +1191,76 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         // 默认仅删组卷记录（已发布到空间的试卷保留）；withPaper 时整卷删除
         await api.deletePaperApi(id, opts?.withPaper ? 'paper' : 'record')
-        setRecords((prev) => prev.filter((r) => r.id !== id))
+        if (!sessionIsCurrent()) return false
+        await loadRecords()
+        if (!sessionIsCurrent()) return false
         showToast(opts?.withPaper ? '试卷已删除' : '组卷记录已删除')
+        return true
       } catch (err) {
-        showToast(err instanceof Error ? err.message : '删除失败')
+        showToast(err instanceof Error ? err.message : '删除失败', 'error')
+        return false
       }
     },
-    [showToast],
+    [loadRecords, sessionIsCurrent, showToast],
   )
 
   const deleteRecords = useCallback(
     async (ids: string[]) => {
-      if (!ids.length) return
+      if (!ids.length) return false
       try {
         await api.batchDeletePapers(ids)
-        setRecords((prev) => prev.filter((r) => !ids.includes(r.id)))
+        if (!sessionIsCurrent()) return false
+        await loadRecords()
+        if (!sessionIsCurrent()) return false
         showToast(`已删除 ${ids.length} 条组卷记录`)
+        return true
       } catch (err) {
-        showToast(err instanceof Error ? err.message : '批量删除失败')
+        showToast(err instanceof Error ? err.message : '批量删除失败', 'error')
+        return false
       }
     },
-    [showToast],
+    [loadRecords, sessionIsCurrent, showToast],
   )
 
   const deleteRecordQuestions = useCallback(
-    (recordId: string, ids: string[]) => {
-      void api
-        .removePaperQuestions(recordId, ids)
-        .then((updated) =>
-          setRecords((prev) => prev.map((r) => (r.id === recordId ? api.mapPaper(updated) : r))),
-        )
-        .catch((err) => showToast(err instanceof Error ? err.message : '删除题目失败'))
+    async (recordId: string, ids: string[]) => {
+      try {
+        const updated = await api.removePaperQuestions(recordId, ids)
+        if (!sessionIsCurrent()) return false
+        recordsRequestVersion.current += 1
+        setRecords((prev) => prev.map((r) => (r.id === recordId ? api.mapPaper(updated) : r)))
+        showToast('题目已删除，历史作答保留', 'success')
+        return true
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '删除题目失败', 'error')
+        return false
+      }
     },
-    [showToast],
+    [sessionIsCurrent, showToast],
   )
+
+  const refreshRecord = useCallback(async (id: string) => {
+    const updated = await api.getPaperApi(id)
+    if (!sessionIsCurrent()) return
+    recordsRequestVersion.current += 1
+    setRecords(prev => updated.deleted
+      ? prev.filter(record => record.id !== id)
+      : prev.map(record => record.id === id ? api.mapPaper(updated) : record))
+  }, [sessionIsCurrent])
+
+  const setRecordClosed = useCallback(async (id: string, closed: boolean) => {
+    try {
+      const updated = await (closed ? api.closePaperApi(id) : api.reopenPaperApi(id))
+      if (!sessionIsCurrent()) return false
+      recordsRequestVersion.current += 1
+      setRecords(prev => prev.map(record => record.id === id ? api.mapPaper(updated) : record))
+      showToast(closed ? '试卷已关闭，各空间停止状态保持不变' : '试卷已恢复开放，各空间停止状态保持不变', 'success')
+      return true
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '试卷状态更新失败', 'error')
+      return false
+    }
+  }, [sessionIsCurrent, showToast])
 
   const publishRecords = useCallback(
     (ids: string[]) => {
@@ -1453,6 +1502,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteRecord,
     deleteRecords,
     deleteRecordQuestions,
+    setRecordClosed,
+    refreshRecord,
     publishRecords,
     role: user?.role ?? null,
     createSpace,

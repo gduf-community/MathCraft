@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import BASE_DIR, settings
 from app.db import SessionLocal
 from app.errors import AppError
-from app.models import Bank, Document, DocumentChunk, RagSetting
+from app.models import Bank, DeletionOperation, Document, DocumentChunk, RagSetting
 from app.schemas.rag_settings import (
     ActiveSettings, PendingSettings, RagSettingsBody, RagSettingsResult,
     RebuildStatus, ServiceTestBody, ServiceTestResult, VectorStoreStatus,
@@ -200,6 +200,10 @@ def queue_rebuild(db: Session, revision: int) -> str:
     """锁定待应用配置并拒绝与尚未完成的资料入库同时重建。"""
     row = _lock_settings(db)
     _assert_editable(row, revision)
+    if db.query(DeletionOperation.id).filter(
+        DeletionOperation.status != "completed",
+    ).first():
+        raise AppError("RAG_DELETION_BUSY", "尚有资料删除待恢复，请完成清理后再重建", 409)
     if not row.pending_json:
         raise AppError("RAG_NO_PENDING_CONFIG", "没有需要重建应用的配置", 409)
     unfinished = db.query(Document.id).join(Bank, Bank.id == Document.bank_id).filter(

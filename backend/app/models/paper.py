@@ -16,6 +16,8 @@ class Paper(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     owner_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)      # draft / published
+    closed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
     saved_to_records: Mapped[bool] = mapped_column(default=True, nullable=False)
     # 交卷后的操作：是否允许查看答案解析 / 是否允许修改答案重新提交
     allow_review: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -35,6 +37,7 @@ class PaperQuestion(Base):
     )
 
     id: Mapped[StrPK]
+    removed: Mapped[bool] = mapped_column(default=False, nullable=False)
     paper_id: Mapped[str] = mapped_column(String(40), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False, index=True)
     source_question_id: Mapped[Optional[str]] = mapped_column(String(40), ForeignKey("questions.id", ondelete="SET NULL"))
     order_no: Mapped[int] = mapped_column(nullable=False)
@@ -71,7 +74,9 @@ class PaperAttempt(Base, TimestampMixin):
     paper_id: Mapped[str] = mapped_column(String(40), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False, index=True)
     space_id: Mapped[Optional[str]] = mapped_column(String(40), ForeignKey("study_spaces.id", ondelete="CASCADE"))
     student_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(16), default="answering", nullable=False)  # answering / submitted
+    status: Mapped[str] = mapped_column(String(16), default="answering", nullable=False)  # answering / grading / submitted
+    question_ids_json: Mapped[Optional[str]] = mapped_column(Text)
+    grading_run_id: Mapped[Optional[str]] = mapped_column(String(40))
     score: Mapped[Optional[int]] = mapped_column()
     total_score: Mapped[int] = mapped_column(nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

@@ -2,7 +2,9 @@
 from app.models.auth import AuthProof, AuthSession, EmailChange, RefreshUse
 from app.models.bank import Bank, BankMember, Document, DocumentChunk
 from app.models.chat import ChatMessage, ChatSession
+from app.models.deletion import DeletionOperation
 from app.models.favorite import Favorite, FavoriteGroup
+from app.models.generation_task import GenerationTask
 from app.models.notification import Notification
 from app.models.paper import (
     AttemptAnswer,
@@ -22,6 +24,7 @@ __all__ = [
     "AuthProof", "AuthSession", "EmailChange", "RefreshUse",
     "Bank", "BankMember", "Document", "DocumentChunk",
     "ChatMessage", "ChatSession",
+    "DeletionOperation", "GenerationTask",
     "Favorite", "FavoriteGroup",
     "Notification",
     "Paper", "PaperAttempt", "PaperPublication", "PaperQuestion", "AttemptAnswer",

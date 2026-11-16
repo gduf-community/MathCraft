@@ -138,12 +138,37 @@ def test_generation_requires_ready_document(client, teacher, db):
     assert resp.json()["detail"]["code"] == "DOCUMENT_NOT_READY"
 
 
-def test_generation_busy(client, teacher, monkeypatch):
-    bank, doc = _setup(client, teacher)
-    monkeypatch.setattr(generation, "acquire_lock", lambda user_id: False)
-    resp = client.post("/api/generate/start", json=_body(bank, doc), headers=teacher)
+def test_generation_busy(client, teacher, db, isolated_redis, monkeypatch):
+    """已提交的 queued 任务即使丢失 Redis 租约，也必须阻止同用户重复受理。"""
+    from app.models.generation_task import GenerationTask
+
+    bank = create_bank(client, teacher)
+    user_id = client.get("/api/auth/me", headers=teacher).json()["user"]["id"]
+    doc = Document(
+        id=new_id("doc"), bank_id=bank["id"], name="任务门禁.md", format="MD",
+        size_bytes=1, storage_path="fake-generation-gate.md", status="ready",
+        uploader_id=user_id,
+    )
+    db.add(doc)
+    db.commit()
+    client.put("/api/users/me/model-settings", headers=teacher,
+               json={"deepseek_api_key": "fake-generation-gate-key"})
+    monkeypatch.setattr(generation, "run_generation_task", lambda *args, **kwargs: None)
+    body = _body(bank, {"document_id": doc.id})
+    accepted = client.post("/api/generate/start", json=body, headers=teacher)
+    assert accepted.status_code == 202, accepted.text
+    task_id = accepted.json()["task_id"]
+    db.expire_all()
+    task = db.get(GenerationTask, task_id)
+    assert task is not None and task.user_id == user_id and task.status == "queued"
+
+    isolated_redis.flushall()
+    resp = client.post("/api/generate/start", json=body, headers=teacher)
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "GENERATION_BUSY"
+    db.expire_all()
+    assert db.query(GenerationTask).filter_by(user_id=user_id).count() == 1
+    assert db.get(GenerationTask, task_id).status == "queued"
 
 
 def test_sync_generation(client, teacher):

@@ -62,6 +62,12 @@ export function DocumentFailure({ doc, onRetry }: { doc: BankDoc; onRetry?: () =
   const [expanded, setExpanded] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const retryLock = useRef(false)
+  if (doc.status === 'deleting') {
+    return <div className="mt-2 space-y-1 text-xs text-amber-700" role="status">
+      <p>{doc.stage || '资料正在删除，尚未完成清理，可点击继续清理重试。'}</p>
+      {doc.errorMessage && <p className="select-text break-words text-red-700">{doc.errorMessage}</p>}
+    </div>
+  }
   if (doc.status !== 'failed') return null
   return (
     <div className="mt-2 space-y-2 text-sm">

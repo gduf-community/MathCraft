@@ -21,7 +21,8 @@ def owner(client, db):
 
 
 def _papers(db, owner_id, count):
-    papers = [Paper(id=new_id("p"), name=f"试卷 {i}", owner_id=owner_id)
+    # 删除确认测试使用已关闭草稿，筛选与确认隔离不依赖绕过删除前置条件。
+    papers = [Paper(id=new_id("p"), name=f"试卷 {i}", owner_id=owner_id, closed=True)
               for i in range(count)]
     db.add_all(papers)
     db.commit()
@@ -50,9 +51,11 @@ def test_confirmation_uses_preview_ids_including_limit_and_later_inserts(
     db.expire_all()
     assert str(expected) in reply
     assert db.get(Paper, late_id).name == "试卷 0"
+    assert not db.get(Paper, late_id).deleted
     remaining = db.query(Paper).filter(Paper.id.in_(ids)).all()
     if action == "delete":
-        assert len(remaining) == len(ids) - expected
+        assert len(remaining) == len(ids)
+        assert sum(p.deleted for p in remaining) == expected
     else:
         assert sum(p.name == "新名称" for p in remaining) == expected
 
@@ -67,8 +70,10 @@ def test_confirmation_preserves_filter_operator(owner, db, monkeypatch):
                        filters=[{"field": "name", "op": "eq", "value": "目标"}])
     assert confirm["affected"] == 1
     data_agent.execute_confirmed(db, owner, confirm["id"], True)
-    assert db.get(Paper, ids[1]) is not None
-    assert db.query(Paper).count() == 3
+    db.expire_all()
+    assert db.get(Paper, ids[0]).deleted
+    assert all(not db.get(Paper, paper_id).deleted for paper_id in ids[1:])
+    assert db.query(Paper).count() == 4
 
 
 def test_confirmation_preserves_preview_sort_selection(owner, db, monkeypatch):
@@ -77,9 +82,9 @@ def test_confirmation_preserves_preview_sort_selection(owner, db, monkeypatch):
     assert "试卷 2" in confirm["samples"][0]
     data_agent.execute_confirmed(db, owner, confirm["id"], True)
     db.expire_all()
-    assert db.get(Paper, ids[2]) is None
-    assert db.get(Paper, ids[0]) is not None
-    assert db.get(Paper, ids[1]) is not None
+    assert db.get(Paper, ids[2]).deleted
+    assert not db.get(Paper, ids[0]).deleted
+    assert not db.get(Paper, ids[1]).deleted
 
 
 def test_hardest_favorite_confirmation_selects_older_hard_question(owner, db, monkeypatch):
@@ -234,15 +239,18 @@ def test_favorite_confirmation_uses_preview_order_and_limit(owner, db, monkeypat
 
 
 def test_foreign_account_does_not_consume_confirmation(owner, db, monkeypatch, isolated_redis):
-    _papers(db, owner.id, 1)
+    paper_id = _papers(db, owner.id, 1)[0]
     other = db.query(User).filter_by(account="student").one()
     confirm = _preview(db, owner, monkeypatch)
     with pytest.raises(AppError) as error:
         data_agent.execute_confirmed(db, other, confirm["id"], True)
     assert error.value.code == "CONFIRM_FORBIDDEN"
     assert isolated_redis.exists(data_agent._confirm_key(confirm["id"]))
+    assert not db.get(Paper, paper_id).deleted
     data_agent.execute_confirmed(db, owner, confirm["id"], True)
-    assert db.query(Paper).count() == 0
+    db.expire_all()
+    assert db.query(Paper).count() == 1
+    assert db.get(Paper, paper_id).deleted
 
 
 def test_confirmation_rechecks_ownership(owner, db, monkeypatch):
@@ -253,18 +261,20 @@ def test_confirmation_rechecks_ownership(owner, db, monkeypatch):
     db.commit()
     data_agent.execute_confirmed(db, owner, confirm["id"], True)
     db.expire_all()
-    assert db.get(Paper, paper_id) is not None
+    assert not db.get(Paper, paper_id).deleted
 
 
 @pytest.mark.parametrize("accepted", [True, False])
 def test_confirmation_is_single_use(owner, db, monkeypatch, accepted):
-    _papers(db, owner.id, 1)
+    paper_id = _papers(db, owner.id, 1)[0]
     confirm = _preview(db, owner, monkeypatch)
     data_agent.execute_confirmed(db, owner, confirm["id"], accepted)
     with pytest.raises(AppError) as error:
         data_agent.execute_confirmed(db, owner, confirm["id"], True)
     assert error.value.code == "CONFIRM_EXPIRED"
-    assert db.query(Paper).count() == (0 if accepted else 1)
+    db.expire_all()
+    assert db.query(Paper).count() == 1
+    assert db.get(Paper, paper_id).deleted is accepted
 
 
 def test_expired_confirmation_cannot_mutate(owner, db, monkeypatch, isolated_redis):
@@ -280,7 +290,7 @@ def test_expired_confirmation_cannot_mutate(owner, db, monkeypatch, isolated_red
 
 
 def test_concurrent_confirmations_execute_only_once(owner, db, monkeypatch, isolated_redis):
-    _papers(db, owner.id, 1)
+    paper_id = _papers(db, owner.id, 1)[0]
     confirm = _preview(db, owner, monkeypatch)
     owner_id = owner.id
     key = data_agent._confirm_key(confirm["id"])
@@ -307,7 +317,10 @@ def test_concurrent_confirmations_execute_only_once(owner, db, monkeypatch, isol
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: execute(), range(2)))
     assert results.count("CONFIRM_EXPIRED") == 1
-    assert sum("已删除 1" in result for result in results) == 1
+    assert sum(result.startswith("已移除 1") for result in results) == 1
+    db.expire_all()
+    assert db.query(Paper).count() == 1
+    assert db.get(Paper, paper_id).deleted
 
 
 @pytest.mark.parametrize("action,entity", [("truncate", "papers"), ("delete", "questions")])

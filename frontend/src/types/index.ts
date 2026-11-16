@@ -12,6 +12,8 @@ export interface OptionItem {
 
 export interface Question {
   id: string
+  /** 试卷快照中的原始题号；题库题目没有题号。 */
+  no?: number
   type: QuestionType
   /** 分值 */
   score: number
@@ -49,7 +51,7 @@ export interface KnowledgeBase {
 }
 
 /** 文档入库状态，与后端文档契约一致。 */
-export type DocumentStatus = 'uploaded' | 'parsing' | 'ocr' | 'chunking' | 'embedding' | 'ready' | 'failed'
+export type DocumentStatus = 'uploaded' | 'parsing' | 'ocr' | 'chunking' | 'embedding' | 'ready' | 'failed' | 'deleting'
 
 export interface KbDocument {
   id: string
@@ -75,8 +77,8 @@ export interface StudySpace {
 
 /** 做题时间窗口（不限时间时不传或为 null） */
 export interface ExamWindow {
-  start: string
-  end: string
+  start: string | null
+  end: string | null
 }
 
 export interface GenerateParams {
@@ -118,11 +120,15 @@ export interface PublishPayload {
 
 export interface AssembleRecord {
   id: string
+  closed: boolean
+  deleted: boolean
   name: string
   createdAt: string
   questionCount: number
   totalScore: number
   spaces: string[]
+  /** 发布空间的稳定标识及各自停止状态。 */
+  publications?: { spaceId: string; stopped: boolean }[]
   /** 发布状态：发布 / 未发布（草稿） */
   published?: boolean
   /** 组卷时的题目快照，供组卷记录查看 */

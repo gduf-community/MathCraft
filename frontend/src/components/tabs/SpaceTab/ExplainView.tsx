@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronsRight, PanelRightClose } from 'lucide-react'
 import { TYPE_LABELS } from '../../../constants'
 import type { AssembleRecord, StudySpace } from '../../../types'
-import { groupOrderedQuestions, orderQuestionsByModules } from '../../../lib/order'
+import { groupOrderedQuestions } from '../../../lib/order'
 import { Latex } from '../../../lib/latex'
 import { useApp } from '../../../store/AppContext'
 import { getStatistics } from '../../../api/backend'
@@ -54,8 +54,8 @@ export default function ExplainView({ record, space }: Props) {
   const studentCount = stats?.student_count ?? Math.max(0, space.memberCount - 1)
   const respondents = stats?.submitted_count ?? record.submittedCount ?? 0
   const ordered = useMemo(
-    () => orderQuestionsByModules(record.questions, record.modulesOrder),
-    [record.questions, record.modulesOrder],
+    () => record.questions ?? [],
+    [record.questions],
   )
   const groups = useMemo(() => groupOrderedQuestions(ordered), [ordered])
   const [collapsed, setCollapsed] = useState(false)
@@ -77,6 +77,7 @@ export default function ExplainView({ record, space }: Props) {
         <div className="flex flex-wrap items-center gap-2.5">
           <span className="text-sm font-bold text-ink">{record.name}</span>
           <span className="rounded-full bg-primary-light px-2.5 py-0.5 text-xs text-primary">讲解模式</span>
+          {record.deleted && <span className="rounded-full bg-page px-2.5 py-0.5 text-xs text-ink-3">已删除·历史</span>}
           <span className="text-xs text-ink-3">
             共 {ordered.length} 题 · 交卷 {respondents} / {studentCount}
           </span>
@@ -91,7 +92,7 @@ export default function ExplainView({ record, space }: Props) {
           >
             <div className="flex flex-wrap items-center gap-2">
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-sm font-semibold text-white">
-                {i + 1}
+                {q.no ?? i + 1}
               </span>
               <span className="rounded bg-primary-light px-2 py-0.5 text-xs font-medium text-primary">
                 {TYPE_LABELS[q.type]}
@@ -163,14 +164,14 @@ export default function ExplainView({ record, space }: Props) {
                       key={q.id}
                       type="button"
                       onClick={() => jumpTo(no)}
-                      title={`跳转到第 ${no} 题`}
+                      title={`跳转到第 ${q.no ?? no} 题`}
                       className={`rounded-md border py-1.5 text-center text-xs font-medium transition-colors ${
                         currentNo === no
                           ? 'border-primary bg-primary text-white'
                           : 'border-line bg-page text-ink-2 hover:border-primary/50 hover:text-primary'
                       }`}
                     >
-                      {no}
+                      {q.no ?? no}
                     </button>
                   ))}
                 </div>
@@ -182,7 +183,7 @@ export default function ExplainView({ record, space }: Props) {
           {current && (
             <div className="border-t border-line px-3 py-3">
               <p className="mb-2 text-xs font-bold text-ink">
-                作答情况 · 第 {currentNo} 题
+                作答情况 · 第 {current.no ?? currentNo} 题
                 <span className="ml-1.5 font-normal text-ink-3">{TYPE_LABELS[current.type]}</span>
               </p>
               {currentDist ? (
