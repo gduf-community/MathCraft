@@ -7,7 +7,7 @@
 `ops-panel-regression.mjs` 只在浏览器测试边界提供合成 API；产品没有演示回退。有效空台账才展示零记录，503不冒充空结果。
 `ops-ledger-regression.mjs` 配合 `backend/tests/ops_browser_server.py`，通过正式迁移、真实 HTTP 入口和正式 ORM 验证查询与页面；公共夹具隔离配置、临时 SQLite、fakeredis、假模型及禁网保护，真实模型调用为零。
 
-本地 M4 与隔离页面联调已完成，不代表已合入 main、部署、真实模型或数学质量通过。具体范围与复现见[前端 V2 与联调](docs/design/运维后台前端V2适配与联调.md)，Phoenix 独立边界见[可选扩展](docs/design/Phoenix可选扩展.md)。下方历史预览和替身记录保持原状。
+本地 M4 与隔离页面联调已完成，不代表已合入 main、部署、真实模型或数学质量通过。具体范围与复现见[前端 V2 与联调](docs/implementation/运维后台前端V2适配与联调.md)，Phoenix 独立边界见[可选扩展](docs/design/Phoenix可选扩展.md)。下方历史预览和替身记录保持原状。
 
 ## 本地历史前端隔离预览（2026-11-12）
 
@@ -20,7 +20,7 @@
 - 当时页面只允许回环 5174，合成 fetch 无真实网络 fallback；API／media（包括绝对外域业务地址）由合成服务或阻断处理，XHR 同样拦截。guard v2 只匹配业务路径前缀 `/^\/(api|media)(\/|$)/i`，不拦 `/src/api` 源码模块；Service Worker scope 仅 `/historical-preview/`。认证写入页面私有 `MemoryStorage`，不读写真实 `mathcraft-auth`，不向真实后端发送伪造 Token 或演示请求。
 - 独立 preview tsc、ESLint、额外 HTML 入口 Vite bundling 通过；浏览器独立上下文覆盖两角色共 16 个主要页面、16 个深链及 4 个详情，页面异常与业务请求外泄均为 0，两角色收藏变更刷新重置。未知／外网业务请求返回 501，绕过页面 fetch 的原生 API 请求返回 503，media 为占位 SVG，XHR 拦截已验证；根旧登录 controller 为 null、真实 storage sentinel 保留，验证未访问 5173。教师完整欢迎区／快捷提问与学生 3 个空间已实看确认。
 
-历史证据位于 `output/playwright/historical-preview/`：`verification.json`、`details-verification.json` 均 PASS，两份复核脚本及 20 张截图保留在本次清理范围之外。原历史快照 typecheck／build 通过，原全量 lint 的 6 错误／15 警告保留；额外入口构建的大 chunk 警告未通过修改历史源文件消除。历史页面表见[恢复设计](docs/design/登录视觉恢复与历史前端对照.md#历史页面隔离预览)，本次停服与删除受阻情况见其清理状态记录。
+历史证据位于 `output/playwright/historical-preview/`：`verification.json`、`details-verification.json` 均 PASS，两份复核脚本及 20 张截图保留在本次清理范围之外。原历史快照 typecheck／build 通过，原全量 lint 的 6 错误／15 警告保留；额外入口构建的大 chunk 警告未通过修改历史源文件消除。历史页面表见[恢复设计](docs/implementation/登录视觉恢复与历史前端对照.md#历史页面隔离预览)，本次停服与删除受阻情况见其清理状态记录。
 
 ## 历史 DeepTutor 裁剪与替身记录
 
@@ -80,7 +80,7 @@ Verified on Windows / Python 3.14 on 2026-10-31:
 covering real subprocess text/PDF extraction, Markdown output, successful HTTP
 previews, remote errors, timeouts and cancellation. Existing parsing regressions
 passed all 9 tests; the full backend suite passed 322 tests with 1 skipped. See
-[the restoration design and acceptance criteria](docs/design/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收).
+[the restoration design and acceptance criteria](docs/archive/后端包统一与接口对齐.md#10-隔离文档解析恢复方案与验收).
 
 ## Removing the stubs later
 
@@ -101,5 +101,5 @@ The favorites page currently uses an in-memory frontend mock which resets on
 refresh. This is not a backend persistence implementation or a restored upstream
 feature; package unification does not add favorites endpoints or storage.
 
-See [后端包统一与接口对齐](docs/design/后端包统一与接口对齐.md) for the migration
+See [后端包统一与接口对齐](docs/archive/后端包统一与接口对齐.md) for the migration
 scope, unchanged contracts and acceptance criteria.

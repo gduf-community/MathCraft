@@ -39,13 +39,13 @@ backend/
 
 参数化异步出题支持按任务取消；一键清空等待后台执行退出后才能重新出题。
 部署前执行既有 Alembic 升级入口，包含 `o0b1c2d34567` 的请求身份与执行退出字段。
-接口及异常边界见[快速出题取消与清空](../docs/design/快速出题取消与清空.md)。
+接口及异常边界见[快速出题取消与清空](../docs/implementation/快速出题取消与清空.md)。
 
 管理员运行查询提供 `/api/admin/ops/overview`、`/api/admin/ops/runs` 和
 `/api/admin/ops/runs/{run_id}`，使用 V2 最小摘要、UTC 受理时间筛选和 limit/offset 分页。
 查询读取正式台账模型，两类出题入口已写入运行记录；部署前须升级既有 Alembic 迁移，
 不自动创建生产表。表缺失、契约不兼容或读取失败返回 `503 OPS_DATA_UNAVAILABLE`。
-前端已适配 V2，隔离页面联调已完成；部署验收仍待进行。字段和状态见[查询 V2 实现与交接](../docs/design/运维查询V2实现与交接.md)。
+前端已适配 V2，隔离页面联调已完成；部署验收仍待进行。字段和状态见[查询 V2 实现与交接](../docs/design/运维查询V2接口与查询设计.md)。
 
 需要 Python 3.11 及以上、uv、Redis 7 及以上。以下使用 PowerShell；完整前后端启动说明见 [根 README](../README.md#启动方法)。
 
@@ -153,7 +153,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 已有部署升级前备份 SQLite、Chroma 与文件目录，先在受控副本迁移并审计，再在维护窗口升级目标库。SQLite 备份需包含已提交的 WAL 数据，可使用 backup API；SQL 备份不包含向量、上传原件、OCR、头像或 Redis。
 
-ACID 迁移 `j5e6f7a8b901` 增加试卷关闭与历史快照字段、持久出题任务及删除操作记录；升级后未完成任务在启动时标记中断，删除继续恢复。完整边界见 [数据库与 ACID 修复记录](../docs/design/数据库与ACID审查修复记录.md)。
+ACID 迁移 `j5e6f7a8b901` 增加试卷关闭与历史快照字段、持久出题任务及删除操作记录；升级后未完成任务在启动时标记中断，删除继续恢复。完整边界见 [数据一致性与故障恢复设计](../docs/design/数据一致性与故障恢复设计.md)。
 
 迁移链保留正文证据版本 `j5e6f7a89012` 和出题运行版本 `k6f7a8b90123`，通过 `m8f9a0b12345` 与 ACID 分支汇合，再应用台账迁移 `n9a0b1c23456`。旧 V2 曾用与 ACID 相同的 `j5e6f7a8b901` 创建台账；已使用旧迁移或来源不明的数据库不得直接升级或仅覆盖版本标记，须先按[台账兼容性说明](../docs/design/运维后台运行台账基础.md#旧-v2-同号迁移的部署兼容性)核对结构与数据并制定修复方案。
 
@@ -165,7 +165,7 @@ uv run alembic upgrade head
 uv run python scripts/auth_migration.py audit --operator-confirmed --database 'C:/mathcraft-backup/mathcraft.db'
 ```
 
-审计为只读，检查版本、结构和账号约束。完成后关闭该终端，避免副本地址影响正常启动；详细边界见 [账号与迁移设计](../docs/design/账号系统整合与审查修复.md)。
+审计为只读，检查版本、结构和账号约束。完成后关闭该终端，避免副本地址影响正常启动；详细边界见 [账号与迁移设计](../docs/implementation/账号系统整合与审查修复.md)。
 
 生产需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true`，补齐 Cloudflare 站点配置，关闭开发账号并清空开发账号字段。服务器通过 SSH 连接；同一部署保持认证密钥一致，不在每次启动时重新生成。
 
@@ -207,6 +207,6 @@ uv run ruff check app tests
 - [API 文档](../docs/api.md)、[OpenAPI 契约](../openapi.json)：完整接口。
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
-- [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
-- 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)和[查询 V2](../docs/design/运维查询V2实现与交接.md)。台账、两类入口、管理员查询与 V2 前端已接通并完成隔离联调，部署待验收。
-- [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/design/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。
+- [账号与权限](../docs/implementation/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
+- 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)和[查询 V2](../docs/design/运维查询V2接口与查询设计.md)。台账、两类入口、管理员查询与 V2 前端已接通并完成隔离联调，部署待验收。
+- [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/operations/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。

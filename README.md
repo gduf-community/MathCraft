@@ -14,7 +14,7 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 学习空间可在停止作答后移除尚无作答记录的发布；已有作答保留历史入口。删除未完成的题库与资料在管理页提供继续清理入口。
 
-两类出题入口已接入正式运行台账，运维 V2 提供管理员概览、运行列表和详情查询；前端已对接 V2 概览、运行列表与基本详情。台账不可用时查询返回 503，不回退演示数据。范围、字段和交接见[运维查询 V2](docs/design/运维查询V2实现与交接.md)。
+两类出题入口已接入正式运行台账，运维 V2 提供管理员概览、运行列表和详情查询；前端已对接 V2 概览、运行列表与基本详情。台账不可用时查询返回 503，不回退演示数据。范围、字段和交接见[运维查询 V2](docs/design/运维查询V2接口与查询设计.md)。
 
 ## 目录结构
 
@@ -34,7 +34,13 @@ MathCraft/
 ├── docs/                     # API、设计与维护文档
 │   ├── api.md                # API 索引
 │   ├── 测试与持续集成.md     # 测试范围与 CI 维护说明
-│   └── design/               # 功能与架构设计
+│   ├── design/               # 功能与架构设计
+│   ├── requirements/         # 产品需求与待定讨论
+│   ├── implementation/       # 实施、交接与历史验收
+│   ├── research/             # 调查与评估
+│   ├── reference/            # 参考清单
+│   ├── operations/           # 运维手册
+│   └── archive/              # 已失效方案归档
 ├── tools/                    # 文档生成与维护工具
 │   ├── archive/              # 失效脚本历史归档，不用于当前验收
 │   └── ops_g0/               # 历史工具及独立测试
@@ -184,7 +190,7 @@ docker compose down             # 移除容器，保留数据卷
 - 登录按钮显示“认证配置不可用”：确认认证密钥已初始化，开发配置为 `APP_ENV=development`、`TURNSTILE_ENABLED=false`，按上述回环地址与 `--no-proxy-headers` 启动，然后重启后端、刷新页面。检查启动环境变量是否覆盖 `.env`。
 - 前端请求失败：确认后端 8000 端口和 Redis 均已启动；邮件、向量、OCR 等依赖的状态可从健康检查查看。
 - Chroma 在 Windows 报 `code 14`：核对启动进程的 `TEMP/TMP` 是否可写，处理步骤见 [后端说明](backend/README.md)。
-- 删除资料提示 `DATABASE_BUSY` 或 `DELETION_PENDING`：短暂写锁会有限重试；已登记删除的资源进入不可用状态，重试或重启后继续清理，见 [删除与恢复边界](docs/design/数据库与ACID审查修复记录.md)。
+- 删除资料提示 `DATABASE_BUSY` 或 `DELETION_PENDING`：短暂写锁会有限重试；已登记删除的资源进入不可用状态，重试或重启后继续清理，见 [删除与恢复边界](docs/design/数据一致性与故障恢复设计.md)。
 - 删除资料的全文索引清理出现 `SQLITE_CANTOPEN / 14`：更新后重启后端以应用 SQLite 内存临时存储配置；数据库与 WAL 仍保存在磁盘。该错误与写锁竞争分别处理，见 [后端排错说明](backend/README.md#常见问题)。
 
 生产部署需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true` 并配置 Cloudflare 站点信息，关闭开发账号能力，配置持久化路径与备份。服务器通过 SSH 连接，部署前按 [后端迁移说明](backend/README.md#迁移与验证) 完成备份、迁移与审计。
@@ -222,12 +228,12 @@ npm run build
 
 - [后端说明](backend/README.md)、[前端说明](frontend/README.md)：开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
-- [数据库与 ACID 修复记录](docs/design/数据库与ACID审查修复记录.md)：关闭与历史作答、任务持久化、删除恢复及缓存完整性。
-- [账号与权限](docs/design/账号系统整合与审查修复.md)、[认证与账号安全](docs/design/登录视觉恢复与历史前端对照.md)。
+- [数据一致性与故障恢复设计](docs/design/数据一致性与故障恢复设计.md)：关闭与历史作答、任务持久化、删除恢复及缓存完整性。
+- [账号与权限](docs/implementation/账号系统整合与审查修复.md)、[认证与账号安全](docs/implementation/登录视觉恢复与历史前端对照.md)。
 - [模型配置](docs/design/模型配置来源与普通知识库流程.md)、[知识库](docs/design/知识库模块说明.md)。
 - [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
-- [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/design/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/design/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
-- [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/design/运维后台运行手册.md)、[台账基础](docs/design/运维后台运行台账基础.md)、[入口接入](docs/design/运维后台出题入口接入.md)、[前端 V2](docs/design/运维后台前端V2适配与联调.md)和[可选追踪](docs/design/Phoenix可选扩展.md)。
+- [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/requirements/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/research/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
+- [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/operations/运维后台运行手册.md)、[台账基础](docs/design/运维后台运行台账基础.md)、[入口接入](docs/design/运维后台出题入口接入.md)、[前端 V2](docs/implementation/运维后台前端V2适配与联调.md)和[可选追踪](docs/design/Phoenix可选扩展.md)。
 - [协作约定](AGENTS.md)。
 
 ## 许可证
