@@ -145,6 +145,22 @@ def _create(kwargs: dict, runtime: tuple[str, str, str], thinking_off: bool,
     return client.chat.completions.create(**kwargs)
 
 
+def _platform_retry(api_key: str | None, exc: Exception) -> tuple[str, str, str] | None:
+    """个人 Key 请求遭遇 401/403 时，若平台凭据可用且不同，返回平台 runtime 以便重试。
+
+    个人设置里保存的旧 Key 失效是最常见的凭据故障：不回退会让意图识别、
+    出题、答疑全部静默降级。平台 Key 自身 401 时不重试，避免双倍等待。
+    """
+    if not isinstance(exc, APIStatusError) or exc.status_code not in (401, 403):
+        return None
+    if not api_key:
+        return None
+    platform = get_platform_llm()
+    if platform and platform[0] != api_key:
+        return platform
+    return None
+
+
 def chat_json(
     messages: list[dict],
     api_key: str | None = None,
@@ -195,6 +211,11 @@ def chat_json(
                 continue
             raise LLMError(_INVALID_JSON) from None
         except Exception as exc:  # noqa: BLE001
+            retry_runtime = _platform_retry(api_key, exc)
+            if retry_runtime:
+                return chat_json(messages, api_key=retry_runtime[0], retries=retries,
+                                 max_tokens=max_tokens, thinking_off=thinking_off,
+                                 thinking=thinking)
             raise LLMError(friendly_error(exc)) from None
 
 
@@ -217,6 +238,11 @@ def chat_text(
         resp = _create(kwargs, runtime, thinking_off)
         return resp.choices[0].message.content or ""
     except Exception as exc:  # noqa: BLE001
+        retry_runtime = _platform_retry(api_key, exc)
+        if retry_runtime:
+            return chat_text(messages, api_key=retry_runtime[0], temperature=temperature,
+                             max_tokens=max_tokens, thinking_off=thinking_off,
+                             response_format=response_format)
         raise LLMError(friendly_error(exc)) from None
 
 
@@ -247,4 +273,10 @@ def chat_stream(
         finally:
             resp.close()
     except Exception as exc:  # noqa: BLE001
+        retry_runtime = _platform_retry(api_key, exc)
+        if retry_runtime:
+            yield from chat_stream(messages, api_key=retry_runtime[0],
+                                   max_tokens=max_tokens, thinking_off=thinking_off,
+                                   temperature=temperature)
+            return
         raise LLMError(friendly_error(exc)) from None

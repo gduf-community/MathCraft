@@ -20,6 +20,9 @@ import type {
   TeacherProfile,
 } from '../types'
 import { orderQuestionsByModules } from '../lib/order'
+import { CHAT_MODE_LABELS } from '../types'
+
+const isChatMode = (value: string): value is ChatMode => value in CHAT_MODE_LABELS
 import { useAuth } from './AuthContext'
 import { useToast } from './ToastContext'
 import type { ToastMessage, ToastVariant } from './ToastContext'
@@ -744,9 +747,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!isActive()) return
         setSessionMode(res.mode)
         setModeVisible(res.kind !== 'reply')
+        // 只接受合法业务模式：后端异常或历史版本传来的非法值直接忽略，避免卡死输入区
         setModeSuggested(
-          res.kind === 'mode_mismatch' && res.suggested_template && res.suggested_template !== 'none'
-            ? res.suggested_template : null,
+          res.kind === 'mode_mismatch' && res.suggested_template
+          && isChatMode(res.suggested_template) ? res.suggested_template : null,
         )
         setPendingConfirm(res.confirm)
         setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
