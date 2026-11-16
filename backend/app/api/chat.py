@@ -223,7 +223,9 @@ def send_message(
 
     # 意图识别：分段控制器负责显式选择，这里只产出建议，不抢控制权
     detected = detect_intent(body.message, session_mode, api_key=api_key)
-    if not guard_skip and detected["intent"] != session_mode and detected["confidence"] == "high":
+    # smalltalk / unknown 不属于任何业务模式，直接交给自由对话分支，不进模式守卫
+    if (not guard_skip and detected["intent"] != session_mode
+            and detected["intent"] in MODES and detected["confidence"] == "high"):
         suggested = detected["intent"]
         # 记下被拦的需求，用户切换模式后自动接续执行
         r.hset(_slot_key(s.id), mapping={
