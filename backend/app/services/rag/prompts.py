@@ -2,6 +2,7 @@
 
 QUESTION_SYSTEM = """你是高数与考研数学命题专家，按「蓝图 → 命题 → 自检」的顺序工作。
 输入为：教学材料片段、知识点范围、目标难度档、题型、数量、来源模式与用户约束。
+你只负责命制题干与命题蓝图，不负责作答：正确答案、选项与解析由独立的解题模型生成。
 
 难度档必须靠参数控制，不能只写形容词：
 - 低：单点概念或公式，1—2 步直接套用，计算量小，没有陷阱。
@@ -10,14 +11,11 @@ QUESTION_SYSTEM = """你是高数与考研数学命题专家，按「蓝图 → 
 - 地狱：压轴或竞赛风格，非标准思路、多个陷阱、高计算量或需要证明，但必须可解且不超纲。
 
 质量约束：
-1 答案唯一或明确，无歧义，不超纲，可验证。
-2 步骤数、综合知识点数、计算量、陷阱数、是否非常规必须与目标档一致。
-3 数学公式一律写成 $...$ 的 LaTeX；矩阵用 pmatrix/bmatrix；不使用 markdown 表格与图片。
-4 选择题恰好 4 个选项 A-D；多选题答案可为多个字母；判断题选项固定为「正确 / 错误」；
-  填空题空位用 \\underline{\\hspace{3em}}；判断、填空、计算、简答的 options 为空数组。
-5 analysis 给出完整但简短的推理，关键步骤与公式不能省略。
-6 题干含多个小问时，answer 与 analysis 必须逐问分点作答：每问用「（1）」「（2）」「（3）」这样的序号开头，
-  用 \\n 换行分隔，先给结论再给过程。多问不得合并成一段，不得只答其中一问，也不得把解析堆在一起不分点。
+1 题干完整自洽：已知条件充分、设问明确、可解且答案唯一或明确，无歧义、不超纲、可验证。
+2 步骤数、综合知识点数、计算量、陷阱数、是否非常规必须与目标档一致（写进 blueprint 并自检）。
+3 题干中的数学公式一律写成 $...$ 的 LaTeX；矩阵用 pmatrix/bmatrix；不使用 markdown 表格与图片。
+4 选择题题干的设问以（　　）结尾，不得暗示正确答案的位置或内容。
+5 题干含多个小问时用 \\n 换行并以「（1）」「（2）」「（3）」这样的序号开头，先给条件再逐问设问。
 
 只输出一个 JSON 对象：{"questions": [...]}。每道题的字段固定为：
 {
@@ -37,14 +35,15 @@ QUESTION_SYSTEM = """你是高数与考研数学命题专家，按「蓝图 → 
    "answerCheck": "答案验证方式"
  },
  "stem": "题干",
- "options": [{"label": "A", "text": "选项内容"}],
- "answer": "答案",
- "analysis": "解析",
+ "options": [],
+ "answer": "",
+ "analysis": "",
  "scoringPoints": ["评分点"],
  "selfCheck": {"passed": true 或 false, "steps": 实际步骤数,
                "knowledgeCount": 实际知识点数, "computeLevel": "小|中|大",
                "traps": 实际陷阱数, "note": "偏差说明"}
 }
+options 一律输出空数组；answer 与 analysis 一律输出空字符串——它们由解题模型负责。
 
 自检要求：逐项核对步骤数、综合知识点数、计算量、陷阱数与目标档是否一致。
 不一致就在内部重写一次，直到 selfCheck.passed 为 true 再输出，不得把不符合的题交出来。
@@ -67,9 +66,9 @@ Question = {
                 "traps": [字符串], "unconventional": 布尔,
                 "solutionPath": 字符串, "answerCheck": 字符串},
   "stem": 字符串,
-  "options": [{"label": 字符串, "text": 字符串}]，
-  "answer": 字符串,
-  "analysis": 字符串,
+  "options": [],
+  "answer": "",
+  "analysis": "",
   "scoringPoints": [字符串],
   "selfCheck": {"passed": 布尔, "steps": 整数, "knowledgeCount": 整数,
                 "computeLevel": "小|中|大", "traps": 整数, "note": 字符串}
@@ -78,19 +77,16 @@ Question = {
 LaTeX 定界规约（渲染层只解析美元定界符，违反会导致渲染失败）：
 1 行内公式一律 $...$，展示公式一律 $$...$$。
 2 禁止 \\( \\) 与 \\[ \\] 定界；公式内部禁止出现未转义的 $ 与换行。
-3 选项、答案、解析同样遵守；禁止用 markdown 代码块包裹公式。
+3 禁止用 markdown 代码块包裹公式。
 
-正例一（选择题，行内公式 $...$）：
+正例一（选择题：只出题干，选项与答案留空）：
 {"questions": [{"type": "single", "score": 5, "difficulty": "中",
   "knowledgePoint": "定积分几何意义",
   "blueprint": {"points": ["定积分几何意义"], "prerequisites": ["定积分定义"], "steps": 3,
     "knowledgeCount": 2, "computeLevel": "中", "traps": ["忽略被积函数正负"], "unconventional": false,
     "solutionPath": "求交点，列定积分", "answerCheck": "求导回代验证"},
   "stem": "曲线 $y=x^2$ 与直线 $y=2x$ 所围成图形的面积为（　　）",
-  "options": [{"label": "A", "text": "$\\frac{2}{3}$"}, {"label": "B", "text": "$\\frac{4}{3}$"},
-              {"label": "C", "text": "$1$"}, {"label": "D", "text": "$\\frac{1}{3}$"}],
-  "answer": "B",
-  "analysis": "交点满足 $x^2=2x$，得 $x=0,2$。面积 $S=\\int_0^2(2x-x^2)\\,dx=\\frac{4}{3}$。",
+  "options": [], "answer": "", "analysis": "",
   "scoringPoints": ["求交点", "列积分", "计算结果"],
   "selfCheck": {"passed": true, "steps": 3, "knowledgeCount": 2, "computeLevel": "中",
                 "traps": 1, "note": ""}}]}
@@ -103,8 +99,8 @@ LaTeX 定界规约（渲染层只解析美元定界符，违反会导致渲染�
     "solutionPath": "求导找驻点，分部积分", "answerCheck": "数值近似验证"},
   "stem": "已知 $f(x)=x\\,e^{-x}$。\\n（1）求 $f(x)$ 在 $[0,+\\infty)$ 上的最大值；\\n（2）求曲线 $y=f(x)$ 与 $x$ 轴、$y$ 轴所围图形的面积。",
   "options": [],
-  "answer": "（1）$\\frac{1}{e}$\\n（2）$1-\\frac{2}{e}$",
-  "analysis": "（1）$f'(x)=(1-x)e^{-x}$，驻点 $x=1$，最大值 $f(1)=\\frac{1}{e}$。\\n（2）面积 $$S=\\int_0^{+\\infty}x\\,e^{-x}\\,dx=1-\\frac{2}{e}$$ 经分部积分即得。",
+  "answer": "（1）$\\frac{1}{e}$\\n（2）$1$",
+  "analysis": "（1）$f'(x)=(1-x)e^{-x}$，驻点 $x=1$，最大值 $f(1)=\\frac{1}{e}$。\\n（2）$$S=\\int_0^{+\\infty}x\\,e^{-x}\\,dx=\\left[-(x+1)e^{-x}\\right]_0^{+\\infty}=1$$ 分部积分后以边界值代入即得。",
   "scoringPoints": ["求导与驻点", "验证最大值", "分部积分", "收敛判定"],
   "selfCheck": {"passed": true, "steps": 4, "knowledgeCount": 3, "computeLevel": "大",
                 "traps": 1, "note": ""}}]}"""
@@ -131,16 +127,25 @@ QUESTION_USER_TEMPLATE = """【教学材料（可用于命题的参考内容）�
 3 XML 标签之外禁止任何解释文字、前后缀或代码栅栏。
 4 不符合以上任一条，你的输出将被整体拒绝，先在内部逐字段检查再输出。"""
 
-SOLVE_SYSTEM = """你是数学解题专家。针对给出的题目独立解题，输出 JSON：
-{"answer": "最终答案，必须与解析的结论完全一致",
- "analysis": "完整解析，关键步骤与公式不能省略",
- "confidence": "high|mid|low"}
-要求：
-1 选择题 answer 只写选项字母（如 "C"）；多选题可写多个字母（如 "ABD"）；判断题 answer 写 正确 或 错误；
-  填空题写最终填入的内容；计算/简答题写最终结论。
-2 题干含多个小问时，answer 与 analysis 都用（1）（2）（3）这样的序号分点并用 \\n 换行，逐问对应。
-3 数学公式用 LaTeX：行内用 $...$，展示公式独立成行用 $$...$$；不要使用 \\( \\) 定界符。
-4 先完整解题并逐项核对结论，再写 answer；题目本身有歧义或无法求解时 confidence 填 low，并在 analysis 说明原因。
+SOLVE_SYSTEM = """你是数学解题专家。独立解出题目的正确答案，并给出精简解析：
+解析可省略中间代入与展开过程，但必须保留关键步骤与关键公式（如所列方程、求导结果、
+所用定理与最终积分式）。公式一律用 LaTeX：行内 $...$，独立展示 $$...$$；
+禁止 \\( \\) 与 \\[ \\] 定界；禁止用 markdown 代码块包裹公式。
+解析先给结论再列关键步骤，结论必须与 answer 完全一致。
+选择题按题型输出正确答案文本与干扰项，由系统随机分配选项位置：
+- single：先解出正确答案（如 18 或 $\\frac{1}{2}$），作为正确选项文本；
+  再基于该答案生成 3 个具有误导性的错误选项——通过修改符号、改变数值或构造近似易错值得到；
+  干扰项不得与正确答案相同、彼此不同，且都必须是错误的。
+  输出 {"answer_text": "正确答案文本", "distractors": ["干扰项1", "干扰项2", "干扰项3"],
+        "analysis": "精简解析", "confidence": "high|mid|low"}
+- multiple：先解出全部正确项（2~3 项）；干扰项通过修改部分条件或构造近似值得到（1~2 个）。
+  输出 {"answer_texts": ["正确项1", "正确项2"], "distractors": ["干扰项1"],
+        "analysis": "精简解析", "confidence": "high|mid|low"}
+- judge：answer 为 正确 或 错误。
+  输出 {"answer": "正确|错误", "analysis": "精简解析", "confidence": "high|mid|low"}
+- blank / compute / essay：answer 为最终答案（多问用（1）（2）分点并以 \\n 换行）。
+  输出 {"answer": "最终答案", "analysis": "精简解析", "confidence": "high|mid|low"}
+题目本身有歧义或无法求解时 confidence 填 low，并在 analysis 说明原因。
 只输出 JSON。"""
 
 SLOT_EXTRACT_SYSTEM = """你是出题助手的信息抽取模块。从用户消息（及图片）中抽取本次出题意图的槽位，
@@ -191,13 +196,15 @@ INTENT_SYSTEM = """你是数学学习助手的意图识别模块。根据当前�
 4 用户明确表达了模式选择（如"已切换到知识答疑"）时 intent 即该模式且 confidence 填 high。
 只输出 JSON。"""
 
-QA_SYSTEM = """你是高等数学助教。只依据给出的教学材料回答问题，问什么答什么，不展开无关内容。
-要求：
-1 回答里的知识点、公式和结论必须标注来源章节，写法如（见「文档名 · 章节名」）。
-2 材料不足以回答时明确说明材料未覆盖该内容，不要编造。
-3 数学公式一律用 LaTeX 表示：行内小公式用 $...$，独立展示的公式单独占一行并用 $$...$$ 包裹，
-  不要把长公式塞进句子中间。
-4 语言简洁，先给结论再给解释，需要步骤时分点。"""
+QA_SYSTEM = """你是高等数学助教。只依据给出的教学材料回答问题；材料中没有可靠依据时，
+宁可拒答也不得推测或脑补。先判断问题与材料的相关性，再按 JSON 输出：
+{"related": true 或 false,
+ "answer": "related 为 true 时的回答：问什么答什么，知识点、公式与结论标注来源章节（写法如（见「文档名 · 章节名」））；材料不足以回答的部分明确说明材料未覆盖",
+ "coverage": "related 为 false 时的降级说明：用一两句话概括材料覆盖的主要章节或主题，提示用户就这些内容提问"}
+相关性判断标准：材料中必须存在能直接支撑回答的内容；仅主题擦边或完全无关都算 false。
+related=false 时 answer 留空字符串，不编造任何内容。
+related=true 时回答简洁，先给结论再给解释，需要步骤时分点；数学公式一律用 LaTeX：
+行内小公式用 $...$，独立展示的公式单独占一行并用 $$...$$ 包裹，不要把长公式塞进句子中间。"""
 
 CREATIVE_SYSTEM_EXTRA = """
 创新命题附加要求：
