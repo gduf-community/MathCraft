@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import SOLVE_SYSTEM
 from app.services.rag_runtime import with_snapshot
@@ -524,53 +524,153 @@ def _normalize_answer(question: Question, raw: str) -> str:
 _TYPE_CN = {"single": "单选题", "multiple": "多选题", "judge": "判断题",
             "blank": "填空题", "compute": "计算题", "essay": "简答题"}
 
+# 需要解题模型产出答案的题型：出题模型只命制题干，答案为空即解题失败
+_NEED_ANSWER_TYPES = {QuestionType.single, QuestionType.multiple,
+                      QuestionType.judge, QuestionType.blank,
+                      QuestionType.compute, QuestionType.essay}
 
-def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | None:
-    """独立解题（JSON 输出）：answer 与 analysis 来自同一次求解，保证两者一致。"""
-    options = "\n".join(f"{o.label}. {o.text}" for o in question.options) if question.options else "（无选项）"
-    user = f"【题干】\n{question.stem}\n\n【选项】\n{options}\n\n【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
-    data = _chat_json_low(
-        [
-            {"role": "system", "content": SOLVE_SYSTEM},
-            {"role": "user", "content": user},
-        ],
-        api_key, 3200,
-    )
-    raw_answer, raw_analysis = data.get("answer"), data.get("analysis")
-    if (not isinstance(raw_answer, str) or not raw_answer.strip()
-            or not isinstance(raw_analysis, str) or not raw_analysis.strip()):
+
+def _latex_issue(text: str) -> str | None:
+    """题干与解析共用的 LaTeX 定界校验：返回首个违规描述，无违规返回 None。"""
+    if r"\(" in text or r"\)" in text or r"\[" in text or r"\]" in text:
+        return "使用了 \\( \\) 或 \\[ \\] 定界符"
+    if len(re.findall(r"(?<!\$)\$(?!\$)", text)) % 2 == 1:
+        return "$ 定界不配对"
+    return None
+
+
+def _latex_repair(text: str) -> str:
+    """常见 LaTeX 定界违规的机械修复：\\(\\) 转行内 $，\\[\\] 转展示 $$。"""
+    return (text.replace(r"\(", "$").replace(r"\)", "$")
+                .replace(r"\[", "$$").replace(r"\]", "$$"))
+
+
+def _polish_analysis(text: str) -> str | None:
+    """解析规范化：收敛空行、套用 LaTeX 定界校验（先机械修复，仍违规返回 None）。"""
+    cleaned = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if not cleaned:
         return None
-    answer = _normalize_math(_normalize_answer(question, raw_answer))
-    analysis = _normalize_math(raw_analysis.strip())
-    analysis = re.sub(r"\n{3,}", "\n\n", analysis)
-    if not answer or not analysis:
+    if _latex_issue(cleaned):
+        cleaned = _latex_repair(cleaned)
+    if _latex_issue(cleaned):
         return None
-    if data.get("confidence") == "low":
-        note = str((question.selfCheck or {}).get("note", ""))
-        question.selfCheck = {**(question.selfCheck or {}), "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"}
-    return answer, analysis
+    return cleaned
+
+
+def _assign_options(correct_texts: list[str], distractors: list[str]) -> tuple[list, str]:
+    """随机分配正确答案到 A/B/C/D 的位置，其余位置放干扰项。
+
+    返回 (选项列表, 正确字母串)。正确项位置每次随机，避免答案总落在同一选项。
+    """
+    import random
+
+    labels = ["A", "B", "C", "D"]
+    positions = sorted(random.sample(range(4), len(correct_texts)))
+    options: list = []
+    correct_letters: list[str] = []
+    ci = 0
+    di = 0
+    for idx, label in enumerate(labels):
+        if ci < len(correct_texts) and idx == positions[ci]:
+            options.append(OptionItem(label=label, text=correct_texts[ci]))
+            correct_letters.append(label)
+            ci += 1
+        else:
+            options.append(OptionItem(label=label, text=distractors[di]))
+            di += 1
+    return options, "".join(correct_letters)
+
+
+def _chat_json_solve(messages: list[dict], api_key: str | None) -> dict:
+    """解题专用：显式开启思考模式深化推理，输出预算覆盖推理与精简解析。"""
+    return llm.chat_json(messages, api_key=api_key, max_tokens=4800, thinking=True)
+
+
+def _solve_one(question: Question, api_key: str | None) -> bool:
+    """独立解题（思考模式）：answer/analysis/options 全部来自解题模型。
+
+    选择题先解出正确答案文本，再生成误导性干扰项，由代码随机分配选项位置；
+    解析精简（保留关键步骤与关键公式）并套用与题干相同的 LaTeX 定界校验，
+    校验失败先机械修复再带错误重试一次，仍失败视为解题失败。
+    返回 True 表示解题成功且已就地更新题目。
+    """
+    is_single = question.type == QuestionType.single
+    is_multiple = question.type == QuestionType.multiple
+    user = f"【题干】\n{question.stem}\n\n【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
+
+    def _validate(data: dict) -> tuple[str, str, list] | None:
+        """从解题输出提取 (answer, analysis, options)；协议或校验不合格返回 None。"""
+        analysis = _polish_analysis(str(data.get("analysis") or ""))
+        if not analysis:
+            return None
+        if is_single:
+            correct = str(data.get("answer_text") or "").strip()
+            distractors = [str(d).strip() for d in (data.get("distractors") or []) if str(d).strip()]
+            if not correct or len(distractors) != 3 or correct in distractors:
+                return None
+            options, letters = _assign_options([correct], distractors)
+            return letters, analysis, options
+        if is_multiple:
+            corrects = [str(t).strip() for t in (data.get("answer_texts") or []) if str(t).strip()]
+            distractors = [str(d).strip() for d in (data.get("distractors") or []) if str(d).strip()]
+            if not 2 <= len(corrects) <= 3 or len(corrects) + len(distractors) != 4:
+                return None
+            options, letters = _assign_options(corrects, distractors)
+            return letters, analysis, options
+        if question.type == QuestionType.judge:
+            raw = str(data.get("answer") or "").strip()
+            answer = "A" if raw in ("正确", "对", "T", "true", "√") else (
+                "B" if raw in ("错误", "错", "F", "false", "×") else "")
+        else:
+            answer = _normalize_math(_normalize_answer(question, str(data.get("answer") or "")))
+        if not answer:
+            return None
+        return answer, analysis, question.options
+
+    last_error = ""
+    for attempt in range(2):
+        retry_note = f"\n\n上次输出不合格：{last_error}。请按协议修正后重新输出。" if attempt else ""
+        data = _chat_json_solve(
+            [
+                {"role": "system", "content": SOLVE_SYSTEM},
+                {"role": "user", "content": user + retry_note},
+            ],
+            api_key,
+        )
+        if not isinstance(data, dict):
+            last_error = "输出不是 JSON 对象"
+            continue
+        result = _validate(data)
+        if result is None:
+            last_error = "字段缺失、干扰项数量不符或解析未通过 LaTeX 定界校验"
+            continue
+        answer, analysis, options = result
+        if data.get("confidence") == "low":
+            note = str((question.selfCheck or {}).get("note", ""))
+            question.selfCheck = {**(question.selfCheck or {}), "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"}
+        question.answer = answer
+        question.analysis = analysis
+        if is_single or is_multiple:
+            question.options = options
+        return True
+    return False
 
 
 def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStats) -> None:
     if not questions:
         return
 
-    def run(q: Question) -> tuple[Question, tuple[str, str] | None]:
+    def run(q: Question) -> tuple[Question, bool]:
         try:
             return q, _solve_one(q, api_key)
         except Exception as exc:
             logger.warning("解析生成失败：%s", exc)
-            return q, None
+            return q, False
 
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-solve") as pool:
-        for question, result in pool.map(run, questions):
-            if result is None:
-                continue
-            answer, analysis = result
-            if answer:
-                question.answer = answer
-            question.analysis = analysis
-            stats.solved += 1
+        for question, ok in pool.map(run, questions):
+            if ok:
+                stats.solved += 1
 
 
 def review_questions(
@@ -705,6 +805,12 @@ def review_questions(
 
     report(96, f"正在生成解析（共 {len(final)} 题）")
     _solve_all(final, api_key, stats)
+    # 解题失败的题目没有答案与解析，不能入库（宁可少给不出半成品）
+    unsolved = [q for q in final if q.type in _NEED_ANSWER_TYPES and not q.answer]
+    if unsolved:
+        logger.warning("解题失败剔除 %d 题（无答案与解析）", len(unsolved))
+        dropped_set = {id(q) for q in unsolved}
+        final = [q for q in final if id(q) not in dropped_set]
 
     order = {t: i for i, t in enumerate(ordered_types)}
     final.sort(key=lambda q: order.get(q.type, 99))

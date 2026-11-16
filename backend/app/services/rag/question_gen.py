@@ -30,9 +30,9 @@ RetrieveFn = Callable[[str], list[dict]]
 GEN_BATCH_SIZE = 1
 # 并发出题数
 GEN_BATCH_WORKERS = 6
-# 单题的输出预算（token），含蓝图、评分点与自检。地狱难度带蓝图与自检实测 1100~2200，
-# 给到 3000 才不会被 finish_reason=length 截成半截 JSON
-GEN_TOKENS_PER_QUESTION = 3000
+# 单题的输出预算（token）。出题模型只命制题干与蓝图（答案与解析由解题模型负责），
+# 含蓝图与自检实测 800~1400，给到 1600 不会被 finish_reason=length 截成半截 JSON
+GEN_TOKENS_PER_QUESTION = 1600
 # 单批固定的 JSON 结构开销
 GEN_TOKENS_OVERHEAD = 400
 # 高压长任务阈值：单题型要求达到该数量时启用高压规划与执行策略
@@ -354,10 +354,10 @@ def _gen_batch(
         q.difficulty = params.difficulty
         q.docName = doc_name
         if tc.type == QuestionType.judge and not q.options:
+            # 判断题选项恒为 正确/错误；answer 由解题模型填充
             from app.schemas.question import OptionItem
 
             q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
-            q.answer = "A" if q.answer in ("正确", "对", "T", "true", "√") else "B"
         out.append(q)
     if out:
         return out

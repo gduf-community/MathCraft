@@ -75,8 +75,9 @@ class Question(BaseModel):
     # 题干/选项/答案/解析中的公式一律用 $...$ 包裹的 LaTeX
     stem: str
     options: list[OptionItem] = []
-    answer: str
-    analysis: str
+    # 出题模型只命制题干：answer/analysis 由解题模型填充，中途态允许为空
+    answer: str = ""
+    analysis: str = ""
     knowledgePoint: str = ""
     # 命题阶段写下的蓝图、评分点与自检结果，用于审计与展示
     blueprint: dict = {}

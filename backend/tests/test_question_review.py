@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from app.db import SessionLocal
+from app.db import SessionLocal, Base, engine
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services import question_review
 from app.services.question_review import review_questions as real_review
@@ -49,18 +49,22 @@ LOW_SCORES = {"knowledge": 3, "steps": 2, "abstraction": 2, "computation": 2, "t
 class FakeLLM:
     """按 prompt 类型分派：盲评、修补与独立解题均返回对应的 JSON 契约。"""
 
-    def __init__(self, reviews: list[str], repair_items: list[dict] | None = None):
+    def __init__(self, reviews: list[str], repair_items: list[dict] | None = None,
+                 solve_payload: dict | None = None):
         self.reviews = reviews
         self.repair_items = repair_items or []
+        self.solve_payload = solve_payload
         self.eval_calls = 0
         self.solve_calls = 0
         self.repair_calls = 0
         self._lock = threading.Lock()
 
-    def __call__(self, messages, api_key=None, temperature=0.7, max_tokens=None, thinking_off=False, response_format=None):
+    def __call__(self, messages, api_key=None, temperature=0.7, max_tokens=None,
+                 thinking_off=False, thinking=None, response_format=None):
         prompt = messages[-1]["content"]
+        system = messages[0]["content"]
         with self._lock:
-            if prompt.startswith("你是独立数学审题人"):
+            if "独立数学审题人" in system:
                 idx = min(self.eval_calls, len(self.reviews) - 1)
                 self.eval_calls += 1
                 return self.reviews[idx]
@@ -69,12 +73,16 @@ class FakeLLM:
                 item = self.repair_items[min(self.repair_calls - 1, len(self.repair_items) - 1)]
                 return json.dumps(item, ensure_ascii=False)
             self.solve_calls += 1
-            return json.dumps({"answer": "B", "analysis": "由定义可得 $y'=3x^2$。",
-                               "confidence": "high"}, ensure_ascii=False)
+            if self.solve_payload is not None:
+                return self.solve_payload
+            return {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
+                    "analysis": "由定义可得 $y'=3x^2$。", "confidence": "high"}
 
 
 @pytest.fixture
 def db():
+    # 本文件不经过 client fixture：单文件运行时显式建表（幂等），避免依赖其他测试先建库
+    Base.metadata.create_all(bind=engine)
     session = SessionLocal()
     try:
         yield session
@@ -163,6 +171,7 @@ def test_repair_then_accept(db, monkeypatch):
         }],
     )
     monkeypatch.setattr(question_review.llm, "chat_text", fake)
+    monkeypatch.setattr(question_review.llm, "chat_json", fake)
 
     params = GenerateParams(
         kb_id="bank_test", doc_id="doc_test",
@@ -175,8 +184,12 @@ def test_repair_then_accept(db, monkeypatch):
     assert len(result) == 1
     assert result[0].stem.startswith("修补后的题干")
     assert result[0].difficultyScore > 3
-    assert result[0].answer == "B"  # 解析环节覆盖答案
-    assert "3x^2" in result[0].analysis
+    # 解题模型负责答案与选项：正确答案文本随机分配到某个选项位，answer 为对应字母
+    assert result[0].answer in {"A", "B", "C", "D"}
+    assert len(result[0].options) == 4
+    correct_texts = [o.text for o in result[0].options if o.label == result[0].answer]
+    assert correct_texts == ["$18$"]
+    assert "y'=3x^2" in result[0].analysis
     assert stats.solved == 1
     assert fake.solve_calls == 1
 
@@ -185,6 +198,7 @@ def test_duplicate_shortfall_is_refilled(db, monkeypatch):
     """查重丢掉一题后，按缺口重出，最终数量与请求一致。"""
     fake = FakeLLM(reviews=[_review_json(GOOD_SCORES)])
     monkeypatch.setattr(question_review.llm, "chat_text", fake)
+    monkeypatch.setattr(question_review.llm, "chat_json", fake)
     monkeypatch.setattr(question_review, "load_corpus", lambda *_a, **_k: ["求 $y=x^2$ 的导数。"])
 
     fresh = _q("重出的新题：求 $y=x^3$ 在 $x=2$ 处的导数。")
@@ -204,26 +218,28 @@ def test_duplicate_shortfall_is_refilled(db, monkeypatch):
     assert len(result) == 2
 
 
-def test_solver_failure_keeps_original_answer(db, monkeypatch):
-    class NoSolveLLM(FakeLLM):
-        def __call__(self, messages, api_key=None, temperature=0.7, max_tokens=None, thinking_off=False, response_format=None):
-            prompt = messages[-1]["content"]
-            if prompt.startswith("你是独立数学审题人"):
-                return _review_json(GOOD_SCORES)
-            return "这里没有按格式输出"
+def test_solver_failure_drops_question(db, monkeypatch):
+    """解题输出无效时题目无答案，审核链路将其剔除（宁可少给不出半成品）。"""
+    class NoSolveChatJson:
+        def __call__(self, messages, api_key=None, **kwargs):
+            system = messages[0]["content"]
+            if "独立数学审题人" in system:
+                return json.loads(_review_json(GOOD_SCORES))
+            return {"analysis": "解析", "confidence": "high"}  # 缺 answer_text
 
-    monkeypatch.setattr(question_review.llm, "chat_text", NoSolveLLM(reviews=[]))
+    monkeypatch.setattr(question_review.llm, "chat_json", NoSolveChatJson())
 
     params = GenerateParams(
         kb_id="bank_test", doc_id="doc_test",
         types=[TypeCount(type=QuestionType.single, count=1)],
         difficulty=Difficulty.high, scope="导数",
     )
-    result, stats = real_review(db, "u_test", [_q("求 $y=x^2$ 的导数。")], params, "doc.md", "sk-test")
+    # 新流程下出题模型不产答案，题目的 answer/analysis 为空
+    bare = Question(id="b1", type=QuestionType.single, score=5, difficulty=Difficulty.high,
+                    stem="求 $y=x^2$ 的导数。", options=[], answer="", analysis="")
+    result, stats = real_review(db, "u_test", [bare], params, "doc.md", "sk-test")
 
-    assert len(result) == 1
-    assert result[0].answer == "A"
-    assert result[0].analysis == "旧解析"
+    assert result == []
     assert stats.solved == 0
 
 
@@ -233,48 +249,60 @@ def test_math_delimiters_are_normalized():
     assert "$f(0)=0$" in text
 
 
-def test_independent_solver_uses_answer_and_analysis_from_same_json(monkeypatch):
-    """避免旧用例仅凭修补题自带答案误判独立解题成功。"""
+def test_latex_issue_and_repair():
+    assert question_review._latex_issue(r"由 \(x=2\) 可得") == "使用了 \\( \\) 或 \\[ \\] 定界符"
+    repaired = question_review._latex_repair(r"由 \(x=2\) 可得 $$y$$ 与 $z$")
+    assert question_review._latex_issue(repaired) is None
+    assert repaired == "由 $x=2$ 可得 $$y$$ 与 $z$"
+    assert question_review._latex_issue("奇数个 $ 符号") == "$ 定界不配对"
+    assert question_review._latex_issue("正常的 $x$ 公式") is None
+
+
+def test_independent_solver_assigns_random_options(monkeypatch):
+    """选择题由解题模型解出答案文本并生成干扰项，代码随机分配选项位。"""
     calls = []
 
     def solve(messages, **kwargs):
         calls.append(messages)
-        return json.dumps({"answer": "B", "analysis": r"由 \(x=2\) 可得答案 B。",
-                           "confidence": "low"}, ensure_ascii=False)
+        assert kwargs.get("thinking") is True  # 解题显式开启思考模式
+        return {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
+                "analysis": r"由 \(x=2\) 可得答案 $18$。", "confidence": "low"}
 
-    monkeypatch.setattr(question_review.llm, "chat_text", solve)
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
     question = _q("独立求解 JSON 回归题目")
     result = question_review._solve_one(question, "fake-model-key")
-    assert result == ("B", "由 $x=2$ 可得答案 B。")
+    assert result is True
     assert len(calls) == 1
     assert calls[0][0]["content"] == question_review.SOLVE_SYSTEM
+    labels = {o.label: o.text for o in question.options}
+    assert set(labels) == {"A", "B", "C", "D"}
+    assert len(set(labels.values())) == 4  # 四个选项互不相同
+    correct = [lbl for lbl, txt in labels.items() if txt == "$18$"]
+    assert len(correct) == 1  # 正确答案恰好占一个选项位
+    assert question.answer == correct[0]
+    # 解析经 LaTeX 机械修复：反斜杠括号已转为美元定界
+    assert r"\(" not in question.analysis and "$x=2$" in question.analysis
     assert "置信度低" in question.selfCheck["note"]
 
 
-@pytest.mark.parametrize("field", ["answer", "analysis"])
-@pytest.mark.parametrize("invalid", [None, "", "  \n", False, 7, {}, []])
-def test_solver_invalid_json_fields_preserve_entire_original_pair(monkeypatch, field, invalid):
-    payload = {"answer": "B", "analysis": "新的独立解析", "confidence": "high"}
-    payload[field] = invalid
-    monkeypatch.setattr(question_review, "_chat_json_low", lambda *a, **kw: payload)
-    question = _q("无效解题输出回归")
-    stats = question_review.ReviewStats()
-    question_review._solve_all([question], "fake-key", stats)
-    assert (question.answer, question.analysis) == ("A", "旧解析")
-    assert stats.solved == 0
-
-
-@pytest.mark.parametrize("field", ["answer", "analysis"])
-def test_solver_missing_json_fields_preserve_entire_original_pair(monkeypatch, field):
-    payload = {"answer": "B", "analysis": "新的独立解析", "confidence": "high"}
-    payload.pop(field)
-    monkeypatch.setattr(question_review, "_chat_json_low", lambda *a, **kw: payload)
-    question = _q("缺失解题字段回归")
-    stats = question_review.ReviewStats()
-    question_review._solve_all([question], "fake-key", stats)
-    assert (question.answer, question.analysis) == ("A", "旧解析")
-    assert stats.solved == 0
-
+def test_solver_invalid_output_leaves_question_unsolved(monkeypatch):
+    """解题输出字段缺失、干扰项数量不符或解析违规时，题目保持无答案状态。"""
+    base = {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
+            "analysis": "新的独立解析", "confidence": "high"}
+    cases = [
+        {**base, "answer_text": None},                 # 缺正确答案
+        {**base, "distractors": ["$-18$"]},            # 干扰项数量不符
+        {**base, "analysis": None},                    # 缺解析
+        {**base, "analysis": "奇数个 $ 符号未闭合"},      # 解析 LaTeX 违规且不可机械修复
+    ]
+    for payload in cases:
+        monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **kw: payload)
+        question = _q("无效解题输出回归")
+        stats = question_review.ReviewStats()
+        question_review._solve_all([question], "fake-key", stats)
+        # 解题失败不覆盖题目任何字段；新流程下出题模型本就不产答案
+        assert question.answer == "A" and question.analysis == "旧解析"
+        assert stats.solved == 0
 
 def test_answer_normalization():
     single = _q("题干", QuestionType.single)

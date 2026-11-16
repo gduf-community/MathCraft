@@ -191,13 +191,33 @@ def prohibit_network(monkeypatch):
     monkeypatch.setattr(socket, "socketpair", socketpair)
 
 
+def fake_llm_chat_json(messages, api_key=None, retries=1, max_tokens=None,
+                       thinking_off=False, thinking=None, **kwargs) -> dict:
+    """JSON 调用桩：解题链路（SOLVE_SYSTEM）按题型返回解题协议，其余返回空。"""
+    system = (messages or [{}])[0].get("content", "") if messages else ""
+    if "数学解题专家" not in system:
+        return {}
+    user = messages[-1].get("content", "") if messages else ""
+    m = re.search(r"【题型】(\S+?题)", user)
+    qtype_cn = m.group(1) if m else "单选题"
+    if qtype_cn == "单选题":
+        return {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
+                "analysis": "关键步骤：列式求解得 $18$。", "confidence": "high"}
+    if qtype_cn == "多选题":
+        return {"answer_texts": ["$18$", "$-18$"], "distractors": ["$81$", "$8.1$"],
+                "analysis": "关键步骤：逐项判断。", "confidence": "high"}
+    if qtype_cn == "判断题":
+        return {"answer": "正确", "analysis": "关键步骤：按定义判断成立。", "confidence": "high"}
+    return {"answer": "$18$", "analysis": "关键步骤：分步求解得 $18$。", "confidence": "high"}
+
+
 @pytest.fixture(autouse=True)
 def fake_models(monkeypatch):
     monkeypatch.setattr(embeddings, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(embeddings, "embed_one", lambda t: fake_embed_texts([t])[0])
     monkeypatch.setattr(rerank, "rerank", fake_rerank)
     monkeypatch.setattr(llm, "chat_text", lambda *a, **k: "假设段落：导数的定义与求导法则。")
-    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {})
+    monkeypatch.setattr(llm, "chat_json", fake_llm_chat_json)
     monkeypatch.setattr(llm, "chat_stream", fake_question_chat_stream)
     monkeypatch.setattr(slots, "chat_json", fake_slot_chat_json)
     # 出题中间件默认直通：接口用例只验证编排，中间件逻辑由 test_question_review 单独覆盖

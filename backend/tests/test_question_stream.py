@@ -99,11 +99,15 @@ def test_stream_handles_non_list_repair_result(
     repair.assert_called_once()
 
 
-@pytest.mark.parametrize("missing_field", ["stem", "answer", "analysis"])
+@pytest.mark.parametrize("missing_field", ["stem"])
 def test_stream_missing_required_field_reports_question_output_error(
     monkeypatch: pytest.MonkeyPatch, missing_field: str,
 ) -> None:
-    """完整对象缺必填字段时立即阻断，报告字段名并保留原输出以供重试。"""
+    """完整对象缺必填字段时立即阻断，报告字段名并保留原输出以供重试。
+
+    answer/analysis 已改为可选（出题模型只命制题干，答案与解析由解题模型填充），
+    缺失它们不再触发 QuestionOutputError。
+    """
     question = _question("缺字段的题目")
     del question[missing_field]
     output = json.dumps({"questions": [question]}, ensure_ascii=False)
