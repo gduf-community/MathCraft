@@ -278,15 +278,18 @@ def test_confirmation_is_single_use(owner, db, monkeypatch, accepted):
 
 
 def test_expired_confirmation_cannot_mutate(owner, db, monkeypatch, isolated_redis):
-    _papers(db, owner.id, 1)
+    paper_id = _papers(db, owner.id, 1)[0]
     confirm = _preview(db, owner, monkeypatch)
     key = data_agent._confirm_key(confirm["id"])
     assert 0 < isolated_redis.ttl(key) <= data_agent.CONFIRM_TTL_SECONDS
-    isolated_redis.pexpire(key, 0)
+    assert isolated_redis.pexpire(key, -1)
+    assert isolated_redis.get(key) is None
     with pytest.raises(AppError) as error:
         data_agent.execute_confirmed(db, owner, confirm["id"], True)
     assert error.value.code == "CONFIRM_EXPIRED"
     assert db.query(Paper).count() == 1
+    db.expire_all()
+    assert not db.get(Paper, paper_id).deleted
 
 
 def test_concurrent_confirmations_execute_only_once(owner, db, monkeypatch, isolated_redis):

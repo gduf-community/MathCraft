@@ -1,16 +1,12 @@
-/* global URL, console, process, window, Event, File, Response, AbortSignal */
+/* global URL, console, window, Event, File, Response, AbortSignal */
 /** 主线整合风险回归：真实 React/题库适配层，内存假服务，浏览器所有网络均阻断。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { build } from 'esbuild'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const backend = await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8')
 const exports = [...backend.matchAll(/export (async )?function (\w+)/g)]
 const stubs = {
@@ -88,9 +84,8 @@ const bundle = await build({
     builder.onLoad({ filter: /.*/, namespace: 'merge-fakes' }, args => ({ contents: stubs[args.path] }))
   } }],
 })
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe',
-), headless: true })
+await withResources(async use => {
+const browser = use(await launchBrowser())
 const errors = []
 const failures = []
 let passed = 0
@@ -129,12 +124,14 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
     h.paperRows = mode === 'records' ? [{id:'paper-old', name:'旧试卷', createdAt:'2026-11-11',
       questionCount:0, totalScore:0, spaces:[], published:false, questions:[], modulesOrder:[],
       savedToRecords:true, answered:false}] : []
-    h.apiBank = {id:'bank-A', name:'合成题库', code:'fake-code', creator:{id:'A', display_name:'合成用户'},
+    h.apiBank = {id:'bank-A', status:'active', stage:null, error_message:null,
+      name:'合成题库', code:'fake-code', creator:{id:'A', display_name:'合成用户'},
       member_count:1, capacity:100, source:'owned', quitted:false, my_role:memberRole,
       can_upload_document:memberRole !== 'readonly', can_download_document:true,
       can_delete_document:memberRole !== 'readonly', can_manage_members:memberRole === 'creator',
       can_edit_bank:memberRole === 'creator', can_transfer_bank:false, can_delete_bank:memberRole === 'creator'}
-    h.bank = {id:'bank-A', name:'合成题库', code:'fake-code', creator:'合成用户',
+    h.bank = {id:'bank-A', status:'active', stage:null, errorMessage:null,
+      name:'合成题库', code:'fake-code', creator:'合成用户',
       memberCount:1, capacity:100, source:'owned', myRole:memberRole,
       canUpload:memberRole !== 'readonly', canDownload:true, canDeleteDoc:memberRole !== 'readonly',
       canManageMembers:memberRole === 'creator', canEdit:memberRole === 'creator', canDelete:memberRole === 'creator',
@@ -225,7 +222,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   }, {entity, action})
   await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'cache-confirm')
 }
-try {
+{
   const settings = await mount('settings')
   await settings.getByRole('button', {name:'打开个人设置', exact:true}).click()
   const key = settings.getByLabel('新的 DeepSeek API Key', {exact:true})
@@ -450,6 +447,9 @@ try {
   for (const mode of ['edit', 'view']) {
     const deletion = await mount(mode, 'teacher', mode === 'edit' ? 'creator' : 'editor')
     try {
+      await deletion.evaluate(() => window.mergeHarness.tick(3000))
+      await deletion.waitForFunction(() =>
+        !window.document.querySelector('button[title="删除文档"]').disabled)
       await selectBank(deletion)
       await deletion.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
       await deletion.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
@@ -1201,6 +1201,6 @@ try {
   pass('paused chat keeps newer results/ownership, generation polling stops on identity change, unmount removes all polling')
   console.log(`主线整合回归：${passed} 组通过，${failures.length} 组失败`)
   assert.deepEqual(failures, [], '整合回归发现产品行为与约定不符；保留失败断言，不修改产品代码')
-} finally {
-  await browser.close()
 }
+
+})

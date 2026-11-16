@@ -52,7 +52,7 @@ def get_hyde(
     key = cache.PREFIX_HYDE.format(digest=_digest(bank_id, document_id, scope, difficulty))
     cached = r.get(key)
     if cached:
-        return cached
+        return cached.decode("utf-8") if isinstance(cached, bytes) else cached
     text = generate_hyde(scope, api_key)
     if text:
         r.set(key, text, ex=_HYDE_TTL)

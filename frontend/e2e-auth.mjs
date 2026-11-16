@@ -1,16 +1,21 @@
-/* global process, localStorage, URL, console, window, document, navigator, setTimeout */
+/* global localStorage, URL, console, window, document, navigator, setTimeout */
 /** 真实前端浏览器回归：仅使用内存 API 与假 Turnstile，不连接后端。 */
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { homedir, tmpdir } from 'node:os'
+import { createServer } from 'vite'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { fileURLToPath } from 'node:url'
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe'), headless: true })
-const origin = process.env.AUTH_TEST_URL ?? 'http://127.0.0.1:5178'
-const artifacts = fileURLToPath(new URL('../output/playwright/auth-account/', import.meta.url))
+await withResources(async use => {
+const browser = use(await launchBrowser())
+const root = fileURLToPath(new URL('.', import.meta.url))
+const server = use(await createServer({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
+  server: { port: 5178, strictPort: true, hmr: false }, logLevel: 'error' }))
+await server.listen()
+const address = server.httpServer.address()
+assert.ok(address && typeof address !== 'string')
+const origin = 'http://127.0.0.1:' + address.port
+const artifacts = fileURLToPath(new URL('./.test-results/auth-account/', import.meta.url))
 await mkdir(artifacts, { recursive: true })
 const fixture = (role = 'student', verified = false) => ({ id: 'test-' + role, account: 'fake-' + role, role,
   identity: role === 'admin' ? '管理员' : role === 'teacher' ? '教师' : '学生',
@@ -836,4 +841,6 @@ try {
   console.error('Recent fake API calls:', calls.slice(-18).map(call => call.method + ' ' + call.path))
   console.error('Web Locks:', await page.evaluate(() => navigator.locks.query()))
   throw error
-} finally { await browser.close() }
+}
+
+})

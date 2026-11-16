@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
+from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -103,7 +104,7 @@ def paper_question_payload(pq: PaperQuestion, include_answer: bool = True) -> di
     return payload
 
 
-def publications(db: Session, paper_id: str) -> list[tuple[PaperPublication, StudySpace]]:
+def publications(db: Session, paper_id: str) -> list[Row[PaperPublication, StudySpace]]:
     return (
         db.query(PaperPublication, StudySpace)
         .join(StudySpace, StudySpace.id == PaperPublication.space_id)
@@ -194,7 +195,10 @@ def paper_payload(
         "allow_review": bool(paper.allow_review),
         "allow_retake": bool(paper.allow_retake),
         "exam_window": (
-            {"start": _aware(paper.exam_start), "end": _aware(paper.exam_end)}
+            {
+                "start": _aware(paper.exam_start) if paper.exam_start is not None else None,
+                "end": _aware(paper.exam_end) if paper.exam_end is not None else None,
+            }
             if paper.exam_start or paper.exam_end
             else None
         ),
@@ -603,7 +607,10 @@ def space_papers(db: Session, space: StudySpace, viewer: User) -> list[dict]:
                 "allow_review": bool(paper.allow_review),
                 "allow_retake": bool(paper.allow_retake),
                 "exam_window": (
-                    {"start": _aware(paper.exam_start), "end": _aware(paper.exam_end)}
+                    {
+                        "start": _aware(paper.exam_start) if paper.exam_start is not None else None,
+                        "end": _aware(paper.exam_end) if paper.exam_end is not None else None,
+                    }
                     if paper.exam_start or paper.exam_end
                     else None
                 ),
@@ -690,7 +697,7 @@ def urge_feed(db: Session, student: User) -> dict:
                 "space_name": space.name,
                 "teacher_name": teacher.display_name,
                 "created_at": created,
-                "exam_end": _aware(paper.exam_end),
+                "exam_end": _aware(paper.exam_end) if paper.exam_end is not None else None,
             }
         )
     return {"unread_count": unread, "items": items}

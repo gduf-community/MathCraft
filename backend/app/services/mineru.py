@@ -115,7 +115,7 @@ def _at_stage(operation: str, part_index: int | None = None) -> Iterator[None]:
 def detect_scanned_pdf(file_path: Path) -> tuple[bool, int]:
     """判定 PDF 是否为扫描件（无可提取文本层）。返回 (is_scanned, page_count)。"""
     with fitz.open(file_path) as doc:
-        pages = [page.get_text("text").strip() for page in doc]
+        pages = [page.get_textpage(flags=fitz.TEXTFLAGS_TEXT).extractText().strip() for page in doc]
     page_count = len(pages)
     if page_count == 0:
         return False, 0

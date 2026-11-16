@@ -21,7 +21,6 @@ def test_rrf_prefers_chunks_in_both_lists():
     ids = [item["chunk_id"] for item in fused]
     # c 在稠密第 3、稀疏第 1，b 在稠密第 2、稀疏第 2，两者都应排在只出现一次的前面
     assert set(ids[:2]) == {"b", "c"}
-    assert ids[0] in ("b", "c")
     assert "a" in ids and "d" in ids
 
 

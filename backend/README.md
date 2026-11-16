@@ -27,7 +27,7 @@ backend/
 │           └── question_gen.py # 模型流式接收、滚动解析与题目校验
 ├── alembic/             # 数据库迁移
 │   └── versions/n9a0b1c23456_add_ops_runs.py # 最小运行台账增量迁移
-├── scripts/             # 认证密钥、管理员及迁移审计工具
+├── scripts/             # 认证密钥、管理员及迁移审计工具；旧冒烟脚本已归档到 tools/archive
 ├── tests/               # 后端测试与外部服务替身
 ├── .env.example         # 本机开发配置模板
 ├── pyproject.toml       # 后端依赖
@@ -193,6 +193,8 @@ uv run ruff check app tests
 ```
 
 测试使用临时 SQLite、每测试独立 fakeredis 和假 SMTP、Turnstile、模型服务，夹具禁止外部网络，不连接或清空本机 Redis。接口变更后同步根 `openapi.json` 和 [API 文档](../docs/api.md)，生成命令见 [协作约定](../AGENTS.md)。
+
+开发依赖包含 `pytest-xdist`，可使用 `uv run pytest -n 4 --dist loadfile` 并行执行。旧 G0 测试位于 `tools/ops_g0/tests/`，已移出当前应用默认套件；两份旧登录冒烟脚本位于 `tools/archive/legacy-smoke/`，仅供历史参考。当前验证范围见[测试与持续集成](../docs/design/测试清理与持续集成.md)。
 
 ## 相关文档
 

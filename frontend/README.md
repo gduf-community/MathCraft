@@ -34,6 +34,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | `src/types/ops.ts` | 对齐正式后端 schema 的 V2 摘要、六状态与 nullable 字段 |
 | `src/styles/`、`src/assets/`、`src/lib/` | 样式、静态资源与工具函数 |
 | `vite.config.ts` | 开发代理、环境文件隔离与构建配置 |
+| `run-regressions.mjs`、`regression-resources.mjs` | 回归顺序、构建、超时与资源清理 |
 | `*-regression.mjs`、`e2e-auth.mjs` | 会话、组件与浏览器回归；ops-panel 为离线页面边界，ops-ledger 为正式临时台账联调 |
 
 ## 启动
@@ -42,7 +43,7 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 
 ```powershell
 cd frontend
-npm install
+npm ci
 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort
 ```
 
@@ -73,28 +74,43 @@ node node_modules/vite/bin/vite.js preview --host 127.0.0.1  # 本机预览构�
 
 当前 Vite 开发服务器将 `/api` 和 `/media` 固定代理到 `http://127.0.0.1:8000`；`vite preview` 默认继承 `server.proxy`，因此本机构建预览也使用这两条固定代理。部署到普通静态托管时不包含 Vite 代理，需要另行配置 API 与媒体文件访问。
 
-### 上传与预览离线回归
+### 可复现离线回归与 CI
 
-```powershell
-node document-upload-regression.mjs
-node document-preview-regression.mjs
+使用 Node.js 22（至少 22.13）与 npm，依赖版本由 `package-lock.json` 固定。`playwright-core`、`esbuild` 均为显式开发依赖；浏览器默认使用与本地 Playwright 版本配套的 Chromium，不依赖临时工具目录、NODE_PATH 或系统浏览器路径。已有特定浏览器时可用 `AUTH_BROWSER` 显式指定可执行文件。
+
+Ubuntu + Node 22 的 CI 在仓库根目录执行以下完整命令：
+
+```bash
+cd frontend
+npm ci
+npx playwright-core install --with-deps chromium
+npm run lint
+npm test
 ```
 
-脚本依赖前端已安装依赖、系统临时目录下 `mathcraft-auth-browser` 工具目录中的 `playwright-core` 和已安装 Chromium；可通过 `AUTH_BROWSER` 指定浏览器路径。浏览器依赖不在当前 `package.json` 中声明，运行前需单独准备。脚本使用合成请求，无需后端、真实账号或模型，分别覆盖上传组件与预览传输／渲染边界。
+Windows 本地安装浏览器使用 `npx playwright-core install chromium`，其余命令相同。首次安装 npm 依赖与 Chromium 需要网络；安装完成后回归使用内存 API 和假 Turnstile，无需后端、Redis、真实账号、模型或个人环境文件。
 
-其他定向检查可按需运行：
+`npm test` 与 `npm run test:regression` 都会先执行 TypeScript 检查和一次生产构建，再按以下固定顺序逐个运行脚本：
 
-```powershell
-node auth-session-regression.mjs
-node logout-session-regression.mjs
-node isolation-session-regression.mjs
-node admin-panel-regression.mjs
-node merge-frontend-regression.mjs
-```
+1. `auth-session-regression.mjs`：HTTP、刷新与 XHR 上传的会话边界。
+2. `logout-session-regression.mjs`：退出、失败重试与身份清理。
+3. `isolation-session-regression.mjs`：标签、恢复、下载与环境文件隔离。
+4. `document-upload-regression.mjs`：真实上传组件、校验与部分失败重试。
+5. `document-preview-regression.mjs`：预览传输、渲染、取消与下载。
+6. `admin-panel-regression.mjs`：管理员面板、账号操作与模型配置。
+7. `merge-frontend-regression.mjs`：主线整合、会话竞态、聊天与通知。
+8. `ops-panel-regression.mjs`：V2 页面、筛选分页、错误、竞态、窄屏与生产产物。
+9. `e2e-auth.mjs`：完整认证页面与多标签流程，自动启动并关闭本地隔离 Vite。
 
-### 运维后台离线回归
+运行器固定工作目录为 `frontend/`，保留子进程输出；构建、断言、清理失败或超时均非零退出，并停止后续脚本。类型检查、构建及普通回归各限时 180 秒，完整认证回归限时 300 秒；超时或中断会结束子进程树。浏览器与 Vite 在初始化或测试失败后也会关闭。运维页面测试使用回环端口 5182，认证测试使用回环端口 5178；端口占用时明确失败，都不会复用外部运行的前端。
 
-`ops-panel-regression.mjs` 验证真实 V2 页面、筛选分页、空值、错误、竞态、轮询、窄屏和生产构建；所有 API 在测试边界拦截。`ops-ledger-regression.mjs` 配合 `backend/tests/ops_browser_server.py`，通过正式迁移的独立临时库执行三条实际生成 HTTP 路径，再核对真实查询和页面。脚本需要单独可用的 playwright-core 与 Chromium，可通过 NODE_PATH 和 AUTH_BROWSER 指定，不增加产品依赖。复现命令和验收边界见[前端 V2 与联调](../docs/design/运维后台前端V2适配与联调.md)。
+CI 无需额外执行 `npm run typecheck` 或 `npm run build`。若同一 job 已成功构建当前代码，可执行 `npm run test:regression -- --skip-build`，复用该次 `dist/`。单个回归可用 `node <脚本名>.mjs` 定向运行；单独执行 ops-panel 前需先运行 `npm run build`。完整认证也可用 `npm run test:auth` 单独执行。
+
+截图和运维检查结果默认保存在已忽略的 `frontend/.test-results/`，可作为 CI artifact 收集；`OPS_TEST_OUTPUT` 可显式覆盖运维结果路径。
+
+### 运维台账隔离联调
+
+`npm run test:ops-ledger` 单独运行 `ops-ledger-regression.mjs`，不纳入默认离线回归。它需要先用 `backend/tests/ops_browser_server.py` 启动经过正式迁移的独立临时库后端，并将其生成的种子文件路径通过 `OPS_LEDGER_SEED` 传入；缺少种子文件时立即失败。脚本会发出真实 HTTP 请求，仅供隔离联调 job 使用。配置方法与验收边界见[前端 V2 与联调](../docs/design/运维后台前端V2适配与联调.md)。
 
 ## 代理和认证配置注意
 

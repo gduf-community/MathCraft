@@ -1,0 +1,91 @@
+name: Code checks
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend lint, types and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked backend dependencies with Phoenix
+        run: uv sync --project backend --locked --extra phoenix
+      - name: Install locked type checker
+        run: npm ci
+        working-directory: frontend
+      - name: Create placeholder local configuration
+        run: cp backend/app/local_secrets.example.py backend/app/local_secrets.py
+      - name: Ruff
+        run: .venv/bin/python -m ruff check backend/app backend/tests
+      - name: Pyright
+        run: frontend/node_modules/.bin/pyright
+      - name: Pytest
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: .venv/bin/python -m pytest -q -n 4 --dist loadfile --junitxml=test-results/backend.xml
+      - name: Upload backend test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: test-results/backend.xml
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend lint, types, build and regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Install Chromium and system dependencies
+        run: npx --no-install playwright-core install --with-deps chromium
+      - name: ESLint
+        run: npm run lint
+      - name: TypeScript, build and offline regressions
+        run: npm test
+      - name: Upload browser regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-regression-results
+          path: frontend/.test-results/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

@@ -2,23 +2,20 @@
 /** V2 实际页面回归：仅在测试边界构造响应，所有外部请求阻断。 */
 import assert from 'node:assert/strict'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { createServer, preview } from 'vite'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const root = fileURLToPath(new URL('.', import.meta.url))
-const output = process.env.OPS_TEST_OUTPUT ?? fileURLToPath(new URL('../.scratch/ops-m4-v2/browser/', import.meta.url))
-const server = await createServer({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
-  server: { port: 5182, strictPort: true, hmr: false }, logLevel: 'error' })
+const output = process.env.OPS_TEST_OUTPUT ?? fileURLToPath(new URL('./.test-results/ops-panel/', import.meta.url))
+await withResources(async use => {
+const server = use(await createServer({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
+  server: { port: 5182, strictPort: true, hmr: false }, logLevel: 'error' }))
 await server.listen()
 const origin = 'http://127.0.0.1:5182'
 const allowedOrigins = new Set([origin])
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe'), headless: true })
+const browser = use(await launchBrowser())
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block',
   timezoneId: 'Asia/Shanghai', reducedMotion: 'reduce' })
 const page = await context.newPage()
@@ -311,6 +308,9 @@ try {
     }
     const production = await preview({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
       preview: { host: '127.0.0.1', port: 0, strictPort: true }, logLevel: 'error' })
+    use(production, () => new Promise((resolve, reject) => {
+      production.httpServer.close(error => error ? reject(error) : resolve())
+    }))
     const address = production.httpServer.address(); assert.ok(address && typeof address !== 'string')
     const productionOrigin = `http://127.0.0.1:${address.port}`; allowedOrigins.add(productionOrigin)
     const built = await context.newPage()
@@ -319,7 +319,7 @@ try {
       await built.getByRole('heading', { name: '运维后台', exact: true }).waitFor()
       await built.getByText('已记录总数：27', { exact: true }).waitFor()
       assert.equal(await built.getByRole('navigation', { name: '管理员后台导航' }).getByRole('button').count(), 5)
-    } finally { await built.close(); await new Promise(resolve => production.httpServer.close(resolve)) }
+    } finally { await built.close() }
   })
   await check('401沿用真实会话失效流程', async () => {
     await nav('出题运行').click(); await rows().first().waitFor()
@@ -334,7 +334,12 @@ try {
     unexpected, errors, opsRequests: calls.filter(call => call.path.startsWith('/api/admin/ops/')).length }, null, 2))
   console.log(`V2 浏览器回归通过：${passed.length} 组`)
 } catch (error) {
-  await page.screenshot({ path: join(output, 'failure.png') }); throw error
+  try {
+    await page.screenshot({ path: join(output, 'failure.png'), timeout: 10000 })
+  } catch (captureError) { console.error('Failure screenshot unavailable:', captureError.message) }
+  throw error
 } finally {
-  releaseOld(); await context.close(); await browser.close(); await server.close()
+  releaseOld()
 }
+
+})

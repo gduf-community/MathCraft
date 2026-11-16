@@ -524,7 +524,7 @@ def read_task(task_id: str, user_id: str | None = None) -> dict | None:
 
 def _ops_recovery_schema_available(db: Session) -> bool:
     """只接受可执行中断状态恢复的台账结构，数据库读取错误继续向外传播。"""
-    table = OpsRun.__table__
+    table = OpsRun.metadata.tables[OpsRun.__tablename__]
     inspector = inspect(db.connection())
     if not inspector.has_table(table.name, schema=table.schema):
         return False

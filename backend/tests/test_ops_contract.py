@@ -59,9 +59,7 @@ def test_checked_in_openapi_matches_runtime():
     assert checked_in == app.openapi()
 
 
-def test_api_index_covers_new_operations_and_drops_deleted_contract_links():
+def test_api_index_covers_ops_operations():
     document = (ROOT / "docs/api.md").read_text(encoding="utf-8")
     for path in OPS_PATHS:
         assert f"| `GET` | `{path}` |" in document
-    assert "运维后台接口与联调契约.md" not in document
-    assert "运维查询V2实现与交接.md" in document

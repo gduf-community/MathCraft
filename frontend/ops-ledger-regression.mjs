@@ -2,27 +2,24 @@
 /** 正式临时迁移库 + 实际三条 HTTP 生成路径 + 实际管理员页面；后端模型与 Redis 为替身。 */
 import assert from 'node:assert/strict'
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { createServer } from 'vite'
 
 assert.ok(process.env.OPS_LEDGER_SEED, '先按本批说明启动隔离后端；不得指向业务数据库')
 const seed = JSON.parse(await readFile(process.env.OPS_LEDGER_SEED, 'utf8'))
 assert.equal(seed.migration, 'n9a0b1c23456')
 assert.match(seed.backend, /^http:\/\/127\.0\.0\.1:\d+$/)
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const root = fileURLToPath(new URL('.', import.meta.url))
-const output = process.env.OPS_TEST_OUTPUT ?? fileURLToPath(new URL('../.scratch/ops-m4-v2/ledger/', import.meta.url))
+const output = process.env.OPS_TEST_OUTPUT ?? fileURLToPath(new URL('./.test-results/ops-ledger/', import.meta.url))
 await mkdir(output, { recursive: true })
-const server = await createServer({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
-  server: { port: 5183, strictPort: true, hmr: false, proxy: { '/api': seed.backend, '/media': seed.backend } }, logLevel: 'error' })
+await withResources(async use => {
+const server = use(await createServer({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
+  server: { port: 5183, strictPort: true, hmr: false, proxy: { '/api': seed.backend, '/media': seed.backend } }, logLevel: 'error' }))
 await server.listen()
 const origin = 'http://127.0.0.1:5183'
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(homedir(),
-  'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe'), headless: true })
+const browser = use(await launchBrowser())
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', timezoneId: 'Asia/Shanghai' })
 const teacher = await browser.newContext({ serviceWorkers: 'block' })
 const page = await context.newPage()
@@ -95,4 +92,6 @@ try {
     administratorQueries: opsCalls.length, errors, unexpected, realModelCalls: 0 }, null, 2))
   console.log('PASS 正式迁移 + 三条实际 HTTP 路径 + 管理员三接口 + 页面详情；真实模型调用 0')
 } catch (error) { await page.screenshot({ path: join(output, 'failure.png') }); throw error }
-finally { await teacher.close(); await context.close(); await browser.close(); await server.close() }
+finally { await teacher.close() }
+
+})

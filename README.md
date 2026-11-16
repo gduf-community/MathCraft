@@ -35,6 +35,8 @@ MathCraft/
 │   ├── api.md                # API 索引
 │   └── design/               # 设计、实施与验证记录
 ├── tools/                    # 文档生成与维护工具
+│   ├── archive/              # 失效脚本历史归档，不用于当前验收
+│   └── ops_g0/               # 历史工具及独立测试
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
 ├── compose.yaml              # 本地 Redis 容器
@@ -204,6 +206,8 @@ docker compose down             # 移除容器，保留数据卷
 uv sync --group dev
 uv run pytest -q
 ```
+
+开发依赖包含 `pytest-xdist`，可使用 `pytest -n 4 --dist loadfile` 并行执行。当前测试范围与隔离说明见[测试与持续集成](docs/design/测试清理与持续集成.md)。
 
 前端在 `frontend/` 执行：
 

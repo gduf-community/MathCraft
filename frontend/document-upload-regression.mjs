@@ -1,16 +1,12 @@
-/* global process, URL, console, window, document, File, DataTransfer, Event, DragEvent */
+/* global URL, console, window, document, File, DataTransfer, Event, DragEvent */
 /** 离线真实组件回归：真实弹窗、上传 hook、banks 映射和 Toast；仅替换请求、会话与预览边界。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { build } from 'esbuild'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const source = await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8')
 const requestExports = [...source.matchAll(/export (?:async )?function (\w+)/g)]
 const stubs = {
@@ -73,9 +69,8 @@ const bundle = await build({
     }))
   }}],
 })
-const browser = await chromium.launch({executablePath:process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe',
-), headless:true})
+await withResources(async use => {
+const browser = use(await launchBrowser())
 const runtimeErrors = []
 const passed = []
 
@@ -169,8 +164,12 @@ async function toast(page, variant, contains) {
     const latest = window.uploadHarness.toasts.at(-1)
     return latest?.variant === variant && latest.text.includes(contains)
   }, {variant, contains})
-  const color = {error:'border-red-700', success:'border-emerald-700', info:'border-slate-700'}[variant]
-  assert.ok(await page.locator(`.${color}`).count(), '真实 Toast 使用正确语义颜色')
+  const role = variant === 'error' ? 'alert' : 'status'
+  const announcement = page.locator(`[role="${role}"][aria-atomic="true"]`).filter({hasText:contains})
+  await announcement.waitFor()
+  assert.equal(await announcement.getAttribute('aria-live'), variant === 'error' ? 'assertive' : 'polite')
+  assert.equal(await page.locator('.bg-ink.text-white').filter({hasText:contains}).count(), 1,
+    '真实 Toast 使用当前约定的深色底白字，并保留错误与状态播报语义')
 }
 
 function fixture(id, format = 'TXT', status = 'ready') {
@@ -180,7 +179,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
     ocr_status:status === 'failed' ? 'failed' : null}
 }
 
-try {
+{
   const validation = await mount()
   const input = validation.locator('input[type=file]')
   assert.equal(await input.getAttribute('multiple'), '')
@@ -411,6 +410,6 @@ try {
 
   assert.deepEqual(runtimeErrors, [], '离线真实组件无未处理异常')
   console.log(JSON.stringify({passed:passed.length, cases:passed}, null, 2))
-} finally {
-  await browser.close()
 }
+
+})
