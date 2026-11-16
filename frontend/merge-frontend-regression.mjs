@@ -1,6 +1,7 @@
-/* global URL, console, process, window, document, localStorage, Event, File, Response, AbortSignal */
+/* global URL, console, process, window, Event, File, Response, AbortSignal */
 /** 主线整合风险回归：真实 React/题库适配层，内存假服务，浏览器所有网络均阻断。 */
 import assert from 'node:assert/strict'
+import { runChatHistoryCases, runGenerationTaskCases } from './merge-session-cases.mjs'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +32,7 @@ const stubs = {
 }
 const bundle = await build({
   stdin: { contents: `
-    import React, {useEffect} from 'react';
+    import React, {useCallback, useEffect, useRef, useState} from 'react';
     import {createRoot} from 'react-dom/client';
     import {AppProvider, useApp} from './src/store/AppContext';
     import {ApiError} from './src/api/backend';
@@ -44,7 +45,23 @@ const bundle = await build({
     import TopBar from './src/components/layout/TopBar';
     import ChatInput from './src/components/tabs/GenerateTab/ChatInput';
     import TabBar from './src/components/layout/TabBar';
-    import ParamsSidebar from './src/components/layout/ParamsSidebar';
+    import HistorySidebar from './src/components/layout/HistorySidebar';
+    import ConfirmDialog from './src/components/ui/ConfirmDialog';
+    import {useGenerationTask} from './src/store/useGenerationTask';
+    function TaskHarness() {
+      const h = window.mergeHarness;
+      const initialGeneration = useRef(h.generation);
+      const mounted = useRef(true);
+      const isCurrent = useCallback(() => mounted.current && initialGeneration.current === h.generation, [h]);
+      const onDeleted = useCallback(ids => { h.deletedIds.push(...ids); }, [h]);
+      const task = useGenerationTask(h.user.userId, isCurrent, onDeleted);
+      const [confirmReset, setConfirmReset] = useState(false);
+      useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+      useEffect(() => { window.generationTask = task; }, [task]);
+      return <>{task.generationRecoveryError && <button onClick={() => setConfirmReset(true)}>重置恢复记录</button>}
+        {confirmReset && <ConfirmDialog title="重置恢复记录" message="确认重置合成恢复记录"
+          onConfirm={task.resetGenerationRecovery} onClose={() => setConfirmReset(false)}/>}</>;
+    }
     import RecordsTab from './src/components/tabs/RecordsTab';
     function Harness() {
       const app = useApp(), h = window.mergeHarness;
@@ -58,7 +75,8 @@ const bundle = await build({
       }};
       return <>
         <TopBar/>
-        {h.mode === 'generation' && <><TabBar/><ParamsSidebar/></>}
+        <TabBar/>
+        {h.mode === 'history' && <HistorySidebar/>}
         {h.mode === 'settings' && <>
           <button onClick={() => app.setActiveTab('settings')}>打开个人设置</button>
           <button onClick={() => app.setActiveTab('preview')}>离开个人设置</button>
@@ -78,7 +96,7 @@ const bundle = await build({
     const root = createRoot(document.getElementById('root'));
     window.mergeApiError = ApiError;
     window.unmountMerge = () => root.unmount();
-    window.remountMerge = () => root.render(<ToastProvider key={window.mergeHarness.generation}><AppProvider><Harness/></AppProvider><Toast/></ToastProvider>);
+    window.remountMerge = () => root.render(<ToastProvider key={window.mergeHarness.generation}>{window.mergeHarness.mode === 'task' ? <TaskHarness/> : <AppProvider><Harness/></AppProvider>}<Toast/></ToastProvider>);
     window.remountMerge();
   `, resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'jsx' },
   bundle: true, write: false, format: 'iife', jsx: 'automatic',
@@ -105,7 +123,7 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
   await page.evaluate(({ mode, role, memberRole, format, documentStatus }) => {
     const h = window.mergeHarness = { mode, generation: 0, closed: 0, changed: 0,
       changedDocumentIds: [], changeRefreshesFinished: 0,
-      calls: [], timers: new Map(), timerId: 0, listeners:new Set(),
+      deletedIds: [], calls: [], timers: new Map(), timerId: 0, listeners:new Set(),
       user: {userId:'A', username:'fake-A', displayName:'合成用户', role, emailVerified:false},
       notifications: [], held: {}, pending: {}, documents: {}, preview: '# 远端文档预览\n\n**原样文本** $x$',
     }
@@ -144,6 +162,8 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
       docs:[{id:'doc-bank-A', name:'bank-A.' + format.toLowerCase(), format, size:'12 B', status:documentStatus, stage:'正在解析', progress:25}],
       members:[{id:'member-A', userId:'A', name:'合成用户', role:memberRole, isMe:true, isCreator:memberRole === 'creator'}]}
     const defaults = {
+      listChatSessions: () => h.sessions ?? [],
+      getChatSession: id => ({session_id:id, mode:'generate', messages:[]}), listQuestions: () => ({items:[]}),
       listBanks: () => h.banks ?? [h.apiBank], latestBatch: () => ({batch_id:null, questions:[]}),
       getModelSettings: () => ({deepseek_model:'fake-deepseek', deepseek_key_configured:false,
         deepseek_key_masked:null, mineru_token_configured:false, mineru_token_masked:null,
@@ -196,7 +216,7 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
     }
   }, {mode, role, memberRole, format, documentStatus})
   await page.addScriptTag({ content: bundle.outputFiles[0].text })
-  await page.waitForFunction(() => window.mergeApp && window.mergeHarness.calls.some(call => call.name === 'listSpaces'))
+  await page.waitForFunction(() => window.mergeHarness.mode === 'task' ? !!window.generationTask : window.mergeApp && window.mergeHarness.calls.some(call => call.name === 'listSpaces'))
   return page
 }
 async function attachFiles(page) {
@@ -233,7 +253,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'cache-confirm')
 }
 {
-  if (!process.argv.includes('--generation-only')) {
+  if (!(process.argv.includes('--chat-only') || process.argv.includes('--generation-only'))) {
   const settings = await mount('settings')
   await settings.getByRole('button', {name:'打开个人设置', exact:true}).click()
   const key = settings.getByLabel('新的 DeepSeek API Key', {exact:true})
@@ -818,7 +838,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   pass('notifications preserve selected bank, reject late document refresh and stop polling after identity change')
 
   for (const phase of ['getDocument', 'listDocuments']) {
-    for (const action of ['selectDoc', 'clearAll']) {
+    for (const action of ['selectDoc', 'startNewChat']) {
       await providerCase(`upload auto-selection expires after ${action} while ${phase} is held, preserving the new chat`, async page => {
         await page.evaluate(() => {
           const h = window.mergeHarness
@@ -837,7 +857,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
         await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
         await page.evaluate(action => {
           if (action === 'selectDoc') window.mergeApp.selectDoc('doc-other')
-          else window.mergeApp.clearAll()
+          else window.mergeApp.startNewChat()
         }, action)
         await settleRender(page)
         await page.evaluate(() => {
@@ -949,7 +969,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   }
 
   for (const phase of ['listFavorites', 'listPapers', 'getPaperApi']) {
-    for (const action of ['clearAll', 'selectDoc', 'endSession']) {
+    for (const action of ['startNewChat', 'selectDoc', 'endSession']) {
       await providerCase(`confirmation cache refresh ${phase} completed after ${action} cannot overwrite current resources`, async page => {
         await page.waitForFunction(() => window.mergeApp.records.length === 1 && window.mergeApp.favorites.length === 1)
         await prepareConfirmation(page, phase === 'listFavorites' ? 'favorites' : 'papers')
@@ -963,7 +983,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
         await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
         assert.equal(await page.evaluate(() => window.mergeApp.pendingConfirm), null)
         await page.evaluate(action => {
-          if (action === 'clearAll') window.mergeApp.clearAll()
+          if (action === 'startNewChat') window.mergeApp.startNewChat()
           if (action === 'selectDoc') window.mergeApp.selectDoc('doc-other')
           if (action === 'endSession') window.mergeHarness.invalidate()
         }, action)
@@ -1002,7 +1022,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
     assert.deepEqual(await page.evaluate(() => window.mergeApp.records), [])
   }, 'records')
 
-  for (const action of ['clearAll', 'selectDoc', 'selectKb', 'endSession']) {
+  for (const action of ['startNewChat', 'selectDoc', 'selectKb', 'endSession']) {
     await providerCase(`late confirmation after ${action} cannot restore messages or change a newer confirmation`, async page => {
       await selectBank(page)
       await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
@@ -1030,7 +1050,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
       assert.equal(await page.getByRole('button', {name:'发送', exact:true}).isDisabled(), true)
       await page.evaluate(action => {
         const app = window.mergeApp, h = window.mergeHarness
-        if (action === 'clearAll') app.clearAll()
+        if (action === 'startNewChat') app.startNewChat()
         if (action === 'selectDoc') app.selectDoc('doc-other')
         if (action === 'selectKb') app.selectKb('bank-B')
         if (action === 'endSession') h.invalidate()
@@ -1072,7 +1092,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
       void window.mergeApp.confirmOperation(true)
     })
     await page.waitForFunction(() => window.mergeApp.confirmBusy)
-    await page.evaluate(() => window.mergeApp.clearAll())
+    await page.evaluate(() => window.mergeApp.startNewChat())
     await settleRender(page)
     await page.evaluate(async () => {
       window.mergeHarness.nextConfirm = 'second'
@@ -1093,7 +1113,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
     assert.equal(await page.evaluate(() => window.mergeApp.messages.filter(message => message.text === '新删除已完成').length), 1)
   })
 
-  for (const action of ['clearAll', 'selectDoc', 'selectKb', 'sendChat', 'endSession']) {
+  for (const action of ['startNewChat', 'selectDoc', 'selectKb', 'sendChat', 'endSession']) {
     await providerCase(`image reading completed after ${action} cannot append stale attachments`, async page => {
       await selectBank(page)
       await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
@@ -1108,7 +1128,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
       })
       await page.evaluate(action => {
         const app = window.mergeApp
-        if (action === 'clearAll') app.clearAll()
+        if (action === 'startNewChat') app.startNewChat()
         if (action === 'selectDoc') app.selectDoc('doc-other')
         if (action === 'selectKb') app.selectKb('bank-B')
         if (action === 'sendChat') void app.sendChat('发送时还未读完图片')
@@ -1151,7 +1171,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
     assert.equal(await page.evaluate(() => window.mergeApp.inputDraft), '编辑图片消息')
   })
 
-  for (const action of ['clearAll', 'selectDoc', 'selectKb']) {
+  for (const action of ['startNewChat', 'selectDoc', 'selectKb']) {
     await providerCase(`chat response after ${action} cannot restore mode, confirmation, questions or polling state`, async page => {
       await selectBank(page)
       await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
@@ -1163,7 +1183,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
       await page.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
       await page.evaluate(action => {
         const app = window.mergeApp
-        if (action === 'clearAll') app.clearAll()
+        if (action === 'startNewChat') app.startNewChat()
         if (action === 'selectDoc') app.selectDoc('doc-other')
         if (action === 'selectKb') app.selectKb('bank-B')
       }, action)
@@ -1185,411 +1205,10 @@ async function prepareConfirmation(page, entity, action = 'delete') {
 
 
   }
-  await providerCase('quick generation: delayed start is canceled by request identity; dialog waits for actual exit', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.held.startGeneration = true
-      h.held.cancelGeneration = true
-      h.held.getGenerationProgress = true
-      void window.mergeApp.generate()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.startGeneration?.length === 1)
-    const requestId = await page.evaluate(() => window.mergeHarness.pending.startGeneration[0].args[0].request_id)
-    assert.match(requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
-    await page.getByRole('button', {name:'一键清空', exact:true}).click()
-    await page.getByRole('button', {name:'确认清空', exact:true}).click()
-    await page.waitForFunction(() => window.mergeHarness.pending.cancelGeneration?.length === 1)
-    assert.equal(await page.getByRole('dialog').getAttribute('aria-busy'), 'true')
-    assert.equal(await page.getByRole('button', {name:'正在取消与清理…'}).isDisabled(), true)
-    assert.equal(await page.evaluate(() => window.mergeApp.generate()), false)
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'startGeneration').length), 1)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.finish('cancelGeneration', {done:false, execution_finished:false, status:'canceling',
-        progress:40, stage:'模型仍在运行', questions:[], question_ids:[], error:null})
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.finish('getGenerationProgress', {done:true, execution_finished:true, status:'canceled',
-        progress:0, stage:'已取消', questions:[], error:null})
-    })
-    await page.waitForFunction(() => !window.mergeApp.generating)
-    await page.waitForFunction(() => !document.querySelector('[role=dialog]'))
-    await page.evaluate(() => { void window.mergeApp.generate() })
-    await page.waitForFunction(() => window.mergeHarness.pending.startGeneration?.length === 2)
-    const nextRequest = await page.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-generation:A')).requestId)
-    assert.notEqual(nextRequest, requestId)
-    await page.evaluate(() => window.mergeHarness.finish('startGeneration', {task_id:'fake-task'}))
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-generation:A')).requestId), nextRequest)
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-    assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-    await page.evaluate(async () => {
-      window.mergeHarness.held.cancelGeneration = false
-      await window.mergeApp.clearAll()
-    })
-  }, 'generation')
+  await runChatHistoryCases({providerCase, selectBank, settleRender})
+  await runGenerationTaskCases({providerCase, settleRender})
 
-  await providerCase('quick generation: lost start response recovers the same request without another POST', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.backend.startGeneration = () => { throw new TypeError('synthetic lost response') }
-      h.held.getGenerationProgress = true
-      void window.mergeApp.generate()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-    const identity = await page.evaluate(() => {
-      const calls = window.mergeHarness.calls
-      return {sent:calls.find(c => c.name === 'startGeneration').args[0].request_id,
-        found:calls.find(c => c.name === 'findGenerationRequest').args[0]}
-    })
-    assert.equal(identity.sent, identity.found)
-    await page.evaluate(() => window.mergeApp.clearAll())
-    await page.evaluate(() => window.mergeHarness.finish('getGenerationProgress', {
-      done:false, execution_finished:false, status:'running', progress:99, stage:'迟到旧进度', questions:[], error:null,
-    }))
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => window.mergeApp.genProgress), null)
-    assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'startGeneration').length), 1)
-  })
-
-  await providerCase('quick generation: switching documents preserves the task gate and suppresses stale completion', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(() => {
-      window.mergeHarness.held.getGenerationProgress = true
-      void window.mergeApp.generate()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-    await page.evaluate(() => window.mergeApp.selectDoc('another-document'))
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-    assert.equal(await page.evaluate(() => window.mergeApp.generate()), false)
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'cancelGeneration').length), 0)
-    await page.evaluate(() => window.mergeHarness.finish('getGenerationProgress', {
-      done:true, execution_finished:true, status:'done', progress:100, stage:'完成',
-      questions:[{id:'old-doc-result'}], batch_id:'old-batch', error:null,
-    }))
-    await page.waitForFunction(() => !window.mergeApp.generating)
-    assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-  })
-
-  await providerCase('quick generation: completed but unseen results are deleted in batches; failure retains remaining IDs and favorites', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(async () => {
-      const h = window.mergeHarness
-      h.held.getGenerationProgress = true
-      h.backend.cancelGeneration = () => ({done:true, execution_finished:true, status:'done',
-        progress:100, stage:'完成', error:null, question_ids:[], questions:Array.from({length:205}, (_, i) => ({id:'result-' + i}))})
-      h.deleteCalls = 0
-      h.backend.batchDeleteQuestions = () => { if (++h.deleteCalls === 2) throw new Error('synthetic second batch failure') }
-      void window.mergeApp.generate()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-    await page.evaluate(async () => {
-      try { await window.mergeApp.clearAll() } catch (error) { window.mergeHarness.clearError = error.message }
-    })
-    assert.equal(await page.evaluate(() => window.mergeHarness.clearError), 'synthetic second batch failure')
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-    const remaining = await page.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-generation:A')).questionIds)
-    assert.equal(remaining.length, 5)
-    await page.evaluate(() => window.mergeApp.clearAll())
-    assert.deepEqual(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'batchDeleteQuestions').map(c => c.args[0].length)), [200,5,5])
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), false)
-    assert.equal(await page.evaluate(() => localStorage.getItem('mathcraft-generation:A')), null)
-    await page.evaluate(() => window.mergeHarness.finish('getGenerationProgress', {
-      done:true, execution_finished:true, status:'done', progress:100, stage:'旧完成响应',
-      questions:[{id:'result-0'}], batch_id:'late', error:null,
-    }))
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-  })
-
-  await providerCase('quick generation: clearing preview removes matching favorites and invalidates initial batch readback', async page => {
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.favoriteRows = [{id:'preview-result'}, {id:'keep-favorite'}]
-      h.backend.latestBatch = () => ({batch_id:'preview-batch', questions:[{id:'preview-result'}]})
-      h.generation++
-      window.remountMerge()
-    })
-    await page.waitForFunction(() => window.mergeApp.favorites.length === 2 && window.mergeApp.questions.length === 1)
-    await page.evaluate(() => window.mergeApp.clearAll())
-    await settleRender(page)
-    assert.deepEqual(await page.evaluate(() => window.mergeApp.favorites.map(q => q.id)), ['keep-favorite'])
-    assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.held.latestBatch = true
-      h.generation++
-      window.remountMerge()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.latestBatch?.length === 1)
-    await page.evaluate(() => window.mergeApp.clearAll())
-    await page.evaluate(() => window.mergeHarness.finish('latestBatch', {
-      batch_id:'obsolete-batch', questions:[{id:'should-not-return'}],
-    }))
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-  })
-
-  await providerCase('quick generation: remount resumes persisted cancellation and scopes recovery to the account', async page => {
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      localStorage.setItem('mathcraft-generation:A', JSON.stringify({requestId:'11111111-1111-4111-8111-111111111111',
-        taskId:'restored-task', finished:false, rejected:false, clearing:true, questionIds:['restored-result'], sessionId:'restored-chat'}))
-      h.held.cancelGeneration = true
-      h.generation++
-      window.remountMerge()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.cancelGeneration?.length === 1)
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-    assert.equal(await page.evaluate(() => window.mergeHarness.pending.cancelGeneration[0].args[0]), 'restored-task')
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.user = {...h.user, userId:'B'}
-      h.generation++
-      window.remountMerge()
-      h.finish('cancelGeneration', {done:true, execution_finished:true, status:'canceled', progress:0, questions:[], question_ids:[], error:null})
-    })
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'batchDeleteQuestions').length), 0)
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), false)
-    assert.notEqual(await page.evaluate(() => localStorage.getItem('mathcraft-generation:A')), null)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.user = {...h.user, userId:'A'}
-      h.generation++
-      h.held.cancelGeneration = false
-      window.remountMerge()
-    })
-    await page.waitForFunction(() => !window.mergeApp.generating && localStorage.getItem('mathcraft-generation:A') === null)
-    assert.deepEqual(await page.evaluate(() => window.mergeHarness.calls.find(c => c.name === 'batchDeleteQuestions').args[0]), ['restored-result'])
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'deleteChatSession').at(-1).args[0]), 'restored-chat')
-  })
-
-
-  await providerCase('quick generation: a never accepted start is replayed after 404 using the identical persisted request', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      h.startAttempts = 0
-      h.backend.startGeneration = () => {
-        if (++h.startAttempts === 1) throw new TypeError('synthetic request never reached server')
-        return {task_id:'replayed-task'}
-      }
-      h.backend.findGenerationRequest = () => { throw new window.mergeApiError('not accepted', 'NOT_FOUND', 404) }
-      h.held.getGenerationProgress = true
-      void window.mergeApp.generate()
-    })
-    await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-    const replay = await page.evaluate(() => ({
-      posts:window.mergeHarness.calls.filter(c => c.name === 'startGeneration').map(c => c.args[0]),
-      stored:JSON.parse(localStorage.getItem('mathcraft-generation:A')),
-    }))
-    assert.equal(replay.posts.length, 2)
-    assert.deepEqual(replay.posts[0], replay.posts[1])
-    assert.equal(replay.stored.taskId, 'replayed-task')
-    assert.equal(replay.stored.body.document_id, 'doc-bank-A')
-    assert.deepEqual(Object.keys(replay.stored.body).sort(), ['bank_id','difficulty','document_id','existing_stems','source_mode','types'])
-    await page.evaluate(() => window.mergeApp.clearAll())
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.find(c => c.name === 'cancelGeneration').args[0]), 'replayed-task')
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), false)
-  })
-
-  for (const status of [400,409]) {
-    await providerCase(`quick generation: deterministic ${status} on replay ends the operation instead of waiting forever`, async page => {
-      await selectBank(page)
-      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-      await settleRender(page)
-      await page.evaluate(async status => {
-        const h = window.mergeHarness
-        h.startAttempts = 0
-        h.backend.startGeneration = () => {
-          if (++h.startAttempts === 1) throw new TypeError('synthetic lost request')
-          throw new window.mergeApiError('synthetic definitive rejection', 'INVALID_REQUEST', status)
-        }
-        h.backend.findGenerationRequest = () => { throw new window.mergeApiError('not found', 'NOT_FOUND', 404) }
-        h.generateResult = await window.mergeApp.generate()
-      }, status)
-      await settleRender(page)
-      assert.equal(await page.evaluate(() => window.mergeHarness.generateResult), false)
-      assert.equal(await page.evaluate(() => window.mergeApp.generating), false)
-      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-generation:A')).rejected), true)
-      await page.evaluate(() => window.mergeApp.clearAll())
-      assert.equal(await page.evaluate(() => localStorage.getItem('mathcraft-generation:A')), null)
-      assert.equal(await page.evaluate(() => window.mergeHarness.calls.some(c => c.name === 'cancelGeneration')), false)
-    })
-  }
-
-  await providerCase('quick generation: clear replays a missing persisted request after reload and cancels that exact task', async page => {
-    await page.evaluate(() => {
-      const h = window.mergeHarness
-      localStorage.setItem('mathcraft-generation:A', JSON.stringify({
-        requestId:'22222222-2222-4222-8222-222222222222', taskId:null,
-        finished:false, rejected:false, clearing:true, questionIds:[], sessionId:null,
-        body:{bank_id:'bank-A', document_id:'doc-bank-A', types:[{type:'single', count:1}], difficulty:'中'},
-      }))
-      h.backend.findGenerationRequest = () => { throw new window.mergeApiError('not found', 'NOT_FOUND', 404) }
-      h.backend.startGeneration = () => ({task_id:'recovered-exact-task'})
-      h.generation++
-      window.remountMerge()
-    })
-    await page.waitForFunction(() => window.mergeHarness.calls.some(c => c.name === 'cancelGeneration'))
-    await page.waitForFunction(() => !window.mergeApp.generating && localStorage.getItem('mathcraft-generation:A') === null)
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.find(c => c.name === 'startGeneration').args[0].request_id), '22222222-2222-4222-8222-222222222222')
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.find(c => c.name === 'cancelGeneration').args[0]), 'recovered-exact-task')
-  })
-
-  for (const kind of ['broken-json','incompatible','legacy-without-body']) {
-    await providerCase(`quick generation: ${kind} offers a confirmed reset and permits generation again`, async page => {
-      await page.evaluate(kind => {
-        const h = window.mergeHarness
-        const raw = kind === 'broken-json' ? '{' : kind === 'incompatible' ? '{}' : JSON.stringify({
-          requestId:'33333333-3333-4333-8333-333333333333', taskId:null,
-          finished:false, rejected:false, clearing:true, questionIds:[], sessionId:null,
-        })
-        localStorage.setItem('mathcraft-generation:A', raw)
-        h.backend.findGenerationRequest = () => { throw new window.mergeApiError('not found', 'NOT_FOUND', 404) }
-        h.generation++
-        window.remountMerge()
-      }, kind)
-      await page.waitForFunction(() => !!window.mergeApp.generationRecoveryError)
-      assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-      await page.getByRole('button', {name:'重置出题恢复记录', exact:true}).click()
-      await page.getByRole('button', {name:'确认重置', exact:true}).click()
-      await page.waitForFunction(() => !window.mergeApp.generating && !window.mergeApp.generationRecoveryError)
-      assert.equal(await page.evaluate(() => localStorage.getItem('mathcraft-generation:A')), null)
-      await selectBank(page)
-      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-      await settleRender(page)
-      await page.evaluate(() => {
-        window.mergeHarness.held.getGenerationProgress = true
-        void window.mergeApp.generate()
-      })
-      await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-      await page.evaluate(() => window.mergeApp.clearAll())
-      await page.waitForFunction(() => !window.mergeApp.generating)
-      assert.equal(await page.evaluate(() => window.mergeApp.generating), false)
-    }, 'generation')
-  }
-
-  for (const cancelDone of [true,false]) {
-    await providerCase(`quick generation: empty questions still deletes authoritative cancel IDs (done=${cancelDone})`, async page => {
-      await selectBank(page)
-      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-      await settleRender(page)
-      await page.evaluate(cancelDone => {
-        const h = window.mergeHarness
-        h.held.getGenerationProgress = true
-        h.backend.cancelGeneration = () => ({done:cancelDone, execution_finished:cancelDone,
-          status:cancelDone ? 'done' : 'canceling', progress:60, stage:'部分题目已删除',
-          question_ids:['sql-survivor'], questions:[], error:null})
-        void window.mergeApp.generate()
-      }, cancelDone)
-      await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
-      await page.evaluate(() => {
-        void window.mergeApp.clearAll().then(() => { window.mergeHarness.clearFinished = true })
-      })
-      if (!cancelDone) {
-        await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 2)
-        await page.evaluate(() => window.mergeHarness.pending.getGenerationProgress[1].resolve({
-          done:true, execution_finished:true, status:'canceled', progress:100,
-          stage:'完成', question_ids:['late-survivor'], questions:[], error:null,
-        }))
-      }
-      await page.waitForFunction(() => window.mergeHarness.clearFinished)
-      assert.deepEqual(await page.evaluate(() => window.mergeHarness.calls.find(c => c.name === 'batchDeleteQuestions').args[0]),
-        cancelDone ? ['sql-survivor'] : ['sql-survivor','late-survivor'])
-      assert.equal(await page.evaluate(() => window.mergeApp.questions.length), 0)
-    })
-  }
-
-  await providerCase('quick generation: clearing a known completed task still reads SQL survivor IDs from cancel', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(async () => {
-      const h = window.mergeHarness
-      h.backend.getGenerationProgress = () => ({done:true, execution_finished:true, status:'done',
-        progress:100, stage:'完成', questions:[], error:null})
-      h.backend.cancelGeneration = () => ({done:true, execution_finished:true, status:'done',
-        progress:100, stage:'完成', questions:[], question_ids:['remaining-sql-id'], error:null})
-      await window.mergeApp.generate()
-      await window.mergeApp.clearAll()
-    })
-    assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'cancelGeneration').length), 1)
-    assert.deepEqual(await page.evaluate(() => window.mergeHarness.calls.find(c => c.name === 'batchDeleteQuestions').args[0]), ['remaining-sql-id'])
-  })
-
-
-  for (const recovery of ['retry','reload']) {
-    await providerCase(`quick generation: chat DELETE response lost then CHAT_SESSION_NOT_FOUND completes clear after ${recovery}`, async page => {
-      await selectBank(page)
-      await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-      await settleRender(page)
-      await page.evaluate(async () => {
-        const h = window.mergeHarness
-        await window.mergeApp.sendChat('合成会话')
-        h.chatDeletes = 0
-        h.backend.deleteChatSession = () => {
-          if (++h.chatDeletes === 1) throw new TypeError('synthetic committed DELETE response lost')
-          throw new window.mergeApiError('already deleted', 'CHAT_SESSION_NOT_FOUND', 404)
-        }
-        try { await window.mergeApp.clearAll() } catch (error) { h.clearError = error.message }
-      })
-      await settleRender(page)
-      assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-generation:A')).sessionId), 'session-A')
-      await page.evaluate(async recovery => {
-        if (recovery === 'reload') {
-          window.mergeHarness.generation++
-          window.remountMerge()
-        } else await window.mergeApp.clearAll()
-      }, recovery)
-      await page.waitForFunction(() => !window.mergeApp.generating && localStorage.getItem('mathcraft-generation:A') === null)
-      assert.deepEqual(await page.evaluate(() => window.mergeHarness.calls.filter(c => c.name === 'deleteChatSession').map(c => c.args[0])), ['session-A','session-A'])
-    })
-  }
-
-  await providerCase('quick generation: other chat DELETE 404 codes retain the session ID and busy gate', async page => {
-    await selectBank(page)
-    await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
-    await settleRender(page)
-    await page.evaluate(async () => {
-      const h = window.mergeHarness
-      await window.mergeApp.sendChat('合成会话')
-      h.backend.deleteChatSession = () => { throw new window.mergeApiError('synthetic different 404', 'OTHER_NOT_FOUND', 404) }
-      try { await window.mergeApp.clearAll() } catch (error) { h.clearError = error.code }
-    })
-    await settleRender(page)
-    assert.equal(await page.evaluate(() => window.mergeHarness.clearError), 'OTHER_NOT_FOUND')
-    assert.equal(await page.evaluate(() => window.mergeApp.generating), true)
-    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-generation:A')).sessionId), 'session-A')
-    await page.evaluate(async () => {
-      window.mergeHarness.backend.deleteChatSession = () => {
-        throw new window.mergeApiError('already deleted', 'CHAT_SESSION_NOT_FOUND', 404)
-      }
-      await window.mergeApp.clearAll()
-    })
-    await page.waitForFunction(() => !window.mergeApp.generating && localStorage.getItem('mathcraft-generation:A') === null)
-  })
-
-  if (!process.argv.includes('--generation-only')) {
+  if (!(process.argv.includes('--chat-only') || process.argv.includes('--generation-only'))) {
   const chat = await mount('context')
   await chat.evaluate(() => { window.mergeApp.selectKb('bank-A'); window.mergeApp.selectDoc('doc-bank-A') })
   await chat.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
@@ -1606,17 +1225,11 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   assert.equal(await chat.evaluate(() => [...window.mergeHarness.timers.values()].filter(timer => timer.delay === 1500).length), 1)
   await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', window.mergeHarness.chatReply({reply:'新结果'})))
   await chat.waitForFunction(() => !window.mergeApp.botThinking && window.mergeApp.messages.some(message => message.text === '新结果'))
-  await chat.evaluate(() => { void window.mergeApp.generate().then(() => { window.mergeHarness.generationFinished = true }) })
-  await chat.waitForFunction(() => window.mergeHarness.calls.some(call => call.name === 'getGenerationProgress'))
-  const progressCalls = await chat.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'getGenerationProgress').length)
-  await chat.evaluate(() => { window.mergeHarness.generation++ })
-  await chat.waitForFunction(() => window.mergeHarness.generationFinished)
-  assert.equal(await chat.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'getGenerationProgress').length), progressCalls)
   await chat.evaluate(() => window.unmountMerge())
   assert.equal(await chat.evaluate(() => window.mergeHarness.timers.size), 0)
   await chat.close()
   assert.deepEqual(errors, [])
-  pass('paused chat keeps newer results/ownership, generation polling stops on identity change, unmount removes all polling')
+  pass('paused chat keeps newer results/ownership and unmount removes all polling')
   }
   assert.deepEqual(errors, [])
   console.log(`主线整合回归：${passed} 组通过，${failures.length} 组失败`)

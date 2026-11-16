@@ -168,8 +168,17 @@ async function toast(page, variant, contains) {
   const announcement = page.locator(`[role="${role}"][aria-atomic="true"]`).filter({hasText:contains})
   await announcement.waitFor()
   assert.equal(await announcement.getAttribute('aria-live'), variant === 'error' ? 'assertive' : 'polite')
-  assert.equal(await page.locator('.bg-ink.text-white').filter({hasText:contains}).count(), 1,
-    '真实 Toast 使用当前约定的深色底白字，并保留错误与状态播报语义')
+  const visual = page.locator('.pointer-events-auto').filter({hasText:contains})
+  assert.equal(await visual.count(), 1, '真实 Toast 同时显示可见提示')
+  assert.equal(await visual.isVisible(), true)
+  const variantClasses = {
+    info: ['bg-primary-weak/95', 'text-ink'],
+    success: ['bg-emerald-50/95', 'text-emerald-700'],
+    error: ['bg-red-50/95', 'text-red-500'],
+  }
+  assert.equal(await visual.evaluate((element, classes) =>
+    classes.every(name => element.classList.contains(name)), variantClasses[variant]), true,
+  '真实 Toast 使用 agent 的柔和浅色变体，并保留错误与状态播报语义')
 }
 
 function fixture(id, format = 'TXT', status = 'ready') {

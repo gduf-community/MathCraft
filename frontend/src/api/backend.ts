@@ -1043,16 +1043,45 @@ export interface ChatSession {
   welcome?: string
 }
 
+/** 历史会话列表项：标题取首条用户消息，按账号隔离 */
+export interface ApiChatSessionSummary {
+  session_id: string
+  title: string
+  bank_id: string
+  document_id: string
+  document_name?: string | null
+  last_message_at?: string | null
+  created_at?: string | null
+}
+
+export async function listChatSessions(): Promise<ApiChatSessionSummary[]> {
+  const data = await request<{ items: ApiChatSessionSummary[] }>('/api/chat/sessions')
+  return data.items
+}
+
+export interface ApiChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  batch_id?: string | null
+  created_at?: string
+}
+
+export interface BackendChatDetail {
+  mode: ChatMode
+  messages: ApiChatMessage[]
+}
+
+export async function getChatSession(sessionId: string): Promise<BackendChatDetail> {
+  return request(`/api/chat/sessions/${sessionId}`)
+}
+
 export async function createChatSession(bankId: string, documentId: string, signal?: AbortSignal): Promise<ChatSession> {
   return request<ChatSession>('/api/chat/sessions', {
     method: 'POST',
     body: JSON.stringify({ bank_id: bankId, document_id: documentId }),
     signal,
   })
-}
-
-export async function getChatSession(sessionId: string): Promise<{ messages: { role: 'user' | 'assistant'; text: string }[] }> {
-  return request(`/api/chat/sessions/${sessionId}`)
 }
 
 export async function sendChatMessage(

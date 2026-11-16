@@ -70,7 +70,7 @@ def test_counts_complete_across_turns_preserving_confirmed_values(complete_state
     }
 
 
-INVALID_COUNTS = [0, -1, True, False, 1.5, float("nan"), float("inf"), -float("inf"), 21]
+INVALID_COUNTS = [0, -1, True, False, 1.5, float("nan"), float("inf"), -float("inf"), 101]
 
 
 @pytest.mark.parametrize("count", INVALID_COUNTS)
@@ -117,7 +117,7 @@ def test_build_params_rejects_one_missing_count(complete_state):
         slots.build_params(complete_state, "bank-test", "doc-test")
 
 
-@pytest.mark.parametrize("count", [1, 20, 1.0, 20.0])
+@pytest.mark.parametrize("count", [1, 20, 50, 100, 1.0, 50.0, 100.0])
 def test_valid_boundaries_reach_generator(count, complete_state, mocked_services):
     extract, generate = mocked_services
     extract.return_value = {**complete_state, "types": [{"type": "single", "count": count}]}

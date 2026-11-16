@@ -23,6 +23,7 @@ dependencies = [
     "latex2mathml>=3.81.1",
     "mathml2omml>=0.0.2",
     "json-repair>=0.64.9",
+    "cryptography>=50.0.2",
 ]
 
 [project.optional-dependencies]

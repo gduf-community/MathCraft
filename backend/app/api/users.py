@@ -20,7 +20,9 @@ from app.models.base import new_id
 from app.services import auth as auth_service
 from app.services import auth_codes
 from app.schemas.user import EmailChangeResult, UserPayload, UserUpdateBody
-from app.services.model_settings import get_effective_mineru_token, get_setting, mask, user_payload
+from app.services.model_settings import (
+    get_effective_mineru_token, get_setting, mask, require_deepseek_key, user_payload,
+)
 from app.services.rag_runtime import current_snapshot
 
 router = APIRouter(prefix="/api/users/me", tags=["users"])
@@ -129,10 +131,8 @@ def test_deepseek(user: User = Depends(get_current_user), db: Session = Depends(
     """测试 DeepSeek 连接，失败仅返回固定脱敏提示。"""
     from app.services.rag import llm
 
-    row = get_setting(db, user.id)
-    key = row.deepseek_api_key or settings.deepseek_api_key
-    if not key:
-        raise AppError("DEEPSEEK_KEY_MISSING", "请先填写 DeepSeek API Key", status_code=400)
+    key = require_deepseek_key(db, user.id)
+    db.rollback()
     try:
         reply = llm.chat_text(
             [{"role": "user", "content": "ping"}],

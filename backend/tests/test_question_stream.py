@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.services.rag import question_gen
+from app.schemas.question import GenerateParams, Question, QuestionType, TypeCount
 from app.services.rag.question_gen import (
     QuestionOutputError,
     _RollingParser,
@@ -83,6 +84,83 @@ def test_stream_rejects_scalars_and_damaged_output_as_question_errors(
     assert caught.value.raw_excerpt == output
 
 
+def test_schema_failure_closes_active_model_stream(monkeypatch):
+    closed = []
+
+    def stream(*args, **kwargs):
+        try:
+            yield '{"questions": [{"type": "single"}]}'
+            pytest.fail("failed schema must stop stream consumption")
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    with pytest.raises(QuestionOutputError):
+        _stream_questions([], budget=100, api_key=None)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("qtype", [QuestionType.single, QuestionType.judge])
+def test_gen_batch_discards_fast_model_solution_and_options(monkeypatch, qtype):
+    """模型违背命题协议返回完整解答时，命题边界也必须丢弃该解答。"""
+    payload = {
+        "type": qtype.value, "stem": "函数的导数在原点是否等于零？",
+        "answer": "B", "analysis": "快速模型给出的未经独立验证的解析。",
+        "options": [{"label": "A", "text": "错误的判断选项一"},
+                    {"label": "B", "text": "错误的判断选项二"}],
+    }
+    monkeypatch.setattr(question_gen.llm, "chat_stream", lambda *a, **k: iter([
+        json.dumps({"questions": [payload]}, ensure_ascii=False),
+    ]))
+    tc = TypeCount(type=qtype, count=1)
+    params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", types=[tc])
+    question, = question_gen._gen_batch(
+        tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "fixture context"}], "",
+    )
+    assert question.answer == question.analysis == ""
+    assert [item.model_dump() for item in question.options] == ([
+        {"label": "A", "text": "正确"}, {"label": "B", "text": "错误"},
+    ] if qtype == QuestionType.judge else [])
+
+
+def test_generation_refills_through_fifth_round_and_reports_zero_to_hundred(monkeypatch):
+    attempts = []
+    progress = []
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-document",
+        types=[TypeCount(type=QuestionType.blank, count=1)],
+    )
+
+    def generate(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 5:
+            raise ValueError("fixture batch failed")
+        return [Question(type=QuestionType.blank, stem="第五轮完成的题目")]
+
+    monkeypatch.setattr(question_gen, "_gen_batch", generate)
+    result = question_gen.generate_questions(
+        params, "fake.pdf", retrieve_fn=lambda query: [{"text": "fixture context"}],
+        progress_cb=lambda percent, stage: progress.append(percent),
+    )
+    assert len(result) == 1 and len(attempts) == 5
+    assert progress[0] == 0 and progress[-1] == 100
+    assert progress == sorted(progress)
+
+
+def test_high_pressure_planning_budget_and_scoped_fallback(monkeypatch):
+    requests = []
+
+    def plan(messages, **kwargs):
+        requests.append(kwargs)
+        return {"points": ["分部积分", "分部积分"]}
+
+    monkeypatch.setattr(question_gen.llm, "chat_json", plan)
+    points = question_gen._plan_points("定积分", "填空题", "高", 25, [], None)
+    assert requests[0]["max_tokens"] == question_gen.HIGH_PRESSURE_PLAN_TOKENS
+    assert len(points) == 25 and len(set(points)) == 25
+    assert all("定积分" in point for point in points[1:])
+
+
 @pytest.mark.parametrize("repaired", [42, {"unexpected": "dictionary"}, None])
 def test_stream_handles_non_list_repair_result(
     monkeypatch: pytest.MonkeyPatch, repaired: object,
@@ -99,11 +177,15 @@ def test_stream_handles_non_list_repair_result(
     repair.assert_called_once()
 
 
-@pytest.mark.parametrize("missing_field", ["stem", "answer", "analysis"])
+@pytest.mark.parametrize("missing_field", ["stem"])
 def test_stream_missing_required_field_reports_question_output_error(
     monkeypatch: pytest.MonkeyPatch, missing_field: str,
 ) -> None:
-    """完整对象缺必填字段时立即阻断，报告字段名并保留原输出以供重试。"""
+    """完整对象缺必填字段时立即阻断，报告字段名并保留原输出以供重试。
+
+    answer/analysis 已改为可选（出题模型只命制题干，答案与解析由解题模型填充），
+    缺失它们不再触发 QuestionOutputError。
+    """
     question = _question("缺字段的题目")
     del question[missing_field]
     output = json.dumps({"questions": [question]}, ensure_ascii=False)

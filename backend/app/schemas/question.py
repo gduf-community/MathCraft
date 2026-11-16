@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.services.latex_utils import fix_delimiters
+
 # 选项文本里常见的「A. xxx」前缀
 _OPTION_PREFIX = re.compile(r"^([A-Ha-h])[.、．:：]\s*(.+)$")
 
@@ -43,7 +45,7 @@ def normalize_latex(text: str) -> str:
         text = _CODE_FENCE.sub("", text)
     text = _DISPLAY_MATH.sub(lambda m: "$$" + m.group(1) + "$$", text)
     text = _INLINE_MATH.sub(lambda m: "$" + m.group(1) + "$", text)
-    return text
+    return fix_delimiters(text)
 
 
 class QuestionType(str, Enum):
@@ -75,8 +77,9 @@ class Question(BaseModel):
     # 题干/选项/答案/解析中的公式一律用 $...$ 包裹的 LaTeX
     stem: str
     options: list[OptionItem] = []
-    answer: str
-    analysis: str
+    # 出题模型只命制题干：answer/analysis 由解题模型填充，中途态允许为空
+    answer: str = ""
+    analysis: str = ""
     knowledgePoint: str = ""
     # 命题阶段写下的蓝图、评分点与自检结果，用于审计与展示
     blueprint: dict = {}
@@ -99,19 +102,13 @@ class Question(BaseModel):
         for key in ("stem", "answer", "analysis"):
             if isinstance(out.get(key), str):
                 out[key] = normalize_latex(out[key])
-        if isinstance(out.get("options"), list):
-            out["options"] = [
-                {**item, "text": normalize_latex(item["text"])}
-                for item in out["options"]
-                if isinstance(item, dict) and isinstance(item.get("text"), str)
-            ] if all(isinstance(item, dict) for item in out["options"]) else out["options"]
         for key in ("blueprint", "selfCheck", "difficultyReview"):
             if key in out:
                 out[key] = _as_dict(out[key])
         if "scoringPoints" in out:
             out["scoringPoints"] = _as_str_list(out["scoringPoints"])
         options = out.get("options")
-        if isinstance(options, list) and any(isinstance(item, str) for item in options):
+        if isinstance(options, list):
             fixed = []
             for index, item in enumerate(options):
                 if isinstance(item, str):
@@ -121,6 +118,10 @@ class Question(BaseModel):
                     if matched:
                         label, text = matched.group(1).upper(), matched.group(2).strip()
                     fixed.append({"label": label, "text": text})
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    fixed.append({**item, "text": normalize_latex(item["text"])})
+                elif isinstance(item, OptionItem):
+                    fixed.append({"label": item.label, "text": normalize_latex(item.text)})
                 else:
                     fixed.append(item)
             out["options"] = fixed
@@ -129,7 +130,8 @@ class Question(BaseModel):
 
 class TypeCount(BaseModel):
     type: QuestionType
-    count: int = Field(ge=1, le=20)
+    # 高压长任务：单题型上限放宽到 100，由规划层拆批执行
+    count: int = Field(ge=1, le=100)
 
 
 class GenerateParams(BaseModel):

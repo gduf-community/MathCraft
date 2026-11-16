@@ -202,9 +202,8 @@ def test_chat_rechecks_original_auth_version_before_starting_model(
     assert db.get(ChatSession, session_id).run_status == "idle"
 
 
-@pytest.mark.parametrize("path", ["parametric", "chat"])
 def test_hyde_cache_write_failure_preserves_generated_context(
-    client, teacher, db, monkeypatch, caplog, path,
+    client, teacher, db, monkeypatch, caplog,
 ):
     _, body = resources(client, teacher, db)
     r = cache.get_redis()
@@ -217,30 +216,38 @@ def test_hyde_cache_write_failure_preserves_generated_context(
 
     monkeypatch.setattr(r, "set", fail_hyde)
     expected = "假设段落：导数的定义与求导法则。"
-    if path == "parametric":
-        request = GenerateStartBody(**body)
-        assert generation.get_hyde(generation.build_params(request), request, "fake-key") == expected
-    else:
-        session_id = session_for(client, teacher, body)
-        s = db.get(ChatSession, session_id)
-        s.mode, s.slot_state_json = "generate", json.dumps({"scope": "导数"})
-        db.commit()
-        seen = []
-
-        def run(ctx):
-            seen.append(ctx.hyde_text)
-            return {"reply": "完成", "done": True}
-
-        monkeypatch.setattr(chat, "get_skill", lambda mode: SimpleNamespace(run=run))
-        monkeypatch.setattr(chat, "detect_intent", lambda *a, **kw: {
-            "intent": "generate", "confidence": "high",
-        })
-        response = client.post(f"/api/chat/sessions/{session_id}/messages", headers=teacher,
-                               json={"message": "继续"})
-        assert response.status_code == 200, response.text
-        assert seen == [expected]
+    request = GenerateStartBody(**body)
+    assert generation.get_hyde(generation.build_params(request), request, "fake-key") == expected
     assert "HyDE" in caplog.text
     assert "fake-sensitive-cache-detail" not in caplog.text
+
+
+def test_chat_with_existing_scope_never_calls_hyde(client, teacher, db, monkeypatch):
+    _, body = resources(client, teacher, db)
+    session_id = session_for(client, teacher, body)
+    s = db.get(ChatSession, session_id)
+    s.mode, s.slot_state_json = "generate", json.dumps({"scope": "导数"})
+    db.commit()
+
+    def forbidden_hyde(*args, **kwargs):
+        pytest.fail("对话链路不得调用 HyDE")
+
+    monkeypatch.setattr(generation, "get_cached_hyde", forbidden_hyde)
+    monkeypatch.setattr(generation, "get_hyde", forbidden_hyde)
+    seen = []
+
+    def run(ctx):
+        seen.append(ctx.hyde_text)
+        return {"reply": "完成", "done": True}
+
+    monkeypatch.setattr(chat, "get_skill", lambda mode: SimpleNamespace(run=run))
+    monkeypatch.setattr(chat, "detect_intent", lambda *a, **kw: {
+        "intent": "generate", "confidence": "high",
+    })
+    response = client.post(f"/api/chat/sessions/{session_id}/messages", headers=teacher,
+                           json={"message": "继续"})
+    assert response.status_code == 200, response.text
+    assert seen == [None]
 
 
 def test_legacy_redis_task_has_explicit_recovery_without_trusting_cached_owner(client, teacher):

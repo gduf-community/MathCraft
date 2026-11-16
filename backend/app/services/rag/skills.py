@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ChatSession, User
 from app.schemas.question import GenerateParams
+from app.services.generation_cancellation import GenerationCanceled, run_checked
 from app.services.rag.chat_flow import ChatCanceled
 from app.services.rag.modes import MODES, mode_label
 
@@ -79,17 +80,25 @@ def run_creative(ctx: ChatContext) -> dict:
 
 
 def run_qa(ctx: ChatContext) -> dict:
-    """知识答疑：检索当前文档作答，不出题不落库。异常转可读文案，不抛 500。"""
+    """知识答疑：检索当前文档作答，取消穿透所有降级分支交给运行控制器。"""
     from app.services.rag.llm import LLMError, friendly_error
     from app.services.rag.qa import answer_question
 
+    def check() -> None:
+        if ctx.cancel_check():
+            raise ChatCanceled()
+
     try:
-        reply = answer_question(
+        reply = run_checked(
+            check, answer_question,
             ctx.session.bank_id, ctx.session.document_id, ctx.message,
             ctx.history, api_key=ctx.api_key, progress_cb=ctx.progress_cb,
+            mode="qa", doc_name=ctx.doc_name, cancel_check=check,
         )
     except ChatCanceled:
-        return {"reply": "已暂停本次生成，未写入题目预览。", "done": True}
+        raise
+    except GenerationCanceled as exc:
+        raise ChatCanceled() from exc
     except LLMError as exc:
         return {"reply": friendly_error(exc), "done": True}
     except Exception:  # noqa: BLE001  答疑链路保持整段可用，不把内部异常抛给前端

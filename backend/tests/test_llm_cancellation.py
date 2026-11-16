@@ -34,6 +34,7 @@ def sdk(monkeypatch, fake_models):
     monkeypatch.setattr(llm, "chat_json", REAL_JSON)
     monkeypatch.setattr(llm, "chat_text", REAL_TEXT)
     monkeypatch.setattr(llm, "chat_stream", REAL_STREAM)
+    monkeypatch.setattr(llm, "get_platform_llm", lambda: None)
 
     def install(handler):
         client = OpenAI(
@@ -41,7 +42,7 @@ def sdk(monkeypatch, fake_models):
             http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
         clients.append(client)
-        monkeypatch.setattr(llm, "get_client", lambda api_key=None: client)
+        monkeypatch.setattr(llm, "get_client", lambda api_key=None, *, runtime=None: client)
 
     yield install
     for client in clients:

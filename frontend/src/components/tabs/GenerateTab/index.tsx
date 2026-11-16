@@ -1,21 +1,21 @@
 import { useEffect, useState } from 'react'
 import type { DragEvent } from 'react'
-import { Bot, Copy, ImagePlus, Pencil, RotateCcw } from 'lucide-react'
+import { Bot, Copy, ImagePlus, Loader2, Pencil, RotateCcw } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { Latex } from '../../../lib/latex'
 import RobotAvatar from './RobotAvatar'
-import QuickPrompts from './QuickPrompts'
 import ChatInput from './ChatInput'
-import ConfirmCard from '../../ui/ConfirmCard'
 
-/** Agent出题标签页：机器人与快捷提问欢迎态、对话及确认操作；支持图片与文档拖入 */
+/** Agent出题标签页：机器人欢迎态、对话与输入框附着审批；支持图片与文档拖入 */
 export default function GenerateTab() {
   const {
     messages, botThinking, uploadDocument, profile, retryChat, editChat,
-    showToast, chatProgress, chatStartedAt, addChatImages, pendingConfirm, confirmOperation, confirmBusy,
+    showToast, chatProgress, chatStartedAt, addChatImages, pendingConfirm, confirmBusy,
+    sessionLoading, questionsClearing, generating, generationRecoveryError,
   } = useApp()
-  const showWelcome = messages.length === 0 && !botThinking && pendingConfirm === null
-  const interactionBusy = botThinking || confirmBusy || pendingConfirm !== null
+  const showWelcome = messages.length === 0 && !botThinking && pendingConfirm === null && !sessionLoading
+  const interactionBusy = botThinking || sessionLoading || questionsClearing || generating
+    || generationRecoveryError !== null || confirmBusy || pendingConfirm !== null
   const [dragOver, setDragOver] = useState(false)
   const [now, setNow] = useState(() => Date.now())
 
@@ -75,16 +75,14 @@ export default function GenerateTab() {
       onDrop={onDrop}
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {showWelcome ? (
-            <div className="flex min-h-full flex-col items-center justify-center px-8 pb-4">
+        {sessionLoading ? (
+          <div className="flex h-full items-center justify-center" role="status" aria-label="正在加载历史会话" aria-live="polite">
+            <Loader2 size={22} className="animate-spin text-primary" />
+          </div>
+        ) : showWelcome ? (
+            <div className="flex min-h-full flex-col items-center justify-center px-8 pb-10">
               <RobotAvatar />
-              <h2 className="mt-4 text-[24px] font-bold text-ink">你好，我是AI出题助手</h2>
-              <p className="mt-3 max-w-[460px] text-center text-sm leading-6 text-ink-2">
-                我可以根据你的需求，结合知识库内容，为你生成高质量的试题。
-                <br />
-                你可以直接提出出题要求，或告诉我相关的知识点、难度、题型等信息。
-              </p>
-              <QuickPrompts />
+              <h2 className="mt-2 text-[24px] font-bold text-ink">你好，我是AI出题助手</h2>
             </div>
           ) : (
             <div className="mx-auto flex w-full max-w-[980px] flex-col gap-4 px-6 py-6">
@@ -210,14 +208,6 @@ export default function GenerateTab() {
                     )}
                   </div>
                 </div>
-              )}
-              {pendingConfirm && (
-                <ConfirmCard
-                  confirm={pendingConfirm}
-                  busy={confirmBusy}
-                  onAccept={() => void confirmOperation(true)}
-                  onReject={() => void confirmOperation(false)}
-                />
               )}
             </div>
           )}

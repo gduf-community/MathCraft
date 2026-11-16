@@ -14,14 +14,17 @@ from test_auth_seed import AuthCommandCase
 
 
 def test_main_and_ops_revisions_form_one_unambiguous_history() -> None:
-    """主线原有两条历史完整汇合，运维迁移成为唯一 head。"""
+    """主线与智能体历史汇合，平台配置合并迁移成为唯一 head。"""
     versions = Path(__file__).resolve().parents[1] / "alembic"
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "error", message=r"Revision .* is present more than once", category=UserWarning,
         )
         scripts = ScriptDirectory(str(versions))
-        assert scripts.get_heads() == ["o0b1c2d34567"]
+        assert scripts.get_heads() == ["p1c2d3e45678"]
+        assert scripts.get_revision("p1c2d3e45678").down_revision == (
+            "o0b1c2d34567", "j5f6g7h8i900",
+        )
         assert scripts.get_revision("o0b1c2d34567").down_revision == "n9a0b1c23456"
         assert scripts.get_revision("n9a0b1c23456").down_revision == "m8f9a0b12345"
         assert scripts.get_revision("m8f9a0b12345").down_revision == (
@@ -75,7 +78,7 @@ class AcidMigrationTests(AuthCommandCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM generation_runs").fetchone(), (0,))
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(db.execute("SELECT version_num FROM alembic_version").fetchone(),
-                             ("o0b1c2d34567",))
+                             ("p1c2d3e45678",))
 
     def test_legacy_ops_revision_requires_reconciliation_before_upgrade(self) -> None:
         """旧 V2 同号数据库不会被新版本图自动识别，也不能覆盖旧台账。"""
@@ -90,6 +93,8 @@ class AcidMigrationTests(AuthCommandCase):
             "k6f7a8b90123_generation_runs.py",
             "m8f9a0b12345_merge_generation_acid.py",
             "o0b1c2d34567_generation_cancellation.py",
+            "j5f6g7h8i900_platform_llm_settings.py",
+            "p1c2d3e45678_merge_agent_platform.py",
         ):
             (versions / filename).unlink()
         ops = versions / "n9a0b1c23456_add_ops_runs.py"
@@ -151,7 +156,7 @@ class AcidMigrationTests(AuthCommandCase):
             self.assertEqual(db.execute("SELECT * FROM generation_runs").fetchall(), before)
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(db.execute("SELECT version_num FROM alembic_version").fetchone(),
-                             ("o0b1c2d34567",))
+                             ("p1c2d3e45678",))
 
     def test_upgrade_preserves_answers_and_backfills_snapshot(self) -> None:
         with closing(sqlite3.connect(self.database)) as db:
@@ -200,4 +205,4 @@ class AcidMigrationTests(AuthCommandCase):
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT * FROM attempt_answers").fetchall(), before)
             self.assertEqual(db.execute("SELECT version_num FROM alembic_version").fetchone(),
-                             ("o0b1c2d34567",))
+                             ("p1c2d3e45678",))

@@ -13,23 +13,29 @@ from app.errors import AppError
 from app.models import ChatMessage, ChatSession, Document, OpsRun, User
 from app.models.base import new_id, utcnow
 from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
-from app.schemas.api import ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody
+from app.schemas.api import (
+    ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody, ChatSessionDetailResponse,
+)
 from app.schemas.auth import ErrorResponse
 from app.schemas.question import GenerateParams, Question
 from app.services import auth, cache, generation, question_review, rag_settings
 from app.services.generation import persist_batch
+from app.services.generation_cancellation import run_checked
 from app.services.generation_lifecycle import (
     GenerationRun, conversation_turn, error_code, rollback_business,
 )
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.ops_runs import RunConflictError
 from app.services.phoenix_tracing import current_run_id, trace_run
-from app.services.rag import chat_flow
+from app.services.rag import chat_flow, question_gen
 from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
 from app.services.rag.intent import detect_intent
 from app.services.rag.llm import LLMError, friendly_error
+from app.services.rag.memory import answer_casually, build_short_term_history
 from app.services.rag.modes import DEFAULT_MODE, MODES, mode_label
+from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
+from app.services.rag.question_gen import TYPE_LABELS
 from app.services.rag.skills import ChatContext, get_skill
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -45,6 +51,36 @@ class _TurnState:
     pending_message: str | None
     pending_images: list[str]
     auth_version: int
+
+
+@router.get("/sessions")
+def list_sessions(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db),
+) -> dict[str, list[dict]]:
+    """仅列出当前账号仍有资料访问权的最近会话。"""
+    rows = db.query(ChatSession).filter(ChatSession.user_id == user.id).order_by(
+        ChatSession.last_message_at.desc(), ChatSession.id,
+    ).limit(100).all()
+    items = []
+    for session in rows:
+        try:
+            generation.validate_resources(db, user.id, session.bank_id, session.document_id)
+        except AppError as exc:
+            if exc.status_code in (403, 404, 409) or exc.code == "DOCUMENT_NOT_READY":
+                continue
+            raise
+        first = db.query(ChatMessage).filter(
+            ChatMessage.session_id == session.id, ChatMessage.role == "user",
+        ).order_by(ChatMessage.created_at, ChatMessage.id).first()
+        doc = db.get(Document, session.document_id)
+        title = (first.content if first else "").strip().replace("\n", " ")[:24]
+        items.append({
+            "session_id": session.id, "title": title or (doc.name if doc else "未命名对话"),
+            "bank_id": session.bank_id, "document_id": session.document_id,
+            "document_name": doc.name if doc else None,
+            "last_message_at": session.last_message_at, "created_at": session.created_at,
+        })
+    return {"items": items}
 
 
 def _slot_key(session_id: str) -> str:
@@ -229,7 +265,7 @@ def create_session(
             "welcome": WELCOME}
 
 
-@router.get("/sessions/{session_id}")
+@router.get("/sessions/{session_id}", response_model=ChatSessionDetailResponse)
 def get_session(
     session_id: str,
     user: User = Depends(get_current_user),
@@ -242,6 +278,7 @@ def get_session(
     ).all()
     return {
         "session_id": s.id, "bank_id": s.bank_id, "document_id": s.document_id,
+        "mode": s.mode or DEFAULT_MODE,
         "messages": [
             {"id": m.id, "role": m.role, "text": m.content, "batch_id": m.batch_id,
              "created_at": m.created_at} for m in messages
@@ -332,7 +369,8 @@ def _run_message(
 
     def base_result(**overrides) -> dict:
         out = {"reply": "", "questions": [], "done": False, "slot_state": state.slots,
-               "kind": "reply", "mode": state.mode, "mode_changed": mode_changed}
+               "kind": "reply", "mode": state.mode, "mode_changed": mode_changed,
+               "confirm": None, "batch_id": None}
         out.update(overrides)
         return out
 
@@ -359,9 +397,17 @@ def _run_message(
         return _commit_turn(db, session_id, user_id, bank_id, document_id, run_id, body,
                             state, result)
 
+    def check_canceled() -> None:
+        if _is_canceled(session_id, run_id):
+            raise ChatCanceled
+
     _write_progress(session_id, run_id, 1, "正在准备")
-    detected = detect_intent(body.message, state.mode, api_key=api_key)
-    if not guard_skip and detected["intent"] != state.mode and detected["confidence"] == "high":
+    detected = run_checked(
+        check_canceled, detect_intent, body.message, state.mode,
+        api_key=api_key, cancel_check=check_canceled,
+    )
+    if (not guard_skip and detected["intent"] != state.mode
+            and detected["intent"] in MODES and detected["confidence"] == "high"):
         suggested = detected["intent"]
         state.pending_message, state.pending_images = body.message, list(body.images)
         result = base_result(
@@ -384,23 +430,38 @@ def _run_message(
         return _commit_turn(db, session_id, user_id, bank_id, document_id, run_id, body,
                             state, result)
 
-    history = [
+    history = build_short_term_history([
         {"role": m.role, "text": m.content}
         for m in db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(
             ChatMessage.created_at.desc(),
-        ).limit(6).all()[::-1]
-    ]
+        ).limit(12).all()[::-1]
+    ])
     db.rollback()
     hyde_text = None
-    if state.slots.get("scope"):
-        hyde_text = generation.get_cached_hyde(
-            bank_id, document_id, str(state.slots["scope"]),
-            str(state.slots.get("difficulty", "中")), api_key,
+    if (detected.get("intent") == "smalltalk" or (
+        detected.get("intent") == "unknown" and detected.get("confidence") in ("low", "mid")
+    )):
+        reply = run_checked(
+            check_canceled, answer_casually, state.mode, doc_name, history, body.message,
+            api_key, cancel_check=check_canceled,
         )
+        return _commit_turn(
+            db, session_id, user_id, bank_id, document_id, run_id, body, state,
+            base_result(reply=switch_prefix + reply, done=True), run=run,
+        )
+
+    last_progress = 0
+
     def progress(percent: int, stage: str) -> None:
-        _write_progress(session_id, run_id, percent, stage)
+        nonlocal last_progress
+        last_progress = max(last_progress, min(99, max(0, percent)))
+        _write_progress(session_id, run_id, last_progress, stage)
+
+    generation_params: GenerateParams | None = None
 
     def begin_generation(params: GenerateParams) -> None:
+        nonlocal generation_params
+        generation_params = params
         # 会话的每轮消息有 run_id，台账只在真正决定出题时受理。
         _begin_generation(session_id, user_id, run_id, run, params)
 
@@ -420,28 +481,69 @@ def _run_message(
     except LLMError as exc:
         failure_code = error_code(exc)
         result = base_result(reply=friendly_error(exc))
-    if result.get("generation_error") == RunErrorCode.NEED_CONFIRM:
-        failure_code = RunErrorCode.NEED_CONFIRM
+    if result.get("generation_error") is not None:
+        failure_code = RunErrorCode(result["generation_error"])
     if switch_prefix:
         result["reply"] = switch_prefix + (result["reply"] or "")
     questions: list[Question] = []
     params = None
     if result["questions"]:
         questions = [Question.model_validate(q) for q in result["questions"]]
-        params = generation.build_params_from_slots(result["slot_state"], bank_id, document_id)
+        params = generation_params or generation.build_params_from_slots(
+            result["slot_state"], bank_id, document_id,
+        )
         requested = sum(t.count for t in params.types)
 
-        def review_progress(percent: int, stage: str) -> None:
-            _write_progress(session_id, run_id, min(99, max(78, percent)), stage)
+        def review_fn(candidates, review_params, stems):
+            check_canceled()
+            return question_review.review_questions(
+                db, user_id, candidates, review_params, doc_name, api_key, None,
+                progress=lambda percent, stage: progress(last_progress, stage),
+                cancel_check=check_canceled,
+            )
 
-        if _is_canceled(session_id, run_id):
-            raise ChatCanceled
-        # 审核自行短事务物化语料；调用时没有活动事务、待写消息/槽位或资料门禁。
-        questions, stats = question_review.review_questions(
-            db, user_id, questions, params, doc_name, api_key, hyde_text, progress=review_progress,
-        )
-        result["questions"] = [q.model_dump() for q in questions]
-        result["reply"] = build_result_reply(len(questions), requested, stats)
+        directive = ""
+        if state.mode == "creative":
+            directive = CREATIVE_SYSTEM_EXTRA
+            if result["slot_state"].get("image_note"):
+                directive += f"\n参考图片的题型说明：{result['slot_state']['image_note']}"
+
+        def gen_fn(refill_params, stems, report):
+            return question_gen.generate_questions(
+                refill_params, doc_name, scope=refill_params.scope,
+                mixed_difficulty=bool(result["slot_state"].get("mixed_difficulty")),
+                existing_stems=stems, api_key=api_key, hyde_text=None,
+                directive=directive, progress_cb=report, cancel_check=check_canceled,
+            )
+
+        try:
+            questions, stats, _ = chat_flow.review_with_refill(
+                questions, params, requested, body.existing_stems, review_fn, gen_fn,
+                progress_cb=progress, cancel_check=lambda: _is_canceled(session_id, run_id),
+            )
+        except (chat_flow.NeedConfirmError, LLMError, ValueError) as exc:
+            check_canceled()
+            failure_code = error_code(exc)
+            questions = []
+            result["questions"] = []
+            result["generation_error"] = failure_code
+            if isinstance(exc, chat_flow.NeedConfirmError):
+                result["slot_state"].pop("source_mode", None)
+                result["done"] = False
+                result["reply"] = switch_prefix + chat_flow.CONFIRM_REPLY.format(
+                    type_label=exc.type_label, available=exc.available, requested=exc.requested,
+                )
+            else:
+                result["reply"] = switch_prefix + friendly_error(exc)
+        else:
+            result["questions"] = [q.model_dump() for q in questions]
+            result["reply"] = switch_prefix + build_result_reply(
+                len(questions), requested, stats, scope=params.scope or None,
+                type_label=(TYPE_LABELS[params.types[0].type] if len(params.types) == 1
+                            else f"{len(params.types)} 类题型组合"),
+            )
+            if questions:
+                result["slot_state"]["types"] = []
     response = _commit_turn(db, session_id, user_id, bank_id, document_id, run_id, body,
                             state, result, params=params, hyde_text=hyde_text, questions=questions,
                             run=run, failure_code=failure_code)
@@ -525,14 +627,31 @@ def confirm_operation(
     db: Session = Depends(get_db),
 ):
     """数据管理高危操作确认：接受执行，拒绝取消。"""
-    s = _get_session(session_id, user, db)
-    resolve_bank_access(db, user, s.bank_id)
-    reply = execute_confirmed(db, user, body.confirm_id, body.accepted, session_id=s.id)
-    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user",
-                       content="接受操作" if body.accepted else "拒绝操作"))
-    db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
-    s.last_message_at = utcnow()
-    db.commit()
+    user_id, auth_version = user.id, user.auth_version
+    _get_session(session_id, user, db)
+    with conversation_turn(session_id):
+        db.rollback()
+        try:
+            auth.assert_version(db, user_id, auth_version)
+            rag_settings.assert_mutations_allowed(db)
+            db.execute(update(ChatSession).where(
+                ChatSession.id == session_id, ChatSession.user_id == user_id,
+            ).values(last_message_at=ChatSession.last_message_at))
+            s = _get_session(session_id, user, db)
+            resolve_bank_access(db, user, s.bank_id)
+            if s.run_status == "running":
+                raise AppError("CHAT_BUSY", "本对话已有进行中的请求，请稍后再确认", 409)
+            reply = execute_confirmed(
+                db, user, body.confirm_id, body.accepted, session_id=s.id, commit=False,
+            )
+            db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user",
+                               content="接受操作" if body.accepted else "拒绝操作"))
+            db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
+            s.last_message_at = utcnow()
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
     return {"reply": reply, "done": True}
 
 

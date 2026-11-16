@@ -27,9 +27,16 @@ TYPE_LABELS = {"single": "选择题", "multiple": "多选题", "judge": "判断�
 
 def extract_slots(message: str, history: list[dict], api_key: str | None = None,
                   images: list[str] | None = None) -> dict:
-    """让模型从用户消息里抽取槽位，未提及的字段为 null；图片以多模态 content 传入。"""
-    recent = "\n".join(f"{'用户' if h.get('role') == 'user' else '助手'}：{h.get('text', '')}" for h in history[-4:])
-    prompt = (f"【最近对话】\n{recent}\n\n" if recent else "") + f"【当前用户消息】\n{message}"
+    """让模型从用户消息里抽取槽位，未提及的字段为 null；图片以多模态 content 传入。
+
+    history 由调用方传入短期记忆窗口（最近 3-5 轮，见 memory.build_short_term_history），
+    此处再做一次防御性截断后格式化为记忆块。
+    """
+    recent = "\n".join(
+        f"{'用户' if h.get('role') == 'user' else '助手'}：{h.get('text', '')}"
+        for h in history[-10:]
+    )
+    prompt = (f"【短期记忆 · 最近对话轮次】\n{recent}\n\n" if recent else "") + f"【当前用户消息】\n{message}"
     if images:
         content: str | list[dict] = [
             {"type": "text", "text": prompt},
@@ -49,10 +56,13 @@ def extract_slots(message: str, history: list[dict], api_key: str | None = None,
 
 
 def _norm_count(raw: object) -> int | None:
-    """只接受 1–20 的整数数值，拒绝布尔值、小数和非有限数。"""
+    """只接受 1–100 的整数数值，拒绝布尔值、小数和非有限数。
+
+    高压长任务上限 100：50 道题这类规模由规划层拆批执行，不再在入口拦截。
+    """
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    if not 1 <= raw <= 20 or not math.isfinite(raw) or int(raw) != raw:
+    if not 1 <= raw <= 100 or not math.isfinite(raw) or int(raw) != raw:
         return None
     return int(raw)
 

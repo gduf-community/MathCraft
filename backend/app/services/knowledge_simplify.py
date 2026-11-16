@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Callable
 
 import openai
-from app.config import settings
 from app.services.rag import llm
 
 logger = logging.getLogger("app.simplify")
@@ -79,18 +78,20 @@ def _chat_text(messages: list[dict], max_tokens: int = 8192, max_retries: int = 
     """DeepSeek 文本调用：低推理档位、显式 max_tokens/超时；返回 (内容, 用量)。"""
     last: Exception | None = None
     usage = dict(_ZERO_USAGE)
+    runtime = llm.resolve_llm_runtime(api_key)
+    resolved_key = llm.ResolvedApiKey(runtime)
     for attempt in range(max_retries + 1):
         try:
-            kwargs: dict = {"model": settings.deepseek_model, "messages": messages,
+            kwargs: dict = {"model": runtime.model, "messages": messages,
                             "max_tokens": max_tokens, "timeout": 600.0, "stream": False}
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
             try:
-                resp = llm.get_client(api_key=api_key).chat.completions.create(
+                resp = llm.get_client(api_key=resolved_key).chat.completions.create(
                     **kwargs, extra_body={"effort": "low"})
             except openai.BadRequestError as exc:
                 if "effort" in str(exc):  # 档位参数不受支持时退回默认档位
-                    resp = llm.get_client(api_key=api_key).chat.completions.create(**kwargs)
+                    resp = llm.get_client(api_key=resolved_key).chat.completions.create(**kwargs)
                 else:
                     raise
             if resp is None or not getattr(resp, "choices", None):

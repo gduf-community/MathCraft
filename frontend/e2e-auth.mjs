@@ -125,6 +125,7 @@ await context.route('**/*', async route => {
   else if (path.startsWith('/api/admin/ops/')) { status = 503; body = { detail: { code: 'NOT_INTEGRATED', message: '合成运维服务未接入' } } }
   else if (path.includes('model-settings')) body = { mineru_limits: {}, embedding_model: 'test', rerank_model: 'test' }
   else if (path === '/api/generate/batches/latest') body = null
+  else if (path === '/api/chat/sessions') { authenticated(); assert.equal(method, 'GET'); body = { items: [] } }
   else if (path === '/api/urges' || path === '/api/notifications') body = { unread_count: 0, items: [] }
   else if (['/api/banks', '/api/spaces', '/api/papers', '/api/favorites', '/api/favorite-groups'].includes(path)) body = []
   else { unexpected.push(method + ' ' + path); status = 404; body = { detail: 'unexpected fake route' } }

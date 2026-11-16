@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import { FileText, MessagesSquare, Trash2 } from 'lucide-react'
+import { FileText, MessagesSquare, Plus, Trash2 } from 'lucide-react'
 import { useApp } from '../../store/AppContext'
 import type { TabKey } from '../../store/AppContext'
 import ConfirmDialog from '../ui/ConfirmDialog'
@@ -11,9 +11,16 @@ const TABS: { key: TabKey; label: string; icon: LucideIcon }[] = [
 ]
 
 export default function TabBar() {
-  const { activeTab, setActiveTab, clearAll, generationRecoveryError, resetGenerationRecovery } = useApp()
+  const {
+    activeTab, setActiveTab, startNewChat, clearQuestions, botThinking, sessionLoading,
+    confirmBusy, pendingConfirm, generating, generationClearing, questionsClearing,
+    generationRecoveryError, resetGenerationRecovery, retryGenerationCleanup,
+  } = useApp()
+  const clearDisabled = botThinking || sessionLoading || confirmBusy || pendingConfirm !== null
+    || generating || generationClearing || questionsClearing || generationRecoveryError !== null
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [confirmRecovery, setConfirmRecovery] = useState(false)
   return (
     <div className="workspace-tabs flex shrink-0 items-center gap-6 border-b border-line px-6">
       {TABS.map(({ key, label, icon: Icon }) => {
@@ -39,20 +46,40 @@ export default function TabBar() {
           重置出题恢复记录
         </button>
       )}
-      <button
-        type="button"
-        onClick={() => setConfirmClear(true)}
-        className="ml-auto flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-500 transition-colors hover:bg-red-100"
-      >
-        <Trash2 size={13} />
-        一键清空
-      </button>
+      {generationClearing && !generationRecoveryError && (
+        <button type="button" onClick={() => setConfirmRecovery(true)}
+          className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-500 hover:bg-red-100">
+          继续清理历史任务
+        </button>
+      )}
+      {activeTab === 'generate' ? (
+        <button
+          type="button"
+          onClick={startNewChat}
+          title="开始一次新的对话，当前对话保留在历史记录中"
+          className="ml-auto flex items-center gap-1.5 rounded-lg border border-primary/35 bg-primary-weak px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:border-primary hover:bg-primary hover:text-white"
+        >
+          <Plus size={13} />
+          新建对话
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={clearDisabled}
+          onClick={() => setConfirmClear(true)}
+          title="清空题目预览中的全部题目，对话记录不受影响"
+          className="ml-auto flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Trash2 size={13} />
+          一键清空
+        </button>
+      )}
       {confirmClear && (
         <ConfirmDialog
           title="一键清空"
-          message="将取消当前快速出题，并删除预览题目、相关收藏及当前对话。后台完全退出且清理完成后才能再次出题。操作不可恢复，确定继续吗？"
+          message="将清空「题目预览」中的全部题目，对话记录与其他数据不受影响，操作不可恢复。确定继续吗？"
           confirmText="确认清空"
-          onConfirm={clearAll}
+          onConfirm={clearQuestions}
           onClose={() => setConfirmClear(false)}
         />
       )}
@@ -63,6 +90,15 @@ export default function TabBar() {
           confirmText="确认重置"
           onConfirm={resetGenerationRecovery}
           onClose={() => setConfirmReset(false)}
+        />
+      )}
+      {confirmRecovery && (
+        <ConfirmDialog
+          title="继续清理历史任务"
+          message="继续此前已保存的任务清理：等待原任务退出，删除该任务待清理的题目及历史会话。失败后保留进度，可再次重试。"
+          confirmText="继续清理"
+          onConfirm={retryGenerationCleanup}
+          onClose={() => setConfirmRecovery(false)}
         />
       )}
     </div>

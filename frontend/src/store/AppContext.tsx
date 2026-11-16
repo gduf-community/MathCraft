@@ -20,27 +20,28 @@ import type {
   TeacherProfile,
 } from '../types'
 import { orderQuestionsByModules } from '../lib/order'
+import { CHAT_MODE_LABELS } from '../types'
+
 import { useAuth } from './AuthContext'
 import { useGenerationTask } from './useGenerationTask'
 import { useToast } from './ToastContext'
 import type { ToastMessage, ToastVariant } from './ToastContext'
 import type { AuthRole, AuthUser } from '../api/auth'
 
+const isChatMode = (value: string): value is ChatMode => value in CHAT_MODE_LABELS
+const QUESTION_DELETE_BATCH_SIZE = 200
+
 export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
 
-export interface TypeConfig {
-  checked: boolean
-  count: number
+/** 历史会话侧边栏列表项（来自后端，按账号隔离） */
+export interface ChatSessionSummary {
+  id: string
+  title: string
+  bankId: string
+  docId: string
+  documentName?: string | null
+  lastMessageAt: string | null
 }
-
-const initialTypeConfigs = (): Record<QuestionType, TypeConfig> => ({
-  single: { checked: true, count: 5 },
-  multiple: { checked: true, count: 3 },
-  judge: { checked: false, count: 2 },
-  blank: { checked: false, count: 2 },
-  compute: { checked: false, count: 2 },
-  essay: { checked: false, count: 1 },
-})
 
 function buildProfile(user: AuthUser | null): TeacherProfile {
   return {
@@ -70,8 +71,8 @@ interface AppState {
   setActiveTab: (t: TabKey) => void
   navCollapsed: boolean
   toggleNav: () => void
-  paramsCollapsed: boolean
-  toggleParams: () => void
+  historyCollapsed: boolean
+  toggleHistory: () => void
 
   kbs: KnowledgeBase[]
   docs: KbDocument[]
@@ -91,19 +92,12 @@ interface AppState {
   isSettingsSaving: boolean
   setIsSettingsSaving: (saving: boolean) => void
 
-  typeConfigs: Record<QuestionType, TypeConfig>
-  setTypeConfig: (type: QuestionType, patch: Partial<TypeConfig>) => void
-  difficulty: Difficulty
-  setDifficulty: (d: Difficulty) => void
-  knowledgeScope: string
-  setKnowledgeScope: (v: string) => void
-  generating: boolean
-  generationClearing: boolean
   generationRecoveryError: string | null
   resetGenerationRecovery: () => void
-  genProgress: { percent: number; stage: string } | null
-  generate: (opts?: { silent?: boolean }) => Promise<boolean>
-
+  retryGenerationCleanup: () => Promise<void>
+  generating: boolean
+  generationClearing: boolean
+  questionsClearing: boolean
   questions: Question[]
   favorites: Question[]
   favGroups: FavoriteGroup[]
@@ -140,7 +134,8 @@ interface AppState {
     allowReview?: boolean,
     allowRetake?: boolean,
   ) => Promise<boolean>
-  clearAll: () => Promise<void>
+  /** 一键清空（题目预览）：只清空题目内容与勾选，不影响对话记录和当前会话 */
+  clearQuestions: () => Promise<void>
   deleteSelected: () => Promise<void>
   uploadDocument: (file: File) => Promise<void>
   deleteRecord: (id: string, opts?: { withPaper?: boolean }) => Promise<boolean>
@@ -184,8 +179,20 @@ interface AppState {
 
   messages: ChatMessage[]
   botThinking: boolean
+  /** 历史会话消息加载中：切换会话时为真，期间不渲染欢迎态避免布局弹跳 */
+  sessionLoading: boolean
   inputDraft: string
   setInputDraft: (v: string) => void
+  /** 历史会话列表（当前账号，后端持久化） */
+  sessions: ChatSessionSummary[]
+  /** 当前激活的会话 id；null 表示新对话（欢迎态） */
+  activeSessionId: string | null
+  /** 打开历史会话：恢复题库文档选择与消息，可继续对话 */
+  openSession: (session: ChatSessionSummary) => Promise<void>
+  /** 新建对话：清空当前对话视图回到欢迎态（不改历史记录） */
+  startNewChat: () => void
+  /** 删除一条历史会话（同步后端）；若删除的是当前会话则回到欢迎态 */
+  removeSession: (sessionId: string) => Promise<void>
   /** 分段控制器当前模式：用户显式选择，优先级最高 */
   mode: ChatMode
   setMode: (m: ChatMode) => void
@@ -228,17 +235,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeTab, setActiveTabState] = useState<TabKey>('generate')
   const activeTabRef = useRef<TabKey>('generate')
   const [navCollapsed, setNavCollapsed] = useState(false)
-  const [paramsCollapsed, setParamsCollapsed] = useState(false)
+  const [historyCollapsed, setHistoryCollapsed] = useState(false)
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [docs, setDocs] = useState<KbDocument[]>([])
   const [spaces, setSpaces] = useState<StudySpace[]>([])
   const [selectedKbId, setSelectedKbId] = useState('')
   const [selectedDocId, setSelectedDocId] = useState('')
-
-  const [typeConfigs, setTypeConfigs] = useState<Record<QuestionType, TypeConfig>>(initialTypeConfigs)
-  const [difficulty, setDifficulty] = useState<Difficulty>('中')
-  const [knowledgeScope, setKnowledgeScope] = useState('')
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
@@ -250,6 +253,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [records, setRecords] = useState<AssembleRecord[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const sessionLoadingRef = useRef(false)
+  const [questionsClearing, setQuestionsClearing] = useState(false)
+  const clearQuestionsFlight = useRef<Promise<void> | null>(null)
+  const previewVersionRef = useRef(0)
+  const sessionsRequestVersion = useRef(0)
   const [chatProgress, setChatProgress] = useState<{ percent: number; stage: string } | null>(null)
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
@@ -331,9 +342,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     favoritesRequestVersion.current += 1
     setFavorites(previous => previous.filter(question => !ids.includes(question.id)))
   }, [])
-  const { generating, generationClearing, genProgress, start: startQuickGeneration, clear: clearQuickGeneration,
-    isClearing, generationRecoveryError, resetGenerationRecovery,
+  const {
+    generating, generationClearing, isClearing, generationRecoveryError, resetGenerationRecovery,
+    clear: clearRecoveredGeneration,
   } = useGenerationTask(user?.userId, sessionIsCurrent, removeClearedFavorites)
+  const retryGenerationCleanup = useCallback(
+    () => clearRecoveredGeneration([], null),
+    [clearRecoveredGeneration],
+  )
 
   const setActiveTab = useCallback((tab: TabKey): boolean => {
     if (tab === activeTabRef.current) return true
@@ -350,6 +366,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 同步失效会话回调，防止清空、切库或切文档后的旧结果回填。
   const resetChat = useCallback(() => {
     chatVersionRef.current += 1
+    previewVersionRef.current += 1
+    sessionLoadingRef.current = false
     pendingDocumentSelection.current = null
     imageVersionRef.current += 1
     chatAbortRef.current?.abort()
@@ -361,6 +379,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
     chatPollRef.current = null
     setBotThinking(false)
+    setSessionLoading(false)
     setConfirmBusy(false)
     setChatProgress(null)
     setChatStartedAt(null)
@@ -373,7 +392,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setModeVisible(true)
     setModeSuggested(null)
     setPendingConfirm(null)
+    setActiveSessionId(null)
   }, [setPendingConfirm])
+
+  /** 按请求版本刷新历史会话列表，失败保留已有记录。 */
+  const loadSessions = useCallback(async () => {
+    if (!sessionIsCurrent()) return
+    const version = ++sessionsRequestVersion.current
+    try {
+      const rows = await api.listChatSessions()
+      if (!sessionIsCurrent() || version !== sessionsRequestVersion.current) return
+      setSessions(rows.map((row) => ({
+        id: row.session_id,
+        title: row.title,
+        bankId: row.bank_id,
+        docId: row.document_id,
+        documentName: row.document_name,
+        lastMessageAt: row.last_message_at ?? null,
+      })))
+      // 列表刷新后校验当前激活会话是否仍存在（可能已被其他入口删除）
+      setActiveSessionId((current) => current && rows.some((row) => row.session_id === current) ? current : null)
+    } catch (error: unknown) {
+      if (sessionIsCurrent() && version === sessionsRequestVersion.current) {
+        showToast(error instanceof Error ? error.message : '历史会话列表加载失败，请重试', 'error')
+      }
+    }
+  }, [sessionIsCurrent, showToast])
 
   const loadFavorites = useCallback(async (isActive = sessionIsCurrent) => {
     if (!sessionIsCurrent() || !isActive()) return
@@ -600,7 +644,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) return
-    const version = chatVersionRef.current
+    const version = previewVersionRef.current
     const restoreHistory = !isClearing()
     setProfile(buildProfile(user))
     banksApi.setCurrentUser(user.displayName)
@@ -609,9 +653,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const [bankRows, latest] = await Promise.all([api.listBanks('all'), api.latestBatch()])
         if (!sessionIsCurrent()) return
         setKbs(bankRows.filter(bank => bank.status === 'active').map(api.mapBankToKnowledgeBase))
-        await Promise.all([loadFavorites(), loadRecords(), refreshSpaces()])
+        await Promise.all([loadFavorites(), loadRecords(), refreshSpaces(), loadSessions()])
         if (!sessionIsCurrent()) return
-        if (restoreHistory && latest.batch_id && version === chatVersionRef.current && !isClearing()) {
+        if (restoreHistory && latest.batch_id && version === previewVersionRef.current && !isClearing()) {
           activeBatchRef.current = latest.batch_id
           setQuestions(latest.questions.map(api.mapQuestion))
         }
@@ -619,7 +663,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(err instanceof Error ? err.message : '加载数据失败，请检查后端服务')
       }
     })()
-  }, [user, loadFavorites, loadRecords, refreshSpaces, sessionIsCurrent, showToast, isClearing])
+  }, [user, loadFavorites, loadRecords, loadSessions, refreshSpaces, sessionIsCurrent, showToast, isClearing])
 
   const selectKb = useCallback(
     (id: string) => {
@@ -653,17 +697,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSelectedDocId(id)
       if (!id || isClearing()) return
       const version = chatVersionRef.current
+      const previewVersion = ++previewVersionRef.current
       const bankId = selectedKbRef.current
       void api.latestBatch(bankId || undefined, id).then((latest) => {
         if (!sessionIsCurrent() || isClearing() || version !== chatVersionRef.current
-          || selectedKbRef.current !== bankId || selectedDocRef.current !== id) return
+          || previewVersion !== previewVersionRef.current || selectedKbRef.current !== bankId || selectedDocRef.current !== id) return
         if (latest.batch_id) {
           activeBatchRef.current = latest.batch_id
           setQuestions(latest.questions.map(api.mapQuestion))
           setSelectedIds([])
         }
       }).catch((error: unknown) => {
-        if (sessionIsCurrent() && version === chatVersionRef.current) {
+        if (sessionIsCurrent() && version === chatVersionRef.current
+          && previewVersion === previewVersionRef.current) {
           showToast(error instanceof Error ? error.message : '加载历史题目失败', 'error')
         }
       })
@@ -671,72 +717,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [isClearing, resetChat, sessionIsCurrent, showToast],
   )
 
-  const setTypeConfig = useCallback((type: QuestionType, patch: Partial<TypeConfig>) => {
-    setTypeConfigs((prev) => ({ ...prev, [type]: { ...prev[type], ...patch } }))
-  }, [])
-
-  const runGenerate = useCallback(
-    async (opts?: { silent?: boolean }) => {
-      const version = chatVersionRef.current
-      const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
-      if (!isActive()) return false
-      const doc = docs.find((d) => d.id === selectedDocId)
-      if (!doc) {
-        showToast('请先选择知识库文档')
-        return false
-      }
-      const types = (Object.keys(typeConfigs) as QuestionType[])
-        .filter((t) => typeConfigs[t].checked && typeConfigs[t].count > 0)
-        .map((t) => ({ type: t, count: typeConfigs[t].count }))
-      if (!types.length) {
-        showToast('请至少勾选一个题型并设置数量')
-        return false
-      }
-      try {
-        const state = await startQuickGeneration({
-          bank_id: selectedKbId,
-          document_id: doc.id,
-          types,
-          difficulty,
-          scope: knowledgeScope.trim() || undefined,
-          source_mode: 'variant_data',
-          existing_stems: questions.map((q) => q.stem),
-        })
-        if (!state || !isActive()) return false
-        if (state.status === 'canceled') return false
-        if (state.error?.message) throw new Error(state.error.message)
-        if (state.status === 'failed' || state.status === 'interrupted') {
-          throw new Error(state.status === 'interrupted' ? '出题任务已中断，请重新生成' : '出题失败，请重试')
-        }
-        const incoming = state.questions.map(api.mapQuestion)
-        setQuestions((prev) => dedupeQuestions(prev, incoming))
-        activeBatchRef.current = state.batch_id
-        setSelectedIds([])
-        setTypeFilter('all')
-        setDiffFilter('all')
-        if (!opts?.silent) {
-          const rv = state.review
-          const detail: string[] = []
-          if (rv?.duplicates) detail.push(`去重 ${rv.duplicates} 题`)
-          if (rv?.repaired) detail.push(`修补 ${rv.repaired} 题`)
-          if (rv?.regenerated) detail.push(`重出 ${rv.regenerated} 题`)
-          const extra = detail.length ? `（${detail.join('，')}）` : ''
-          showToast(`已生成 ${incoming.length} 道题目${extra}`)
-        }
-        setActiveTab('preview')
-        return true
-      } catch (err) {
-        if (!isActive()) return false
-        showToast(err instanceof Error ? err.message : '生成失败，请检查后端服务')
-        return false
-      }
-    },
-    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, sessionIsCurrent, setActiveTab, showToast, startQuickGeneration],
-  )
-
   const setMode = useCallback((next: ChatMode) => {
-    if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
-      || pendingConfirmRef.current) return
+    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+      || chatBusyRef.current || confirmRequestRef.current || pendingConfirmRef.current) return
     setModeState(next)
     setModeVisible(true)
     setModeSuggested(null)
@@ -745,7 +728,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const sendChat = useCallback(
     async (text: string, images: string[] = [], opts?: { switchOnly?: boolean; mode?: ChatMode }) => {
       const trimmed = text.trim()
-      if ((!trimmed && !images.length) || chatBusyRef.current || confirmRequestRef.current
+      if ((!trimmed && !images.length) || sessionLoadingRef.current || clearQuestionsFlight.current
+        || generating || generationRecoveryError || chatBusyRef.current || confirmRequestRef.current
         || pendingConfirmRef.current || !sessionIsCurrent()) return
       if (selectedKbRef.current !== selectedKbId || selectedDocRef.current !== selectedDocId) return
       if (!selectedDocId || !selectedKbId) {
@@ -754,6 +738,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const effectiveMode = opts?.mode ?? mode
       const version = chatVersionRef.current
+      const previewVersion = ++previewVersionRef.current
       chatBusyRef.current = true
       const controller = new AbortController()
       chatAbortRef.current = controller
@@ -780,6 +765,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!isActive()) return
           session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
           chatSessionRef.current = session
+          setActiveSessionId(created.session_id)
+          void loadSessions()
         }
         const sessionId = session.id
         if (!isActive()) return
@@ -801,13 +788,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!isActive()) return
         setSessionMode(res.mode)
         setModeVisible(res.kind !== 'reply')
+        // 只接受合法业务模式：后端异常或历史版本传来的非法值直接忽略，避免卡死输入区
         setModeSuggested(
-          res.kind === 'mode_mismatch' && res.suggested_template && res.suggested_template !== 'none'
-            ? res.suggested_template : null,
+          res.kind === 'mode_mismatch' && res.suggested_template
+          && isChatMode(res.suggested_template) ? res.suggested_template : null,
         )
-        setPendingConfirm(res.confirm)
+        // nullish 兜底：后端历史响应缺 confirm 字段时不能让 undefined 混进状态，
+        // 禁用判断都是「!== null」，undefined 会把发送、重生成与历史切换永久锁死
+        setPendingConfirm(res.confirm ?? null)
         setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
-        if (res.questions.length) {
+        if (res.questions.length && previewVersion === previewVersionRef.current) {
           const incoming = res.questions.map(api.mapQuestion)
           setQuestions((prev) => dedupeQuestions(prev, incoming))
           activeBatchRef.current = res.batch_id
@@ -829,10 +819,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setChatProgress(null)
           setChatStartedAt(null)
           setBotThinking(false)
+          // 消息已写库：刷新会话列表，让最近消息时间立即更新（避免新会话日期短暂为空）
+          void loadSessions()
         }
       }
     },
-    [mode, selectedDocId, selectedKbId, questions, sessionIsCurrent, setPendingConfirm, showToast],
+    [mode, loadSessions, selectedDocId, selectedKbId, questions, generating, generationRecoveryError,
+      sessionIsCurrent, setPendingConfirm, showToast],
   )
 
   const addChatImages = useCallback((files: File[]) => {
@@ -875,7 +868,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const confirmOperation = useCallback(async (accepted: boolean) => {
     const target = pendingConfirmRef.current
     const sessionId = chatSessionRef.current?.id
-    if (!sessionIsCurrent() || !target || !sessionId || confirmRequestRef.current
+    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+      || !target || !sessionId || confirmRequestRef.current
       || chatBusyRef.current) return
     const version = chatVersionRef.current
     const controller = new AbortController()
@@ -928,26 +922,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMessages((prev) => [...prev, {
       id: `m-${++messageIdRef.current}`, role: 'assistant', text: '已暂停本次生成。',
     }])
-    if (sessionId) void api.cancelChat(sessionId).catch((error: unknown) => {
+    if (sessionId) void api.cancelChat(sessionId).then(() => loadSessions()).catch((error: unknown) => {
       if (sessionIsCurrent() && version === chatVersionRef.current && !chatBusyRef.current) {
         showToast(error instanceof Error ? error.message : '服务端暂停未确认')
       }
     })
-  }, [sessionIsCurrent, showToast])
+  }, [loadSessions, sessionIsCurrent, showToast])
 
   const retryChat = useCallback((messageId: string) => {
-    if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
-      || pendingConfirmRef.current || !selectedDocId || !selectedKbId) return
+    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+      || generating || generationRecoveryError || chatBusyRef.current || confirmRequestRef.current
+      || pendingConfirmRef.current || !selectedDocId || !selectedKbId
+      || selectedKbRef.current !== selectedKbId || selectedDocRef.current !== selectedDocId) return
     const index = messages.findIndex((message) => message.id === messageId && message.role === 'user')
     if (index < 0) return
     const { text, images } = messages[index]
     setMessages((prev) => prev.slice(0, index))
     void sendChat(text, images ?? [])
-  }, [messages, selectedDocId, selectedKbId, sendChat, sessionIsCurrent])
+  }, [messages, selectedDocId, selectedKbId, sendChat, sessionIsCurrent, generating, generationRecoveryError])
 
   const editChat = useCallback((messageId: string) => {
-    if (!sessionIsCurrent() || chatBusyRef.current || confirmRequestRef.current
-      || pendingConfirmRef.current) return
+    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+      || chatBusyRef.current || confirmRequestRef.current || pendingConfirmRef.current) return
     const index = messages.findIndex((message) => message.id === messageId && message.role === 'user')
     if (index < 0) return
     imageVersionRef.current += 1
@@ -956,6 +952,128 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setChatImages(chatImagesRef.current)
     setMessages((prev) => prev.slice(0, index))
   }, [messages, sessionIsCurrent])
+
+  /** 打开历史会话：恢复题库文档选择、消息与最近产出题目，可继续对话 */
+  const openSession = useCallback(
+    async (target: ChatSessionSummary) => {
+      const confirmInFlight = confirmRequestRef.current !== null
+      if (!sessionIsCurrent() || chatBusyRef.current || confirmInFlight
+        || pendingConfirmRef.current !== null) return
+      const version = ++chatVersionRef.current
+      const previewVersion = ++previewVersionRef.current
+      sessionLoadingRef.current = true
+      const documentVersion = ++documentRequestVersion.current
+      const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
+      chatAbortRef.current?.abort()
+      chatAbortRef.current = null
+      confirmRequestRef.current?.abort()
+      confirmRequestRef.current = null
+      if (chatPollRef.current !== null) {
+        window.clearInterval(chatPollRef.current)
+        chatPollRef.current = null
+      }
+      pendingDocumentSelection.current = null
+      imageVersionRef.current += 1
+      chatImagesRef.current = []
+      setBotThinking(false)
+      setConfirmBusy(false)
+      setChatProgress(null)
+      setChatStartedAt(null)
+      setPendingConfirm(null)
+      setChatImages([])
+      setInputDraft('')
+      setModeVisible(false)
+      setModeSuggested(null)
+      // 直接恢复选中态，绕过 selectKb/selectDoc 的 resetChat 副作用
+      selectedKbRef.current = target.bankId
+      selectedDocRef.current = target.docId
+      setSelectedKbId(target.bankId)
+      setSelectedDocId(target.docId)
+      setDocs([])
+      void api.listDocuments(target.bankId).then((rows) => {
+        if (isActive() && selectedKbRef.current === target.bankId
+          && documentVersion === documentRequestVersion.current) applyDocumentRows(target.bankId, rows)
+      }).catch((error: unknown) => {
+        if (isActive()) showToast(error instanceof Error ? error.message : '加载文档列表失败', 'error')
+      })
+      chatSessionRef.current = { id: target.id, bankId: target.bankId, docId: target.docId }
+      setActiveSessionId(target.id)
+      setQuestions([])
+      setSelectedIds([])
+      activeBatchRef.current = null
+      setSessionLoading(true)
+      setMessages([])
+      try {
+        const detail = await api.getChatSession(target.id)
+        if (!isActive() || chatSessionRef.current?.id !== target.id) return
+        setModeState(detail.mode)
+        setSessionMode(detail.mode)
+        setModeVisible(detail.messages.length === 0)
+        setMessages(detail.messages.map((m, index) => ({
+          id: m.id || `m-his-${index}`,
+          role: m.role,
+          text: m.text,
+        })))
+        // 恢复该会话最近一次产出的题目到预览，继续出题时用于查重
+        const batchId = [...detail.messages].reverse().find((m) => m.batch_id)?.batch_id ?? null
+        if (batchId) {
+          try {
+            const restored = await api.listQuestions({ batch_id: batchId, page_size: 100 })
+            if (!isActive() || chatSessionRef.current?.id !== target.id
+              || previewVersion !== previewVersionRef.current) return
+            setQuestions(restored.items.map(api.mapQuestion))
+            activeBatchRef.current = batchId
+            setSelectedIds([])
+          } catch (error: unknown) {
+            if (isActive() && previewVersion === previewVersionRef.current) {
+              showToast(error instanceof Error ? error.message : '恢复历史题目失败，请重新打开会话重试', 'error')
+            }
+          }
+        }
+      } catch (error: unknown) {
+        if (isActive()) {
+          showToast(error instanceof Error ? error.message : '读取历史会话失败', 'error')
+          chatSessionRef.current = null
+          setActiveSessionId(null)
+          setModeState('generate')
+          setSessionMode('generate')
+          setModeVisible(true)
+        }
+      } finally {
+        // 仅由当前这一次加载负责收尾；用户已切走时交给新的加载流程管理
+        if (sessionIsCurrent() && version === chatVersionRef.current) {
+          sessionLoadingRef.current = false
+          setSessionLoading(false)
+        }
+      }
+    },
+    [applyDocumentRows, sessionIsCurrent, setPendingConfirm, showToast],
+  )
+
+  /** 新建对话：回到欢迎态；当前会话保留在历史列表中 */
+  const startNewChat = useCallback(() => {
+    if (!sessionIsCurrent()) return
+    if (!setActiveTab('generate')) return
+    resetChat()
+  }, [resetChat, sessionIsCurrent, setActiveTab])
+
+  /** 服务端删除成功后更新列表，失败交由确认弹窗显示并重试。 */
+  const removeSession = useCallback(
+    async (sessionId: string) => {
+      if (!sessionIsCurrent()) throw new Error('登录状态已变化，请重新打开页面')
+      if (chatSessionRef.current?.id === sessionId
+        && (chatBusyRef.current || confirmRequestRef.current || pendingConfirmRef.current)) {
+        throw new Error('当前对话正在处理中，请稍后删除')
+      }
+      await api.deleteChatSession(sessionId)
+      if (!sessionIsCurrent()) return
+      sessionsRequestVersion.current += 1
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      if (chatSessionRef.current?.id === sessionId) resetChat()
+      showToast('已删除该对话')
+    },
+    [resetChat, sessionIsCurrent, showToast],
+  )
 
   const updateQuestion = useCallback(
     async (q: Question) => {
@@ -1276,20 +1394,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [records, spaces, showToast],
   )
 
-  const clearAll = useCallback(async () => {
-    if (!sessionIsCurrent()) return
-    if (generationRecoveryError) throw new Error(generationRecoveryError)
-    if (!setActiveTab('generate')) throw new Error('请先处理未保存的配置')
-    const sessionId = chatSessionRef.current?.id ?? null
+  /** 服务端成功删除后再清理预览，保留当前会话与消息，失败可原样重试。 */
+  const clearQuestions = useCallback((): Promise<void> => {
+    if (!sessionIsCurrent()) return Promise.reject(new Error('登录状态已变化，请重新打开页面'))
+    if (clearQuestionsFlight.current) return clearQuestionsFlight.current
+    if (sessionLoadingRef.current || chatBusyRef.current || confirmRequestRef.current
+      || pendingConfirmRef.current || generating || isClearing()) {
+      return Promise.reject(new Error('当前任务正在处理中，请等待完成后再清空题目'))
+    }
+    if (generationRecoveryError) return Promise.reject(new Error(generationRecoveryError))
     const ids = questions.map(question => question.id)
-    resetChat()
-    favoritesRequestVersion.current += 1
-    setQuestions([])
-    setSelectedIds([])
-    activeBatchRef.current = null
-    await clearQuickGeneration(ids, sessionId)
-    if (sessionIsCurrent()) showToast('已清空题目与对话，后台任务已退出')
-  }, [questions, resetChat, sessionIsCurrent, setActiveTab, showToast, clearQuickGeneration, generationRecoveryError])
+    const version = ++previewVersionRef.current
+    setQuestionsClearing(true)
+    const flight = Promise.resolve().then(async () => {
+      for (let offset = 0; offset < ids.length; offset += QUESTION_DELETE_BATCH_SIZE) {
+        if (!sessionIsCurrent()) return
+        await api.batchDeleteQuestions(ids.slice(offset, offset + QUESTION_DELETE_BATCH_SIZE))
+      }
+      if (!sessionIsCurrent()) return
+      favoritesRequestVersion.current += 1
+      setFavorites(previous => previous.filter(question => !ids.includes(question.id)))
+      if (version !== previewVersionRef.current) return
+      setQuestions(previous => previous.filter(question => !ids.includes(question.id)))
+      setSelectedIds([])
+      activeBatchRef.current = null
+      showToast(ids.length ? '已清空当前题目，对话记录不受影响' : '当前没有题目')
+    }).finally(() => {
+      clearQuestionsFlight.current = null
+      if (sessionIsCurrent()) setQuestionsClearing(false)
+    })
+    clearQuestionsFlight.current = flight
+    return flight
+  }, [questions, sessionIsCurrent, showToast, generating, isClearing, generationRecoveryError])
 
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
@@ -1431,8 +1567,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActiveTab: switchTab,
     navCollapsed,
     toggleNav: () => setNavCollapsed((v) => !v),
-    paramsCollapsed,
-    toggleParams: () => setParamsCollapsed((v) => !v),
+    historyCollapsed,
+    toggleHistory: () => setHistoryCollapsed((v) => !v),
     kbs,
     docs,
     spaces,
@@ -1446,18 +1582,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHasUnsavedChanges,
     isSettingsSaving,
     setIsSettingsSaving,
-    typeConfigs,
-    setTypeConfig,
-    difficulty,
-    setDifficulty,
-    knowledgeScope,
-    setKnowledgeScope,
     generating,
     generationClearing,
     generationRecoveryError,
     resetGenerationRecovery,
-    genProgress,
-    generate: runGenerate,
+    retryGenerationCleanup,
+    questionsClearing,
     questions,
     favorites,
     favGroups,
@@ -1482,7 +1612,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toggleStar,
     records,
     publishPaper,
-    clearAll,
+    clearQuestions,
     deleteSelected,
     uploadDocument,
     deleteRecord,
@@ -1517,8 +1647,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearPendingSpacePaper,
     messages,
     botThinking,
+    sessionLoading,
     inputDraft,
     setInputDraft,
+    sessions,
+    activeSessionId,
+    openSession,
+    startNewChat,
+    removeSession,
     mode,
     setMode,
     sessionMode,

@@ -6,7 +6,7 @@
    再按六个维度打分并加权；可解性一票否决，高与地狱题要求给出两种解法或数值验证；
    两次评分差超过 0.7 时分派第三位评审仲裁；
 3. 反哺：未通过只做一轮最小修补；仍不过就换难度模板重出，不再微调同一题；
-4. 解析：通过后另起对话独立解题，写 2~4 句简短解析，覆盖命题阶段自带的答案与解析。
+4. 解题：独立解出答案、生成选择题选项与精简解析，完整验证后更新；失败保留已有答案。
 
 服务异常降级并写日志；显式取消异常穿透，等待已启动工作结束后交给调用方。
 """
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services.generation_cancellation import (
     GenerationCanceled,
     cancellation_kwargs,
@@ -34,6 +34,7 @@ from app.services.generation_cancellation import (
 )
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import SOLVE_SYSTEM
+from app.services import latex_utils
 from app.services.rag_runtime import with_snapshot
 from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
@@ -301,6 +302,8 @@ def _chat_json_low(
     """
     last: Exception | None = None
     for budget in (max_tokens, int(max_tokens * 1.4)):
+        check_cancellation(cancel_check)
+        text = ""
         try:
             text = run_checked(
                 cancel_check, _chat_text_with_fallback, messages, api_key, budget, json_mode=True,
@@ -313,6 +316,7 @@ def _chat_json_low(
         except GenerationCanceled:
             raise
         except Exception as exc:  # noqa: BLE001
+            check_cancellation(cancel_check)
             # JSON Repair 兜底：截断或非法结构先修复再校验，修复失败才进入下一轮
             try:
                 repaired = json_repair.loads(_strip_json(text))
@@ -546,10 +550,8 @@ def _delta(total: float, target: Difficulty) -> float:
 
 
 def _normalize_math(text: str) -> str:
-    """把 \\(...\\) 与 \\[...\\] 统一成 $...$ / $$...$$，前端只认美元定界符。"""
-    text = re.sub(r"\\\((.+?)\\\)", r"$\1$", text, flags=re.S)
-    text = re.sub(r"\\\[(.+?)\\\]", r"$$\1$$", text, flags=re.S)
-    return text
+    """题干、选项、答案与解析共用公式机械修复。"""
+    return latex_utils.fix_delimiters(text)
 
 
 def _normalize_answer(question: Question, raw: str) -> str:
@@ -575,69 +577,195 @@ def _normalize_answer(question: Question, raw: str) -> str:
 _TYPE_CN = {"single": "单选题", "multiple": "多选题", "judge": "判断题",
             "blank": "填空题", "compute": "计算题", "essay": "简答题"}
 
+# 需要解题模型产出答案的题型：出题模型只命制题干，答案为空即解题失败
+_NEED_ANSWER_TYPES = {QuestionType.single, QuestionType.multiple,
+                      QuestionType.judge, QuestionType.blank,
+                      QuestionType.compute, QuestionType.essay}
+
+
+def _latex_issue(text: str) -> str | None:
+    """题干与解析共用的 LaTeX 定界校验（统一实现见 latex_utils）。"""
+    return latex_utils.latex_issue(text)
+
+
+def _polish_analysis(text: str) -> str | None:
+    """解析规范化：收敛空行、套用与题干相同的 LaTeX 定界校验与机械修复。"""
+    cleaned = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if not cleaned:
+        return None
+    cleaned = latex_utils.fix_delimiters(cleaned)
+    if latex_utils.latex_issue(cleaned):
+        return None
+    return cleaned
+
+
+def _assign_options(
+    correct_texts: list[str], distractors: list[str],
+) -> tuple[list[OptionItem], str]:
+    """随机排列四个已验证的选项，正确答案与标签同时产生。"""
+    import random
+
+    entries = [(text, True) for text in correct_texts] + [
+        (text, False) for text in distractors
+    ]
+    random.shuffle(entries)
+    options = [
+        OptionItem(label=label, text=text)
+        for label, (text, _correct) in zip("ABCD", entries)
+    ]
+    answer = "".join(
+        label for label, (_text, correct) in zip("ABCD", entries) if correct
+    )
+    return options, answer
+
+
+def _chat_json_solve(
+    messages: list[dict], api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict:
+    """独立解题开启思考模式，模型返回或失败后均检查任务取消。"""
+    return run_checked(
+        cancel_check, llm.chat_json, messages, api_key=api_key,
+        max_tokens=4800, thinking=True, **cancellation_kwargs(cancel_check),
+    )
+
 
 def _solve_one(
     question: Question, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
-) -> tuple[str, str] | None:
-    """独立解题（JSON 输出）：answer 与 analysis 来自同一次求解，保证两者一致。"""
-    options = "\n".join(f"{o.label}. {o.text}" for o in question.options) if question.options else "（无选项）"
-    user = f"【题干】\n{question.stem}\n\n【选项】\n{options}\n\n【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
-    data = _chat_json_low(
-        [
-            {"role": "system", "content": SOLVE_SYSTEM},
-            {"role": "user", "content": user},
-        ],
-        api_key, 3200,
-        **cancellation_kwargs(cancel_check),
+) -> bool:
+    """完整验证解题结果后才更新题目；失败与取消均保留原答案、选项与解析。"""
+    check_cancellation(cancel_check)
+    is_single = question.type == QuestionType.single
+    is_multiple = question.type == QuestionType.multiple
+    user = (
+        f"【题干】\n{question.stem}\n\n"
+        f"【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
     )
-    raw_answer, raw_analysis = data.get("answer"), data.get("analysis")
-    if (not isinstance(raw_answer, str) or not raw_answer.strip()
-            or not isinstance(raw_analysis, str) or not raw_analysis.strip()):
-        return None
-    answer = _normalize_math(_normalize_answer(question, raw_answer))
-    analysis = _normalize_math(raw_analysis.strip())
-    analysis = re.sub(r"\n{3,}", "\n\n", analysis)
-    if not answer or not analysis:
-        return None
-    if data.get("confidence") == "low":
-        note = str((question.selfCheck or {}).get("note", ""))
-        question.selfCheck = {**(question.selfCheck or {}), "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"}
-    return answer, analysis
+
+    def clean_text(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        return _polish_analysis(value)
+
+    def texts(value: object) -> list[str] | None:
+        if not isinstance(value, list):
+            return None
+        cleaned = [clean_text(item) for item in value]
+        if any(item is None for item in cleaned):
+            return None
+        return [item for item in cleaned if item is not None]
+
+    def validate(data: dict) -> Question | None:
+        analysis = clean_text(data.get("analysis"))
+        if analysis is None:
+            return None
+        options = list(question.options)
+        if is_single or is_multiple:
+            if is_single:
+                correct = clean_text(data.get("answer_text"))
+                corrects = [correct] if correct is not None else []
+            else:
+                corrects = texts(data.get("answer_texts")) or []
+            distractors = texts(data.get("distractors"))
+            expected = len(corrects) == 1 if is_single else 2 <= len(corrects) <= 3
+            if not expected or distractors is None or len(corrects) + len(distractors) != 4:
+                return None
+            normalized = [
+                re.sub(r"[\s$]+", "", item) for item in corrects + distractors
+            ]
+            if len(set(normalized)) != 4:
+                return None
+            options, answer = _assign_options(corrects, distractors)
+        elif question.type == QuestionType.judge:
+            raw = data.get("answer")
+            if not isinstance(raw, str):
+                return None
+            raw = raw.strip().lower()
+            answer = "A" if raw in ("正确", "对", "t", "true", "√") else (
+                "B" if raw in ("错误", "错", "f", "false", "×") else ""
+            )
+            if not answer:
+                return None
+            options = [
+                OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误"),
+            ]
+        else:
+            answer = clean_text(data.get("answer"))
+            if not answer:
+                return None
+        self_check = dict(question.selfCheck)
+        if data.get("confidence") == "low":
+            note = str(self_check.get("note") or "")
+            self_check["note"] = (
+                (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"
+            )
+        return Question.model_validate({
+            **question.model_dump(), "answer": answer, "analysis": analysis,
+            "options": options, "selfCheck": self_check,
+        })
+
+    for attempt in range(2):
+        check_cancellation(cancel_check)
+        retry_note = (
+            "\n\n上次输出不合格：字段缺失、选项重复或公式定界不合法。请修正后重新输出。"
+            if attempt else ""
+        )
+        data = _chat_json_solve(
+            [
+                {"role": "system", "content": SOLVE_SYSTEM},
+                {"role": "user", "content": user + retry_note},
+            ],
+            api_key, **cancellation_kwargs(cancel_check),
+        )
+        candidate = validate(data) if isinstance(data, dict) else None
+        if candidate is None:
+            continue
+        check_cancellation(cancel_check)
+        question.answer = candidate.answer
+        question.analysis = candidate.analysis
+        question.options = candidate.options
+        question.selfCheck = candidate.selfCheck
+        return True
+    return False
 
 
 def _solve_all(
     questions: list[Question], api_key: str | None, stats: ReviewStats,
     cancel_check: Callable[[], None] | None = None,
-) -> None:
-    """Solve in parallel, propagating cancellation only after active workers have joined."""
+) -> set[int]:
+    """等待全部求解线程退出后统一更新，并返回独立求解成功的对象身份。"""
     check_cancellation(cancel_check)
     if not questions:
-        return
+        return set()
 
-    def run(q: Question) -> tuple[Question, tuple[str, str] | None]:
+    def run(q: Question) -> tuple[Question, Question, bool]:
+        candidate = q.model_copy(deep=True)
         try:
-            return q, run_checked(
-                cancel_check, _solve_one, q, api_key,
+            return q, candidate, run_checked(
+                cancel_check, _solve_one, candidate, api_key,
                 **cancellation_kwargs(cancel_check),
             )
         except GenerationCanceled:
             raise
         except Exception as exc:
             logger.warning("解析生成失败：%s", exc)
-            return q, None
+            check_cancellation(cancel_check)
+            return q, candidate, False
 
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-solve") as pool:
-        for question, result in pool.map(run, questions):
-            check_cancellation(cancel_check)
-            if result is None:
-                continue
-            answer, analysis = result
-            if answer:
-                question.answer = answer
-            question.analysis = analysis
-            stats.solved += 1
+        results = list(pool.map(run, questions))
     check_cancellation(cancel_check)
+    solved: set[int] = set()
+    for original, candidate, ok in results:
+        if ok:
+            original.answer = candidate.answer
+            original.analysis = candidate.analysis
+            original.options = candidate.options
+            original.selfCheck = candidate.selfCheck
+            stats.solved += 1
+            solved.add(id(original))
+    return solved
 
 
 def review_questions(
@@ -663,6 +791,7 @@ def review_questions(
     stats = ReviewStats()
     if not questions:
         return [], stats
+    existing_answered = {id(q) for q in questions if q.answer.strip()}
 
     def report(percent: int, stage: str) -> None:
         check_cancellation(cancel_check)
@@ -680,6 +809,14 @@ def review_questions(
     with db.begin():
         corpus = load_corpus(db, user_id, params.kb_id)
     check_cancellation(cancel_check)
+    seen_stems: set[str] = set()
+    combined_corpus: list[str] = []
+    for stem in corpus + (params.existing_stems or []):
+        key = _norm(stem)
+        if key and key not in seen_stems:
+            seen_stems.add(key)
+            combined_corpus.append(stem)
+    corpus = combined_corpus
     groups: dict[QuestionType, list[Question]] = {}
     for question in questions:
         groups.setdefault(question.type, []).append(question)
@@ -813,9 +950,17 @@ def review_questions(
         final.extend(accepted[:target_count])
 
     report(96, f"正在生成解析（共 {len(final)} 题）")
-    run_checked(cancel_check, _solve_all, final, api_key, stats, **cancel_kwargs)
+    solved = run_checked(cancel_check, _solve_all, final, api_key, stats, **cancel_kwargs) or set()
+    unsolved = [
+        q for q in final if q.type in _NEED_ANSWER_TYPES
+        and (not q.answer.strip() or (id(q) not in existing_answered and id(q) not in solved))
+    ]
+    if unsolved:
+        logger.warning("剔除 %d 题（新题未通过独立求解或答案为空）", len(unsolved))
+        dropped_set = {id(q) for q in unsolved}
+        final = [q for q in final if id(q) not in dropped_set]
 
     order = {t: i for i, t in enumerate(ordered_types)}
     final.sort(key=lambda q: order.get(q.type, 99))
-    report(98, "题目校验完成")
+    report(100, "题目校验完成")
     return final, stats

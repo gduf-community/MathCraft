@@ -72,7 +72,7 @@ def test_upgrade_preserves_all_existing_tables_rows_and_does_not_backfill(histor
     config, engine, _sessions = historical_database
     before = historical_rows(engine)
     directory = ScriptDirectory.from_config(config)
-    assert directory.get_current_head() == "o0b1c2d34567"
+    assert directory.get_current_head() == "p1c2d3e45678"
     assert directory.get_revision(HEAD).down_revision == PREVIOUS
     command.upgrade(config, HEAD)
     assert historical_rows(engine) == before

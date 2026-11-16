@@ -37,7 +37,7 @@ backend/
 
 ## 启动与配置
 
-参数化异步出题支持按任务取消；一键清空等待后台执行退出后才能重新出题。
+参数化异步出题接口保留按任务取消与执行退出检查。当前对话前端使用历史会话侧栏，预览清空只删除题目并保留对话；生成期间禁止清空。
 部署前执行既有 Alembic 升级入口，包含 `o0b1c2d34567` 的请求身份与执行退出字段。
 接口及异常边界见[快速出题取消与清空](../docs/implementation/快速出题取消与清空.md)。
 
@@ -95,6 +95,8 @@ OpenAI SDK 使用 `openai<3`：当前追踪客户端基于 `httpx`，不兼容 S
 DeepSeek 与 MinerU 个人凭据在应用“设置 → 模型与服务”保存；嵌入、重排模型与凭据由管理员在“模型与检索”维护。部署默认值及优先级见 [模型配置说明](../docs/design/模型配置来源与普通知识库流程.md)。
 
 后端环境模板只有本目录的 [.env.example](.env.example)，仓库根模板仅作配置入口指引。MinerU Token 不从 `.env` 读取：个人 Token 优先，没有时使用 `app/local_secrets.py` 中的 `MINERU_DEFAULT_TOKEN`，格式见 [占位样例](app/local_secrets.example.py)。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不属于当前后端配置；已有 `.env` 中这些字段不会自动迁移或覆盖个人设置。OCR 地址和解析模型仍由 `app/services/mineru.py` 固定。
+
+平台生成模型配置通过管理员接口 `GET/PUT /api/admin/llm-settings` 维护；密钥由 `cryptography` 加密落库，个人 Key 优先于平台凭据与部署默认。主密钥在上传目录父级的 `secret.key`（默认 `backend/data/secret.key`），与 SQL 一起备份，首次并发创建不会覆盖已发布密钥。根目录与后端依赖清单均包含该加密依赖。
 
 ### 3. 迁移与创建管理员
 
@@ -156,6 +158,8 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 ACID 迁移 `j5e6f7a8b901` 增加试卷关闭与历史快照字段、持久出题任务及删除操作记录；升级后未完成任务在启动时标记中断，删除继续恢复。完整边界见 [数据一致性与故障恢复设计](../docs/design/数据一致性与故障恢复设计.md)。
 
 迁移链保留正文证据版本 `j5e6f7a89012` 和出题运行版本 `k6f7a8b90123`，通过 `m8f9a0b12345` 与 ACID 分支汇合，再应用台账迁移 `n9a0b1c23456`。旧 V2 曾用与 ACID 相同的 `j5e6f7a8b901` 创建台账；已使用旧迁移或来源不明的数据库不得直接升级或仅覆盖版本标记，须先按[台账兼容性说明](../docs/design/运维后台运行台账基础.md#旧-v2-同号迁移的部署兼容性)核对结构与数据并制定修复方案。
+
+当前唯一迁移头为 `p1c2d3e45678`，汇合 main 的生成取消迁移 `o0b1c2d34567` 与 agent 的平台模型迁移 `j5f6g7h8i900`。空库及来自任一分支的现有数据库均使用同一 `upgrade head` 入口，不改写既有版本标记；平台凭据密文与历史业务数据原样保留。
 
 以下示例在独立 PowerShell 终端、`backend/` 目录执行。将示例绝对路径替换为实际副本路径，确认环境变量指向副本后再执行迁移：
 

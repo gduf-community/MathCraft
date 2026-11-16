@@ -1,6 +1,7 @@
 """出题、题目、收藏、对话的请求模型。"""
 import base64
 from binascii import Error as Base64Error
+from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
@@ -11,7 +12,8 @@ from app.schemas.question import Question
 
 class TypeCountBody(BaseModel):
     type: str = Field(pattern="^(single|multiple|judge|blank|compute|essay)$")
-    count: int = Field(ge=1, le=20)
+    # 高压长任务：单题型上限放宽到 100，与 TypeCount 一致
+    count: int = Field(ge=1, le=100)
 
 
 class GenerateStartBody(BaseModel):
@@ -114,6 +116,26 @@ class FavoriteMoveBody(BaseModel):
 class ChatSessionCreateBody(BaseModel):
     bank_id: str = Field(min_length=1)
     document_id: str = Field(min_length=1)
+
+
+class ChatHistoryMessageResponse(BaseModel):
+    """历史消息的持久化展示字段。"""
+
+    id: str
+    role: Literal["user", "assistant"]
+    text: str
+    batch_id: str | None
+    created_at: datetime
+
+
+class ChatSessionDetailResponse(BaseModel):
+    """恢复会话时同时恢复服务端模式，避免发送时隐式切换。"""
+
+    session_id: str
+    bank_id: str
+    document_id: str
+    mode: Literal["generate", "creative", "qa", "data"]
+    messages: list[ChatHistoryMessageResponse]
 
 
 class ChatMessageBody(BaseModel):
