@@ -42,7 +42,6 @@ MathCraft/
 ├── pyproject.toml            # 仓库级依赖与检查配置
 ├── openapi.json              # 接口契约
 ├── AGENTS.md                 # 协作约定
-├── GLOSSARY.md               # 领域术语
 └── STUBS.md                  # 开发演示与历史替身说明
 ```
 
@@ -224,7 +223,7 @@ npm run build
 - [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
 - [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/design/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/design/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
 - [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/design/运维后台运行手册.md)、[台账基础](docs/design/运维后台运行台账基础.md)、[入口接入](docs/design/运维后台出题入口接入.md)、[前端 V2](docs/design/运维后台前端V2适配与联调.md)和[可选追踪](docs/design/Phoenix可选扩展.md)。
-- [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)。
+- [协作约定](AGENTS.md)。
 
 ## 许可证
 
