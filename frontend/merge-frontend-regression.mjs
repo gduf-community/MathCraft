@@ -286,6 +286,7 @@ async function prepareConfirmation(page, entity, action = 'delete') {
     const h = window.mergeHarness; h.held.getModelSettings = true; h.finish('saveModelSettings');
   })
   await settings.waitForFunction(() => window.mergeHarness.pending.getModelSettings?.length === 1)
+  await settings.waitForFunction(input => input.value === '', await key.elementHandle())
   assert.equal(await key.inputValue(), '')
   assert.equal(await settings.evaluate(() => !window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), true)
   await leaveSettings.click()
@@ -1044,7 +1045,8 @@ async function prepareConfirmation(page, entity, action = 'delete') {
         void window.mergeApp.confirmOperation(true)
         void window.mergeApp.confirmOperation(false)
       })
-      await page.waitForFunction(() => window.mergeHarness.pending.confirmChat?.length === 1)
+      await page.waitForFunction(() =>
+        window.mergeHarness.pending.confirmChat?.length === 1 && window.mergeApp.confirmBusy)
       assert.equal(await page.evaluate(() => window.mergeApp.confirmBusy), true)
       assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'confirmChat').length), 1)
       assert.equal(await page.getByRole('button', {name:'发送', exact:true}).isDisabled(), true)
