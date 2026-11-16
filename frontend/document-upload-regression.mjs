@@ -181,6 +181,13 @@ async function toast(page, variant, contains) {
   '真实 Toast 使用 agent 的柔和浅色变体，并保留错误与状态播报语义')
 }
 
+async function assertFileCount(page, expected) {
+  const files = page.getByRole('listitem')
+  if (expected > 0) await files.nth(expected - 1).waitFor()
+  await files.nth(expected).waitFor({state:'detached'})
+  assert.equal(await files.count(), expected)
+}
+
 function fixture(id, format = 'TXT', status = 'ready') {
   return {id, name:`${id}.${format.toLowerCase()}`, format, status, stage:'合成处理阶段',
     progress:status === 'ready' ? 100 : 15, size_bytes:10,
@@ -197,7 +204,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
     ...['PDF', 'DOCX', 'XLSX', 'md', 'markdown', 'TXT'].map(format => ({name:`valid.${format}`})),
     {name:'empty.txt', text:''}, {name:'bad.exe'}, {name:'bad.constructor'}, {name:'no-extension'},
   ])
-  assert.equal(await validation.getByRole('listitem').count(), 6)
+  await assertFileCount(validation, 6)
   await toast(validation, 'error', '空文件')
   assert.match(await validation.evaluate(() => window.uploadHarness.toasts.at(-1).text), /格式不支持/)
   await choose(validation, [
@@ -206,9 +213,9 @@ function fixture(id, format = 'TXT', status = 'ready') {
     {name:'same.txt', text:'different size', lastModified:10},
     {name:'same.txt', text:'one', lastModified:11},
   ], true)
-  assert.equal(await validation.getByRole('listitem').count(), 9)
+  await assertFileCount(validation, 9)
   await choose(validation, [{name:'same.txt', text:'one', lastModified:10}])
-  assert.equal(await validation.getByRole('listitem').count(), 9)
+  await assertFileCount(validation, 9)
   await toast(validation, 'error', '重复')
   const zone = validation.getByRole('button', {name:'选择或拖入文档'})
   for (const key of ['Enter', 'Space']) {
@@ -236,7 +243,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
   await draft.evaluate(() => { window.uploadHarness.held.createBankWithDocument = true })
   await draft.getByRole('button', {name:'创建', exact:true}).click()
   await draft.waitForFunction(() => window.uploadHarness.pending.createBankWithDocument?.length === 1)
-  assert.equal(await draft.getByRole('listitem').count(), 2)
+  await assertFileCount(draft, 2)
   assert.equal(await draft.getByLabel('题库名称', {exact:true}).inputValue(), '保留的合成草稿')
   assert.equal(await draft.getByRole('button', {name:'关闭新建题库'}).isDisabled(), true)
   assert.equal(await draft.getByRole('button', {name:'取消', exact:true}).isDisabled(), true)
@@ -246,7 +253,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
   await toast(draft, 'error', '等待本批完成')
   await draft.evaluate(() => window.uploadHarness.reject('createBankWithDocument', '服务端拒绝：超过文件大小限制'))
   await toast(draft, 'error', '超过文件大小限制')
-  assert.equal(await draft.getByRole('listitem').count(), 2)
+  await assertFileCount(draft, 2)
   assert.equal(await draft.getByLabel('题库名称', {exact:true}).isEnabled(), true)
   assert.equal(await draft.getByLabel('题库名称', {exact:true}).inputValue(), '保留的合成草稿')
   assert.equal(await draft.evaluate(() => window.uploadHarness.calls.filter(call => call.name === 'uploadDocument').length), 0)
@@ -254,7 +261,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
   await draft.waitForFunction(() => window.uploadHarness.pending.createBankWithDocument?.length === 1)
   await draft.evaluate(() => window.uploadHarness.finish('createBankWithDocument'))
   await draft.waitForFunction(() => window.uploadHarness.closed === 1)
-  assert.equal(await draft.getByRole('listitem').count(), 0)
+  await assertFileCount(draft, 0)
   await toast(draft, 'success', '全部受理')
   assert.equal(await draft.evaluate(() => window.uploadHarness.changed), 2)
   passed.push('真实 multiple 选择、首请求未受理/大小拒绝保留名称与所有文件、忙时禁止关闭与加入、失败可重试')
@@ -272,14 +279,14 @@ function fixture(id, format = 'TXT', status = 'ready') {
   assert.equal(await partial.evaluate(() => window.uploadHarness.calls.filter(call => call.name === 'uploadDocument').length), 0)
   await partial.evaluate(() => window.uploadHarness.finish('createBankWithDocument'))
   await partial.waitForFunction(() => window.uploadHarness.pending.uploadDocument?.length === 1)
-  assert.equal(await partial.getByRole('listitem').count(), 2)
+  await assertFileCount(partial, 2)
   assert.equal(await partial.getByLabel('题库名称', {exact:true}).isDisabled(), true)
   await partial.evaluate(() => window.uploadHarness.reject('uploadDocument', '合成的第二个文件失败'))
   await partial.waitForFunction(() => window.uploadHarness.calls.filter(call => call.name === 'uploadDocument').length === 2)
   assert.equal(await partial.evaluate(() => window.uploadHarness.pending.uploadDocument.length), 1)
   await partial.evaluate(() => window.uploadHarness.finish('uploadDocument'))
   await partial.getByRole('button', {name:'重试未提交文件'}).waitFor()
-  assert.equal(await partial.getByRole('listitem').count(), 1)
+  await assertFileCount(partial, 1)
   assert.match(await partial.getByRole('listitem').innerText(), /two.docx/)
   assert.equal(await partial.evaluate(() => window.uploadHarness.closed), 0)
   await partial.getByRole('button', {name:'重试未提交文件'}).click()
