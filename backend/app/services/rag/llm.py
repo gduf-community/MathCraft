@@ -50,8 +50,10 @@ THINKING_ON = {"thinking": {"type": "enabled"}}
 def friendly_error(exc: Exception) -> str:
     """仅返回固定提示，LLMError 的任意文本同样视为不可信。"""
     text = str(exc)
-    if isinstance(exc, LLMError) and text in _SAFE_ERRORS:
-        return text
+    if isinstance(exc, LLMError):
+        for safe_message in _SAFE_ERRORS:
+            if text == safe_message:
+                return safe_message
     if isinstance(exc, (APITimeoutError, TimeoutException, TimeoutError)):
         return _TIMEOUT_ERROR
     if isinstance(exc, APIStatusError) and exc.status_code in _STATUS_ERRORS:
