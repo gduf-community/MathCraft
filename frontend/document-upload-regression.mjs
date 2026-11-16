@@ -254,6 +254,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
   await draft.waitForFunction(() => window.uploadHarness.pending.createBankWithDocument?.length === 1)
   await draft.evaluate(() => window.uploadHarness.finish('createBankWithDocument'))
   await draft.waitForFunction(() => window.uploadHarness.closed === 1)
+  await draft.getByRole('listitem').first().waitFor({state:'detached'})
   assert.equal(await draft.getByRole('listitem').count(), 0)
   await toast(draft, 'success', '全部受理')
   assert.equal(await draft.evaluate(() => window.uploadHarness.changed), 2)
