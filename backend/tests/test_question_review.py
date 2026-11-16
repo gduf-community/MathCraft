@@ -7,7 +7,7 @@ import pytest
 
 from app.db import SessionLocal, Base, engine
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
-from app.services import question_review
+from app.services import latex_utils, question_review
 from app.services.question_review import review_questions as real_review
 
 
@@ -250,12 +250,12 @@ def test_math_delimiters_are_normalized():
 
 
 def test_latex_issue_and_repair():
-    assert question_review._latex_issue(r"由 \(x=2\) 可得") == "使用了 \\( \\) 或 \\[ \\] 定界符"
-    repaired = question_review._latex_repair(r"由 \(x=2\) 可得 $$y$$ 与 $z$")
-    assert question_review._latex_issue(repaired) is None
+    # \( \) 定界在净化阶段统一转为 $，校验只报无法机械修复的问题
+    repaired = latex_utils.fix_delimiters(r"由 \(x=2\) 可得 $$y$$ 与 $z$")
     assert repaired == "由 $x=2$ 可得 $$y$$ 与 $z$"
+    assert question_review._latex_issue(repaired) is None
     assert question_review._latex_issue("奇数个 $ 符号") == "$ 定界不配对"
-    assert question_review._latex_issue("正常的 $x$ 公式") is None
+    assert question_review._latex_issue(r"裸的 \frac{1}{2} 命令") == "存在未用 $ 包裹的数学命令"
 
 
 def test_independent_solver_assigns_random_options(monkeypatch):

@@ -35,6 +35,9 @@ _DISPLAY_MATH = re.compile(r"\\\[(.+?)\\\]", re.S)
 _CODE_FENCE = re.compile(r"```(?:latex|tex|math)?\s*|\s*```")
 
 
+from app.services.latex_utils import fix_delimiters
+
+
 def normalize_latex(text: str) -> str:
     """把其他 LaTeX 定界符统一成 $...$ / $$...$$，并剥掉 markdown 代码栅栏。"""
     if not text:
@@ -99,10 +102,10 @@ class Question(BaseModel):
         out = dict(data)
         for key in ("stem", "answer", "analysis"):
             if isinstance(out.get(key), str):
-                out[key] = normalize_latex(out[key])
+                out[key] = normalize_latex(fix_delimiters(out[key]))
         if isinstance(out.get("options"), list):
             out["options"] = [
-                {**item, "text": normalize_latex(item["text"])}
+                {**item, "text": normalize_latex(fix_delimiters(item["text"]))}
                 for item in out["options"]
                 if isinstance(item, dict) and isinstance(item.get("text"), str)
             ] if all(isinstance(item, dict) for item in out["options"]) else out["options"]

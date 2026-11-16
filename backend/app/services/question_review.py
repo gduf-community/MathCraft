@@ -26,6 +26,7 @@ from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import SOLVE_SYSTEM
+from app.services import latex_utils
 from app.services.rag_runtime import with_snapshot
 from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
@@ -531,28 +532,17 @@ _NEED_ANSWER_TYPES = {QuestionType.single, QuestionType.multiple,
 
 
 def _latex_issue(text: str) -> str | None:
-    """题干与解析共用的 LaTeX 定界校验：返回首个违规描述，无违规返回 None。"""
-    if r"\(" in text or r"\)" in text or r"\[" in text or r"\]" in text:
-        return "使用了 \\( \\) 或 \\[ \\] 定界符"
-    if len(re.findall(r"(?<!\$)\$(?!\$)", text)) % 2 == 1:
-        return "$ 定界不配对"
-    return None
-
-
-def _latex_repair(text: str) -> str:
-    """常见 LaTeX 定界违规的机械修复：\\(\\) 转行内 $，\\[\\] 转展示 $$。"""
-    return (text.replace(r"\(", "$").replace(r"\)", "$")
-                .replace(r"\[", "$$").replace(r"\]", "$$"))
+    """题干与解析共用的 LaTeX 定界校验（统一实现见 latex_utils）。"""
+    return latex_utils.latex_issue(text)
 
 
 def _polish_analysis(text: str) -> str | None:
-    """解析规范化：收敛空行、套用 LaTeX 定界校验（先机械修复，仍违规返回 None）。"""
+    """解析规范化：收敛空行、套用与题干相同的 LaTeX 定界校验与机械修复。"""
     cleaned = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
     if not cleaned:
         return None
-    if _latex_issue(cleaned):
-        cleaned = _latex_repair(cleaned)
-    if _latex_issue(cleaned):
+    cleaned = latex_utils.fix_delimiters(cleaned)
+    if latex_utils.latex_issue(cleaned):
         return None
     return cleaned
 
