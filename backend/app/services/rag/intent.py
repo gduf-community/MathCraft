@@ -71,11 +71,22 @@ def detect_intent(message: str, current_mode: str, api_key: str | None = None) -
         )
     except Exception:  # noqa: BLE001 意图识别失败不阻塞对话，保守放行当前模式
         data = {}
-    if not isinstance(data, dict) or data.get("intent") not in MODES:
+    confidence = (data.get("confidence") if isinstance(data, dict) else None)
+    confidence = confidence if confidence in ("high", "mid", "low") else "low"
+    intent = data.get("intent") if isinstance(data, dict) else None
+    if intent == "unknown":
+        # 模型明确判为非出题、非业务消息：交给自由对话分支
+        return {"intent": "unknown", "confidence": confidence, "slots": {},
+                "need_confirm": confidence == "low", "suggested_template": "none",
+                "reason": str(data.get("reason") or "")[:80]}
+    if intent == "smalltalk":
+        # 问候与闲聊：同样走自由对话
+        return {"intent": "smalltalk", "confidence": confidence, "slots": {},
+                "need_confirm": False, "suggested_template": "none",
+                "reason": str(data.get("reason") or "")[:80]}
+    if not isinstance(data, dict) or intent not in MODES:
         return {**_fallback(current, "意图不明确，按当前模式继续"),
                 "intent": current, "confidence": "low", "need_confirm": False}
-    intent = data["intent"]
-    confidence = data.get("confidence") if data.get("confidence") in ("high", "mid", "low") else "low"
     slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
     return {
         "intent": intent,

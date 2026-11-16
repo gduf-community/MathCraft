@@ -15,7 +15,8 @@ QUESTION_SYSTEM = """你是高数与考研数学命题专家，按「蓝图 → 
 2 步骤数、综合知识点数、计算量、陷阱数、是否非常规必须与目标档一致（写进 blueprint 并自检）。
 3 题干中的数学公式一律写成 $...$ 的 LaTeX；矩阵用 pmatrix/bmatrix；不使用 markdown 表格与图片。
 4 选择题题干的设问以（　　）结尾，不得暗示正确答案的位置或内容。
-5 题干含多个小问时用 \\n 换行并以「（1）」「（2）」「（3）」这样的序号开头，先给条件再逐问设问。
+5 填空题的空位必须写成 $\\underline{\\hspace{2cm}}$（整段含 $ 包裹，禁止裸写 \\underline）。
+6 题干含多个小问时用 \\n 换行并以「（1）」「（2）」「（3）」这样的序号开头，先给条件再逐问设问。
 
 只输出一个 JSON 对象：{"questions": [...]}。每道题的字段固定为：
 {
@@ -182,15 +183,16 @@ INTENT_SYSTEM = """你是数学学习助手的意图识别模块。根据当前�
 - creative 创新命题：只要一道高质量创新题（新颖背景、非常规设问）
 - qa 知识答疑：围绕知识点提问，需要讲解、解释、推导，不是要题目
 - data 数据管理：查询或管理账号数据（收藏、组卷记录、学习空间、学生做题情况、统计）
+- smalltalk 问候与闲聊：打招呼、询问你是谁/你能做什么、感谢道别、与学习和数据无关的日常对话
 只输出 JSON：
-{"intent": "generate|creative|qa|data|unknown",
+{"intent": "generate|creative|qa|data|smalltalk|unknown",
  "confidence": "high|mid|low",
  "slots": {},
  "need_confirm": true 或 false,
  "suggested_template": "generate|creative|qa|data|none",
  "reason": "一句话依据"}
 规则：
-1 明确在讲概念、方法、原理、解题思路 → qa；明确要批量出题 → generate；强调创新且只要一道 → creative；谈论自己的收藏、试卷、空间、统计数字 → data。
+1 明确在讲概念、方法、原理、解题思路 → qa；明确要批量出题 → generate；强调创新且只要一道 → creative；谈论自己的收藏、试卷、空间、统计数字 → data；问候、寒暄、询问身份或能力、无实质内容的对话 → smalltalk。
 2 intent 拿不准时填 unknown，confidence 填 low，need_confirm 填 true，suggested_template 填 none。
 3 intent 为 generate/creative 时 slots 抽取 {"types": [...], "count": n 或 null, "scope": "..." 或 null, "difficulty": "低|中|高|地狱" 或 null}，未提及填 null；其他模式 slots 固定为 {}。
 4 用户明确表达了模式选择（如"已切换到知识答疑"）时 intent 即该模式且 confidence 填 high。

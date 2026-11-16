@@ -266,9 +266,11 @@ def send_message(
         )[::-1]
     ])
 
-    # 非出题、非业务消息（意图拿不准）：基于短期记忆自然回应，不再机械追问槽位
-    if (not body.switch_only and detected.get("intent") == "unknown"
-            and detected.get("confidence") in ("low", "mid")):
+    # 非出题、非业务消息（问候闲聊，或意图拿不准）：基于短期记忆自然回应，不机械追问槽位
+    if not body.switch_only and (
+        detected.get("intent") == "smalltalk"
+        or (detected.get("intent") == "unknown" and detected.get("confidence") in ("low", "mid"))
+    ):
         reply = answer_casually(session_mode, doc.name, history, body.message, api_key)
         db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="user", content=body.message))
         db.add(ChatMessage(id=new_id("msg"), session_id=s.id, role="assistant", content=reply))
