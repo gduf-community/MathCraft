@@ -14,6 +14,7 @@ from app.models.paper import (
     UrgeReadState,
 )
 from app.models.question import GenerationBatch, Question
+from app.models.platform_llm import PlatformLlmSetting
 from app.models.rag_setting import RagSetting
 from app.models.space import SpaceMember, StudySpace
 from app.models.user import User, UserModelSetting
@@ -27,6 +28,7 @@ __all__ = [
     "Paper", "PaperAttempt", "PaperPublication", "PaperQuestion", "AttemptAnswer",
     "PaperUrge", "UrgeReadState",
     "GenerationBatch", "Question",
+    "PlatformLlmSetting",
     "RagSetting",
     "SpaceMember", "StudySpace",
     "User", "UserModelSetting",

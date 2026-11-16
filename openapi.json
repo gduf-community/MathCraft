@@ -1153,6 +1153,114 @@
         }
       }
     },
+    "/api/admin/llm-settings": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Read Llm Settings",
+        "description": "掩码返回平台模型配置，密钥明文不出库。",
+        "operationId": "read_llm_settings_api_admin_llm_settings_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmSettingsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Save Llm Settings",
+        "description": "保存平台模型凭据：api_key 加密落库；传掩码占位符则保持原值。",
+        "operationId": "save_llm_settings_api_admin_llm_settings_put",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmSettingsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmSettingsResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/me": {
       "put": {
         "tags": [
@@ -7539,6 +7647,80 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "LlmSettingsBody": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Base Url",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Model",
+            "default": ""
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Display Name",
+            "default": ""
+          },
+          "api_key": {
+            "type": "string",
+            "maxLength": 512,
+            "title": "Api Key",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "LlmSettingsBody"
+      },
+      "LlmSettingsResult": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "api_key_masked": {
+            "type": "string",
+            "title": "Api Key Masked"
+          },
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_url",
+          "model",
+          "display_name",
+          "api_key_masked",
+          "configured"
+        ],
+        "title": "LlmSettingsResult"
+      },
       "LoginResult": {
         "properties": {
           "access_token": {
@@ -8173,11 +8355,13 @@
           },
           "answer": {
             "type": "string",
-            "title": "Answer"
+            "title": "Answer",
+            "default": ""
           },
           "analysis": {
             "type": "string",
-            "title": "Analysis"
+            "title": "Analysis",
+            "default": ""
           },
           "knowledgePoint": {
             "type": "string",
@@ -8229,9 +8413,7 @@
         "type": "object",
         "required": [
           "type",
-          "stem",
-          "answer",
-          "analysis"
+          "stem"
         ],
         "title": "Question"
       },
@@ -8737,7 +8919,7 @@
           },
           "count": {
             "type": "integer",
-            "maximum": 20.0,
+            "maximum": 100.0,
             "minimum": 1.0,
             "title": "Count"
           }

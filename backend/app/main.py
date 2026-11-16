@@ -24,6 +24,7 @@ from app.services import phoenix_tracing
 
 from app.api import (
     admin,
+    admin_llm,
     admin_rag,
     attempts,
     auth,
@@ -94,6 +95,7 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(admin_rag.router)
+app.include_router(admin_llm.router)
 app.include_router(users.router)
 app.include_router(banks.router)
 app.include_router(documents.router)

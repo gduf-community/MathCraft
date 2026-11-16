@@ -28,6 +28,8 @@
 | `POST` | `/api/admin/accounts/{user_id}/disable` | Disable Account |
 | `POST` | `/api/admin/accounts/{user_id}/reset-password` | Reset Password |
 | `POST` | `/api/admin/accounts/{user_id}/restore` | Restore Account |
+| `GET` | `/api/admin/llm-settings` | Read Llm Settings |
+| `PUT` | `/api/admin/llm-settings` | Save Llm Settings |
 | `GET` | `/api/admin/overview` | Overview |
 | `GET` | `/api/admin/rag-settings` | Read Settings |
 | `PUT` | `/api/admin/rag-settings` | Save Settings |
@@ -209,4 +211,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | 测试 MinerU 连接与鉴权（不验证文件解析） |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 111 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 113 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
