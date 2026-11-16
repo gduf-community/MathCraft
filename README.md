@@ -31,9 +31,10 @@ MathCraft/
 ├── frontend/                 # React + TypeScript 前端
 │   ├── src/                  # 页面、组件、API 与状态管理
 │   └── README.md             # 前端开发说明
-├── docs/                     # API 文档与设计说明
+├── docs/                     # API、设计与维护文档
 │   ├── api.md                # API 索引
-│   └── design/               # 设计、实施与验证记录
+│   ├── 测试与持续集成.md     # 测试范围与 CI 维护说明
+│   └── design/               # 功能与架构设计
 ├── tools/                    # 文档生成与维护工具
 │   ├── archive/              # 失效脚本历史归档，不用于当前验收
 │   └── ops_g0/               # 历史工具及独立测试
@@ -207,7 +208,7 @@ uv sync --group dev
 uv run pytest -q
 ```
 
-开发依赖包含 `pytest-xdist`，可使用 `pytest -n 4 --dist loadfile` 并行执行。当前测试范围与隔离说明见[测试与持续集成](docs/design/测试清理与持续集成.md)。
+开发依赖包含 `pytest-xdist`，可使用 `pytest -n 4 --dist loadfile` 并行执行。当前测试范围与隔离说明见[测试与持续集成](docs/测试与持续集成.md)。
 
 前端在 `frontend/` 执行：
 

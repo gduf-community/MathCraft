@@ -194,7 +194,7 @@ uv run ruff check app tests
 
 测试使用临时 SQLite、每测试独立 fakeredis 和假 SMTP、Turnstile、模型服务，夹具禁止外部网络，不连接或清空本机 Redis。接口变更后同步根 `openapi.json` 和 [API 文档](../docs/api.md)，生成命令见 [协作约定](../AGENTS.md)。
 
-开发依赖包含 `pytest-xdist`，可使用 `uv run pytest -n 4 --dist loadfile` 并行执行。旧 G0 测试位于 `tools/ops_g0/tests/`，已移出当前应用默认套件；两份旧登录冒烟脚本位于 `tools/archive/legacy-smoke/`，仅供历史参考。当前验证范围见[测试与持续集成](../docs/design/测试清理与持续集成.md)。
+开发依赖包含 `pytest-xdist`，可使用 `uv run pytest -n 4 --dist loadfile` 并行执行。旧 G0 测试位于 `tools/ops_g0/tests/`，已移出当前应用默认套件；两份旧登录冒烟脚本位于 `tools/archive/legacy-smoke/`，仅供历史参考。当前验证范围见[测试与持续集成](../docs/测试与持续集成.md)。
 
 ## 相关文档
 
