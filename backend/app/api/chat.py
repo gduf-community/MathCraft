@@ -4,20 +4,26 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends
 from redis.exceptions import RedisError
-from sqlalchemy import or_, update
+from sqlalchemy import case, or_, update
 from sqlalchemy.orm import Query, Session
 
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user, resolve_bank_access
 from app.errors import AppError
-from app.models import ChatMessage, ChatSession, Document, User
+from app.models import ChatMessage, ChatSession, Document, OpsRun, User
 from app.models.base import new_id, utcnow
+from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
 from app.schemas.api import ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody
+from app.schemas.auth import ErrorResponse
 from app.schemas.question import GenerateParams, Question
 from app.services import auth, cache, generation, question_review, rag_settings
-from app.services.phoenix_tracing import trace_run
 from app.services.generation import persist_batch
+from app.services.generation_lifecycle import (
+    GenerationRun, conversation_turn, error_code, rollback_business,
+)
 from app.services.model_settings import get_effective_deepseek_key
+from app.services.ops_runs import RunConflictError
+from app.services.phoenix_tracing import current_run_id, trace_run
 from app.services.rag import chat_flow
 from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
@@ -108,13 +114,82 @@ def _begin_run(
         db.rollback()
         raise AppError("CHAT_BUSY", "本对话已有进行中的请求，请等待完成或暂停后重试", 409)
     generation.validate_resources(db, user_id, s.bank_id, s.document_id)
-    s.run_id = new_id("run")
+    trace_id = current_run_id()
+    # 被嵌套请求继承的追踪上下文可能属于旧运行，不能复用其取消标识或台账主键。
+    if trace_id and (trace_id in {s.run_id, s.canceled_run_id} or db.get(OpsRun, trace_id)):
+        trace_id = None
+    s.run_id = trace_id or new_id("run")
     s.run_status = "running"
     s.run_progress = 0
     s.run_stage = "正在准备"
     # canceled_run_id 保留旧运行的取消事实，绝不在开始新运行时清空。
     db.commit()
     return s
+
+
+def _transition_chat_ledger(
+    db: Session, session_id: str, user_id: str, run_id: str, status: RunStatus,
+    *, code: RunErrorCode | None = None,
+) -> None:
+    """在会话事务中写入开始或无批次失败，保留台账的并发比较。"""
+    row = db.get(OpsRun, run_id, populate_existing=True)
+    if (row is None or row.entrypoint != RunEntrypoint.CONVERSATION
+            or row.owner_user_id != user_id or row.session_id != session_id):
+        raise RunConflictError("运行与会话或账号不一致")
+    if status == RunStatus.RUNNING and row.status == RunStatus.RUNNING:
+        return
+    if status == RunStatus.RUNNING:
+        allowed = {RunStatus.ACCEPTED, RunStatus.UNKNOWN}
+    elif status == RunStatus.FAILED and code is not None:
+        allowed = {RunStatus.ACCEPTED, RunStatus.RUNNING, RunStatus.UNKNOWN}
+    else:
+        raise ValueError("不支持的会话运行状态")
+    if row.status not in allowed:
+        raise RunConflictError("已确认停止的运行不能再次变更")
+    observed_at = max(utcnow(), row.last_observed_at)
+    values: dict[str, object] = {"status": status.value, "last_observed_at": observed_at}
+    if status == RunStatus.RUNNING:
+        values.update(started_at=row.started_at or observed_at, error_code=None)
+    else:
+        assert code is not None
+        values.update(finished_at=observed_at, delivered_count=0, error_code=code.value)
+    changed = db.execute(update(OpsRun).where(
+        OpsRun.run_id == run_id, OpsRun.owner_user_id == user_id,
+        OpsRun.session_id == session_id, OpsRun.status == row.status,
+        OpsRun.last_observed_at == row.last_observed_at,
+        # 状态和时间可能回到旧值，仍须核对其余可变事实。
+        OpsRun.started_at.is_not_distinct_from(row.started_at),
+        OpsRun.finished_at.is_not_distinct_from(row.finished_at),
+        OpsRun.batch_id.is_not_distinct_from(row.batch_id),
+        OpsRun.delivered_count.is_not_distinct_from(row.delivered_count),
+        OpsRun.error_code.is_not_distinct_from(row.error_code),
+    ).values(**values).returning(OpsRun.run_id).execution_options(synchronize_session=False))
+    if changed.scalar_one_or_none() is None:
+        raise RunConflictError("运行观察发生并发冲突，请回滚后重新读取")
+
+
+def _begin_generation(
+    session_id: str, user_id: str, run_id: str, run: GenerationRun, params: GenerateParams,
+) -> None:
+    """受理和开始分别持久化，均与删除、取消按会话行串行化。"""
+    with SessionLocal() as db:
+        changed = _current_run(db, session_id, run_id).filter(ChatSession.user_id == user_id).update(
+            {"run_status": ChatSession.run_status}, synchronize_session=False,
+        )
+        if not changed:
+            raise ChatCanceled
+        run.run_id = run_id
+        run.accept(params, db=db)
+        db.commit()
+    run.register_accepted()
+    with SessionLocal() as db:
+        changed = _current_run(db, session_id, run_id).filter(ChatSession.user_id == user_id).update(
+            {"run_status": ChatSession.run_status}, synchronize_session=False,
+        )
+        if not changed:
+            raise ChatCanceled
+        _transition_chat_ledger(db, session_id, user_id, run_id, RunStatus.RUNNING)
+        db.commit()
 
 
 def _end_failed_run(session_id: str, run_id: str) -> None:
@@ -174,8 +249,10 @@ def get_session(
     }
 
 
-@router.post("/sessions/{session_id}/messages")
-@trace_run("conversation")
+@router.post("/sessions/{session_id}/messages", responses={
+    409: {"model": ErrorResponse, "description": "当前会话正在处理消息，请稍后再试"},
+})
+@trace_run("conversation", force_new=True)
 def send_message(
     session_id: str,
     body: ChatMessageBody,
@@ -185,6 +262,15 @@ def send_message(
     """运行状态先提交，题目、两条消息与完整会话状态最后一次提交。"""
     user_id, auth_version = user.id, user.auth_version
     s = _get_session(session_id, user, db)
+    with conversation_turn(session_id):
+        return _send_message(session_id, body, user, db, s, user_id, auth_version)
+
+
+def _send_message(
+    session_id: str, body: ChatMessageBody, user: User, db: Session, s: ChatSession,
+    user_id: str, auth_version: int,
+) -> dict:
+    """持有会话执行权直至当前消息确认停止或完成。"""
     generation.validate_resources(db, user.id, s.bank_id, s.document_id)
     api_key = get_effective_deepseek_key(db, user.id)
     if not api_key:
@@ -194,11 +280,23 @@ def send_message(
     s = _begin_run(db, session_id, user_id, auth_version=auth_version)
     run_id = s.run_id
     assert run_id is not None
+    run = GenerationRun(
+        RunEntrypoint.CONVERSATION, user_id, s.bank_id, s.document_id, session_id=session_id,
+    )
     try:
-        return _run_message(db, user, s, body, api_key, run_id,
-                            interrupted_stage=interrupted_stage)
-    except ChatCanceled:
-        return _paused_result(db, session_id)
+        with run.observe(db):
+            try:
+                return _run_message(db, user, s, body, api_key, run_id, run=run,
+                                    interrupted_stage=interrupted_stage)
+            except ChatCanceled:
+                # 取消事实只在执行器停止并回滚业务事务后写入台账。
+                db.rollback()
+                try:
+                    run.cancel()
+                except RunConflictError:
+                    # 删除会话可能刚将旧快照改为 unknown；重读后确认取消。
+                    run.cancel()
+                return _paused_result(db, session_id)
     finally:
         # 回滚工作 Session 的读快照/失败写事务，随后才用独立短事务收尾。
         db.rollback()
@@ -207,7 +305,7 @@ def send_message(
 
 def _run_message(
     db: Session, user: User, s: ChatSession, body: ChatMessageBody, api_key: str, run_id: str,
-    *, interrupted_stage: str = "",
+    *, run: GenerationRun, interrupted_stage: str = "",
 ) -> dict:
     session_id, user_id, bank_id, document_id = s.id, user.id, s.bank_id, s.document_id
     doc = db.get(Document, document_id)
@@ -301,18 +399,29 @@ def _run_message(
         )
     def progress(percent: int, stage: str) -> None:
         _write_progress(session_id, run_id, percent, stage)
+
+    def begin_generation(params: GenerateParams) -> None:
+        # 会话的每轮消息有 run_id，台账只在真正决定出题时受理。
+        _begin_generation(session_id, user_id, run_id, run, params)
+
     ctx = ChatContext(
         db=db, user=user, session=s, doc_name=doc_name, message=body.message,
         history=history, slot_state=state.slots, existing_stems=body.existing_stems,
         api_key=api_key, hyde_text=hyde_text, images=body.images,
         progress_cb=progress, cancel_check=lambda: _is_canceled(session_id, run_id),
+        on_generate=begin_generation,
     )
+    failure_code = None
     try:
         result = base_result(**get_skill(state.mode).run(ctx))
     except chat_flow.NeedConfirmError as exc:
+        failure_code = RunErrorCode.NEED_CONFIRM
         result = base_result(reply=f"材料中原题不足（{exc.available}/{exc.requested}），请调整数量或来源模式")
     except LLMError as exc:
+        failure_code = error_code(exc)
         result = base_result(reply=friendly_error(exc))
+    if result.get("generation_error") == RunErrorCode.NEED_CONFIRM:
+        failure_code = RunErrorCode.NEED_CONFIRM
     if switch_prefix:
         result["reply"] = switch_prefix + (result["reply"] or "")
     questions: list[Question] = []
@@ -333,15 +442,18 @@ def _run_message(
         )
         result["questions"] = [q.model_dump() for q in questions]
         result["reply"] = build_result_reply(len(questions), requested, stats)
-    return _commit_turn(db, session_id, user_id, bank_id, document_id, run_id, body,
-                        state, result, params=params, hyde_text=hyde_text, questions=questions)
+    response = _commit_turn(db, session_id, user_id, bank_id, document_id, run_id, body,
+                            state, result, params=params, hyde_text=hyde_text, questions=questions,
+                            run=run, failure_code=failure_code)
+    return response
 
 
 def _commit_turn(
     db: Session, session_id: str, user_id: str, bank_id: str, document_id: str,
     run_id: str, body: ChatMessageBody, state: _TurnState, result: dict, *,
     params: GenerateParams | None = None, hyde_text: str | None = None,
-    questions: list[Question] | None = None,
+    questions: list[Question] | None = None, run: GenerationRun | None = None,
+    failure_code: RunErrorCode | None = None,
 ) -> dict:
     """所有模型已完成后，锁内重新验证 run 和资源，单次提交整轮结果。"""
     db.rollback()
@@ -360,6 +472,7 @@ def _commit_turn(
     if questions and params is not None:
         batch_id = persist_batch(
             db, user_id, bank_id, document_id, "chat", params, hyde_text, questions, commit=False,
+            run=run if run is not None and run.run_id is not None else None,
         ).id
     db.add(ChatMessage(id=new_id("msg"), session_id=session_id, role="user", content=body.message))
     db.add(ChatMessage(id=new_id("msg"), session_id=session_id, role="assistant",
@@ -370,7 +483,31 @@ def _commit_turn(
     s.pending_images_json = json.dumps(state.pending_images, ensure_ascii=False)
     s.last_message_at = utcnow()
     s.run_status, s.run_progress, s.run_stage = "done", 100, ""
-    db.commit()
+    if batch_id is None and run is not None and run.run_id is not None:
+        _transition_chat_ledger(
+            db, session_id, user_id, run_id, RunStatus.FAILED,
+            code=failure_code or RunErrorCode.NO_PERSISTABLE_QUESTIONS,
+        )
+    # 将确定的写入错误与 commit 结果不明区分；所有写入仍在同一事务中。
+    db.flush()
+    try:
+        db.commit()
+    except BaseException:
+        if run is not None and run.run_id is not None:
+            rollback_business(db)
+            with SessionLocal() as reader:
+                row = reader.get(OpsRun, run_id)
+                failure_committed = (
+                    batch_id is None and row is not None and row.owner_user_id == user_id
+                    and row.session_id == session_id and row.status == RunStatus.FAILED
+                )
+            if failure_committed:
+                run.committed()
+            else:
+                run.unknown()
+        raise
+    if run is not None and run.run_id is not None:
+        run.committed()
     return {
         "reply": result["reply"], "slot_state": result["slot_state"],
         "questions": result["questions"], "done": result["done"], "batch_id": batch_id,
@@ -446,6 +583,18 @@ def delete_session(
         ChatSession.id == session_id, ChatSession.user_id == user_id,
     ).values(run_status="canceled"))
     s = _get_session(session_id, user, db)
+    observed_at = utcnow()
+    db.execute(update(OpsRun).where(
+        OpsRun.entrypoint == RunEntrypoint.CONVERSATION,
+        OpsRun.session_id == session_id, OpsRun.owner_user_id == user_id,
+        OpsRun.status.in_((RunStatus.ACCEPTED, RunStatus.RUNNING)),
+    ).values(
+        status=RunStatus.UNKNOWN.value, error_code=RunErrorCode.OUTCOME_UNKNOWN.value,
+        last_observed_at=case(
+            (OpsRun.last_observed_at > observed_at, OpsRun.last_observed_at),
+            else_=observed_at,
+        ),
+    ).execution_options(synchronize_session=False))
     db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
     db.delete(s)
     db.commit()

@@ -1,4 +1,4 @@
-import { Activity, ChartNoAxesCombined, Database, HeartPulse, ShieldCheck, TriangleAlert, Users } from 'lucide-react'
+import { Activity, ChartNoAxesCombined, Database, ShieldCheck, Users } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { changePasswordCurrent, validateNewPassword } from '../../api/auth'
@@ -17,18 +17,14 @@ import { SecuritySettings } from '../tabs/ProfileTab/SecuritySettings'
 import { RagSettingsPanel } from './RagSettingsPanel'
 import { LegacyOverview } from './LegacyOverview'
 import { realOpsClient } from '../../api/adminOps'
-import type { DemoScenario } from '../../api/adminOpsDemo'
-import type { OpsClient, OpsQuery } from '../../types/ops'
-import { AdminNotifications } from './ops/AdminNotifications'
-import { AlertsPanel, DependenciesPanel, OpsOverviewPanel, RunsPanel } from './ops/OpsPages'
+import type { OpsFilters } from '../../types/ops'
+import { OpsOverviewPanel, RunsPanel } from './ops/OpsPages'
 import { RunDrawer } from './ops/RunDrawer'
 
 const ROLE_LABELS = { admin: '管理员', teacher: '教师', student: '学生' } as const
 const NAV_ITEMS = [
   { id: 'overview', label: '平台概览', icon: ChartNoAxesCombined },
   { id: 'runs', label: '出题运行', icon: Activity },
-  { id: 'dependencies', label: '依赖状态', icon: HeartPulse },
-  { id: 'alerts', label: '异常中心', icon: TriangleAlert },
   { id: 'accounts', label: '账号管理', icon: Users },
   { id: 'rag', label: '模型与检索', icon: Database },
   { id: 'security', label: '账号安全', icon: ShieldCheck },
@@ -47,16 +43,8 @@ export default function AdminPanel() {
   const { user, logout, setAuthNotice } = useAuth()
   const { showToast } = useToast()
   const [section, setSection] = useState<AdminSection>('overview')
-  const [opsClient, setOpsClient] = useState<OpsClient>(realOpsClient)
-  const [demo, setDemo] = useState(false)
-  const [scenario, setScenario] = useState<DemoScenario>('normal')
-  const [opsSwitching, setOpsSwitching] = useState(false)
-  const [sourceVersion, setSourceVersion] = useState(0)
-  const [runQuery, setRunQuery] = useState<OpsQuery>()
-  const [alertQuery, setAlertQuery] = useState<OpsQuery>()
-  const [navigationVersion, setNavigationVersion] = useState(0)
+  const [runQuery, setRunQuery] = useState<OpsFilters>()
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
-  const sourceGeneration = useRef(0)
   const [ragDirty, setRagDirty] = useState(false)
   const [ragBusy, setRagBusy] = useState(false)
   const [accounts, setAccounts] = useState<AdminAccount[]>([])
@@ -88,7 +76,6 @@ export default function AdminPanel() {
     return () => {
       mounted.current = false
       loadGeneration.current += 1
-      sourceGeneration.current += 1
     }
   }, [])
 
@@ -196,50 +183,15 @@ export default function AdminPanel() {
     if (next !== section && canLeaveRag()) {
       setSelectedRun(null)
       if (next === 'runs') setRunQuery(undefined)
-      if (next === 'alerts') setAlertQuery(undefined)
       setSection(next)
     }
   }
 
-  function openRuns(nextQuery?: OpsQuery) {
+  function openRuns(nextQuery?: OpsFilters) {
     if (!canLeaveRag()) return
     setSelectedRun(null)
     setRunQuery(nextQuery)
-    setNavigationVersion(value => value + 1)
     setSection('runs')
-  }
-
-  function openAlerts(nextQuery?: OpsQuery) {
-    if (!canLeaveRag()) return
-    setSelectedRun(null)
-    setAlertQuery(nextQuery)
-    setNavigationVersion(value => value + 1)
-    setSection('alerts')
-  }
-
-  async function changeOpsSource(nextDemo: boolean, nextScenario: DemoScenario = scenario) {
-    if (!import.meta.env.DEV) return
-    const generation = ++sourceGeneration.current
-    setOpsSwitching(true)
-    setSelectedRun(null)
-    try {
-      const nextClient = nextDemo
-        ? (await import('../../api/adminOpsDemo')).createDemoOpsClient(nextScenario)
-        : realOpsClient
-      if (!mounted.current || generation !== sourceGeneration.current) return
-      setOpsClient(nextClient)
-      setDemo(nextDemo)
-      setScenario(nextScenario)
-      setRunQuery(undefined)
-      setAlertQuery(undefined)
-      setSourceVersion(value => value + 1)
-    } catch (error: unknown) {
-      if (mounted.current && generation === sourceGeneration.current) {
-        showToast(error instanceof Error ? error.message : '演示模块加载失败', 'error')
-      }
-    } finally {
-      if (mounted.current && generation === sourceGeneration.current) setOpsSwitching(false)
-    }
   }
 
   if (sessionRevoked) return (
@@ -262,49 +214,11 @@ export default function AdminPanel() {
             <p className="mt-1 break-all text-sm text-ink-2">当前账号：{user?.displayName}</p>
           </div>
           <div className="flex items-center gap-2">
-          {!opsSwitching && <AdminNotifications key={sourceVersion} client={opsClient}
-            demo={demo} disabled={ragBusy} onOpenAlert={id => openAlerts({ alert_id: id })} />}
           <button type="button" disabled={ragBusy} onClick={() => { if (canLeaveRag()) void logout().catch((error: unknown) => showToast(error instanceof Error ? error.message : '退出未确认，请重试', 'error')) }} className="min-h-11 rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page disabled:opacity-60">
             退出登录
           </button>
           </div>
         </header>
-
-        {import.meta.env.DEV && <section aria-label="运维演示设置"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary-weak p-4 text-sm">
-          <div className="min-w-0">
-            <p className="font-semibold text-primary">{demo ? '运维观测 · 合成演示数据' : '运维观测 · 真实接口'}</p>
-            <p className="mt-1 text-ink-2">演示仅覆盖运维统计、运行、依赖、异常和通知；账号、配置、安全及平台资源统计仍为真实操作与数据。</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex min-h-11 cursor-pointer items-center gap-2">
-              <input type="checkbox" checked={demo} disabled={opsSwitching}
-                onChange={event => void changeOpsSource(event.target.checked)} className="h-4 w-4 accent-primary" />
-              使用演示数据
-            </label>
-            {demo && <label className="flex min-h-11 items-center gap-2">
-              演示场景
-              <select value={scenario} disabled={opsSwitching} className="min-h-11 rounded-lg border border-line bg-white px-3"
-                onChange={event => {
-                  const value = event.target.value
-                  if (value === 'normal' || value === 'loading' || value === 'empty'
-                    || value === 'partial' || value === 'error' || value === 'trace_denied'
-                    || value === 'trace_audit_failed' || value === 'trace_expired'
-                    || value === 'trace_simulated_success') void changeOpsSource(true, value)
-                }}>
-                <option value="normal">典型运行与异常</option>
-                <option value="loading">缓慢加载</option>
-                <option value="empty">空数据</option>
-                <option value="partial">部分可用</option>
-                <option value="error">服务不可用</option>
-                <option value="trace_denied">正文独立授权拒绝</option>
-                <option value="trace_audit_failed">正文访问审计失败</option>
-                <option value="trace_expired">正文打开前过期</option>
-                <option value="trace_simulated_success">正文授权与审计模拟成功</option>
-              </select>
-            </label>}
-          </div>
-        </section>}
 
         <div className="grid min-w-0 gap-5 lg:grid-cols-[208px_minmax(0,1fr)]">
           <aside className="min-w-0 self-start rounded-2xl border border-line bg-white p-3 shadow-sm lg:sticky lg:top-6">
@@ -314,13 +228,8 @@ export default function AdminPanel() {
           </aside>
           <main id="admin-content" className="min-w-0 space-y-5" aria-label={NAV_ITEMS.find(item => item.id === section)?.label}>
 
-            {opsSwitching && <p role="status" className="rounded-xl border border-line bg-white p-5 text-sm text-ink-2">正在切换运维数据源…</p>}
-            {!opsSwitching && section === 'runs' && <RunsPanel key={`${sourceVersion}:${navigationVersion}`}
-              client={opsClient} initialQuery={runQuery} onOpenRun={setSelectedRun} />}
-            {!opsSwitching && section === 'dependencies' && <DependenciesPanel key={sourceVersion}
-              client={opsClient} onOpenRuns={openRuns} />}
-            {!opsSwitching && section === 'alerts' && <AlertsPanel key={`${sourceVersion}:${navigationVersion}`}
-              client={opsClient} initialQuery={alertQuery} onOpenRun={setSelectedRun} />}
+            {section === 'runs' && <RunsPanel
+              client={realOpsClient} initialQuery={runQuery} onOpenRun={setSelectedRun} />}
 
             <div hidden={section !== 'security'} className="space-y-5">
 
@@ -348,8 +257,7 @@ export default function AdminPanel() {
             {section === 'accounts' && loadError && <div role="alert" className="rounded-lg border border-line bg-white p-4 text-sm">数据刷新失败：{loadError} <button type="button" onClick={() => setRefresh(value => value + 1)} className="underline">重试</button></div>}
 
             {section === 'overview' && <>
-              {!opsSwitching && <OpsOverviewPanel key={sourceVersion} client={opsClient}
-                onOpenRuns={openRuns} onOpenAlerts={openAlerts} />}
+              <OpsOverviewPanel client={realOpsClient} onOpenRuns={openRuns} onOpenRun={setSelectedRun} />
               <LegacyOverview />
             </>}
             <div hidden={section !== 'accounts'} className="min-w-0 space-y-5">
@@ -394,8 +302,8 @@ export default function AdminPanel() {
           </main>
         </div>
       </div>
-      {!opsSwitching && selectedRun && <RunDrawer client={opsClient} runId={selectedRun}
-        onClose={() => setSelectedRun(null)} onOpenAlerts={openAlerts} demo={demo} />}
+      {selectedRun && <RunDrawer key={selectedRun} client={realOpsClient} runId={selectedRun}
+        onClose={() => setSelectedRun(null)} />}
     </div>
   )
 }

@@ -5,7 +5,7 @@ import { useOpsQuery } from './ops/useOpsQuery'
 /** 原平台资源和成果批次统计，与运维运行统计分别加载。 */
 export function LegacyOverview() {
   const load = useCallback((signal: AbortSignal) => fetchPlatformOverview(signal), [])
-  const { data: overview, error, loading, refresh, lastSuccess } = useOpsQuery(load, true, 0)
+  const { data: overview, error, loading, refresh, lastSuccess } = useOpsQuery(load, 0)
   return <section className="space-y-4" aria-label="平台资源与历史批次">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>

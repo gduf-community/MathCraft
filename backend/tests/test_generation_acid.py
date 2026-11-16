@@ -384,12 +384,15 @@ def test_canceled_old_response_cannot_overwrite_new_completed_turn(client, teach
         if len(seen_runs) == 1:
             assert client.post(f"/api/chat/sessions/{session_id}/cancel", headers=teacher).status_code == 202
             newer = client.post(endpoint, headers=teacher, json={"message": "新一轮"})
-            assert newer.status_code == 200 and newer.json()["batch_id"]
+            assert newer.status_code == 409
+            assert newer.json()["detail"]["code"] == "CHAT_BUSY"
 
     fake_chat(monkeypatch, supersede, questions=True)
     older = client.post(endpoint, headers=teacher, json={"message": "被取消的旧一轮"})
     assert older.status_code == 200 and older.json()["batch_id"] is None
     assert older.json()["questions"] == []
+    newer = client.post(endpoint, headers=teacher, json={"message": "新一轮"})
+    assert newer.status_code == 200 and newer.json()["batch_id"]
     db.expire_all()
     assert db.query(GenerationBatch).count() == db.query(QuestionRow).count() == 1
     messages = db.query(ChatMessage).filter_by(session_id=session_id).all()

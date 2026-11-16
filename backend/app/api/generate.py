@@ -7,9 +7,11 @@ from app.db import get_db
 from app.deps import BankAccess, get_current_user, resolve_bank_access
 from app.errors import AppError
 from app.models import Document, GenerationBatch, Question, User
+from app.models.ops_run import RunEntrypoint, RunErrorCode
 from app.schemas.api import GenerateStartBody
 from app.schemas.auth import ErrorResponse
 from app.services import auth, generation, rag_settings
+from app.services.generation_lifecycle import GenerationRun, rollback_business
 from app.services.phoenix_tracing import trace_run
 from app.services.model_settings import require_deepseek_key
 
@@ -52,10 +54,14 @@ def start_generation(
     _validate_ready(access, body, db)
     api_key = require_deepseek_key(db, user.id)
     task = generation.accept_task(db, user_id, body, auth_version=auth_version)
-    background.add_task(
-        generation.run_generation_task, task.id, user_id, api_key, body, run_id=task.run_id,
-        auth_version=auth_version,
-    )
+    try:
+        background.add_task(
+            generation.run_generation_task, task.id, user_id, api_key, body, run_id=task.run_id,
+            auth_version=auth_version,
+        )
+    except Exception:
+        generation.fail_submission(task)
+        raise
     return {"task_id": task.id}
 
 
@@ -75,7 +81,7 @@ def get_progress(task_id: str, user: User = Depends(get_current_user)):
 @router.post("", responses={
     503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
 })
-@trace_run("parameterized")
+@trace_run("parameterized", force_new=True)
 def generate_sync(
     body: GenerateStartBody,
     user: User = Depends(get_current_user),
@@ -91,40 +97,50 @@ def generate_sync(
     params = generation.build_params(body)
     user_id, bank_id, document_id, doc_name = user.id, access.bank.id, doc.id, doc.name
     db.rollback()
-    hyde_text = generation.get_hyde(params, body, api_key)
-    try:
-        questions = question_gen.generate_questions(
-            params,
-            doc_name,
-            scope=body.scope or None,
-            existing_stems=body.existing_stems,
-            api_key=api_key,
-            hyde_text=hyde_text,
-        )
-    except question_gen.NeedConfirmError as exc:
-        raise AppError(
-            "NEED_CONFIRM",
-            f"材料中「{exc.type_label}」的原题只有 {exc.available} 道，不足 {exc.requested} 道",
-            status_code=422,
-            kind="need_confirm",
-            available=exc.available,
-            requested=exc.requested,
-        ) from exc
-    from app.services import question_review
+    run = GenerationRun(RunEntrypoint.PARAMETERIZED, user_id, bank_id, document_id)
+    with run.observe(db):
+        run.begin(params)
+        hyde_text = generation.get_hyde(params, body, api_key)
+        try:
+            questions = question_gen.generate_questions(
+                params,
+                doc_name,
+                scope=body.scope or None,
+                existing_stems=body.existing_stems,
+                api_key=api_key,
+                hyde_text=hyde_text,
+            )
+        except question_gen.NeedConfirmError as exc:
+            run.fail(RunErrorCode.NEED_CONFIRM)
+            raise AppError(
+                "NEED_CONFIRM",
+                f"材料中「{exc.type_label}」的原题只有 {exc.available} 道，不足 {exc.requested} 道",
+                status_code=422,
+                kind="need_confirm",
+                available=exc.available,
+                requested=exc.requested,
+            ) from exc
+        from app.services import question_review
 
-    questions, _stats = question_review.review_questions(
-        db, user_id, questions, params, doc_name, api_key, hyde_text
-    )
-    db.rollback()
-    auth.assert_version(db, user_id, auth_version)
-    rag_settings.assert_mutations_allowed(db)
-    generation.validate_resources(db, user_id, bank_id, document_id)
-    generation.persist_batch(
-        db, user_id, bank_id, document_id, "parametric", params, hyde_text, questions,
-        commit=False,
-    )
-    db.commit()
-    return [q.model_dump() for q in questions]
+        questions, _stats = question_review.review_questions(
+            db, user_id, questions, params, doc_name, api_key, hyde_text
+        )
+        db.rollback()
+        auth.assert_version(db, user_id, auth_version)
+        rag_settings.assert_mutations_allowed(db)
+        generation.validate_resources(db, user_id, bank_id, document_id)
+        generation.persist_batch(
+            db, user_id, bank_id, document_id, "parametric", params, hyde_text, questions,
+            commit=False, run=run,
+        )
+        try:
+            db.commit()
+        except BaseException:
+            rollback_business(db)
+            run.unknown()
+            raise
+        run.committed()
+        return [q.model_dump() for q in questions]
 
 
 @router.get("/batches/latest")

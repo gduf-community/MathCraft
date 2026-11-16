@@ -6,6 +6,7 @@ from app.models.deletion import DeletionOperation
 from app.models.favorite import Favorite, FavoriteGroup
 from app.models.generation_task import GenerationTask
 from app.models.notification import Notification
+from app.models.ops_run import OpsRun
 from app.models.paper import (
     AttemptAnswer,
     Paper,
@@ -27,6 +28,7 @@ __all__ = [
     "DeletionOperation", "GenerationTask",
     "Favorite", "FavoriteGroup",
     "Notification",
+    "OpsRun",
     "Paper", "PaperAttempt", "PaperPublication", "PaperQuestion", "AttemptAnswer",
     "PaperUrge", "UrgeReadState",
     "GenerationBatch", "Question",

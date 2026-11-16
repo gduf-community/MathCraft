@@ -1,22 +1,27 @@
 """持久出题任务：无写锁调用模型，SQL 原子发布批次与终态，Redis 仅作缓存。"""
+from datetime import datetime
 import json
 import logging
 
 from redis.exceptions import RedisError
+from sqlalchemy import case, inspect, select
+from sqlalchemy.exc import NoSuchTableError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal
 from app.deps import resolve_bank_access
 from app.errors import AppError
-from app.models import Document, GenerationBatch, Question, User
+from app.models import Document, GenerationBatch, OpsRun, Question, User
 from app.models.chat import ChatSession
-from app.models.base import new_id
+from app.models.base import new_id, utcnow
 from app.models.generation_task import GenerationTask
+from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
 from app.schemas.api import GenerateStartBody
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
 from app.schemas.question import Question as GeneratedQuestion
 from app.services import auth, cache, question_review, rag_settings
+from app.services.generation_lifecycle import GenerationRun, error_code, rollback_business
 from app.services.phoenix_tracing import trace_run
 from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import NeedConfirmError
@@ -114,7 +119,13 @@ def accept_task(
         bank_id=bank_id, document_id=document_id, mode=mode, params_json=body.model_dump_json(),
     )
     db.add(task)
+    run = GenerationRun(
+        RunEntrypoint.PARAMETERIZED, user_id, bank_id, document_id,
+        task_id=task.id, run_id=task.run_id,
+    )
+    run.accept(build_params(body), db=db)
     db.commit()
+    run.register_accepted()
     # 缓存失败或残留租约不能推翻已提交的任务受理。
     acquire_lock(user_id, f"{task.id}:{task.run_id}")
     _cache_task(task)
@@ -193,8 +204,9 @@ def persist_batch(
     questions: list[GeneratedQuestion],
     *,
     commit: bool = True,
+    run: GenerationRun | None = None,
 ) -> GenerationBatch:
-    """写入批次与题目；commit=False 时由调用者连同任务/消息一起提交。"""
+    """写入批次、题目及可选台账；commit=False 时由调用者一起提交。"""
     batch = GenerationBatch(
         id=new_id("batch"),
         user_id=user_id,
@@ -230,10 +242,19 @@ def persist_batch(
                 created_by=user_id,
             )
         )
+    db.flush()
+    if run is not None:
+        run.complete_in_transaction(db, batch.id)
     if commit:
-        db.commit()
-    else:
-        db.flush()
+        try:
+            db.commit()
+        except BaseException:
+            if run is not None:
+                rollback_business(db)
+                run.unknown()
+            raise
+        if run is not None:
+            run.committed()
     return batch
 
 
@@ -289,7 +310,7 @@ def build_params_from_slots(slot_state: dict, bank_id: str, document_id: str) ->
     return params
 
 
-@trace_run("parameterized")
+@trace_run("parameterized", run_id_kwarg="run_id", force_new=True)
 def run_generation_task(
     task_id: str, user_id: str, api_key: str, body: GenerateStartBody,
     mode: str = "parametric", *, run_id: str | None = None,
@@ -300,6 +321,11 @@ def run_generation_task(
     # 否则受理门禁会永久认为存在进行中任务。
     owns_run = run_id is not None
     claimed = False
+    committing = False
+    run = GenerationRun(
+        RunEntrypoint.PARAMETERIZED, user_id, body.bank_id or body.kb_id or "",
+        body.document_id or body.doc_id or "", task_id=task_id, run_id=run_id,
+    )
     try:
         with SessionLocal() as db:
             task = db.get(GenerationTask, task_id)
@@ -308,6 +334,7 @@ def run_generation_task(
                 owns_run = False
                 return
             run_id = task.run_id
+            run.run_id = run_id
             owns_run = True
             body = GenerateStartBody.model_validate_json(task.params_json)
             mode = task.mode
@@ -325,6 +352,7 @@ def run_generation_task(
             db.commit()
             claimed = True
         params = build_params(body)
+        run.begin(params)
         _write_progress(task_id, 2, "准备生成", run_id=run_id)
         with SessionLocal() as db:
             doc_name = validate_resources(db, user_id, params.kb_id, params.doc_id).name
@@ -351,6 +379,7 @@ def run_generation_task(
             ).update({"stage": "正在写入题目"}, synchronize_session=False)
             if not current:
                 db.rollback()
+                _observe_run(run, code=RunErrorCode.EXECUTION_INTERRUPTED, unknown=True)
                 return
             validate_resources(db, user_id, params.kb_id, params.doc_id)
             task = db.get(GenerationTask, task_id, populate_existing=True)
@@ -358,7 +387,7 @@ def run_generation_task(
                 raise AppError("TASK_NOT_FOUND", "任务资源已变更", 409)
             batch = persist_batch(
                 db, user_id, params.kb_id, params.doc_id, mode, params, hyde_text, questions,
-                commit=False,
+                commit=False, run=run,
             )
             task.status = "done"
             task.progress = 100
@@ -370,27 +399,71 @@ def run_generation_task(
                 "regenerated": stats.regenerated, "solved": stats.solved,
             }, ensure_ascii=False)
             task.error_json = None
+            committing = True
             db.commit()
+            committing = False
+            run.committed()
             _cache_task(task)
     except NeedConfirmError as exc:
         label = exc.type_label if exc.type_label in question_gen.TYPE_LABELS.values() else "材料"
         if owns_run and run_id is not None:
-            _fail_task(task_id, run_id, {
+            changed = _fail_task(task_id, run_id, {
                 "kind": "need_confirm",
                 "message": f"{label}原题仅 {exc.available} 道，不足 {exc.requested} 道",
                 "available": exc.available, "requested": exc.requested,
             }, user_id=user_id)
+            if changed:
+                _observe_run(run, code=RunErrorCode.NEED_CONFIRM)
     except Exception as exc:
         if owns_run and run_id is not None:
             changed = _fail_task(
                 task_id, run_id, {"message": llm.friendly_error(exc)}, user_id=user_id,
                 statuses=("running",) if claimed else ("queued",),
             )
+            if committing:
+                _observe_run(run, unknown=True)
+            elif changed:
+                _observe_run(run, code=error_code(exc))
             if not claimed:
                 owns_run = changed
+    except BaseException:
+        if owns_run and run_id is not None:
+            _observe_run(run, code=RunErrorCode.EXECUTION_INTERRUPTED, unknown=True)
+        raise
     finally:
         if owns_run and run_id is not None:
             release_lock(user_id, f"{task_id}:{run_id}")
+
+
+def _observe_run(
+    run: GenerationRun, *, code: RunErrorCode | None = None,
+    unknown: bool = False,
+) -> None:
+    """记录台账失败或中断，不让观测失败覆盖已处理的任务结果。"""
+    try:
+        if unknown:
+            run.unknown(code or RunErrorCode.OUTCOME_UNKNOWN)
+        else:
+            run.fail(code or RunErrorCode.EXECUTION_ERROR)
+    except (SQLAlchemyError, ValueError):
+        logger.error("Generation outcome could not be recorded")
+
+
+def fail_submission(task: GenerationTask) -> None:
+    """后台派发失败时收束任务和台账，并释放当前任务的租约。"""
+    try:
+        changed = _fail_task(
+            task.id, task.run_id, {"message": "任务派发失败，请重新发起生成"},
+            user_id=task.user_id, statuses=("queued",),
+        )
+        if changed:
+            run = GenerationRun(
+                RunEntrypoint.PARAMETERIZED, task.user_id, task.bank_id, task.document_id,
+                task_id=task.id, run_id=task.run_id,
+            )
+            _observe_run(run, code=RunErrorCode.TASK_SUBMISSION_ERROR)
+    finally:
+        release_lock(task.user_id, f"{task.id}:{task.run_id}")
 
 
 def _fail_task(
@@ -449,6 +522,40 @@ def read_task(task_id: str, user_id: str | None = None) -> dict | None:
         }
 
 
+def _ops_recovery_schema_available(db: Session) -> bool:
+    """只接受可执行中断状态恢复的台账结构，数据库读取错误继续向外传播。"""
+    table = OpsRun.__table__
+    inspector = inspect(db.connection())
+    if not inspector.has_table(table.name, schema=table.schema):
+        return False
+    try:
+        columns = {column["name"]: column for column in inspector.get_columns(
+            table.name, schema=table.schema,
+        )}
+    except NoSuchTableError:
+        return False
+    for name, expected in (
+        ("run_id", str), ("entrypoint", str), ("status", str), ("error_code", str),
+        ("last_observed_at", datetime),
+    ):
+        column = columns.get(name)
+        if column is None:
+            return False
+        try:
+            if not issubclass(column["type"].python_type, expected):
+                return False
+        except (NotImplementedError, TypeError):
+            return False
+    for name, value in (
+        ("status", RunStatus.UNKNOWN.value),
+        ("error_code", RunErrorCode.EXECUTION_INTERRUPTED.value),
+    ):
+        length = getattr(columns[name]["type"], "length", None)
+        if length is not None and length < len(value):
+            return False
+    return True
+
+
 def recover_interrupted_generation() -> None:
     """单 worker 启动时标记中断，不重新调用模型，由用户显式重试。"""
     with SessionLocal() as db:
@@ -459,6 +566,26 @@ def recover_interrupted_generation() -> None:
             task.status = "interrupted"
             task.stage = "服务重启，生成已中断"
             task.error_json = json.dumps({"message": "服务重启，请重新发起生成"}, ensure_ascii=False)
+        if _ops_recovery_schema_available(db):
+            observed_at = utcnow()
+            task_runs = select(GenerationTask.run_id).where(
+                GenerationTask.status.in_((*ACTIVE_TASK_STATUSES, "failed", "interrupted")),
+            )
+            db.query(OpsRun).filter(
+                OpsRun.status.in_((RunStatus.ACCEPTED.value, RunStatus.RUNNING.value)),
+                # 启动恢复仅适用于没有其他共享数据库执行实例的单 worker 部署。
+                (OpsRun.entrypoint == RunEntrypoint.CONVERSATION.value)
+                | OpsRun.run_id.in_(task_runs),
+            ).update({
+                "status": RunStatus.UNKNOWN.value,
+                "error_code": RunErrorCode.EXECUTION_INTERRUPTED.value,
+                "last_observed_at": case(
+                    (OpsRun.last_observed_at > observed_at, OpsRun.last_observed_at),
+                    else_=observed_at,
+                ),
+            }, synchronize_session=False)
+        else:
+            logger.warning("运维台账结构不可用，已跳过台账中断状态恢复")
         db.query(ChatSession).filter(ChatSession.run_status == "running").update({
             "run_status": "interrupted", "run_stage": "服务重启，请重新发送消息",
         }, synchronize_session=False)
