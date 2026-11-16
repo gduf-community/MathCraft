@@ -6,10 +6,12 @@
 - 生成失败返回 None，降级为原始查询，不阻断出题
 """
 import hashlib
+from collections.abc import Callable
 
 import redis
 
 from app.services import cache
+from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
 from app.services.rag import llm
 from app.services.rag.prompts import HYDE_SYSTEM, HYDE_USER_TEMPLATE
 
@@ -21,7 +23,10 @@ def _digest(bank_id: str, document_id: str, scope: str, difficulty: str) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def generate_hyde(scope: str, api_key: str | None) -> str | None:
+def generate_hyde(
+    scope: str, api_key: str | None, cancel_check: Callable[[], None] | None = None,
+) -> str | None:
+    """生成假设段落；普通失败降级，取消异常交回调用方。"""
     try:
         text = llm.chat_text(
             [
@@ -32,8 +37,11 @@ def generate_hyde(scope: str, api_key: str | None) -> str | None:
             temperature=0.3,
             max_tokens=600,
             thinking_off=True,
+            **cancellation_kwargs(cancel_check),
         )
         return text.strip() or None
+    except GenerationCanceled:
+        raise
     except Exception:
         return None
 

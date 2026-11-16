@@ -226,6 +226,17 @@ class RunLedger:
         """执行器已确认停止且未保存批次；暂停请求本身不能调用本方法。"""
         self._stop(run_id, RunStatus.CANCELED, RunErrorCode.USER_CANCELED, observed_at)
 
+    def cancel_in_transaction(self, db: Session, run_id: str) -> None:
+        """与任务取消终态原子提交；仅在执行已退出或尚未认领时使用。"""
+        row = _load(db, run_id)
+        if row.status == RunStatus.CANCELED:
+            return
+        if row.status in _TERMINAL:
+            raise RunConflictError("已确认终态不能被取消覆盖")
+        at = max(utcnow(), row.last_observed_at)
+        _write(db, row, RunStatus.CANCELED, at, started_at=row.started_at,
+               finished_at=at, delivered_count=0, error_code=RunErrorCode.USER_CANCELED)
+
     def unknown(
         self, run_id: str, *, error_code: RunErrorCode = RunErrorCode.OUTCOME_UNKNOWN,
         observed_at: datetime | None = None,

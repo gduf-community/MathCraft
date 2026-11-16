@@ -29,7 +29,9 @@ def review_question():
 
 
 def stub_review_models(monkeypatch):
-    monkeypatch.setattr(question_review, "_drop_duplicates", lambda questions, corpus: (questions, []))
+    monkeypatch.setattr(
+        question_review, "_drop_duplicates", lambda questions, corpus, **kwargs: (questions, []),
+    )
     monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"passed": True, "total": 2.5})
     monkeypatch.setattr(question_review, "_solve_all", lambda *a, **k: None)
 
@@ -148,7 +150,7 @@ def test_generation_entrypoints_release_review_transaction_before_models(
         review_sessions.append(review_db)
         return original_load(review_db, *args)
 
-    def duplicate_model(questions, corpus):
+    def duplicate_model(questions, corpus, **kwargs):
         assert review_sessions and not review_sessions[-1].in_transaction()
         return questions, []
 

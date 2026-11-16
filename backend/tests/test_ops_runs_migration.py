@@ -72,9 +72,9 @@ def test_upgrade_preserves_all_existing_tables_rows_and_does_not_backfill(histor
     config, engine, _sessions = historical_database
     before = historical_rows(engine)
     directory = ScriptDirectory.from_config(config)
-    assert directory.get_current_head() == HEAD
+    assert directory.get_current_head() == "o0b1c2d34567"
     assert directory.get_revision(HEAD).down_revision == PREVIOUS
-    command.upgrade(config, "head")
+    command.upgrade(config, HEAD)
     assert historical_rows(engine) == before
     with engine.connect() as connection:
         assert connection.execute(select(OpsRun)).all() == []
@@ -87,7 +87,7 @@ def test_upgrade_preserves_all_existing_tables_rows_and_does_not_backfill(histor
 
 def test_nonempty_ledger_downgrade_preserves_history_and_revision(historical_database):
     config, engine, sessions = historical_database
-    command.upgrade(config, "head")
+    command.upgrade(config, HEAD)
     run_id = RunLedger(sessions).accept(entrypoint=RunEntrypoint.PARAMETERIZED,
                                         owner_user_id="u_owner", bank_id="bank_old",
                                         document_id="doc_old", requested_count=1)
@@ -102,7 +102,7 @@ def test_nonempty_ledger_downgrade_preserves_history_and_revision(historical_dat
 
 def test_migration_and_orm_metadata_have_matching_storage_contract(historical_database):
     config, engine, _sessions = historical_database
-    command.upgrade(config, "head")
+    command.upgrade(config, HEAD)
     inspector = inspect(engine)
     actual_columns = inspector.get_columns("ops_runs")
     expected = OpsRun.__table__
@@ -127,7 +127,7 @@ def test_migration_and_orm_metadata_have_matching_storage_contract(historical_da
 
 def test_database_rejects_invalid_fields_and_state_shapes(historical_database):
     config, engine, _sessions = historical_database
-    command.upgrade(config, "head")
+    command.upgrade(config, HEAD)
     base = dict(run_id="run_invalid", entrypoint="parameterized", owner_user_id="u_owner",
                 bank_id="bank_old", document_id="doc_old", status="accepted", requested_count=2,
                 accepted_at=NOW, last_observed_at=NOW)

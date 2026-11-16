@@ -22,6 +22,7 @@ backend/
 │       ├── phoenix_tracing.py # 可选元数据追踪与线程上下文传递
 │       ├── ops_runs.py  # 台账受理、观察与批次同事务完成写入
 │       ├── generation_lifecycle.py # 出题受理、异常收尾及在途运行封口
+│       ├── generation_cancellation.py # 生成与审核的协作取消边界
 │       └── rag/         # 检索与四模式对话
 │           ├── skills.py # 四模式技能注册、执行上下文与延迟导入
 │           └── question_gen.py # 模型流式接收、滚动解析与题目校验
@@ -35,6 +36,10 @@ backend/
 ```
 
 ## 启动与配置
+
+参数化异步出题支持按任务取消；一键清空等待后台执行退出后才能重新出题。
+部署前执行既有 Alembic 升级入口，包含 `o0b1c2d34567` 的请求身份与执行退出字段。
+接口及异常边界见[快速出题取消与清空](../docs/design/快速出题取消与清空.md)。
 
 管理员运行查询提供 `/api/admin/ops/overview`、`/api/admin/ops/runs` 和
 `/api/admin/ops/runs/{run_id}`，使用 V2 最小摘要、UTC 受理时间筛选和 limit/offset 分页。

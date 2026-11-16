@@ -1,5 +1,6 @@
 """持久出题任务：无写锁调用模型，SQL 原子发布批次与终态，Redis 仅作缓存。"""
 from datetime import datetime
+from collections.abc import Callable
 import json
 import logging
 
@@ -22,6 +23,8 @@ from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeC
 from app.schemas.question import Question as GeneratedQuestion
 from app.services import auth, cache, question_review, rag_settings
 from app.services.generation_lifecycle import GenerationRun, error_code, rollback_business
+from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
+from app.services.ops_runs import RunLedger
 from app.services.phoenix_tracing import trace_run
 from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import NeedConfirmError
@@ -33,7 +36,7 @@ def _task_key(task_id: str) -> str:
     return cache.PREFIX_GEN_TASK.format(task_id=task_id)
 
 
-ACTIVE_TASK_STATUSES = ("queued", "running")
+ACTIVE_TASK_STATUSES = ("queued", "running", "canceling")
 _LEASE_SECONDS = 120
 _RENEW_LEASE = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -99,6 +102,14 @@ def accept_task(
     db: Session, user_id: str, body: GenerateStartBody, mode: str = "parametric",
     *, auth_version: int | None = None,
 ) -> GenerationTask:
+    """受理或找回同一请求，兼容直接调用任务服务的既有入口。"""
+    return accept_task_once(db, user_id, body, mode, auth_version=auth_version)[0]
+
+
+def accept_task_once(
+    db: Session, user_id: str, body: GenerateStartBody, mode: str = "parametric",
+    *, auth_version: int | None = None,
+) -> tuple[GenerationTask, bool]:
     """串行化同一用户受理，并在返回 task_id 前提交 SQL。"""
     bank_id = body.bank_id or body.kb_id or ""
     document_id = body.document_id or body.doc_id or ""
@@ -108,15 +119,29 @@ def accept_task(
     db.rollback()
     # 复用账号门禁，同时核对请求原认证版本，不能采用 rollback 后刷新的版本。
     auth.assert_version(db, user_id, auth_version)
+    if body.request_id is not None:
+        existing = db.query(GenerationTask).filter(
+            GenerationTask.user_id == user_id, GenerationTask.request_id == str(body.request_id),
+        ).one_or_none()
+        if existing is not None:
+            previous = GenerateStartBody.model_validate_json(existing.params_json)
+            if previous != body or existing.mode != mode:
+                db.rollback()
+                raise AppError("GENERATION_REQUEST_CONFLICT", "请求标识已用于其他出题参数", 409)
+            db.commit()
+            return existing, False
     validate_resources(db, user_id, bank_id, document_id)
     if db.query(GenerationTask.id).filter(
-        GenerationTask.user_id == user_id, GenerationTask.status.in_(ACTIVE_TASK_STATUSES),
+        GenerationTask.user_id == user_id,
+        (GenerationTask.status.in_(ACTIVE_TASK_STATUSES))
+        | GenerationTask.execution_finished_at.is_(None),
     ).first():
         db.rollback()
         raise AppError("GENERATION_BUSY", "你已有进行中的出题任务，请等待完成后再试", 409)
     task = GenerationTask(
         id=new_id("task"), run_id=new_id("run"), user_id=user_id,
         bank_id=bank_id, document_id=document_id, mode=mode, params_json=body.model_dump_json(),
+        request_id=str(body.request_id) if body.request_id is not None else None,
     )
     db.add(task)
     run = GenerationRun(
@@ -129,7 +154,7 @@ def accept_task(
     # 缓存失败或残留租约不能推翻已提交的任务受理。
     acquire_lock(user_id, f"{task.id}:{task.run_id}")
     _cache_task(task)
-    return task
+    return task, True
 
 
 def _cache_task(task: GenerationTask) -> None:
@@ -143,6 +168,94 @@ def _cache_task(task: GenerationTask) -> None:
         r.expire(_task_key(task.id), settings.generate_task_ttl_seconds)
     except RedisError:
         logger.debug("出题进度缓存不可用；进度继续从 SQL 读取")
+
+
+def find_request(db: Session, user_id: str, request_id: str) -> GenerationTask | None:
+    """仅在调用者账号范围内找回已受理请求，不读取模型配置或资料。"""
+    return db.query(GenerationTask).filter(
+        GenerationTask.user_id == user_id, GenerationTask.request_id == request_id,
+    ).one_or_none()
+
+
+def cancel_task(task_id: str, user_id: str, auth_version: int) -> dict:
+    """取消与认领、发布竞争 SQL 门禁，已运行任务等待执行器确认退出。"""
+    with SessionLocal() as db:
+        auth.assert_version(db, user_id, auth_version)
+        task = db.query(GenerationTask).filter(
+            GenerationTask.id == task_id, GenerationTask.user_id == user_id,
+        ).one_or_none()
+        if task is None:
+            raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
+        if task.status == "queued":
+            task.status = "canceled"
+            task.stage = "已取消"
+            task.execution_finished_at = utcnow()
+            RunLedger().cancel_in_transaction(db, task.run_id)
+        elif task.status == "running":
+            task.status = "canceling"
+            task.stage = "正在取消，等待后台退出"
+        db.commit()
+        if task.status == "canceled":
+            release_lock(user_id, f"{task.id}:{task.run_id}")
+            GenerationRun(
+                RunEntrypoint.PARAMETERIZED, user_id, task.bank_id, task.document_id,
+                task_id=task.id, run_id=task.run_id,
+            ).committed()
+        _cache_task(task)
+    result = read_task(task_id, user_id, validate_material=False)
+    if result is None:
+        raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
+    with SessionLocal() as db:
+        result["question_ids"] = list(db.scalars(
+            select(Question.id).join(GenerationBatch, GenerationBatch.id == Question.batch_id)
+            .join(GenerationTask, GenerationTask.batch_id == GenerationBatch.id)
+            .where(GenerationTask.id == task_id, GenerationTask.user_id == user_id,
+                   GenerationBatch.user_id == user_id, Question.created_by == user_id)
+        ))
+    return result
+
+
+def _check_execution(task_id: str, run_id: str, user_id: str) -> None:
+    """每次读取新 SQL 快照，取消或过期执行不能继续模型工作。"""
+    with SessionLocal() as db:
+        valid = db.query(GenerationTask.id).filter(
+            GenerationTask.id == task_id, GenerationTask.run_id == run_id,
+            GenerationTask.user_id == user_id, GenerationTask.status == "running",
+        ).first()
+        if valid is None:
+            raise GenerationCanceled()
+
+
+def _finish_execution(task_id: str, run_id: str, user_id: str, run: GenerationRun) -> None:
+    """所属线程工作均结束后原子记录退出；只有当前代次能收束取消。"""
+    with SessionLocal() as db:
+        changed = db.query(GenerationTask).filter(
+            GenerationTask.id == task_id, GenerationTask.run_id == run_id,
+            GenerationTask.user_id == user_id,
+        ).update({"execution_finished_at": utcnow()}, synchronize_session=False)
+        if not changed:
+            db.rollback()
+            _observe_run(run, code=RunErrorCode.EXECUTION_INTERRUPTED, unknown=True)
+            return
+        task = db.get(GenerationTask, task_id, populate_existing=True)
+        if task is None:
+            return
+        canceled = task.status == "canceling"
+        interrupted = task.status in ("queued", "running")
+        if canceled:
+            task.status = "canceled"
+            task.stage = "已取消"
+            task.result_json = task.review_json = task.error_json = None
+            RunLedger().cancel_in_transaction(db, run_id)
+        elif interrupted:
+            task.status = "interrupted"
+            task.stage = "执行已中断，请重新生成"
+            task.error_json = json.dumps({"message": "执行已中断，请重新生成"}, ensure_ascii=False)
+        db.commit()
+        if canceled:
+            run.committed()
+        elif interrupted:
+            _observe_run(run, code=RunErrorCode.EXECUTION_INTERRUPTED, unknown=True)
 
 
 def _write_progress(
@@ -165,13 +278,20 @@ def _write_progress(
             renew_lock(task.user_id, f"{task_id}:{run_id}")
 
 
-def get_hyde(params: GenerateParams, body: GenerateStartBody, api_key: str) -> str | None:
+def get_hyde(
+    params: GenerateParams, body: GenerateStartBody, api_key: str,
+    cancel_check: Callable[[], None] | None = None,
+) -> str | None:
     """可选 HyDE 缓存故障不阻断题目生成。"""
-    return get_cached_hyde(params.kb_id, params.doc_id, body.scope, body.difficulty, api_key)
+    return get_cached_hyde(
+        params.kb_id, params.doc_id, body.scope, body.difficulty, api_key,
+        **cancellation_kwargs(cancel_check),
+    )
 
 
 def get_cached_hyde(
     bank_id: str, document_id: str, scope: str, difficulty: str, api_key: str,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str | None:
     """复用 HyDE 生成与键格式；缓存读写失败不丢弃本轮生成结果。"""
     scope = scope.strip()
@@ -184,7 +304,7 @@ def get_cached_hyde(
             return cached
     except RedisError:
         logger.warning("HyDE 缓存读取失败，继续本轮生成")
-    generated = hyde.generate_hyde(scope, api_key)
+    generated = hyde.generate_hyde(scope, api_key, **cancellation_kwargs(cancel_check))
     if generated:
         try:
             cache.get_redis().set(key, generated, ex=hyde._HYDE_TTL)
@@ -221,9 +341,11 @@ def persist_batch(
     db.add(batch)
     db.flush()
     for q in questions:
+        if not q.id:
+            q.id = new_id("q")
         db.add(
             Question(
-                id=q.id or new_id("q"),
+                id=q.id,
                 batch_id=batch.id,
                 bank_id=bank_id,
                 document_id=document_id,
@@ -352,22 +474,34 @@ def run_generation_task(
             db.commit()
             claimed = True
         params = build_params(body)
+        def check_canceled() -> None:
+            _check_execution(task_id, run_id, user_id)
+
+        check_canceled()
         run.begin(params)
         _write_progress(task_id, 2, "准备生成", run_id=run_id)
         with SessionLocal() as db:
             doc_name = validate_resources(db, user_id, params.kb_id, params.doc_id).name
-        hyde_text = get_hyde(params, body, api_key)
+        check_canceled()
+        hyde_text = get_hyde(
+            params, body, api_key, **cancellation_kwargs(check_canceled),
+        )
+        check_canceled()
         if body.scope and hyde_text:
             _write_progress(task_id, 5, "已生成假设文档（HyDE），正在混合检索", run_id=run_id)
         def progress(percent: int, stage: str) -> None:
+            check_canceled()
             _write_progress(task_id, percent, stage, run_id=run_id)
         questions = question_gen.generate_questions(
             params, doc_name, scope=body.scope or None, existing_stems=body.existing_stems,
             progress_cb=progress, api_key=api_key, hyde_text=hyde_text,
+            cancel_check=check_canceled,
         )
+        check_canceled()
         with SessionLocal() as db:
             questions, stats = question_review.review_questions(
                 db, user_id, questions, params, doc_name, api_key, hyde_text, progress=progress,
+                cancel_check=check_canceled,
             )
             # 审核仅作读操作；结束旧快照后再进入短写事务。
             db.rollback()
@@ -379,8 +513,7 @@ def run_generation_task(
             ).update({"stage": "正在写入题目"}, synchronize_session=False)
             if not current:
                 db.rollback()
-                _observe_run(run, code=RunErrorCode.EXECUTION_INTERRUPTED, unknown=True)
-                return
+                raise GenerationCanceled()
             validate_resources(db, user_id, params.kb_id, params.doc_id)
             task = db.get(GenerationTask, task_id, populate_existing=True)
             if task is None or task.bank_id != params.kb_id or task.document_id != params.doc_id:
@@ -404,6 +537,8 @@ def run_generation_task(
             committing = False
             run.committed()
             _cache_task(task)
+    except GenerationCanceled:
+        pass
     except NeedConfirmError as exc:
         label = exc.type_label if exc.type_label in question_gen.TYPE_LABELS.values() else "材料"
         if owns_run and run_id is not None:
@@ -432,7 +567,10 @@ def run_generation_task(
         raise
     finally:
         if owns_run and run_id is not None:
-            release_lock(user_id, f"{task_id}:{run_id}")
+            try:
+                release_lock(user_id, f"{task_id}:{run_id}")
+            finally:
+                _finish_execution(task_id, run_id, user_id, run)
 
 
 def _observe_run(
@@ -451,24 +589,25 @@ def _observe_run(
 
 def fail_submission(task: GenerationTask) -> None:
     """后台派发失败时收束任务和台账，并释放当前任务的租约。"""
+    run = GenerationRun(
+        RunEntrypoint.PARAMETERIZED, task.user_id, task.bank_id, task.document_id,
+        task_id=task.id, run_id=task.run_id,
+    )
     try:
         changed = _fail_task(
             task.id, task.run_id, {"message": "任务派发失败，请重新发起生成"},
             user_id=task.user_id, statuses=("queued",),
         )
         if changed:
-            run = GenerationRun(
-                RunEntrypoint.PARAMETERIZED, task.user_id, task.bank_id, task.document_id,
-                task_id=task.id, run_id=task.run_id,
-            )
             _observe_run(run, code=RunErrorCode.TASK_SUBMISSION_ERROR)
     finally:
         release_lock(task.user_id, f"{task.id}:{task.run_id}")
+        _finish_execution(task.id, task.run_id, task.user_id, run)
 
 
 def _fail_task(
     task_id: str, run_id: str, error: dict, *, user_id: str,
-    statuses: tuple[str, ...] = ACTIVE_TASK_STATUSES,
+    statuses: tuple[str, ...] = ("queued", "running"),
 ) -> bool:
     """仅当前执行者能够写失败状态，不能覆盖已提交结果或恢复后的中断状态。"""
     with SessionLocal() as db:
@@ -486,7 +625,9 @@ def _fail_task(
         return bool(changed)
 
 
-def read_task(task_id: str, user_id: str | None = None) -> dict | None:
+def read_task(
+    task_id: str, user_id: str | None = None, *, validate_material: bool = True,
+) -> dict | None:
     """只依据 SQL 所有者返回完整状态；缺少归属或身份时默认拒绝。"""
     if not user_id:
         return None
@@ -496,14 +637,21 @@ def read_task(task_id: str, user_id: str | None = None) -> dict | None:
         ).one_or_none()
         if task is None:
             return None
-        try:
-            validate_resources(db, user_id, task.bank_id, task.document_id)
-        except AppError:
-            return None
+        material_available = True
+        if task.status not in ("canceling", "canceled", "interrupted"):
+            try:
+                validate_resources(db, user_id, task.bank_id, task.document_id)
+            except AppError:
+                if validate_material:
+                    return None
+                material_available = False
         batch_id = task.batch_id
         questions = json.loads(task.result_json) if task.result_json else []
         review = json.loads(task.review_json) if task.review_json else None
         error = json.loads(task.error_json) if task.error_json else None
+        if not material_available:
+            batch_id, questions, review = None, [], None
+            error = {"message": "生成资料已不可用"}
         if task.status == "done":
             batch = db.get(GenerationBatch, batch_id) if batch_id else None
             if (batch is None or batch.user_id != user_id or batch.status != "done"
@@ -513,9 +661,12 @@ def read_task(task_id: str, user_id: str | None = None) -> dict | None:
                 batch_id, questions, review = None, [], None
                 error = {"message": "生成结果已删除或失效，请检查最近批次或重新生成"}
         return {
+            "status": task.status,
+            "execution_finished": task.execution_finished_at is not None,
             "progress": task.progress, "stage": task.stage,
             "review": review,
-            "done": task.status not in ACTIVE_TASK_STATUSES,
+            "done": (task.status not in ACTIVE_TASK_STATUSES
+                     and task.execution_finished_at is not None),
             "batch_id": batch_id,
             "questions": questions,
             "error": error,
@@ -560,12 +711,15 @@ def recover_interrupted_generation() -> None:
     """单 worker 启动时标记中断，不重新调用模型，由用户显式重试。"""
     with SessionLocal() as db:
         tasks = db.query(GenerationTask).filter(
-            GenerationTask.status.in_(ACTIVE_TASK_STATUSES),
+            (GenerationTask.status.in_(ACTIVE_TASK_STATUSES))
+            | GenerationTask.execution_finished_at.is_(None),
         ).all()
         for task in tasks:
-            task.status = "interrupted"
-            task.stage = "服务重启，生成已中断"
-            task.error_json = json.dumps({"message": "服务重启，请重新发起生成"}, ensure_ascii=False)
+            task.execution_finished_at = utcnow()
+            if task.status in ACTIVE_TASK_STATUSES:
+                task.status = "interrupted"
+                task.stage = "服务重启，生成已中断"
+                task.error_json = json.dumps({"message": "服务重启，请重新发起生成"}, ensure_ascii=False)
         if _ops_recovery_schema_available(db):
             observed_at = utcnow()
             task_runs = select(GenerationTask.run_id).where(

@@ -1,6 +1,8 @@
 """出题接口：异步任务（start + progress 轮询）、同步出题、最近批次（v2 5.5）。"""
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from uuid import UUID
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -8,7 +10,12 @@ from app.deps import BankAccess, get_current_user, resolve_bank_access
 from app.errors import AppError
 from app.models import Document, GenerationBatch, Question, User
 from app.models.ops_run import RunEntrypoint, RunErrorCode
-from app.schemas.api import GenerateStartBody
+from app.schemas.api import (
+    GenerateCancellationResponse,
+    GenerateProgressResponse,
+    GenerateStartBody,
+    GenerateTaskResponse,
+)
 from app.schemas.auth import ErrorResponse
 from app.services import auth, generation, rag_settings
 from app.services.generation_lifecycle import GenerationRun, rollback_business
@@ -41,7 +48,7 @@ def _validate_ready(access: BankAccess, body: GenerateStartBody, db: Session) ->
     return doc
 
 
-@router.post("/start", status_code=202)
+@router.post("/start", status_code=202, response_model=GenerateTaskResponse)
 def start_generation(
     body: GenerateStartBody,
     background: BackgroundTasks,
@@ -50,10 +57,15 @@ def start_generation(
 ):
     """创建异步出题任务。同一用户同时只允许一个进行中任务（409 GENERATION_BUSY）。"""
     user_id, auth_version = user.id, user.auth_version
+    if body.request_id is not None and generation.find_request(db, user_id, str(body.request_id)):
+        task, _ = generation.accept_task_once(db, user_id, body, auth_version=auth_version)
+        return {"task_id": task.id}
     access = _resolve(body, user, db)
     _validate_ready(access, body, db)
     api_key = require_deepseek_key(db, user.id)
-    task = generation.accept_task(db, user_id, body, auth_version=auth_version)
+    task, created = generation.accept_task_once(db, user_id, body, auth_version=auth_version)
+    if not created:
+        return {"task_id": task.id}
     try:
         background.add_task(
             generation.run_generation_task, task.id, user_id, api_key, body, run_id=task.run_id,
@@ -65,7 +77,31 @@ def start_generation(
     return {"task_id": task.id}
 
 
-@router.get("/progress/{task_id}")
+@router.get("/requests/{request_id}", response_model=GenerateTaskResponse)
+def find_generation_request(
+    request_id: UUID, user: User = Depends(get_current_user), db: Session = Depends(get_db),
+):
+    """在当前账号内找回启动响应丢失的原任务。"""
+    task = generation.find_request(db, user.id, str(request_id))
+    if task is None:
+        raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
+    return {"task_id": task.id}
+
+
+@router.post("/cancel/{task_id}", response_model=GenerateCancellationResponse, responses={
+    202: {"model": GenerateCancellationResponse, "description": "取消已受理，等待后台执行退出"},
+})
+def cancel_generation_task(
+    task_id: str, response: Response, user: User = Depends(get_current_user),
+):
+    """幂等取消指定任务；正在执行时保留忙碌门禁直到全部工作退出。"""
+    state = generation.cancel_task(task_id, user.id, user.auth_version)
+    if state["status"] == "canceling":
+        response.status_code = 202
+    return state
+
+
+@router.get("/progress/{task_id}", response_model=GenerateProgressResponse)
 def get_progress(task_id: str, user: User = Depends(get_current_user)):
     """查询任务进度；任务完成时携带题目与批次 id。"""
     data = generation.read_task(task_id, user_id=user.id)

@@ -380,6 +380,7 @@ export async function viewDocument(bankId: string, docId: string): Promise<void>
 /* ---------------- 出题与题目 ---------------- */
 
 export interface GenerateBody {
+  request_id?: string
   bank_id: string
   document_id: string
   types: { type: QuestionType; count: number }[]
@@ -450,6 +451,9 @@ export async function startGeneration(body: GenerateBody): Promise<{ task_id: st
 }
 
 export interface GenerateProgress {
+  status: 'queued' | 'running' | 'canceling' | 'canceled' | 'done' | 'failed' | 'interrupted'
+  execution_finished: boolean
+  question_ids?: string[]
   progress: number
   stage: string
   done: boolean
@@ -462,6 +466,14 @@ export interface GenerateProgress {
 
 export async function getGenerationProgress(taskId: string): Promise<GenerateProgress> {
   return request<GenerateProgress>(`/api/generate/progress/${taskId}`)
+}
+
+export async function findGenerationRequest(requestId: string): Promise<{ task_id: string }> {
+  return request(`/api/generate/requests/${requestId}`)
+}
+
+export async function cancelGeneration(taskId: string): Promise<GenerateProgress & { question_ids: string[] }> {
+  return request(`/api/generate/cancel/${taskId}`, { method: 'POST' })
 }
 
 export async function latestBatch(

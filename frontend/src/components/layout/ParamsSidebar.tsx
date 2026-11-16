@@ -38,6 +38,7 @@ export default function ParamsSidebar() {
     knowledgeScope,
     setKnowledgeScope,
     generating,
+    generationClearing,
     genProgress,
     generate,
   } = useApp()
@@ -255,11 +256,12 @@ export default function ParamsSidebar() {
         <button
           type="button"
           disabled={generating}
+          aria-busy={generating}
           onClick={() => void generate()}
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-3 text-[16px] font-semibold text-white shadow-[0_4px_14px_rgba(30,111,255,0.35)] transition-all hover:bg-[#1a5fe6] active:scale-[0.98] disabled:opacity-60"
         >
           {generating ? <Loader2 size={17} className="animate-spin" /> : <Sparkles size={17} />}
-          {generating ? `生成中 ${genProgress?.percent ?? 0}%` : '生成题目'}
+          {generationClearing ? '正在取消与清理…' : generating ? `生成中 ${genProgress?.percent ?? 0}%` : '生成题目'}
         </button>
         {generating && (
           <div className="mt-2.5">
@@ -269,7 +271,7 @@ export default function ParamsSidebar() {
                 style={{ width: `${genProgress?.percent ?? 0}%` }}
               />
             </div>
-            <p className="mt-1.5 text-center text-xs text-ink-3">{genProgress?.stage ?? '准备生成'}</p>
+            <p role="status" className="mt-1.5 text-center text-xs text-ink-3">{genProgress?.stage ?? '准备生成'}</p>
           </div>
         )}
       </div>

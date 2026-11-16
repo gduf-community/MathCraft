@@ -100,7 +100,7 @@ class GenerationRun:
         self._ledger.complete_in_transaction(db, self.run_id, batch_id=batch_id)
 
     def committed(self) -> None:
-        """批次事务已确认提交，后续回复或进度错误不改变保存事实。"""
+        """业务终态事务已确认提交，后续回复或进度错误不改变保存事实。"""
         self._settled = True
         self._forget()
 

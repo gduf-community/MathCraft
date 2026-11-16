@@ -21,7 +21,8 @@ def test_main_and_ops_revisions_form_one_unambiguous_history() -> None:
             "error", message=r"Revision .* is present more than once", category=UserWarning,
         )
         scripts = ScriptDirectory(str(versions))
-        assert scripts.get_heads() == ["n9a0b1c23456"]
+        assert scripts.get_heads() == ["o0b1c2d34567"]
+        assert scripts.get_revision("o0b1c2d34567").down_revision == "n9a0b1c23456"
         assert scripts.get_revision("n9a0b1c23456").down_revision == "m8f9a0b12345"
         assert scripts.get_revision("m8f9a0b12345").down_revision == (
             "k6f7a8b90123", "j5e6f7a8b901",
@@ -74,7 +75,7 @@ class AcidMigrationTests(AuthCommandCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM generation_runs").fetchone(), (0,))
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(db.execute("SELECT version_num FROM alembic_version").fetchone(),
-                             ("n9a0b1c23456",))
+                             ("o0b1c2d34567",))
 
     def test_legacy_ops_revision_requires_reconciliation_before_upgrade(self) -> None:
         """旧 V2 同号数据库不会被新版本图自动识别，也不能覆盖旧台账。"""
@@ -88,6 +89,7 @@ class AcidMigrationTests(AuthCommandCase):
             "j5e6f7a89012_source_evidence.py",
             "k6f7a8b90123_generation_runs.py",
             "m8f9a0b12345_merge_generation_acid.py",
+            "o0b1c2d34567_generation_cancellation.py",
         ):
             (versions / filename).unlink()
         ops = versions / "n9a0b1c23456_add_ops_runs.py"
@@ -149,7 +151,7 @@ class AcidMigrationTests(AuthCommandCase):
             self.assertEqual(db.execute("SELECT * FROM generation_runs").fetchall(), before)
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(db.execute("SELECT version_num FROM alembic_version").fetchone(),
-                             ("n9a0b1c23456",))
+                             ("o0b1c2d34567",))
 
     def test_upgrade_preserves_answers_and_backfills_snapshot(self) -> None:
         with closing(sqlite3.connect(self.database)) as db:
@@ -198,4 +200,4 @@ class AcidMigrationTests(AuthCommandCase):
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT * FROM attempt_answers").fetchall(), before)
             self.assertEqual(db.execute("SELECT version_num FROM alembic_version").fetchone(),
-                             ("n9a0b1c23456",))
+                             ("o0b1c2d34567",))

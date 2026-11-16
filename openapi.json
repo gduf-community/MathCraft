@@ -3691,7 +3691,138 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generate/requests/{request_id}": {
+      "get": {
+        "tags": [
+          "generate"
+        ],
+        "summary": "Find Generation Request",
+        "description": "在当前账号内找回启动响应丢失的原任务。",
+        "operationId": "find_generation_request_api_generate_requests__request_id__get",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generate/cancel/{task_id}": {
+      "post": {
+        "tags": [
+          "generate"
+        ],
+        "summary": "Cancel Generation Task",
+        "description": "幂等取消指定任务；正在执行时保留忙碌门禁直到全部工作退出。",
+        "operationId": "cancel_generation_task_api_generate_cancel__task_id__post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateCancellationResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "取消已受理，等待后台执行退出",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateCancellationResponse"
+                }
               }
             }
           },
@@ -3748,7 +3879,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateProgressResponse"
+                }
               }
             }
           },
@@ -8921,8 +9054,206 @@
         ],
         "title": "FavoriteMoveBody"
       },
+      "GenerateCancellationResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "canceling",
+              "canceled",
+              "done",
+              "failed",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "execution_finished": {
+            "type": "boolean",
+            "title": "Execution Finished"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationReviewStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationConfirmationError"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "question_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Question Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "execution_finished",
+          "progress",
+          "stage",
+          "done",
+          "batch_id",
+          "questions",
+          "review",
+          "error",
+          "question_ids"
+        ],
+        "title": "GenerateCancellationResponse",
+        "description": "取消后仍存在的本任务题目 ID，供清空覆盖部分删除批次。"
+      },
+      "GenerateProgressResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "canceling",
+              "canceled",
+              "done",
+              "failed",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "execution_finished": {
+            "type": "boolean",
+            "title": "Execution Finished"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationReviewStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationConfirmationError"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "execution_finished",
+          "progress",
+          "stage",
+          "done",
+          "batch_id",
+          "questions",
+          "review",
+          "error"
+        ],
+        "title": "GenerateProgressResponse",
+        "description": "业务状态和执行退出分别报告，done 代表两者均已结束。"
+      },
       "GenerateStartBody": {
         "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
           "bank_id": {
             "type": "string",
             "maxLength": 40,
@@ -9004,6 +9335,92 @@
           "types"
         ],
         "title": "GenerateStartBody"
+      },
+      "GenerateTaskResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "GenerateTaskResponse",
+        "description": "可恢复的参数化任务标识。"
+      },
+      "GenerationConfirmationError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "available": {
+            "type": "integer",
+            "title": "Available"
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "kind",
+          "available",
+          "requested"
+        ],
+        "title": "GenerationConfirmationError",
+        "description": "原题数量不足时的结构化确认信息。"
+      },
+      "GenerationError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "GenerationError",
+        "description": "脱敏任务错误及原题不足提示。"
+      },
+      "GenerationReviewStats": {
+        "properties": {
+          "duplicates": {
+            "type": "integer",
+            "title": "Duplicates"
+          },
+          "repaired": {
+            "type": "integer",
+            "title": "Repaired"
+          },
+          "regenerated": {
+            "type": "integer",
+            "title": "Regenerated"
+          },
+          "solved": {
+            "type": "integer",
+            "title": "Solved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "duplicates",
+          "repaired",
+          "regenerated",
+          "solved"
+        ],
+        "title": "GenerationReviewStats",
+        "description": "生成审核的计数摘要。"
       },
       "HTTPValidationError": {
         "properties": {

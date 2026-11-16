@@ -1,11 +1,17 @@
 """DeepSeek 客户端（OpenAI 兼容协议）。密钥按用户传入，未传时回退环境变量。"""
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from httpx import TimeoutException
 from openai import APIStatusError, APITimeoutError, OpenAI
 
 from app.config import settings
+from app.services.generation_cancellation import (
+    GenerationCanceled,
+    cancellation_kwargs,
+    check_cancellation,
+    run_checked,
+)
 from app.services.phoenix_tracing import MetadataClient
 
 
@@ -69,15 +75,22 @@ def get_client(api_key: str | None = None) -> OpenAI:
     return cli
 
 
-def _create(kwargs: dict, api_key: str | None, thinking_off: bool):
+def _create(
+    kwargs: dict, api_key: str | None, thinking_off: bool,
+    cancel_check: Callable[[], None] | None = None,
+):
     """统一调用入口：按需关闭思考模式，接口不认这个字段时退回默认调用。"""
     client = get_client(api_key)
     if thinking_off:
         try:
+            check_cancellation(cancel_check)
             return client.chat.completions.create(**kwargs, extra_body=THINKING_OFF)
+        except GenerationCanceled:
+            raise
         except Exception as exc:  # noqa: BLE001
             if "thinking" not in str(exc).lower():
                 raise
+    check_cancellation(cancel_check)
     return client.chat.completions.create(**kwargs)
 
 
@@ -87,6 +100,7 @@ def chat_json(
     retries: int = 1,
     max_tokens: int | None = None,
     thinking_off: bool = False,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict:
     """调用模型并要求 JSON 输出。
 
@@ -109,7 +123,10 @@ def chat_json(
             }
             if budget:
                 kwargs["max_tokens"] = budget
-            resp = _create(kwargs, api_key, thinking_off)
+            resp = run_checked(
+                cancel_check, _create, kwargs, api_key, thinking_off,
+                **cancellation_kwargs(cancel_check),
+            )
             choice = resp.choices[0]
             return json.loads(choice.message.content or "")
         except json.JSONDecodeError as exc:
@@ -127,6 +144,8 @@ def chat_json(
                 ]
                 continue
             raise LLMError(_INVALID_JSON) from None
+        except GenerationCanceled:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(friendly_error(exc)) from None
 
@@ -138,6 +157,7 @@ def chat_text(
     max_tokens: int | None = None,
     thinking_off: bool = False,
     response_format: dict | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     """返回模型文本，调用与响应异常仅以固定安全提示抛出。"""
     kwargs: dict = {"model": settings.deepseek_model, "messages": messages, "temperature": temperature}
@@ -146,8 +166,13 @@ def chat_text(
     if response_format:
         kwargs["response_format"] = response_format
     try:
-        resp = _create(kwargs, api_key, thinking_off)
+        resp = run_checked(
+            cancel_check, _create, kwargs, api_key, thinking_off,
+            **cancellation_kwargs(cancel_check),
+        )
         return resp.choices[0].message.content or ""
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise LLMError(friendly_error(exc)) from None
 
@@ -158,6 +183,7 @@ def chat_stream(
     max_tokens: int | None = None,
     thinking_off: bool = False,
     temperature: float = 0.7,
+    cancel_check: Callable[[], None] | None = None,
 ) -> Iterator[str]:
     """流式返回增量文本；参数与 _create 一致，供出题链路边生成边校验。"""
     kwargs: dict = {
@@ -167,7 +193,8 @@ def chat_stream(
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
     try:
-        resp = _create(kwargs, api_key, thinking_off)
+        check_cancellation(cancel_check)
+        resp = _create(kwargs, api_key, thinking_off, **cancellation_kwargs(cancel_check))
         try:
             for chunk in resp:
                 choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
@@ -177,5 +204,9 @@ def chat_stream(
                     yield piece
         finally:
             resp.close()
+        check_cancellation(cancel_check)
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
+        check_cancellation(cancel_check)
         raise LLMError(friendly_error(exc)) from None

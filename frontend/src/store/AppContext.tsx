@@ -21,6 +21,7 @@ import type {
 } from '../types'
 import { orderQuestionsByModules } from '../lib/order'
 import { useAuth } from './AuthContext'
+import { useGenerationTask } from './useGenerationTask'
 import { useToast } from './ToastContext'
 import type { ToastMessage, ToastVariant } from './ToastContext'
 import type { AuthRole, AuthUser } from '../api/auth'
@@ -97,6 +98,9 @@ interface AppState {
   knowledgeScope: string
   setKnowledgeScope: (v: string) => void
   generating: boolean
+  generationClearing: boolean
+  generationRecoveryError: string | null
+  resetGenerationRecovery: () => void
   genProgress: { percent: number; stage: string } | null
   generate: (opts?: { silent?: boolean }) => Promise<boolean>
 
@@ -136,7 +140,7 @@ interface AppState {
     allowReview?: boolean,
     allowRetake?: boolean,
   ) => Promise<boolean>
-  clearAll: () => void
+  clearAll: () => Promise<void>
   deleteSelected: () => Promise<void>
   uploadDocument: (file: File) => Promise<void>
   deleteRecord: (id: string, opts?: { withPaper?: boolean }) => Promise<boolean>
@@ -235,8 +239,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [typeConfigs, setTypeConfigs] = useState<Record<QuestionType, TypeConfig>>(initialTypeConfigs)
   const [difficulty, setDifficulty] = useState<Difficulty>('中')
   const [knowledgeScope, setKnowledgeScope] = useState('')
-  const [generating, setGenerating] = useState(false)
-  const [genProgress, setGenProgress] = useState<{ percent: number; stage: string } | null>(null)
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
@@ -325,6 +327,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showSharedToast(text, variant)
   }, [sessionIsCurrent, showSharedToast])
 
+  const removeClearedFavorites = useCallback((ids: string[]) => {
+    favoritesRequestVersion.current += 1
+    setFavorites(previous => previous.filter(question => !ids.includes(question.id)))
+  }, [])
+  const { generating, generationClearing, genProgress, start: startQuickGeneration, clear: clearQuickGeneration,
+    isClearing, generationRecoveryError, resetGenerationRecovery,
+  } = useGenerationTask(user?.userId, sessionIsCurrent, removeClearedFavorites)
+
   const setActiveTab = useCallback((tab: TabKey): boolean => {
     if (tab === activeTabRef.current) return true
     if (settingsSavingRef.current) {
@@ -351,8 +361,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
     chatPollRef.current = null
     setBotThinking(false)
-    setGenerating(false)
-    setGenProgress(null)
     setConfirmBusy(false)
     setChatProgress(null)
     setChatStartedAt(null)
@@ -592,6 +600,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) return
+    const version = chatVersionRef.current
+    const restoreHistory = !isClearing()
     setProfile(buildProfile(user))
     banksApi.setCurrentUser(user.displayName)
     void (async () => {
@@ -601,7 +611,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setKbs(bankRows.filter(bank => bank.status === 'active').map(api.mapBankToKnowledgeBase))
         await Promise.all([loadFavorites(), loadRecords(), refreshSpaces()])
         if (!sessionIsCurrent()) return
-        if (latest.batch_id) {
+        if (restoreHistory && latest.batch_id && version === chatVersionRef.current && !isClearing()) {
           activeBatchRef.current = latest.batch_id
           setQuestions(latest.questions.map(api.mapQuestion))
         }
@@ -609,7 +619,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(err instanceof Error ? err.message : '加载数据失败，请检查后端服务')
       }
     })()
-  }, [user, loadFavorites, loadRecords, refreshSpaces, sessionIsCurrent, showToast])
+  }, [user, loadFavorites, loadRecords, refreshSpaces, sessionIsCurrent, showToast, isClearing])
 
   const selectKb = useCallback(
     (id: string) => {
@@ -641,11 +651,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       selectedDocRef.current = id
       pendingDocumentSelection.current = null
       setSelectedDocId(id)
-      if (!id) return
+      if (!id || isClearing()) return
       const version = chatVersionRef.current
       const bankId = selectedKbRef.current
       void api.latestBatch(bankId || undefined, id).then((latest) => {
-        if (!sessionIsCurrent() || version !== chatVersionRef.current
+        if (!sessionIsCurrent() || isClearing() || version !== chatVersionRef.current
           || selectedKbRef.current !== bankId || selectedDocRef.current !== id) return
         if (latest.batch_id) {
           activeBatchRef.current = latest.batch_id
@@ -658,7 +668,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       })
     },
-    [resetChat, sessionIsCurrent, showToast],
+    [isClearing, resetChat, sessionIsCurrent, showToast],
   )
 
   const setTypeConfig = useCallback((type: QuestionType, patch: Partial<TypeConfig>) => {
@@ -682,10 +692,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast('请至少勾选一个题型并设置数量')
         return false
       }
-      setGenerating(true)
-      setGenProgress({ percent: 0, stage: '准备生成' })
       try {
-        const started = await api.startGeneration({
+        const state = await startQuickGeneration({
           bank_id: selectedKbId,
           document_id: doc.id,
           types,
@@ -694,27 +702,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           source_mode: 'variant_data',
           existing_stems: questions.map((q) => q.stem),
         })
-        if (!isActive()) return false
-        let state: api.GenerateProgress
-        for (;;) {
-          if (!isActive()) return false
-          try {
-            state = await api.getGenerationProgress(started.task_id)
-          } catch (error) {
-            if (!isActive()) return false
-            const unavailable = error instanceof TypeError
-              || (error instanceof api.ApiError && (error.status === 0 || error.status >= 500))
-            if (!unavailable) throw error
-            setGenProgress({ percent: 0, stage: '连接中断，正在恢复任务进度…' })
-            await new Promise(resolve => window.setTimeout(resolve, 2000))
-            continue
-          }
-          if (state.done) break
-          setGenProgress({ percent: state.progress, stage: state.stage })
-          await new Promise((r) => setTimeout(r, 500))
-        }
-        if (!isActive()) return false
+        if (!state || !isActive()) return false
+        if (state.status === 'canceled') return false
         if (state.error?.message) throw new Error(state.error.message)
+        if (state.status === 'failed' || state.status === 'interrupted') {
+          throw new Error(state.status === 'interrupted' ? '出题任务已中断，请重新生成' : '出题失败，请重试')
+        }
         const incoming = state.questions.map(api.mapQuestion)
         setQuestions((prev) => dedupeQuestions(prev, incoming))
         activeBatchRef.current = state.batch_id
@@ -736,14 +729,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!isActive()) return false
         showToast(err instanceof Error ? err.message : '生成失败，请检查后端服务')
         return false
-      } finally {
-        if (isActive()) {
-          setGenerating(false)
-          setGenProgress(null)
-        }
       }
     },
-    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, sessionIsCurrent, setActiveTab, showToast],
+    [docs, selectedDocId, typeConfigs, difficulty, knowledgeScope, questions, selectedKbId, sessionIsCurrent, setActiveTab, showToast, startQuickGeneration],
   )
 
   const setMode = useCallback((next: ChatMode) => {
@@ -1288,25 +1276,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [records, spaces, showToast],
   )
 
-  const clearAll = useCallback(() => {
-    if (!sessionIsCurrent() || !setActiveTab('generate')) return
-    const sessionId = chatSessionRef.current?.id
+  const clearAll = useCallback(async () => {
+    if (!sessionIsCurrent()) return
+    if (generationRecoveryError) throw new Error(generationRecoveryError)
+    if (!setActiveTab('generate')) throw new Error('请先处理未保存的配置')
+    const sessionId = chatSessionRef.current?.id ?? null
+    const ids = questions.map(question => question.id)
     resetChat()
-    const version = chatVersionRef.current
-    const reportFailure = (error: unknown) => {
-      if (sessionIsCurrent() && version === chatVersionRef.current) {
-        showToast(error instanceof Error ? error.message : '清理服务端记录失败，请重试', 'error')
-      }
-    }
-    if (questions.length) {
-      void api.batchDeleteQuestions(questions.map((question) => question.id)).catch(reportFailure)
-    }
-    if (sessionId) void api.deleteChatSession(sessionId).catch(reportFailure)
+    favoritesRequestVersion.current += 1
     setQuestions([])
     setSelectedIds([])
     activeBatchRef.current = null
-    showToast('已清空当前题目与对话，正在清理服务端记录')
-  }, [questions, resetChat, sessionIsCurrent, setActiveTab, showToast])
+    await clearQuickGeneration(ids, sessionId)
+    if (sessionIsCurrent()) showToast('已清空题目与对话，后台任务已退出')
+  }, [questions, resetChat, sessionIsCurrent, setActiveTab, showToast, clearQuickGeneration, generationRecoveryError])
 
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
@@ -1470,6 +1453,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     knowledgeScope,
     setKnowledgeScope,
     generating,
+    generationClearing,
+    generationRecoveryError,
+    resetGenerationRecovery,
     genProgress,
     generate: runGenerate,
     questions,

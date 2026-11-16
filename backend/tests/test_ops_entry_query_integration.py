@@ -60,7 +60,7 @@ def migrated_database(monkeypatch):
         config = Config()
         config.set_main_option("script_location", str(Path(__file__).parents[1] / "alembic"))
         command.upgrade(config, "i4d5e6f7a890")
-        command.upgrade(config, "n9a0b1c23456")
+        command.upgrade(config, "head")
     monkeypatch.setattr(conftest, "_reset_database", reset)
     yield
     # 真实迁移包含 ORM metadata 不认识的表，不能留给后续公共夹具清理。

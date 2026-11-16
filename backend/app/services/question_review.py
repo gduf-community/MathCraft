@@ -8,7 +8,7 @@
 3. 反哺：未通过只做一轮最小修补；仍不过就换难度模板重出，不再微调同一题；
 4. 解析：通过后另起对话独立解题，写 2~4 句简短解析，覆盖命题阶段自带的答案与解析。
 
-任何一步的服务异常都只降级（保留原题、跳过校验）并写日志，不让整批出题失败。
+服务异常降级并写日志；显式取消异常穿透，等待已启动工作结束后交给调用方。
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import json_repair
@@ -25,6 +26,12 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.services.generation_cancellation import (
+    GenerationCanceled,
+    cancellation_kwargs,
+    check_cancellation,
+    run_checked,
+)
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import SOLVE_SYSTEM
 from app.services.rag_runtime import with_snapshot
@@ -195,22 +202,28 @@ def load_corpus(db: Session, user_id: str, bank_id: str) -> list[str]:
 
 @with_snapshot
 def _drop_duplicates(
-    questions: list[Question], corpus: list[str]
+    questions: list[Question], corpus: list[str],
+    cancel_check: Callable[[], None] | None = None,
 ) -> tuple[list[Question], list[Question]]:
     """语义查重：与语料或批内已保留题目相似度过阈值的丢弃。"""
+    check_cancellation(cancel_check)
     if not questions:
         return [], []
     threshold = settings.review_similarity_threshold
     if corpus:
         try:
-            corpus_vecs = embeddings.embed_texts(corpus)
+            corpus_vecs = run_checked(cancel_check, embeddings.embed_texts, corpus)
+        except GenerationCanceled:
+            raise
         except Exception as exc:  # 向量服务不可用时跳过查重，不阻断出题
             logger.warning("查重跳过（向量服务不可用）：%s", exc)
             corpus_vecs = []
     else:
         corpus_vecs = []
     try:
-        fresh_vecs = embeddings.embed_texts([q.stem for q in questions])
+        fresh_vecs = run_checked(cancel_check, embeddings.embed_texts, [q.stem for q in questions])
+    except GenerationCanceled:
+        raise
     except Exception as exc:
         logger.warning("查重跳过（题目向量化失败）：%s", exc)
         return questions, []
@@ -265,7 +278,8 @@ def _strip_json(text: str) -> str:
 
 
 def _chat_text_with_fallback(
-    messages: list[dict], api_key: str | None, max_tokens: int, json_mode: bool = False
+    messages: list[dict], api_key: str | None, max_tokens: int, json_mode: bool = False,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     """评估与解析都关掉思考模式，只取结论；接口不认这个参数时由模型层自动退回。"""
     kwargs: dict = {
@@ -273,10 +287,13 @@ def _chat_text_with_fallback(
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    return llm.chat_text(messages, **kwargs)
+    return llm.chat_text(messages, **kwargs, **cancellation_kwargs(cancel_check))
 
 
-def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 4800) -> dict:
+def _chat_json_low(
+    messages: list[dict], api_key: str | None, max_tokens: int = 4800,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict:
     """低温 JSON 调用：先给足预算，被截断再放大一次。
 
     修补要整题重写 JSON，实测单次输出三千多字；预算给小了会截断成非法 JSON，
@@ -285,17 +302,24 @@ def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 
     last: Exception | None = None
     for budget in (max_tokens, int(max_tokens * 1.4)):
         try:
-            text = _chat_text_with_fallback(messages, api_key, budget, json_mode=True)
+            text = run_checked(
+                cancel_check, _chat_text_with_fallback, messages, api_key, budget, json_mode=True,
+                **cancellation_kwargs(cancel_check),
+            )
             data = json.loads(_strip_json(text))
             if isinstance(data, dict):
                 return data
             last = ValueError("返回不是 JSON 对象")
+        except GenerationCanceled:
+            raise
         except Exception as exc:  # noqa: BLE001
             # JSON Repair 兜底：截断或非法结构先修复再校验，修复失败才进入下一轮
             try:
                 repaired = json_repair.loads(_strip_json(text))
                 if isinstance(repaired, dict) and repaired:
                     return repaired
+            except GenerationCanceled:
+                raise
             except Exception:  # noqa: BLE001
                 pass
             last = exc
@@ -339,18 +363,26 @@ def parse_review(data: dict, target: Difficulty) -> dict:
     }
 
 
-def _judge_once(question: Question, target: Difficulty, scope: str, api_key: str | None) -> dict | None:
+def _judge_once(
+    question: Question, target: Difficulty, scope: str, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict | None:
     prompt = (
         EVAL_PROMPT.replace("__TARGET__", target.value)
         .replace("__SCOPE__", scope or "未限定")
         .replace("__STEM__", question.stem)
     )
     try:
-        data = _chat_json_low([{"role": "user", "content": prompt}], api_key)
+        data = _chat_json_low(
+            [{"role": "user", "content": prompt}], api_key,
+            **cancellation_kwargs(cancel_check),
+        )
         review = parse_review(data, target)
         if target in (Difficulty.high, Difficulty.hell) and len(review["methods"]) < 2:
             logger.info("高难题目评审未给出两种解法，按分数继续判定")
         return review
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("盲评失败：%s", exc)
         return None
@@ -387,22 +419,31 @@ def _merge_reviews(reviews: list[dict]) -> dict:
 
 
 def evaluate(
-    question: Question, target: Difficulty, scope: str, api_key: str | None, judges: int = 2
+    question: Question, target: Difficulty, scope: str, api_key: str | None, judges: int = 2,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict:
     """双评 + 仲裁：两次总分差超过 0.7 时请第三位评审裁决。
 
     修补后的复评只需要确认修补是否到位，用单评即可，省一半调用。
     """
+    check_cancellation(cancel_check)
+    cancel_kwargs = cancellation_kwargs(cancel_check)
     judges = max(1, judges)
     with ThreadPoolExecutor(max_workers=judges, thread_name_prefix="review-judge") as pool:
         futures = [
-            pool.submit(_judge_once, question, target, scope, api_key) for _ in range(judges)
+            pool.submit(
+                run_checked, cancel_check, _judge_once,
+                question, target, scope, api_key, **cancel_kwargs,
+            ) for _ in range(judges)
         ]
         first = [f.result() for f in futures]
+    check_cancellation(cancel_check)
     valid = [r for r in first if r]
     if len(valid) == 2 and abs(valid[0]["total"] - valid[1]["total"]) > 0.7:
         logger.info("两次盲评差 %.2f，启动仲裁", abs(valid[0]["total"] - valid[1]["total"]))
-        arbiter = _judge_once(question, target, scope, api_key)
+        arbiter = run_checked(
+            cancel_check, _judge_once, question, target, scope, api_key, **cancel_kwargs,
+        )
         if arbiter:
             merged = _merge_reviews([arbiter])
             merged["arbitrated"] = True
@@ -428,7 +469,8 @@ def _apply_review(question: Question, review: dict) -> None:
 
 
 def _repair(
-    question: Question, review: dict, target: Difficulty, api_key: str | None
+    question: Question, review: dict, target: Difficulty, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> Question | None:
     """按缺陷码做最小修补，保持题型与考点不变。"""
     payload = {
@@ -451,9 +493,14 @@ def _repair(
         .replace("__QUESTION__", json.dumps(payload, ensure_ascii=False))
     )
     try:
-        data = _chat_json_low([{"role": "user", "content": prompt}], api_key)
+        data = _chat_json_low(
+            [{"role": "user", "content": prompt}], api_key,
+            **cancellation_kwargs(cancel_check),
+        )
         item = data.get("question") if isinstance(data.get("question"), dict) else data
         fixed = Question.model_validate(item)
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("修补失败：%s", exc)
         return None
@@ -475,8 +522,10 @@ def _regen(
     api_key: str | None,
     hyde_text: str | None,
     directive: str = "",
+    cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """按题型补出 count 道，避免与已保留题目重复。"""
+    check_cancellation(cancel_check)
     sub = params.model_copy(update={"types": [TypeCount(type=qtype, count=count)]})
     return question_gen.generate_questions(
         sub,
@@ -486,6 +535,7 @@ def _regen(
         api_key=api_key,
         hyde_text=hyde_text,
         directive=directive,
+        **cancellation_kwargs(cancel_check),
     )
 
 
@@ -526,7 +576,10 @@ _TYPE_CN = {"single": "单选题", "multiple": "多选题", "judge": "判断题"
             "blank": "填空题", "compute": "计算题", "essay": "简答题"}
 
 
-def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | None:
+def _solve_one(
+    question: Question, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> tuple[str, str] | None:
     """独立解题（JSON 输出）：answer 与 analysis 来自同一次求解，保证两者一致。"""
     options = "\n".join(f"{o.label}. {o.text}" for o in question.options) if question.options else "（无选项）"
     user = f"【题干】\n{question.stem}\n\n【选项】\n{options}\n\n【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
@@ -536,6 +589,7 @@ def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | Non
             {"role": "user", "content": user},
         ],
         api_key, 3200,
+        **cancellation_kwargs(cancel_check),
     )
     raw_answer, raw_analysis = data.get("answer"), data.get("analysis")
     if (not isinstance(raw_answer, str) or not raw_answer.strip()
@@ -552,19 +606,30 @@ def _solve_one(question: Question, api_key: str | None) -> tuple[str, str] | Non
     return answer, analysis
 
 
-def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStats) -> None:
+def _solve_all(
+    questions: list[Question], api_key: str | None, stats: ReviewStats,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
+    """Solve in parallel, propagating cancellation only after active workers have joined."""
+    check_cancellation(cancel_check)
     if not questions:
         return
 
     def run(q: Question) -> tuple[Question, tuple[str, str] | None]:
         try:
-            return q, _solve_one(q, api_key)
+            return q, run_checked(
+                cancel_check, _solve_one, q, api_key,
+                **cancellation_kwargs(cancel_check),
+            )
+        except GenerationCanceled:
+            raise
         except Exception as exc:
             logger.warning("解析生成失败：%s", exc)
             return q, None
 
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-solve") as pool:
         for question, result in pool.map(run, questions):
+            check_cancellation(cancel_check)
             if result is None:
                 continue
             answer, analysis = result
@@ -572,6 +637,7 @@ def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStat
                 question.answer = answer
             question.analysis = analysis
             stats.solved += 1
+    check_cancellation(cancel_check)
 
 
 def review_questions(
@@ -583,20 +649,26 @@ def review_questions(
     api_key: str | None,
     hyde_text: str | None = None,
     progress=None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> tuple[list[Question], ReviewStats]:
     """中间件主流程，返回通过校验的题目与统计。
 
     progress(percent, stage) 用于向出题任务写阶段进度；不传则静默执行。
     db 必须没有活动事务和待写变更。语料在本函数拥有的短读事务内物化，
     该事务在任何模型或 progress 调用前结束；不提交或回滚调用者的业务事务。
+    cancel_check 显式绑定当前任务；取消穿透降级，线程池退出时等待已发起工作结束。
     """
+    check_cancellation(cancel_check)
+    cancel_kwargs = cancellation_kwargs(cancel_check)
     stats = ReviewStats()
     if not questions:
         return [], stats
 
     def report(percent: int, stage: str) -> None:
+        check_cancellation(cancel_check)
         if progress:
             progress(percent, stage)
+        check_cancellation(cancel_check)
 
     target = params.difficulty
     scope = params.scope or ""
@@ -607,6 +679,7 @@ def review_questions(
         )
     with db.begin():
         corpus = load_corpus(db, user_id, params.kb_id)
+    check_cancellation(cancel_check)
     groups: dict[QuestionType, list[Question]] = {}
     for question in questions:
         groups.setdefault(question.type, []).append(question)
@@ -618,20 +691,28 @@ def review_questions(
     ordered_types = list(requested) + [t for t in groups if t not in requested]
 
     for qtype in ordered_types:
+        check_cancellation(cancel_check)
         items = groups.get(qtype)
         if not items:
             continue
         target_count = requested.get(qtype, len(items))
 
         report(78, f"正在排查重复题目（{done + 1}/{total}）")
-        kept, dropped = _drop_duplicates(items, corpus)
+        kept, dropped = run_checked(
+            cancel_check, _drop_duplicates, items, corpus, **cancel_kwargs,
+        )
         stats.duplicates += len(dropped)
 
         report(82, f"正在盲评题目难度（{done + 1}/{total}）")
         accepted: list[Question] = []
         rejected: list[tuple[Question, dict]] = []
         with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-eval") as pool:
-            reviewed = list(pool.map(lambda q: (q, evaluate(q, target, scope, api_key)), kept))
+            reviewed = list(pool.map(
+                lambda q: (q, run_checked(
+                    cancel_check, evaluate, q, target, scope, api_key, **cancel_kwargs,
+                )), kept,
+            ))
+        check_cancellation(cancel_check)
         for question, review in reviewed:
             _apply_review(question, review)
             if review.get("unknown"):
@@ -648,11 +729,19 @@ def review_questions(
             report(86, f"难度不符，正在按缺陷修补（{len(rejected)} 题）")
             batch = rejected[:need]
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-fix") as pool:
-                fixed = list(pool.map(lambda item: _repair(item[0], item[1], target, api_key), batch))
+                fixed = list(pool.map(
+                    lambda item: run_checked(
+                        cancel_check, _repair, item[0], item[1], target, api_key, **cancel_kwargs,
+                    ), batch,
+                ))
+            check_cancellation(cancel_check)
             still: list[tuple[Question, dict]] = []
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval") as pool:
                 reeval = list(pool.map(
-                    lambda q: (q, evaluate(q, target, scope, api_key, judges=1)) if q else (None, None),
+                    lambda q: (q, run_checked(
+                        cancel_check, evaluate, q, target, scope, api_key,
+                        judges=1, **cancel_kwargs,
+                    )) if q else (None, None),
                     fixed,
                 ))
             for question, review in reeval:
@@ -670,6 +759,7 @@ def review_questions(
         # 避免同一批题反复重出把等待时间拖长
         rounds = max(1, min(2, settings.review_max_regen_rounds))
         for attempt in range(rounds):
+            check_cancellation(cancel_check)
             need = target_count - len(accepted)
             if need <= 0:
                 break
@@ -682,11 +772,19 @@ def review_questions(
             if rejected and rejected[0][1].get("suggestion"):
                 directive += f"\n- 评审建议：{rejected[0][1]['suggestion']}"
             try:
-                fresh = _regen(params, qtype, need, doc_name, avoid, api_key, hyde_text, directive)
+                fresh = run_checked(
+                    cancel_check, _regen,
+                    params, qtype, need, doc_name, avoid, api_key, hyde_text, directive,
+                    **cancel_kwargs,
+                )
+            except GenerationCanceled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("换模板重出失败（%s）：%s", qtype.value, exc)
                 break
-            fresh, dup = _drop_duplicates(fresh, avoid)
+            fresh, dup = run_checked(
+                cancel_check, _drop_duplicates, fresh, avoid, **cancel_kwargs,
+            )
             stats.duplicates += len(dup)
             stats.regenerated += len(fresh)
             if not fresh:
@@ -694,7 +792,9 @@ def review_questions(
                 continue
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval2") as pool:
                 reviewed_fresh = list(pool.map(
-                    lambda q: (q, evaluate(q, target, scope, api_key)), fresh
+                    lambda q: (q, run_checked(
+                        cancel_check, evaluate, q, target, scope, api_key, **cancel_kwargs,
+                    )), fresh
                 ))
             for question, review in reviewed_fresh:
                 _apply_review(question, review)
@@ -713,7 +813,7 @@ def review_questions(
         final.extend(accepted[:target_count])
 
     report(96, f"正在生成解析（共 {len(final)} 题）")
-    _solve_all(final, api_key, stats)
+    run_checked(cancel_check, _solve_all, final, api_key, stats, **cancel_kwargs)
 
     order = {t: i for i, t in enumerate(ordered_types)}
     final.sort(key=lambda q: order.get(q.type, 99))
