@@ -7,7 +7,7 @@
 """
 from typing import Callable
 
-from app.schemas.question import GenerateParams, Question, TypeCount
+from app.schemas.question import GenerateParams, Question, QuestionType, TypeCount
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
 from app.services.rag.question_gen import (
     NeedConfirmError,
@@ -298,4 +298,15 @@ def review_with_refill(
             pool = []
             break
         report(78, f"补出 {len(pool)} 道，正在查重与评估难度")
+    # 数量与题型分布都严格对齐请求：补齐轮次用尽后累计可能超过请求数，按配额截断
+    if len(accepted) > requested:
+        quota = {tc.type: tc.count for tc in params.types}
+        counts: dict[QuestionType, int] = {}
+        trimmed: list[Question] = []
+        for question in accepted:
+            used = counts.get(question.type, 0)
+            if used < quota.get(question.type, 0):
+                counts[question.type] = used + 1
+                trimmed.append(question)
+        accepted = trimmed
     return accepted, stats, canceled
