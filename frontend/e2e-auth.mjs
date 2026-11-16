@@ -208,11 +208,19 @@ async function noBusinessSession() {
   assert.equal(await page.getByRole('heading', { name: '运维后台', exact: true }).count(), 0)
 }
 async function noHorizontalOverflow(scope = page) {
+  await page.waitForFunction(() => {
+    const stage = document.querySelector('.auth-stage')
+    if (!stage) return true
+    const bounds = stage.getBoundingClientRect()
+    return Math.abs(bounds.width - window.innerWidth) <= 1 &&
+      Math.abs(bounds.height - window.innerHeight) <= 1
+  })
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '页面不得横向溢出')
   for (const element of await scope.locator('input, button').all()) {
     if (!await element.isVisible()) continue
     const bounds = await element.boundingBox()
-    assert.ok(bounds && bounds.x >= -1 && bounds.x + bounds.width <= page.viewportSize().width + 1, '可见输入框和按钮须完整落在视口宽度内')
+    assert.ok(bounds && bounds.x >= -1 && bounds.x + bounds.width <= page.viewportSize().width + 1,
+      `可见输入框和按钮须完整落在视口宽度内：${JSON.stringify({bounds, viewport:page.viewportSize()})}`)
   }
 }
 async function scrollReachable(control) {
