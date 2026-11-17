@@ -1,0 +1,101 @@
+name: Build release artifact
+
+on:
+  push:
+    tags: ['**']
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  actions: read
+  security-events: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      sha: ${{ steps.tag.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Tag validation regression
+        run: node --test .github/scripts/validate-release-tag.test.cjs
+      - name: Validate version and resolve commit
+        id: tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const validate = require('./.github/scripts/validate-release-tag.cjs');
+            await validate({github, context, core});
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/checks.yml
+
+  build:
+    name: Build release ZIP
+    needs: [validate, ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - name: Require long-term branch CI and CodeQL before build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {requireLongTermBranchChecks} = require('./.github/scripts/validate-release-tag.cjs');
+            await requireLongTermBranchChecks({github, context, core, sha: process.env.RELEASE_SHA});
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+      - name: Package release
+        run: >-
+          python .github/scripts/build-release.py
+          --version "$RELEASE_VERSION"
+          --sha "$RELEASE_SHA"
+          --frontend-dir frontend/dist
+          --output-dir release-dist
+      - name: Recheck long-term branch CI and CodeQL before upload
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {requireLongTermBranchChecks} = require('./.github/scripts/validate-release-tag.cjs');
+            await requireLongTermBranchChecks({github, context, core, sha: process.env.RELEASE_SHA});
+      - name: Upload release ZIP and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathcraft-${{ needs.validate.outputs.version }}
+          path: |
+            release-dist/*.zip
+            release-dist/SHA256SUMS
+          if-no-files-found: error
