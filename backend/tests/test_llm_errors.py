@@ -59,6 +59,8 @@ def sdk_transport(
     monkeypatch.setattr(llm, "get_platform_llm", lambda: None)
     clients: dict[tuple[str, str, str], OpenAI] = {}
     monkeypatch.setattr(llm, "_clients", clients)
+    # 思考开关是按 (base_url, model) 缓存的，跨用例残留会让后续用例少发一次探测请求
+    llm.reset_thinking_probe()
 
     def install(handler: TransportHandler) -> None:
         cache_key = (FAKE_KEY, settings.deepseek_base_url, settings.deepseek_model)

@@ -4,6 +4,7 @@
 Fernet 加密存库）→ 部署环境变量。前两者均可覆盖模型与接口地址。
 """
 import json
+import logging
 import time
 from collections.abc import Iterator
 
@@ -11,7 +12,10 @@ from httpx import TimeoutException
 from openai import APIStatusError, APITimeoutError, OpenAI
 
 from app.config import settings
+from app.services import latex_utils
 from app.services.phoenix_tracing import MetadataClient
+
+logger = logging.getLogger(__name__)
 
 
 class LLMError(RuntimeError):
@@ -32,11 +36,32 @@ _SAFE_ERRORS = frozenset({
 })
 
 
-# 关闭思考模式：出题、评分、解析都只需要结论，开着思考时推理会吃满输出预算，
-# 单道题能从十秒拖到三分钟以上，多题并发直接撞超时。
-THINKING_OFF = {"thinking": {"type": "disabled"}}
-# 开启思考模式：解题链路专用，先推理后作答提升答案可靠性
-THINKING_ON = {"thinking": {"type": "enabled"}}
+# 思考模式的开关写法因部署而异，必须按顺序试探并记住生效的那一种。
+# 自部署 vLLM（学校 newapi 走这套）只认 chat_template_kwargs，官方 DeepSeek 认 thinking.type；
+# 传错时服务端要么报 400，要么静默忽略——静默忽略最坑，等于以为开了推理其实没开。
+THINKING_ON_VARIANTS: tuple[dict, ...] = (
+    {"chat_template_kwargs": {"thinking": True}},   # vLLM / 自部署
+    {"thinking": {"type": "enabled"}},              # DeepSeek 官方
+)
+THINKING_OFF_VARIANTS: tuple[dict, ...] = (
+    {"thinking": {"type": "disabled"}},             # DeepSeek 官方
+    {"chat_template_kwargs": {"thinking": False}},  # vLLM / 自部署
+)
+# (base_url, model) -> 生效变体下标；探测一次后固定复用，避免每次调用多打一次
+_thinking_variant_cache: dict[tuple[str, str], int] = {}
+# 关闭思考时的探测结果：-1 表示服务端不认关闭参数，之后直接裸调
+_thinking_off_cache: dict[tuple[str, str], int] = {}
+
+
+def thinking_variant(runtime: tuple[str, str, str]) -> int | None:
+    """返回当前部署已探测到的开关下标；未探测过返回 None。"""
+    return _thinking_variant_cache.get((runtime[1], runtime[2]))
+
+
+def reset_thinking_probe() -> None:
+    """清空开关探测缓存。改过部署地址或切换模型后需要重新探测一次。"""
+    _thinking_variant_cache.clear()
+    _thinking_off_cache.clear()
 
 
 def friendly_error(exc: Exception) -> str:
@@ -125,23 +150,78 @@ def get_client(runtime: tuple[str, str, str]) -> OpenAI:
     return cli
 
 
+def _rejects_parameter(exc: Exception) -> bool:
+    """只有「服务端不接受这个参数」才值得换下一种写法。
+
+    鉴权、余额、限流、超时、网络错误换写法也没用，直接抛出去，
+    否则一次 401 会被放大成两次无谓等待。
+    """
+    return isinstance(exc, APIStatusError) and exc.status_code in (400, 404, 422)
+
+
+def _create_thinking(client: OpenAI, kwargs: dict, runtime: tuple[str, str, str]):
+    """按优先级试探思考开关写法，记住生效的那一种并固定复用。"""
+    cache_key = (runtime[1], runtime[2])
+    cached = _thinking_variant_cache.get(cache_key)
+    order = (
+        [cached] + [i for i in range(len(THINKING_ON_VARIANTS)) if i != cached]
+        if cached is not None
+        else list(range(len(THINKING_ON_VARIANTS)))
+    )
+    last: Exception | None = None
+    for index in order:
+        try:
+            response = client.chat.completions.create(
+                **kwargs, extra_body=THINKING_ON_VARIANTS[index]
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not _rejects_parameter(exc):
+                raise
+            last = exc
+            continue
+        _thinking_variant_cache[cache_key] = index
+        return response
+    # 两种写法都被拒：退回服务端默认，至少不让整条链路失败
+    if last is not None:
+        logger.warning("思考开关两种写法均被拒绝，退回默认调用：%s", type(last).__name__)
+    return client.chat.completions.create(**kwargs)
+
+
+def _create_thinking_off(client: OpenAI, kwargs: dict, runtime: tuple[str, str, str]):
+    """显式关闭思考；服务端不认关闭参数时记下来，之后直接裸调。
+
+    保留「先试关闭、再裸调」的顺序是有意的：官方 reasoner 默认开思考，
+    不主动关会白烧预算；而自部署 flash 默认就不思考，裸调即等价。
+    """
+    cache_key = (runtime[1], runtime[2])
+    cached = _thinking_off_cache.get(cache_key)
+    if cached == -1:
+        return client.chat.completions.create(**kwargs)
+    if cached is not None:
+        return client.chat.completions.create(
+            **kwargs, extra_body=THINKING_OFF_VARIANTS[cached]
+        )
+    try:
+        response = client.chat.completions.create(
+            **kwargs, extra_body=THINKING_OFF_VARIANTS[0]
+        )
+    except Exception as exc:  # noqa: BLE001
+        if not _rejects_parameter(exc):
+            raise
+        _thinking_off_cache[cache_key] = -1
+        return client.chat.completions.create(**kwargs)
+    _thinking_off_cache[cache_key] = 0
+    return response
+
+
 def _create(kwargs: dict, runtime: tuple[str, str, str], thinking_off: bool,
             thinking: bool | None = None):
-    """统一调用入口：thinking 显式三态（True=开启 / False=关闭 / None=服务端默认），
-    接口不认这个字段时退回默认调用。"""
+    """统一调用入口：thinking 显式三态（True=开启 / False=关闭 / None=服务端默认）。"""
     client = get_client(runtime)
     if thinking is True:
-        try:
-            return client.chat.completions.create(**kwargs, extra_body=THINKING_ON)
-        except Exception as exc:  # noqa: BLE001
-            if "thinking" not in str(exc).lower():
-                raise
+        return _create_thinking(client, kwargs, runtime)
     if thinking_off:
-        try:
-            return client.chat.completions.create(**kwargs, extra_body=THINKING_OFF)
-        except Exception as exc:  # noqa: BLE001
-            if "thinking" not in str(exc).lower():
-                raise
+        return _create_thinking_off(client, kwargs, runtime)
     return client.chat.completions.create(**kwargs)
 
 
@@ -194,7 +274,9 @@ def chat_json(
                 kwargs["max_tokens"] = budget
             resp = _create(kwargs, runtime, thinking_off, thinking)
             choice = resp.choices[0]
-            return json.loads(choice.message.content or "")
+            return json.loads(
+                latex_utils.escape_bare_commands_in_json(choice.message.content or "")
+            )
         except json.JSONDecodeError as exc:
             content = choice.message.content or ""
             temperature = 0.3
