@@ -11,7 +11,7 @@ const NAMES = {
 function fixture(branch = 'main') {
   const runs = [
     { id: 10, path: '.github/workflows/checks.yml', event: 'push' },
-    { id: 20, path: 'dynamic/github-code-scanning/codeql', event: 'dynamic' },
+    { id: 20, path: '.github/workflows/codeql.yml', event: 'push' },
   ].map(run => ({
     ...run, head_sha: SHA, head_branch: branch, run_attempt: 1,
     head_repository: { full_name: 'example/project' },
@@ -98,6 +98,28 @@ test('CodeQL 缺失不放行', async () => {
   await assert.rejects(verifyRelease(state.args), /CodeQL 缺少/)
   assert.deepEqual(state.outputs, {})
 })
+
+for (const change of [
+  { path: 'dynamic/github-code-scanning/codeql', event: 'dynamic' },
+  { path: 'dynamic/github-code-scanning/codeql', event: 'push' },
+  { event: 'pull_request' }, { event: 'schedule' }, { event: 'dynamic' },
+]) {
+  test(`CodeQL 非可信路径或事件成功不能放行 ${JSON.stringify(change)}`, async () => {
+    const state = fixture()
+    Object.assign(state.runs[1], change)
+    await assert.rejects(verifyRelease(state.args), /CodeQL 缺少/)
+    assert.deepEqual(state.outputs, {})
+  })
+}
+
+for (const branch of ['main', 'agent']) {
+  test(`允许 ${branch} 同提交的 CodeQL 手动检查成功发布`, async () => {
+    const state = fixture(branch)
+    state.runs[1].event = 'workflow_dispatch'
+    await verifyRelease(state.args)
+    assert.deepEqual(state.outputs, { sha: SHA })
+  })
+}
 
 for (const [status, conclusion] of [
   ['completed', 'failure'], ['completed', 'cancelled'], ['completed', 'skipped'],

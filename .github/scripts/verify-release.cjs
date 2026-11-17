@@ -6,9 +6,9 @@ const REQUIREMENTS = [
     jobs: ['Backend lint, types and tests', 'Frontend lint, types, build and regressions'],
   },
   {
-    path: 'dynamic/github-code-scanning/codeql',
+    path: '.github/workflows/codeql.yml',
     name: 'CodeQL',
-    events: ['dynamic'],
+    events: ['push', 'workflow_dispatch'],
     jobs: ['Analyze (actions)', 'Analyze (javascript-typescript)', 'Analyze (python)'],
   },
 ]
