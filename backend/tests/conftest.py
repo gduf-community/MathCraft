@@ -193,22 +193,26 @@ def prohibit_network(monkeypatch):
 
 def fake_llm_chat_json(messages, api_key=None, retries=1, max_tokens=None,
                        thinking_off=False, thinking=None, **kwargs) -> dict:
-    """JSON 调用桩：解题链路（SOLVE_SYSTEM）按题型返回解题协议，其余返回空。"""
+    """JSON 调用桩：解题分两步，求解只给答案，讲解给解析与干扰项。"""
     system = (messages or [{}])[0].get("content", "") if messages else ""
-    if "数学解题专家" not in system:
-        return {}
     user = messages[-1].get("content", "") if messages else ""
     m = re.search(r"【题型】(\S+?题)", user)
     qtype_cn = m.group(1) if m else "单选题"
-    if qtype_cn == "单选题":
-        return {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
-                "analysis": "关键步骤：列式求解得 $18$。", "confidence": "high"}
-    if qtype_cn == "多选题":
-        return {"answer_texts": ["$18$", "$-18$"], "distractors": ["$81$", "$8.1$"],
-                "analysis": "关键步骤：逐项判断。", "confidence": "high"}
-    if qtype_cn == "判断题":
-        return {"answer": "正确", "analysis": "关键步骤：按定义判断成立。", "confidence": "high"}
-    return {"answer": "$18$", "analysis": "关键步骤：分步求解得 $18$。", "confidence": "high"}
+    if "数学解题专家" in system:
+        if qtype_cn == "多选题":
+            return {"answer": ["$18$", "$-18$"], "confidence": "high"}
+        if qtype_cn == "判断题":
+            return {"answer": "正确", "confidence": "high"}
+        return {"answer": "$18$", "confidence": "high"}
+    if "数学阅卷讲评老师" in system:
+        if qtype_cn == "单选题":
+            return {"analysis": "关键步骤：列式求解得 $18$。",
+                    "distractors": ["$-18$", "$81$", "$8.1$"], "confidence": "high"}
+        if qtype_cn == "多选题":
+            return {"analysis": "关键步骤：逐项判断。",
+                    "distractors": ["$81$", "$8.1$"], "confidence": "high"}
+        return {"analysis": "关键步骤：按定义判断成立。", "confidence": "high"}
+    return {}
 
 
 @pytest.fixture(autouse=True)

@@ -56,6 +56,7 @@ class FakeLLM:
         self.solve_payload = solve_payload
         self.eval_calls = 0
         self.solve_calls = 0
+        self.explain_calls = 0
         self.repair_calls = 0
         self._lock = threading.Lock()
 
@@ -72,11 +73,15 @@ class FakeLLM:
                 self.repair_calls += 1
                 item = self.repair_items[min(self.repair_calls - 1, len(self.repair_items) - 1)]
                 return json.dumps(item, ensure_ascii=False)
-            self.solve_calls += 1
-            if self.solve_payload is not None:
-                return self.solve_payload
-            return {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
-                    "analysis": "由定义可得 $y'=3x^2$。", "confidence": "high"}
+            # 解题分两步：先只求解，再依该答案写解析与干扰项
+            if "数学解题专家" in system:
+                self.solve_calls += 1
+                if self.solve_payload is not None:
+                    return self.solve_payload
+                return {"answer": "$18$", "confidence": "high"}
+            self.explain_calls += 1
+            return {"analysis": "由定义可得 $y'=3x^2$。",
+                    "distractors": ["$-18$", "$81$", "$8.1$"], "confidence": "high"}
 
 
 @pytest.fixture
@@ -259,21 +264,24 @@ def test_latex_issue_and_repair():
 
 
 def test_independent_solver_assigns_random_options(monkeypatch):
-    """选择题由解题模型解出答案文本并生成干扰项，代码随机分配选项位。"""
+    """选择题先由解题模型解出答案，再依该答案生成干扰项，代码随机分配选项位。"""
     calls = []
 
     def solve(messages, **kwargs):
         calls.append(messages)
-        assert kwargs.get("thinking") is True  # 解题显式开启思考模式
-        return {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
-                "analysis": r"由 \(x=2\) 可得答案 $18$。", "confidence": "low"}
+        system = messages[0]["content"]
+        if system == question_review.SOLVE_ANSWER_SYSTEM:
+            assert kwargs.get("thinking") is True  # 求解显式开启思考模式
+            return {"answer": "$18$", "confidence": "low"}
+        assert system == question_review.SOLVE_EXPLAIN_SYSTEM
+        return {"analysis": r"由 \(x=2\) 可得答案 $18$。",
+                "distractors": ["$-18$", "$81$", "$8.1$"], "confidence": "low"}
 
     monkeypatch.setattr(question_review.llm, "chat_json", solve)
     question = _q("独立求解 JSON 回归题目")
     result = question_review._solve_one(question, "fake-model-key")
     assert result is True
-    assert len(calls) == 1
-    assert calls[0][0]["content"] == question_review.SOLVE_SYSTEM
+    assert len(calls) == 2  # 先求解、再讲解，两步分开
     labels = {o.label: o.text for o in question.options}
     assert set(labels) == {"A", "B", "C", "D"}
     assert len(set(labels.values())) == 4  # 四个选项互不相同
@@ -285,23 +293,45 @@ def test_independent_solver_assigns_random_options(monkeypatch):
     assert "置信度低" in question.selfCheck["note"]
 
 
+def test_solver_rejects_analysis_with_draft_trace(monkeypatch):
+    """解析里混入自我怀疑或重算草稿时判为不合格，不让它进题库。"""
+    def solve(messages, **kwargs):
+        system = messages[0]["content"]
+        if system == question_review.SOLVE_ANSWER_SYSTEM:
+            return {"answer": "$18$", "confidence": "high"}
+        return {"analysis": "计算得到 $18$，不对，好像有误，应该是 $81$。",
+                "distractors": ["$-18$", "$81$", "$8.1$"], "confidence": "high"}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    question = _q("草稿泄漏回归题目")
+    assert question_review._solve_one(question, "fake-key") is False
+    assert question.answer == "A" and question.analysis == "旧解析"
+
+
 def test_solver_invalid_output_leaves_question_unsolved(monkeypatch):
-    """解题输出字段缺失、干扰项数量不符或解析违规时，题目保持无答案状态。"""
-    base = {"answer_text": "$18$", "distractors": ["$-18$", "$81$", "$8.1$"],
-            "analysis": "新的独立解析", "confidence": "high"}
+    """求解缺答案、干扰项数量不符、解析缺失或 LaTeX 违规时，题目保持无答案状态。"""
+    good_answer = {"answer": "$18$", "confidence": "high"}
+    good_explain = {"analysis": "新的独立解析",
+                    "distractors": ["$-18$", "$81$", "$8.1$"], "confidence": "high"}
     cases = [
-        {**base, "answer_text": None},                 # 缺正确答案
-        {**base, "distractors": ["$-18$"]},            # 干扰项数量不符
-        {**base, "analysis": None},                    # 缺解析
-        {**base, "analysis": "奇数个 $ 符号未闭合"},      # 解析 LaTeX 违规且不可机械修复
+        ({"answer": "", "confidence": "high"}, good_explain),                 # 答案为空
+        ({"confidence": "high"}, good_explain),                               # 没有 answer 字段
+        (good_answer, {"analysis": "新的独立解析", "distractors": ["$-18$"]}),   # 干扰项不足三个
+        (good_answer, {"analysis": "", "distractors": ["$-18$", "$81$", "$8.1$"]}),  # 缺解析
+        (good_answer, {"analysis": "奇数个 $ 符号未闭合",
+                       "distractors": ["$-18$", "$81$", "$8.1$"]}),           # 解析 LaTeX 违规
     ]
-    for payload in cases:
-        monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **kw: payload)
+    for answer_payload, explain_payload in cases:
+        def solve(messages, _answer=answer_payload, _explain=explain_payload, **kwargs):
+            system = messages[0]["content"]
+            return _answer if system == question_review.SOLVE_ANSWER_SYSTEM else _explain
+
+        monkeypatch.setattr(question_review.llm, "chat_json", solve)
         question = _q("无效解题输出回归")
         stats = question_review.ReviewStats()
         question_review._solve_all([question], "fake-key", stats)
-        # 解题失败不覆盖题目任何字段；新流程下出题模型本就不产答案
-        assert question.answer == "A" and question.analysis == "旧解析"
+        # 解题失败时清空答案与解析：修补阶段自填的答案未经独立求解，不能带进题库
+        assert question.answer == "" and question.analysis == ""
         assert stats.solved == 0
 
 def test_answer_normalization():
