@@ -25,7 +25,7 @@ from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services.rag import embeddings, llm, question_gen
-from app.services.rag.prompts import SOLVE_SYSTEM
+from app.services.rag.prompts import DRAFT_TRACES, SOLVE_ANSWER_SYSTEM, SOLVE_EXPLAIN_SYSTEM
 from app.services import latex_utils
 from app.services.rag_runtime import with_snapshot
 from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
@@ -286,14 +286,18 @@ def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 
     for budget in (max_tokens, int(max_tokens * 1.4)):
         try:
             text = _chat_text_with_fallback(messages, api_key, budget, json_mode=True)
-            data = json.loads(_strip_json(text))
+            # 解析前先补反斜杠：模型常把 \neq 写成单斜杠，json 会静默吃掉或直接报非法转义
+            payload = latex_utils.escape_bare_commands_in_json(_strip_json(text))
+            data = json.loads(payload)
             if isinstance(data, dict):
                 return data
             last = ValueError("返回不是 JSON 对象")
         except Exception as exc:  # noqa: BLE001
             # JSON Repair 兜底：截断或非法结构先修复再校验，修复失败才进入下一轮
             try:
-                repaired = json_repair.loads(_strip_json(text))
+                repaired = json_repair.loads(
+                    latex_utils.escape_bare_commands_in_json(_strip_json(text))
+                )
                 if isinstance(repaired, dict) and repaired:
                     return repaired
             except Exception:  # noqa: BLE001
@@ -571,77 +575,231 @@ def _assign_options(correct_texts: list[str], distractors: list[str]) -> tuple[l
     return options, "".join(correct_letters)
 
 
-def _chat_json_solve(messages: list[dict], api_key: str | None) -> dict:
-    """解题专用：显式开启思考模式深化推理，输出预算覆盖推理与精简解析。"""
-    return llm.chat_json(messages, api_key=api_key, max_tokens=4800, thinking=True)
+# 多选答案在内部用不可见分隔符串联，避免与选项文本里的逗号、分号冲突
+_MULTI_SEP = "\u0001"
+# 求解要留出完整推理预算，讲解只需要写结论与关键步骤
+_SOLVE_ANSWER_TOKENS = 4000
+_SOLVE_EXPLAIN_TOKENS = 2400
+# 解析里出现草稿痕迹就重写；两次仍不干净则放弃该题
+_EXPLAIN_ATTEMPTS = 2
+# 解析结论与答案不一致时重新求解的上限；两次仍对不上就放弃该题
+_SOLVE_ATTEMPTS = 2
+
+
+def _ask_answer(question: Question, api_key: str | None) -> tuple[str, str] | None:
+    """第一步：独立求解，只拿答案。
+
+    与讲解分开调用是刻意的：一次调用里同时输出答案、干扰项和解析时，
+    模型容易在解析里算出 A、把 answer 写成 B，三者互相打架且无人校验。
+    先锁定唯一答案，再让讲解围绕它展开，一致性才有保证。
+    """
+    type_label = _TYPE_CN.get(question.type.value, question.type.value)
+    prompt = f"【题干】\n{question.stem}\n\n【题型】{type_label}\n"
+    if question.type == QuestionType.multiple:
+        prompt += "\n本题为多选题：answer 输出正确选项文本组成的数组，例如 [\"选项一\", \"选项二\"]。"
+    elif question.type == QuestionType.single:
+        prompt += "\n本题为单选题：answer 填正确选项的文本本身，不要填字母。"
+    elif question.type == QuestionType.judge:
+        prompt += "\n本题为判断题：answer 只填 正确 或 错误。"
+    try:
+        data = llm.chat_json(
+            [
+                {"role": "system", "content": SOLVE_ANSWER_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            api_key=api_key,
+            max_tokens=_SOLVE_ANSWER_TOKENS,
+            thinking=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("独立求解失败：%s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    confidence = str(data.get("confidence") or "mid").strip().lower()
+    raw = data.get("answer")
+    if isinstance(raw, list):
+        items = [str(item).strip() for item in raw if str(item).strip()]
+        if not items:
+            return None
+        return _MULTI_SEP.join(items), confidence
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    return text, confidence
+
+
+def _has_draft_trace(analysis: str) -> bool:
+    """解析里出现自我怀疑与重算痕迹，说明模型把草稿写进了成品。"""
+    return any(trace in analysis for trace in DRAFT_TRACES)
+
+
+def _ask_explain(
+    question: Question, answer_text: str, api_key: str | None
+) -> tuple[str, list[str], str] | None:
+    """第二步：以已定答案为准写解析，选择题顺带产出干扰项。
+
+    不需要思考模式：答案已经锁死，这一步只做确定性表述与选错项构造。
+    返回 (解析, 干扰项, 解析推导出的结论)，结论供上层与答案交叉核对。
+    """
+    type_label = _TYPE_CN.get(question.type.value, question.type.value)
+    prompt = (
+        f"【题干】\n{question.stem}\n\n"
+        f"【题型】{type_label}\n\n"
+        f"【已确定的标准答案】\n{answer_text}\n"
+    )
+    is_choice = question.type in (QuestionType.single, QuestionType.multiple)
+    if is_choice:
+        prompt += "\n请输出 analysis、conclusion 与 distractors，distractors 的数量要使选项总数正好 4 个。"
+    else:
+        prompt += "\n请只输出 analysis 与 conclusion。"
+    explanation = ""
+    distractors: list[str] = []
+    conclusion = ""
+    for _attempt in range(_EXPLAIN_ATTEMPTS):
+        try:
+            data = llm.chat_json(
+                [
+                    {"role": "system", "content": SOLVE_EXPLAIN_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                api_key=api_key,
+                max_tokens=_SOLVE_EXPLAIN_TOKENS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("讲解生成失败：%s", exc)
+            return None
+        if not isinstance(data, dict):
+            continue
+        analysis = _polish_analysis(str(data.get("analysis") or ""))
+        if not analysis:
+            continue
+        if _has_draft_trace(analysis):
+            logger.info("解析含草稿痕迹，重写一次")
+            prompt += "\n上次解析里出现了自我怀疑或重算的表述，请只写确定结论。"
+            continue
+        explanation = analysis
+        conclusion = str(data.get("conclusion") or "").strip()
+        # 干扰项也要走同一套净化：只清洗正确答案会让选项里一半带 $ 一半裸奔
+        distractors = [
+            _clean_option_text(str(item))
+            for item in (data.get("distractors") or [])
+            if str(item).strip()
+        ]
+        return explanation, distractors, conclusion
+    return None
+
+
+def _answers_agree(conclusion: str, answer_text: str) -> bool:
+    """判断解析结论与给定答案是否指向同一结果。
+
+    纯数值必须完全相同：不然 5 与 25 会因包含关系被判成一致，
+    第 22 题那种「解析算 5、答案填 17」的错就漏过去了。
+    """
+    def normalize(text: str) -> str:
+        stripped = re.sub(r"\$|\\left|\\right|\\[,;!]|\s+", "", text or "")
+        stripped = stripped.replace("{", "").replace("}", "").replace("\\", "")
+        return stripped.strip().lower()
+
+    left, right = normalize(conclusion), normalize(answer_text)
+    if not left or not right:
+        return True  # 没有结论就不拦，避免因模型漏填而误杀
+    if left == right:
+        return True
+    numeric = re.compile(r"-?\d+(?:\.\d+)?")
+    if numeric.fullmatch(left) and numeric.fullmatch(right):
+        return False
+    return left in right or right in left
+
+
+def _clean_option_text(text: str) -> str:
+    """去掉模型偶尔带上的 A. B. 前缀，选项文本只保留内容本身。"""
+    cleaned = re.sub(r"^[A-Ha-h][.、．:：）)]\s*", "", text.strip())
+    return latex_utils.fix_delimiters(cleaned)
+
+
+def _prepare_answer(question: Question, answer_raw: str) -> tuple[list[str], str] | None:
+    """把求解原文收敛成本平台的答案格式，返回 (正确项文本, 展示用答案文本)。"""
+    if question.type == QuestionType.multiple:
+        corrects = [
+            _clean_option_text(part) for part in answer_raw.split(_MULTI_SEP) if part.strip()
+        ]
+        corrects = [item for item in corrects if item]
+        if not 2 <= len(corrects) <= 3:
+            return None
+        return corrects, "；".join(corrects)
+    if question.type == QuestionType.single:
+        correct = _clean_option_text(answer_raw)
+        if not correct:
+            return None
+        return [correct], correct
+    if question.type == QuestionType.judge:
+        positive = any(word in answer_raw for word in ("正确", "对", "成立", "√", "是"))
+        negative = any(word in answer_raw for word in ("错误", "错", "不成立", "×", "否"))
+        if positive == negative:
+            return None
+        return [], "正确" if positive else "错误"
+    text = latex_utils.fix_delimiters(_normalize_math(answer_raw))
+    if not text:
+        return None
+    return [], text
 
 
 def _solve_one(question: Question, api_key: str | None) -> bool:
-    """独立解题（思考模式）：answer/analysis/options 全部来自解题模型。
+    """独立解题（思考模式）+ 依答案写解析 + 结论交叉校验。
 
-    选择题先解出正确答案文本，再生成误导性干扰项，由代码随机分配选项位置；
-    解析精简（保留关键步骤与关键公式）并套用与题干相同的 LaTeX 定界校验，
-    校验失败先机械修复再带错误重试一次，仍失败视为解题失败。
-    返回 True 表示解题成功且已就地更新题目。
+    先锁定唯一答案，再让解析与干扰项围绕该答案生成。解析完成后比对
+    conclusion 与答案：模型第一步算错、解析里又算对的情况（例如行列式题
+    答案是 17 而解析推导出 5）在这里被拦下，重新求解一轮；仍不一致就放弃该题，
+    宁可少给一道，不让选项与解析互相矛盾的题进题库。
     """
-    is_single = question.type == QuestionType.single
-    is_multiple = question.type == QuestionType.multiple
-    user = f"【题干】\n{question.stem}\n\n【题型】{_TYPE_CN.get(question.type.value, question.type.value)}"
+    is_choice = question.type in (QuestionType.single, QuestionType.multiple)
+    for attempt in range(_SOLVE_ATTEMPTS):
+        solved = _ask_answer(question, api_key)
+        if solved is None:
+            return False
+        answer_raw, confidence = solved
+        prepared = _prepare_answer(question, answer_raw)
+        if prepared is None:
+            continue
+        corrects, answer_text = prepared
 
-    def _validate(data: dict) -> tuple[str, str, list] | None:
-        """从解题输出提取 (answer, analysis, options)；协议或校验不合格返回 None。"""
-        analysis = _polish_analysis(str(data.get("analysis") or ""))
-        if not analysis:
-            return None
-        if is_single:
-            correct = str(data.get("answer_text") or "").strip()
-            distractors = [str(d).strip() for d in (data.get("distractors") or []) if str(d).strip()]
-            if not correct or len(distractors) != 3 or correct in distractors:
-                return None
-            options, letters = _assign_options([correct], distractors)
-            return letters, analysis, options
-        if is_multiple:
-            corrects = [str(t).strip() for t in (data.get("answer_texts") or []) if str(t).strip()]
-            distractors = [str(d).strip() for d in (data.get("distractors") or []) if str(d).strip()]
-            if not 2 <= len(corrects) <= 3 or len(corrects) + len(distractors) != 4:
-                return None
+        explained = _ask_explain(question, answer_text, api_key)
+        if explained is None:
+            return False
+        analysis, distractors, conclusion = explained
+
+        if not _answers_agree(conclusion, answer_text):
+            logger.warning(
+                "解析结论与答案不一致（第 %d 次）：答案=%r 结论=%r，重新求解",
+                attempt + 1, answer_text, conclusion,
+            )
+            continue
+
+        if is_choice:
+            if question.type == QuestionType.single:
+                if len(distractors) != 3 or corrects[0] in distractors:
+                    return False
+            else:
+                if not 1 <= len(distractors) <= 2 or len(corrects) + len(distractors) != 4:
+                    return False
+                if any(item in distractors for item in corrects):
+                    return False
             options, letters = _assign_options(corrects, distractors)
-            return letters, analysis, options
-        if question.type == QuestionType.judge:
-            raw = str(data.get("answer") or "").strip()
-            answer = "A" if raw in ("正确", "对", "T", "true", "√") else (
-                "B" if raw in ("错误", "错", "F", "false", "×") else "")
-        else:
-            answer = _normalize_math(_normalize_answer(question, str(data.get("answer") or "")))
-        if not answer:
-            return None
-        return answer, analysis, question.options
-
-    last_error = ""
-    for attempt in range(2):
-        retry_note = f"\n\n上次输出不合格：{last_error}。请按协议修正后重新输出。" if attempt else ""
-        data = _chat_json_solve(
-            [
-                {"role": "system", "content": SOLVE_SYSTEM},
-                {"role": "user", "content": user + retry_note},
-            ],
-            api_key,
-        )
-        if not isinstance(data, dict):
-            last_error = "输出不是 JSON 对象"
-            continue
-        result = _validate(data)
-        if result is None:
-            last_error = "字段缺失、干扰项数量不符或解析未通过 LaTeX 定界校验"
-            continue
-        answer, analysis, options = result
-        if data.get("confidence") == "low":
-            note = str((question.selfCheck or {}).get("note", ""))
-            question.selfCheck = {**(question.selfCheck or {}), "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"}
-        question.answer = answer
-        question.analysis = analysis
-        if is_single or is_multiple:
             question.options = options
+            question.answer = letters
+        elif question.type == QuestionType.judge:
+            question.answer = "A" if answer_text == "正确" else "B"
+        else:
+            question.answer = answer_text
+
+        question.analysis = analysis
+        if confidence == "low":
+            note = str((question.selfCheck or {}).get("note", ""))
+            question.selfCheck = {
+                **(question.selfCheck or {}),
+                "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义",
+            }
         return True
     return False
 
@@ -652,10 +810,18 @@ def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStat
 
     def run(q: Question) -> tuple[Question, bool]:
         try:
-            return q, _solve_one(q, api_key)
-        except Exception as exc:
+            ok = _solve_one(q, api_key)
+        except Exception as exc:  # noqa: BLE001
             logger.warning("解析生成失败：%s", exc)
-            return q, False
+            ok = False
+        if not ok:
+            # 修补阶段可能留下命题模型自填的答案、解析与选项，未经独立求解一律作废：
+            # 带着未验证的答案入库，正是「选项与解析对不上」的来源。
+            q.answer = ""
+            q.analysis = ""
+            if q.type in (QuestionType.single, QuestionType.multiple):
+                q.options = []
+        return q, ok
 
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-solve") as pool:
         for question, ok in pool.map(run, questions):
