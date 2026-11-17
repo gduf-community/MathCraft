@@ -18,6 +18,7 @@ import json_repair
 from pydantic import ValidationError
 
 from app.schemas.question import GenerateParams, Question, QuestionType
+from app.services import latex_utils
 from app.services.rag import retrieval, vectorstore
 from app.services.rag import llm
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
@@ -192,21 +193,29 @@ class _RollingParser:
 
 
 def _stream_questions(messages: list[dict], budget: int, api_key: str | None) -> list[Question]:
-    """流式生成 + 滚动解析：每个完整对象立即校验，有错立刻阻断当前批次。"""
-    parser = _RollingParser()
-    raw: list[str] = []
-    collected: list[Question] = []
+    """流式收完再统一解析。
+
+    不能边收边解析：模型在 JSON 字符串里写 \\neq、\\left、\\frac 这类单反斜杠时，
+    raw_decode 会因非法转义中断，json_repair 又会把 \\n 当换行吃掉，两种都写坏公式。
+    改为先累积原文、补齐反斜杠后再解析，单次调用只出一题，牺牲的增量解析收益很小。
+    """
+    chunks: list[str] = []
     try:
         for delta in llm.chat_stream(messages, api_key=api_key, max_tokens=budget, thinking_off=True):
-            raw.append(delta)
-            parser.feed(delta)
-            collected.extend(parser.extract(_schema_validate))
-        collected.extend(parser.finish(_schema_validate))
+            chunks.append(delta)
     except QuestionOutputError as exc:
-        exc.raw_excerpt = "".join(raw)[-1500:]
+        exc.raw_excerpt = "".join(chunks)[-1500:]
+        raise
+    raw_text = latex_utils.escape_bare_commands_in_json("".join(chunks))
+    parser = _RollingParser()
+    parser.feed(raw_text)
+    try:
+        collected = parser.extract(_schema_validate) + parser.finish(_schema_validate)
+    except QuestionOutputError as exc:
+        exc.raw_excerpt = raw_text[-1500:]
         raise
     if not collected:
-        raise QuestionOutputError("未解析出任何题目对象", "".join(raw)[-1500:])
+        raise QuestionOutputError("未解析出任何题目对象", raw_text[-1500:])
     return collected
 
 
@@ -318,7 +327,12 @@ def _gen_batch(
             "role": "user",
             "content": user_prompt
             + f"\n\n【重要】本次生成的每一道题 type 字段必须严格为 {tc.type.value}（{type_label}），不得混入其他题型。"
-            + f"\n本次请恰好生成 {count} 道。",
+            + f"\n本次请恰好生成 {count} 道。"
+            # 长任务里模型会逐渐忘掉 system 里的格式要求，逐题重申一次最有效
+            + "\n【公式格式复述】行内 $...$ 的两个 $ 之间不得换行；"
+            "多行推导用 \\begin{aligned}...\\end{aligned} 并以 \\\\ 换行、& 对齐；"
+            "矩阵用 pmatrix/bmatrix 并以 \\\\ 分行；"
+            "反斜杠在 JSON 字符串中写成两个（\\frac 写作 \\\\frac），不要额外再加反斜杠。",
         },
     ]
     budget = GEN_TOKENS_OVERHEAD + GEN_TOKENS_PER_QUESTION * count
