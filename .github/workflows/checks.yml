@@ -3,7 +3,9 @@ name: Code checks
 on:
   pull_request:
   push:
+    branches: ['**']
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -41,7 +43,9 @@ jobs:
         run: npm ci
         working-directory: frontend
       - name: Release gate regression
-        run: node --test .github/scripts/verify-release.test.cjs
+        run: node --test .github/scripts/verify-release.test.cjs .github/scripts/validate-release-tag.test.cjs
+      - name: Deployment package regression
+        run: .venv/bin/python -B -m unittest discover -s .github/scripts -p test_build_release.py -v
       - name: Create placeholder local configuration
         run: cp backend/app/local_secrets.example.py backend/app/local_secrets.py
       - name: Ruff
