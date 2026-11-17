@@ -1,14 +1,10 @@
-/* global process, URL, console, window, Event */
+/* global URL, console, window, Event */
 /** 实际 React 面板 + 内存请求调度；离线浏览器，不启动后端或访问网络。 */
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { build } from 'esbuild'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const stubs = {
   backend: `
     const h = () => window.adminHarness;
@@ -75,9 +71,8 @@ const bundle = await build({
     builder.onLoad({ filter: /.*/, namespace: 'admin-fakes' }, args => ({ contents: stubs[args.path] }))
   } }],
 })
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe',
-), headless: true })
+await withResources(async use => {
+const browser = use(await launchBrowser())
 const errors = []
 async function mount() {
   const page = await browser.newPage()
@@ -120,7 +115,7 @@ async function mount() {
   await page.getByText('self', {exact:true}).waitFor()
   return page
 }
-try {
+{
   const page = await mount()
   await page.getByLabel('搜索账号').fill('old')
   await page.waitForFunction(() => window.adminHarness.pending.old)
@@ -230,6 +225,6 @@ try {
   console.log('PASS: admin RAG distinguishes old-backend 404, service failure and network loss; refresh recovers')
   assert.deepEqual(errors, [])
   console.log('PASS: latest search, persistent totals, real Toast feedback, self revocation, own-password reminder, dirty navigation and saving guards')
-} finally {
-  await browser.close()
 }
+
+})

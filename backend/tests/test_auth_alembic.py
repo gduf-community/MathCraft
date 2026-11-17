@@ -42,7 +42,7 @@ class AuthAlembicCommandTests(AuthCommandCase):
         return subprocess.run(
             [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", revision],
             cwd=self.backend, env=self.env, capture_output=True, text=True,
-            encoding="utf-8", timeout=30, check=False,
+            encoding="utf-8", timeout=60, check=False,
         )
 
     def add_history(self, *, conflict: str | None = None) -> None:

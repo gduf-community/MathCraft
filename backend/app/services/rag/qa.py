@@ -6,6 +6,11 @@
 """
 from typing import Callable
 
+from app.services.generation_cancellation import (
+    cancellation_kwargs,
+    check_cancellation,
+    run_checked,
+)
 from app.services.rag.llm import LLMError, chat_json, friendly_error
 from app.services.rag.memory import build_memory_system, build_short_term_history
 from app.services.rag.retrieval import retrieve_for_generation
@@ -43,15 +48,19 @@ def answer_question(
     progress_cb: ProgressCB | None = None,
     mode: str = "qa",
     doc_name: str = "当前文档",
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     """检索并回答；引用只来自召回 chunk，不相关的问题明确拒答并提示可回答范围。"""
 
     def report(percent: int, stage: str) -> None:
+        check_cancellation(cancel_check)
         if progress_cb:
-            progress_cb(percent, stage)
+            run_checked(cancel_check, progress_cb, percent, stage)
 
     report(12, "正在检索知识库")
-    chunks = retrieve_for_generation(bank_id, message, document_id, hyde_text=None)
+    chunks = run_checked(
+        cancel_check, retrieve_for_generation, bank_id, message, document_id, hyde_text=None,
+    )
     if not chunks:
         return _EMPTY_REPLY
     report(48, "正在组织答案")
@@ -63,8 +72,10 @@ def answer_question(
             messages.append({"role": role, "content": str(h["text"])})
     messages.append({"role": "user", "content": f"【教学材料】\n{_context(chunks[:6])}\n\n【问题】{message}"})
     try:
-        data = chat_json(messages, api_key=api_key, temperature=0.3,
-                         max_tokens=2400, thinking_off=True)
+        data = run_checked(
+            cancel_check, chat_json, messages, api_key=api_key, temperature=0.3,
+            max_tokens=2400, thinking_off=True, **cancellation_kwargs(cancel_check),
+        )
     except LLMError as exc:
         return friendly_error(exc)
     if not isinstance(data, dict):

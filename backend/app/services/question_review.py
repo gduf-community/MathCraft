@@ -6,9 +6,9 @@
    再按六个维度打分并加权；可解性一票否决，高与地狱题要求给出两种解法或数值验证；
    两次评分差超过 0.7 时分派第三位评审仲裁；
 3. 反哺：未通过只做一轮最小修补；仍不过就换难度模板重出，不再微调同一题；
-4. 解析：通过后另起对话独立解题，写 2~4 句简短解析，覆盖命题阶段自带的答案与解析。
+4. 解题：独立解出答案、生成选择题选项与精简解析，完整验证后更新；失败保留已有答案。
 
-任何一步的服务异常都只降级（保留原题、跳过校验）并写日志，不让整批出题失败。
+服务异常降级并写日志；显式取消异常穿透，等待已启动工作结束后交给调用方。
 """
 from __future__ import annotations
 
@@ -16,14 +16,22 @@ import json
 import logging
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import json_repair
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
+from app.services.generation_cancellation import (
+    GenerationCanceled,
+    cancellation_kwargs,
+    check_cancellation,
+    run_checked,
+)
 from app.services.rag import embeddings, llm, question_gen
 from app.services.rag.prompts import DRAFT_TRACES, SOLVE_ANSWER_SYSTEM, SOLVE_EXPLAIN_SYSTEM
 from app.services import latex_utils
@@ -195,22 +203,28 @@ def load_corpus(db: Session, user_id: str, bank_id: str) -> list[str]:
 
 @with_snapshot
 def _drop_duplicates(
-    questions: list[Question], corpus: list[str]
+    questions: list[Question], corpus: list[str],
+    cancel_check: Callable[[], None] | None = None,
 ) -> tuple[list[Question], list[Question]]:
     """语义查重：与语料或批内已保留题目相似度过阈值的丢弃。"""
+    check_cancellation(cancel_check)
     if not questions:
         return [], []
     threshold = settings.review_similarity_threshold
     if corpus:
         try:
-            corpus_vecs = embeddings.embed_texts(corpus)
+            corpus_vecs = run_checked(cancel_check, embeddings.embed_texts, corpus)
+        except GenerationCanceled:
+            raise
         except Exception as exc:  # 向量服务不可用时跳过查重，不阻断出题
             logger.warning("查重跳过（向量服务不可用）：%s", exc)
             corpus_vecs = []
     else:
         corpus_vecs = []
     try:
-        fresh_vecs = embeddings.embed_texts([q.stem for q in questions])
+        fresh_vecs = run_checked(cancel_check, embeddings.embed_texts, [q.stem for q in questions])
+    except GenerationCanceled:
+        raise
     except Exception as exc:
         logger.warning("查重跳过（题目向量化失败）：%s", exc)
         return questions, []
@@ -265,7 +279,8 @@ def _strip_json(text: str) -> str:
 
 
 def _chat_text_with_fallback(
-    messages: list[dict], api_key: str | None, max_tokens: int, json_mode: bool = False
+    messages: list[dict], api_key: str | None, max_tokens: int, json_mode: bool = False,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     """评估与解析都关掉思考模式，只取结论；接口不认这个参数时由模型层自动退回。"""
     kwargs: dict = {
@@ -273,10 +288,13 @@ def _chat_text_with_fallback(
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    return llm.chat_text(messages, **kwargs)
+    return llm.chat_text(messages, **kwargs, **cancellation_kwargs(cancel_check))
 
 
-def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 4800) -> dict:
+def _chat_json_low(
+    messages: list[dict], api_key: str | None, max_tokens: int = 4800,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict:
     """低温 JSON 调用：先给足预算，被截断再放大一次。
 
     修补要整题重写 JSON，实测单次输出三千多字；预算给小了会截断成非法 JSON，
@@ -284,15 +302,22 @@ def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 
     """
     last: Exception | None = None
     for budget in (max_tokens, int(max_tokens * 1.4)):
+        check_cancellation(cancel_check)
+        text = ""
         try:
-            text = _chat_text_with_fallback(messages, api_key, budget, json_mode=True)
-            # 解析前先补反斜杠：模型常把 \neq 写成单斜杠，json 会静默吃掉或直接报非法转义
+            text = run_checked(
+                cancel_check, _chat_text_with_fallback, messages, api_key, budget, json_mode=True,
+                **cancellation_kwargs(cancel_check),
+            )
             payload = latex_utils.escape_bare_commands_in_json(_strip_json(text))
             data = json.loads(payload)
             if isinstance(data, dict):
                 return data
             last = ValueError("返回不是 JSON 对象")
+        except GenerationCanceled:
+            raise
         except Exception as exc:  # noqa: BLE001
+            check_cancellation(cancel_check)
             # JSON Repair 兜底：截断或非法结构先修复再校验，修复失败才进入下一轮
             try:
                 repaired = json_repair.loads(
@@ -300,6 +325,8 @@ def _chat_json_low(messages: list[dict], api_key: str | None, max_tokens: int = 
                 )
                 if isinstance(repaired, dict) and repaired:
                     return repaired
+            except GenerationCanceled:
+                raise
             except Exception:  # noqa: BLE001
                 pass
             last = exc
@@ -343,18 +370,26 @@ def parse_review(data: dict, target: Difficulty) -> dict:
     }
 
 
-def _judge_once(question: Question, target: Difficulty, scope: str, api_key: str | None) -> dict | None:
+def _judge_once(
+    question: Question, target: Difficulty, scope: str, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict | None:
     prompt = (
         EVAL_PROMPT.replace("__TARGET__", target.value)
         .replace("__SCOPE__", scope or "未限定")
         .replace("__STEM__", question.stem)
     )
     try:
-        data = _chat_json_low([{"role": "user", "content": prompt}], api_key)
+        data = _chat_json_low(
+            [{"role": "user", "content": prompt}], api_key,
+            **cancellation_kwargs(cancel_check),
+        )
         review = parse_review(data, target)
         if target in (Difficulty.high, Difficulty.hell) and len(review["methods"]) < 2:
             logger.info("高难题目评审未给出两种解法，按分数继续判定")
         return review
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("盲评失败：%s", exc)
         return None
@@ -391,22 +426,31 @@ def _merge_reviews(reviews: list[dict]) -> dict:
 
 
 def evaluate(
-    question: Question, target: Difficulty, scope: str, api_key: str | None, judges: int = 2
+    question: Question, target: Difficulty, scope: str, api_key: str | None, judges: int = 2,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict:
     """双评 + 仲裁：两次总分差超过 0.7 时请第三位评审裁决。
 
     修补后的复评只需要确认修补是否到位，用单评即可，省一半调用。
     """
+    check_cancellation(cancel_check)
+    cancel_kwargs = cancellation_kwargs(cancel_check)
     judges = max(1, judges)
     with ThreadPoolExecutor(max_workers=judges, thread_name_prefix="review-judge") as pool:
         futures = [
-            pool.submit(_judge_once, question, target, scope, api_key) for _ in range(judges)
+            pool.submit(
+                run_checked, cancel_check, _judge_once,
+                question, target, scope, api_key, **cancel_kwargs,
+            ) for _ in range(judges)
         ]
         first = [f.result() for f in futures]
+    check_cancellation(cancel_check)
     valid = [r for r in first if r]
     if len(valid) == 2 and abs(valid[0]["total"] - valid[1]["total"]) > 0.7:
         logger.info("两次盲评差 %.2f，启动仲裁", abs(valid[0]["total"] - valid[1]["total"]))
-        arbiter = _judge_once(question, target, scope, api_key)
+        arbiter = run_checked(
+            cancel_check, _judge_once, question, target, scope, api_key, **cancel_kwargs,
+        )
         if arbiter:
             merged = _merge_reviews([arbiter])
             merged["arbitrated"] = True
@@ -432,7 +476,8 @@ def _apply_review(question: Question, review: dict) -> None:
 
 
 def _repair(
-    question: Question, review: dict, target: Difficulty, api_key: str | None
+    question: Question, review: dict, target: Difficulty, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> Question | None:
     """按缺陷码做最小修补，保持题型与考点不变。"""
     payload = {
@@ -455,9 +500,14 @@ def _repair(
         .replace("__QUESTION__", json.dumps(payload, ensure_ascii=False))
     )
     try:
-        data = _chat_json_low([{"role": "user", "content": prompt}], api_key)
+        data = _chat_json_low(
+            [{"role": "user", "content": prompt}], api_key,
+            **cancellation_kwargs(cancel_check),
+        )
         item = data.get("question") if isinstance(data.get("question"), dict) else data
         fixed = Question.model_validate(item)
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("修补失败：%s", exc)
         return None
@@ -479,8 +529,10 @@ def _regen(
     api_key: str | None,
     hyde_text: str | None,
     directive: str = "",
+    cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """按题型补出 count 道，避免与已保留题目重复。"""
+    check_cancellation(cancel_check)
     sub = params.model_copy(update={"types": [TypeCount(type=qtype, count=count)]})
     return question_gen.generate_questions(
         sub,
@@ -490,6 +542,7 @@ def _regen(
         api_key=api_key,
         hyde_text=hyde_text,
         directive=directive,
+        **cancellation_kwargs(cancel_check),
     )
 
 
@@ -500,10 +553,8 @@ def _delta(total: float, target: Difficulty) -> float:
 
 
 def _normalize_math(text: str) -> str:
-    """把 \\(...\\) 与 \\[...\\] 统一成 $...$ / $$...$$，前端只认美元定界符。"""
-    text = re.sub(r"\\\((.+?)\\\)", r"$\1$", text, flags=re.S)
-    text = re.sub(r"\\\[(.+?)\\\]", r"$$\1$$", text, flags=re.S)
-    return text
+    """题干、选项、答案与解析共用公式机械修复。"""
+    return latex_utils.fix_delimiters(text)
 
 
 def _normalize_answer(question: Question, raw: str) -> str:
@@ -551,151 +602,191 @@ def _polish_analysis(text: str) -> str | None:
     return cleaned
 
 
-def _assign_options(correct_texts: list[str], distractors: list[str]) -> tuple[list, str]:
-    """随机分配正确答案到 A/B/C/D 的位置，其余位置放干扰项。
-
-    返回 (选项列表, 正确字母串)。正确项位置每次随机，避免答案总落在同一选项。
-    """
+def _assign_options(
+    correct_texts: list[str], distractors: list[str],
+) -> tuple[list[OptionItem], str]:
+    """随机排列四个已验证的选项，正确答案与标签同时产生。"""
     import random
 
-    labels = ["A", "B", "C", "D"]
-    positions = sorted(random.sample(range(4), len(correct_texts)))
-    options: list = []
-    correct_letters: list[str] = []
-    ci = 0
-    di = 0
-    for idx, label in enumerate(labels):
-        if ci < len(correct_texts) and idx == positions[ci]:
-            options.append(OptionItem(label=label, text=correct_texts[ci]))
-            correct_letters.append(label)
-            ci += 1
-        else:
-            options.append(OptionItem(label=label, text=distractors[di]))
-            di += 1
-    return options, "".join(correct_letters)
+    entries = [(text, True) for text in correct_texts] + [
+        (text, False) for text in distractors
+    ]
+    random.shuffle(entries)
+    options = [
+        OptionItem(label=label, text=text)
+        for label, (text, _correct) in zip("ABCD", entries)
+    ]
+    answer = "".join(
+        label for label, (_text, correct) in zip("ABCD", entries) if correct
+    )
+    return options, answer
 
 
-# 多选答案在内部用不可见分隔符串联，避免与选项文本里的逗号、分号冲突
 _MULTI_SEP = "\u0001"
-# 求解要留出完整推理预算，讲解只需要写结论与关键步骤
 _SOLVE_ANSWER_TOKENS = 4000
 _SOLVE_EXPLAIN_TOKENS = 2400
-# 解析里出现草稿痕迹就重写；两次仍不干净则放弃该题
-_EXPLAIN_ATTEMPTS = 2
-# 解析结论与答案不一致时重新求解的上限；两次仍对不上就放弃该题
 _SOLVE_ATTEMPTS = 2
+_EXPLAIN_ATTEMPTS = 2
 
 
-def _ask_answer(question: Question, api_key: str | None) -> tuple[str, str] | None:
-    """第一步：独立求解，只拿答案。
+def _clean_option_text(text: str) -> str:
+    """清除选项标签并统一公式定界，后续仍须校验非空与公式合法性。"""
+    return latex_utils.fix_delimiters(re.sub(r"^[A-Ha-h][.、．:：）)]\s*", "", text.strip()))
 
-    与讲解分开调用是刻意的：一次调用里同时输出答案、干扰项和解析时，
-    模型容易在解析里算出 A、把 answer 写成 B，三者互相打架且无人校验。
-    先锁定唯一答案，再让讲解围绕它展开，一致性才有保证。
-    """
-    type_label = _TYPE_CN.get(question.type.value, question.type.value)
-    prompt = f"【题干】\n{question.stem}\n\n【题型】{type_label}\n"
-    if question.type == QuestionType.multiple:
-        prompt += "\n本题为多选题：answer 输出正确选项文本组成的数组，例如 [\"选项一\", \"选项二\"]。"
-    elif question.type == QuestionType.single:
-        prompt += "\n本题为单选题：answer 填正确选项的文本本身，不要填字母。"
-    elif question.type == QuestionType.judge:
-        prompt += "\n本题为判断题：answer 只填 正确 或 错误。"
-    try:
-        data = llm.chat_json(
-            [
-                {"role": "system", "content": SOLVE_ANSWER_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            api_key=api_key,
-            max_tokens=_SOLVE_ANSWER_TOKENS,
-            thinking=True,
+
+def _option_key(text: str) -> str:
+    """选项唯一性忽略空白、公式定界及展示用伸缩括号指令。"""
+    return re.sub(r"[\s$]+|\\left|\\right", "", text)
+
+
+def _prepare_answer(question: Question, answer_raw: str) -> tuple[list[str], str] | None:
+    """验证答案文本，返回正确项列表与传给讲解阶段的答案。"""
+    if question.type in (QuestionType.single, QuestionType.multiple):
+        corrects = [_clean_option_text(part) for part in answer_raw.split(_MULTI_SEP)]
+        expected = len(corrects) == 1 if question.type == QuestionType.single else (
+            2 <= len(corrects) <= 3
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("独立求解失败：%s", exc)
-        return None
-    if not isinstance(data, dict):
-        return None
-    confidence = str(data.get("confidence") or "mid").strip().lower()
-    raw = data.get("answer")
-    if isinstance(raw, list):
-        items = [str(item).strip() for item in raw if str(item).strip()]
-        if not items:
+        keys = [_option_key(item) for item in corrects]
+        if (not expected or any(not key for key in keys)
+                or len(set(keys)) != len(keys)
+                or any(_polish_analysis(item) is None for item in corrects)):
             return None
-        return _MULTI_SEP.join(items), confidence
-    text = str(raw or "").strip()
-    if not text:
+        return corrects, "；".join(corrects)
+    if question.type == QuestionType.judge:
+        raw = answer_raw.strip().lower()
+        if raw in ("正确", "对", "t", "true", "√"):
+            return [], "正确"
+        if raw in ("错误", "错", "f", "false", "×"):
+            return [], "错误"
         return None
-    return text, confidence
+    answer = _polish_analysis(answer_raw)
+    return ([], answer) if answer else None
+
+
+def _ask_answer(
+    question: Question, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> tuple[str, str] | None:
+    """独立求解并验证答案协议，失败重试；每次调用前后检查取消。"""
+    prompt = (
+        f"【题干】\n{question.stem}\n\n"
+        f"【题型】{_TYPE_CN.get(question.type.value, question.type.value)}\n"
+    )
+    if question.type == QuestionType.multiple:
+        prompt += (
+            "多选题固定四个选项：answer 必须为 2~3 个互异正确项文本的数组，"
+            "保留 1~2 个干扰项位置。不要输出选项字母。"
+        )
+    elif question.type == QuestionType.single:
+        prompt += "单选题 answer 为唯一正确选项文本的字符串，不要输出字母或数组。"
+    elif question.type == QuestionType.judge:
+        prompt += "判断题 answer 只填 正确 或 错误。"
+    for attempt in range(_SOLVE_ATTEMPTS):
+        check_cancellation(cancel_check)
+        retry = "\n上次答案不合格，请重新求解并遵守字段类型与题型约束。" if attempt else ""
+        try:
+            data = run_checked(
+                cancel_check, llm.chat_json,
+                [{"role": "system", "content": SOLVE_ANSWER_SYSTEM},
+                 {"role": "user", "content": prompt + retry}],
+                api_key=api_key, max_tokens=_SOLVE_ANSWER_TOKENS, thinking=True,
+                **cancellation_kwargs(cancel_check),
+            )
+        except GenerationCanceled:
+            raise
+        except Exception as exc:
+            logger.warning("独立求解失败：%s", exc)
+            continue
+        if not isinstance(data, dict):
+            continue
+        confidence = data.get("confidence", "mid")
+        if not isinstance(confidence, str) or confidence not in ("high", "mid", "low"):
+            continue
+        raw = data.get("answer")
+        if question.type == QuestionType.multiple:
+            if (not isinstance(raw, list) or not 2 <= len(raw) <= 3
+                    or any(not isinstance(item, str) or _MULTI_SEP in item for item in raw)):
+                continue
+            answer = _MULTI_SEP.join(raw)
+        elif isinstance(raw, str) and _MULTI_SEP not in raw:
+            answer = raw
+        else:
+            continue
+        if _prepare_answer(question, answer) is not None:
+            return answer, confidence
+    return None
 
 
 def _has_draft_trace(analysis: str) -> bool:
-    """解析里出现自我怀疑与重算痕迹，说明模型把草稿写进了成品。"""
-    return any(trace in analysis for trace in DRAFT_TRACES)
+    """拦截解析中的自我纠错与草稿独白。"""
+    return any(trace in analysis.lower() for trace in DRAFT_TRACES)
 
 
 def _ask_explain(
-    question: Question, answer_text: str, api_key: str | None
+    question: Question, answer_text: str, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+    correct_texts: list[str] | None = None,
 ) -> tuple[str, list[str], str] | None:
-    """第二步：以已定答案为准写解析，选择题顺带产出干扰项。
-
-    不需要思考模式：答案已经锁死，这一步只做确定性表述与选错项构造。
-    返回 (解析, 干扰项, 解析推导出的结论)，结论供上层与答案交叉核对。
-    """
-    type_label = _TYPE_CN.get(question.type.value, question.type.value)
+    """核验候选答案后写成品解析与干扰项，格式错误或草稿泄漏时重试。"""
     prompt = (
         f"【题干】\n{question.stem}\n\n"
-        f"【题型】{type_label}\n\n"
-        f"【已确定的标准答案】\n{answer_text}\n"
+        f"【题型】{_TYPE_CN.get(question.type.value, question.type.value)}\n\n"
+        f"【待核验的候选答案】\n{answer_text}\n"
     )
-    is_choice = question.type in (QuestionType.single, QuestionType.multiple)
-    if is_choice:
-        prompt += "\n请输出 analysis、conclusion 与 distractors，distractors 的数量要使选项总数正好 4 个。"
+    choice = question.type in (QuestionType.single, QuestionType.multiple)
+    if choice:
+        prompt += "输出 analysis、conclusion 与 distractors，正确项与干扰项合计恰好四项。"
+        if question.type == QuestionType.multiple:
+            prompt += "多选有 2~3 个正确项，配 1~2 个互异干扰项；conclusion 按候选项顺序用；连接。"
     else:
-        prompt += "\n请只输出 analysis 与 conclusion。"
-    explanation = ""
-    distractors: list[str] = []
-    conclusion = ""
-    for _attempt in range(_EXPLAIN_ATTEMPTS):
+        prompt += "输出 analysis 与 conclusion。"
+    for attempt in range(_EXPLAIN_ATTEMPTS):
+        check_cancellation(cancel_check)
+        retry = (
+            "\n上次讲解不合格：请检查字段类型、公式、四项唯一性和草稿痕迹，"
+            "只输出成立的推导与真实结论。"
+        ) if attempt else ""
         try:
-            data = llm.chat_json(
-                [
-                    {"role": "system", "content": SOLVE_EXPLAIN_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                api_key=api_key,
-                max_tokens=_SOLVE_EXPLAIN_TOKENS,
+            data = run_checked(
+                cancel_check, llm.chat_json,
+                [{"role": "system", "content": SOLVE_EXPLAIN_SYSTEM},
+                 {"role": "user", "content": prompt + retry}],
+                api_key=api_key, max_tokens=_SOLVE_EXPLAIN_TOKENS,
+                **cancellation_kwargs(cancel_check),
             )
-        except Exception as exc:  # noqa: BLE001
+        except GenerationCanceled:
+            raise
+        except Exception as exc:
             logger.warning("讲解生成失败：%s", exc)
-            return None
+            continue
         if not isinstance(data, dict):
             continue
-        analysis = _polish_analysis(str(data.get("analysis") or ""))
-        if not analysis:
+        raw_analysis, raw_conclusion = data.get("analysis"), data.get("conclusion", "")
+        if not isinstance(raw_analysis, str) or not isinstance(raw_conclusion, str):
             continue
-        if _has_draft_trace(analysis):
-            logger.info("解析含草稿痕迹，重写一次")
-            prompt += "\n上次解析里出现了自我怀疑或重算的表述，请只写确定结论。"
+        analysis = _polish_analysis(raw_analysis)
+        conclusion = raw_conclusion.strip()
+        if not analysis or _has_draft_trace(analysis):
             continue
-        explanation = analysis
-        conclusion = str(data.get("conclusion") or "").strip()
-        # 干扰项也要走同一套净化：只清洗正确答案会让选项里一半带 $ 一半裸奔
-        distractors = [
-            _clean_option_text(str(item))
-            for item in (data.get("distractors") or [])
-            if str(item).strip()
-        ]
-        return explanation, distractors, conclusion
+        distractors: list[str] = []
+        if choice:
+            raw_distractors = data.get("distractors")
+            if (not isinstance(raw_distractors, list)
+                    or any(not isinstance(item, str) for item in raw_distractors)):
+                continue
+            distractors = [_clean_option_text(item) for item in raw_distractors]
+            if any(_polish_analysis(item) is None for item in distractors):
+                continue
+            corrects = correct_texts or [answer_text]
+            keys = [_option_key(item) for item in corrects + distractors]
+            if len(keys) != 4 or any(not key for key in keys) or len(set(keys)) != 4:
+                continue
+        return analysis, distractors, conclusion
     return None
 
 
 def _answers_agree(conclusion: str, answer_text: str) -> bool:
-    """判断解析结论与给定答案是否指向同一结果。
-
-    纯数值必须完全相同：不然 5 与 25 会因包含关系被判成一致，
-    第 22 题那种「解析算 5、答案填 17」的错就漏过去了。
-    """
+    """结论可省略；数值精确比较，其他结果沿用规范化后的包含比较。"""
     def normalize(text: str) -> str:
         stripped = re.sub(r"\$|\\left|\\right|\\[,;!]|\s+", "", text or "")
         stripped = stripped.replace("{", "").replace("}", "").replace("\\", "")
@@ -703,7 +794,7 @@ def _answers_agree(conclusion: str, answer_text: str) -> bool:
 
     left, right = normalize(conclusion), normalize(answer_text)
     if not left or not right:
-        return True  # 没有结论就不拦，避免因模型漏填而误杀
+        return True
     if left == right:
         return True
     numeric = re.compile(r"-?\d+(?:\.\d+)?")
@@ -712,50 +803,14 @@ def _answers_agree(conclusion: str, answer_text: str) -> bool:
     return left in right or right in left
 
 
-def _clean_option_text(text: str) -> str:
-    """去掉模型偶尔带上的 A. B. 前缀，选项文本只保留内容本身。"""
-    cleaned = re.sub(r"^[A-Ha-h][.、．:：）)]\s*", "", text.strip())
-    return latex_utils.fix_delimiters(cleaned)
-
-
-def _prepare_answer(question: Question, answer_raw: str) -> tuple[list[str], str] | None:
-    """把求解原文收敛成本平台的答案格式，返回 (正确项文本, 展示用答案文本)。"""
-    if question.type == QuestionType.multiple:
-        corrects = [
-            _clean_option_text(part) for part in answer_raw.split(_MULTI_SEP) if part.strip()
-        ]
-        corrects = [item for item in corrects if item]
-        if not 2 <= len(corrects) <= 3:
-            return None
-        return corrects, "；".join(corrects)
-    if question.type == QuestionType.single:
-        correct = _clean_option_text(answer_raw)
-        if not correct:
-            return None
-        return [correct], correct
-    if question.type == QuestionType.judge:
-        positive = any(word in answer_raw for word in ("正确", "对", "成立", "√", "是"))
-        negative = any(word in answer_raw for word in ("错误", "错", "不成立", "×", "否"))
-        if positive == negative:
-            return None
-        return [], "正确" if positive else "错误"
-    text = latex_utils.fix_delimiters(_normalize_math(answer_raw))
-    if not text:
-        return None
-    return [], text
-
-
-def _solve_one(question: Question, api_key: str | None) -> bool:
-    """独立解题（思考模式）+ 依答案写解析 + 结论交叉校验。
-
-    先锁定唯一答案，再让解析与干扰项围绕该答案生成。解析完成后比对
-    conclusion 与答案：模型第一步算错、解析里又算对的情况（例如行列式题
-    答案是 17 而解析推导出 5）在这里被拦下，重新求解一轮；仍不一致就放弃该题，
-    宁可少给一道，不让选项与解析互相矛盾的题进题库。
-    """
-    is_choice = question.type in (QuestionType.single, QuestionType.multiple)
-    for attempt in range(_SOLVE_ATTEMPTS):
-        solved = _ask_answer(question, api_key)
+def _solve_one(
+    question: Question, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> bool:
+    """两步解题并核对结论，整题验证和取消检查通过后才回写。"""
+    check_cancellation(cancel_check)
+    for _attempt in range(_SOLVE_ATTEMPTS):
+        solved = _ask_answer(question, api_key, **cancellation_kwargs(cancel_check))
         if solved is None:
             return False
         answer_raw, confidence = solved
@@ -763,70 +818,80 @@ def _solve_one(question: Question, api_key: str | None) -> bool:
         if prepared is None:
             continue
         corrects, answer_text = prepared
-
-        explained = _ask_explain(question, answer_text, api_key)
+        explained = _ask_explain(
+            question, answer_text, api_key, correct_texts=corrects,
+            **cancellation_kwargs(cancel_check),
+        )
         if explained is None:
             return False
         analysis, distractors, conclusion = explained
-
         if not _answers_agree(conclusion, answer_text):
-            logger.warning(
-                "解析结论与答案不一致（第 %d 次）：答案=%r 结论=%r，重新求解",
-                attempt + 1, answer_text, conclusion,
-            )
+            logger.warning("解析结论与候选答案不一致，重新独立求解")
             continue
-
-        if is_choice:
-            if question.type == QuestionType.single:
-                if len(distractors) != 3 or corrects[0] in distractors:
-                    return False
-            else:
-                if not 1 <= len(distractors) <= 2 or len(corrects) + len(distractors) != 4:
-                    return False
-                if any(item in distractors for item in corrects):
-                    return False
-            options, letters = _assign_options(corrects, distractors)
-            question.options = options
-            question.answer = letters
+        options = list(question.options)
+        if question.type in (QuestionType.single, QuestionType.multiple):
+            options, answer = _assign_options(corrects, distractors)
         elif question.type == QuestionType.judge:
-            question.answer = "A" if answer_text == "正确" else "B"
+            answer = "A" if answer_text == "正确" else "B"
+            options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
         else:
-            question.answer = answer_text
-
-        question.analysis = analysis
+            answer = answer_text
+        self_check = dict(question.selfCheck)
         if confidence == "low":
-            note = str((question.selfCheck or {}).get("note", ""))
-            question.selfCheck = {
-                **(question.selfCheck or {}),
-                "note": (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义",
-            }
+            note = str(self_check.get("note") or "")
+            self_check["note"] = (
+                (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"
+            )
+        candidate = Question.model_validate({
+            **question.model_dump(), "answer": answer, "analysis": analysis,
+            "options": options, "selfCheck": self_check,
+        })
+        check_cancellation(cancel_check)
+        question.answer = candidate.answer
+        question.analysis = candidate.analysis
+        question.options = candidate.options
+        question.selfCheck = candidate.selfCheck
         return True
     return False
 
 
-def _solve_all(questions: list[Question], api_key: str | None, stats: ReviewStats) -> None:
-    if not questions:
-        return
 
-    def run(q: Question) -> tuple[Question, bool]:
+def _solve_all(
+    questions: list[Question], api_key: str | None, stats: ReviewStats,
+    cancel_check: Callable[[], None] | None = None,
+) -> set[int]:
+    """等待全部求解线程退出后统一更新，并返回独立求解成功的对象身份。"""
+    check_cancellation(cancel_check)
+    if not questions:
+        return set()
+
+    def run(q: Question) -> tuple[Question, Question, bool]:
+        candidate = q.model_copy(deep=True)
         try:
-            ok = _solve_one(q, api_key)
-        except Exception as exc:  # noqa: BLE001
+            return q, candidate, run_checked(
+                cancel_check, _solve_one, candidate, api_key,
+                **cancellation_kwargs(cancel_check),
+            )
+        except GenerationCanceled:
+            raise
+        except Exception as exc:
             logger.warning("解析生成失败：%s", exc)
-            ok = False
-        if not ok:
-            # 修补阶段可能留下命题模型自填的答案、解析与选项，未经独立求解一律作废：
-            # 带着未验证的答案入库，正是「选项与解析对不上」的来源。
-            q.answer = ""
-            q.analysis = ""
-            if q.type in (QuestionType.single, QuestionType.multiple):
-                q.options = []
-        return q, ok
+            check_cancellation(cancel_check)
+            return q, candidate, False
 
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-solve") as pool:
-        for question, ok in pool.map(run, questions):
-            if ok:
-                stats.solved += 1
+        results = list(pool.map(run, questions))
+    check_cancellation(cancel_check)
+    solved: set[int] = set()
+    for original, candidate, ok in results:
+        if ok:
+            original.answer = candidate.answer
+            original.analysis = candidate.analysis
+            original.options = candidate.options
+            original.selfCheck = candidate.selfCheck
+            stats.solved += 1
+            solved.add(id(original))
+    return solved
 
 
 def review_questions(
@@ -838,22 +903,46 @@ def review_questions(
     api_key: str | None,
     hyde_text: str | None = None,
     progress=None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> tuple[list[Question], ReviewStats]:
     """中间件主流程，返回通过校验的题目与统计。
 
     progress(percent, stage) 用于向出题任务写阶段进度；不传则静默执行。
+    db 必须没有活动事务和待写变更。语料在本函数拥有的短读事务内物化，
+    该事务在任何模型或 progress 调用前结束；不提交或回滚调用者的业务事务。
+    cancel_check 显式绑定当前任务；取消穿透降级，线程池退出时等待已发起工作结束。
     """
+    check_cancellation(cancel_check)
+    cancel_kwargs = cancellation_kwargs(cancel_check)
     stats = ReviewStats()
     if not questions:
         return [], stats
+    existing_answered = {id(q) for q in questions if q.answer.strip()}
 
     def report(percent: int, stage: str) -> None:
+        check_cancellation(cancel_check)
         if progress:
             progress(percent, stage)
+        check_cancellation(cancel_check)
 
     target = params.difficulty
     scope = params.scope or ""
-    corpus = load_corpus(db, user_id, params.kb_id)
+    if db.in_transaction() or db.new or db.dirty or db.deleted:
+        # 连已 flush 的变更也通过活动事务拒绝，不能只检查 new/dirty/deleted 后 rollback。
+        raise InvalidRequestError(
+            "review_questions requires a clean Session without an active transaction"
+        )
+    with db.begin():
+        corpus = load_corpus(db, user_id, params.kb_id)
+    check_cancellation(cancel_check)
+    seen_stems: set[str] = set()
+    combined_corpus: list[str] = []
+    for stem in corpus + (params.existing_stems or []):
+        key = _norm(stem)
+        if key and key not in seen_stems:
+            seen_stems.add(key)
+            combined_corpus.append(stem)
+    corpus = combined_corpus
     groups: dict[QuestionType, list[Question]] = {}
     for question in questions:
         groups.setdefault(question.type, []).append(question)
@@ -865,20 +954,28 @@ def review_questions(
     ordered_types = list(requested) + [t for t in groups if t not in requested]
 
     for qtype in ordered_types:
+        check_cancellation(cancel_check)
         items = groups.get(qtype)
         if not items:
             continue
         target_count = requested.get(qtype, len(items))
 
         report(78, f"正在排查重复题目（{done + 1}/{total}）")
-        kept, dropped = _drop_duplicates(items, corpus)
+        kept, dropped = run_checked(
+            cancel_check, _drop_duplicates, items, corpus, **cancel_kwargs,
+        )
         stats.duplicates += len(dropped)
 
         report(82, f"正在盲评题目难度（{done + 1}/{total}）")
         accepted: list[Question] = []
         rejected: list[tuple[Question, dict]] = []
         with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-eval") as pool:
-            reviewed = list(pool.map(lambda q: (q, evaluate(q, target, scope, api_key)), kept))
+            reviewed = list(pool.map(
+                lambda q: (q, run_checked(
+                    cancel_check, evaluate, q, target, scope, api_key, **cancel_kwargs,
+                )), kept,
+            ))
+        check_cancellation(cancel_check)
         for question, review in reviewed:
             _apply_review(question, review)
             if review.get("unknown"):
@@ -895,11 +992,19 @@ def review_questions(
             report(86, f"难度不符，正在按缺陷修补（{len(rejected)} 题）")
             batch = rejected[:need]
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-fix") as pool:
-                fixed = list(pool.map(lambda item: _repair(item[0], item[1], target, api_key), batch))
+                fixed = list(pool.map(
+                    lambda item: run_checked(
+                        cancel_check, _repair, item[0], item[1], target, api_key, **cancel_kwargs,
+                    ), batch,
+                ))
+            check_cancellation(cancel_check)
             still: list[tuple[Question, dict]] = []
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval") as pool:
                 reeval = list(pool.map(
-                    lambda q: (q, evaluate(q, target, scope, api_key, judges=1)) if q else (None, None),
+                    lambda q: (q, run_checked(
+                        cancel_check, evaluate, q, target, scope, api_key,
+                        judges=1, **cancel_kwargs,
+                    )) if q else (None, None),
                     fixed,
                 ))
             for question, review in reeval:
@@ -917,6 +1022,7 @@ def review_questions(
         # 避免同一批题反复重出把等待时间拖长
         rounds = max(1, min(2, settings.review_max_regen_rounds))
         for attempt in range(rounds):
+            check_cancellation(cancel_check)
             need = target_count - len(accepted)
             if need <= 0:
                 break
@@ -929,11 +1035,19 @@ def review_questions(
             if rejected and rejected[0][1].get("suggestion"):
                 directive += f"\n- 评审建议：{rejected[0][1]['suggestion']}"
             try:
-                fresh = _regen(params, qtype, need, doc_name, avoid, api_key, hyde_text, directive)
+                fresh = run_checked(
+                    cancel_check, _regen,
+                    params, qtype, need, doc_name, avoid, api_key, hyde_text, directive,
+                    **cancel_kwargs,
+                )
+            except GenerationCanceled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("换模板重出失败（%s）：%s", qtype.value, exc)
                 break
-            fresh, dup = _drop_duplicates(fresh, avoid)
+            fresh, dup = run_checked(
+                cancel_check, _drop_duplicates, fresh, avoid, **cancel_kwargs,
+            )
             stats.duplicates += len(dup)
             stats.regenerated += len(fresh)
             if not fresh:
@@ -941,7 +1055,9 @@ def review_questions(
                 continue
             with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval2") as pool:
                 reviewed_fresh = list(pool.map(
-                    lambda q: (q, evaluate(q, target, scope, api_key)), fresh
+                    lambda q: (q, run_checked(
+                        cancel_check, evaluate, q, target, scope, api_key, **cancel_kwargs,
+                    )), fresh
                 ))
             for question, review in reviewed_fresh:
                 _apply_review(question, review)
@@ -960,15 +1076,17 @@ def review_questions(
         final.extend(accepted[:target_count])
 
     report(96, f"正在生成解析（共 {len(final)} 题）")
-    _solve_all(final, api_key, stats)
-    # 解题失败的题目没有答案与解析，不能入库（宁可少给不出半成品）
-    unsolved = [q for q in final if q.type in _NEED_ANSWER_TYPES and not q.answer]
+    solved = run_checked(cancel_check, _solve_all, final, api_key, stats, **cancel_kwargs) or set()
+    unsolved = [
+        q for q in final if q.type in _NEED_ANSWER_TYPES
+        and (not q.answer.strip() or (id(q) not in existing_answered and id(q) not in solved))
+    ]
     if unsolved:
-        logger.warning("解题失败剔除 %d 题（无答案与解析）", len(unsolved))
+        logger.warning("剔除 %d 题（新题未通过独立求解或答案为空）", len(unsolved))
         dropped_set = {id(q) for q in unsolved}
         final = [q for q in final if id(q) not in dropped_set]
 
     order = {t: i for i, t in enumerate(ordered_types)}
     final.sort(key=lambda q: order.get(q.type, 99))
-    report(98, "题目校验完成")
+    report(100, "题目校验完成")
     return final, stats

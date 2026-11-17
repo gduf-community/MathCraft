@@ -105,8 +105,8 @@ LaTeX 定界规约（渲染层只解析美元定界符，违反会导致渲染�
     "solutionPath": "求导找驻点，分部积分", "answerCheck": "数值近似验证"},
   "stem": "已知 $f(x)=x\\,e^{-x}$。\\n（1）求 $f(x)$ 在 $[0,+\\infty)$ 上的最大值；\\n（2）求曲线 $y=f(x)$ 与 $x$ 轴、$y$ 轴所围图形的面积。",
   "options": [],
-  "answer": "（1）$\\frac{1}{e}$\\n（2）$1$",
-  "analysis": "（1）$f'(x)=(1-x)e^{-x}$，驻点 $x=1$，最大值 $f(1)=\\frac{1}{e}$。\\n（2）$$S=\\int_0^{+\\infty}x\\,e^{-x}\\,dx=\\left[-(x+1)e^{-x}\\right]_0^{+\\infty}=1$$ 分部积分后以边界值代入即得。",
+  "answer": "",
+  "analysis": "",
   "scoringPoints": ["求导与驻点", "验证最大值", "分部积分", "收敛判定"],
   "selfCheck": {"passed": true, "steps": 4, "knowledgeCount": 3, "computeLevel": "大",
                 "traps": 1, "note": ""}}]}"""
@@ -147,17 +147,22 @@ SOLVE_ANSWER_SYSTEM = """你是数学解题专家。独立解出给定的题目�
 3 多个小问时按（1）（2）（3）分点，用 \\n 分隔。
 4 数学公式用 $...$ 包裹，两个 $ 之间不得出现换行。
 5 confidence 填你对答案的把握：代回验算通过填 high，只能确认思路填 mid，题目本身有歧义填 low。
-6 只输出一个 JSON 对象：{"answer": "最终答案", "confidence": "high|mid|low"}
+6 只输出一个 JSON 对象：{"answer": "最终答案", "confidence": "high|mid|low"}。
+   单选 answer 为唯一正确选项文本字符串，不带选项字母。
+   多选固定四个选项，answer 必须为 2~3 个互不相同的正确项文本组成的数组，
+   例如 {"answer": ["正确项一", "正确项二"], "confidence": "high"}；保留 1~2 个错误项位置。
+   判断题 answer 只填 正确 或 错误；其他题型 answer 必须为非空字符串。
 7 不要输出解题过程、不要输出思考痕迹、不要输出 JSON 之外的任何文字。
 8 输出位于 JSON 字符串中，反斜杠按 JSON 规则写成两个：LaTeX 的 \\frac 在 JSON 里写作 \\\\frac。
    除此之外不要再加额外反斜杠。"""
 
-SOLVE_EXPLAIN_SYSTEM = """你是数学阅卷讲评老师。题目与标准答案已经给定，你负责写出确定性的解析，
-并在选择题中依据该答案构造干扰项。
+SOLVE_EXPLAIN_SYSTEM = """你是数学阅卷讲评老师。给定题目与待核验的候选答案，你负责核验后写出成品解析，
+并在选择题中依据已核验的答案构造干扰项。
 
 硬性要求：
-1 给定答案是唯一结论。解析必须推导出与它完全一致的结论，不得改成别的值。
-   若你认为答案本身有问题，把 confidence 置 low，但仍按给定答案写解析，不要另立答案。
+1 先独立核验候选答案；成立时按该答案写解析，结论写法保持一致。
+   若推导与候选答案矛盾，只写成立的推导，将真实结果写入 conclusion 并置 confidence 为 low。
+   禁止为了迎合候选答案伪造步骤、抄写错误结论或掩盖矛盾；系统会重新求解。
 2 解析只陈述成立的推导，用确定语气直接写。
    禁止出现任何犹豫、自纠、重算痕迹，例如"不对""好像有误""等等""重新算""让我想想""我再看看"。
    禁止出现"首先让我们分析""我们来考虑一下"这类过程性独白。
@@ -172,7 +177,7 @@ SOLVE_EXPLAIN_SYSTEM = """你是数学阅卷讲评老师。题目与标准答案
    - 输出位于 JSON 字符串中，反斜杠按 JSON 规则写成两个：LaTeX 的 \\frac 在 JSON 里写作 \\\\frac。
      不要再加额外反斜杠。
 5 选择题的干扰项：
-   - 单选需要恰好 3 个，多选按正确答案个数配 1~2 个，使选项总数正好 4 个；
+   - 单选需要恰好 3 个；多选固定 2~3 个正确项，配 1~2 个干扰项，使选项总数正好 4 个；
    - 全部围绕给定答案构造：改符号、换数值、漏条件、混淆公式，做成有迷惑性但确实错的选项；
    - 干扰项互不相同，都不等于正确答案，都不带 A. B. C. D. 前缀。
 6 只输出一个 JSON 对象：
@@ -180,7 +185,8 @@ SOLVE_EXPLAIN_SYSTEM = """你是数学阅卷讲评老师。题目与标准答案
            "distractors": ["干扰项1", "干扰项2", "干扰项3"], "confidence": "high|mid|low"}
    其他题型：{"analysis": "解析", "conclusion": "解析推导出的最终结果",
             "confidence": "high|mid|low"}
-7 conclusion 必须如实填写你自己推导出来的结果，不要抄给定答案凑数。
+7 如填写 conclusion，应如实填写推导结果，不要抄候选答案凑数。
+   多选的 conclusion 按候选正确项顺序用中文分号；连接，逐项核对且不得遗漏。
    若推导结果与给定答案一致，两者写法保持相同；若不一致，把差异如实写出来——
    系统会据此判断哪一步出了问题并重新求解，掩盖差异只会让错题进题库。
 8 不要输出 JSON 之外的任何文字。"""
@@ -265,6 +271,7 @@ CREATIVE_FOLLOWUP_LINES = {
 DATA_SYSTEM = """你是数学学习平台的数据查询助手。把用户的自然语言需求转换为结构化查询，只输出 JSON：
 {"action": "select|delete|update",
  "entity": "favorites|questions|papers|spaces|attempts|unknown",
+ "mode": "record|paper（仅 delete papers 时填写；默认 record）",
  "filters": [{"field": "字段名", "op": "eq|like|gt|lt|ge|le", "value": "字符串或数字"}],
  "aggregate": "none|count|avg:score|max:difficulty_score|min:difficulty_score",
  "order_by": "字段名（可加 - 表示倒序）或 none",
@@ -281,9 +288,16 @@ DATA_SYSTEM = """你是数学学习平台的数据查询助手。把用户的自
 1 "最有意思"没有对应字段，改按难度分 difficulty_score 从高到低取第 1 道，explanation 里说明按难度近似。
 2 "最难/最简单"用 aggregate 的 max/min 或 order_by=-difficulty_score。
 3 统计数量用 aggregate=count，limit 忽略。
-4 删除只允许 favorites 与 papers，且必须用户明确要求删除时 action 才能是 delete；update 仅支持 papers 改名，需要 set_name。
+4 删除只允许 favorites 与 papers，且必须用户明确要求删除时 action 才能是 delete。
+  papers 删除默认不填写 mode 或填写 mode=record，与组卷记录移除一致。
+  只有用户明确说“整卷删除/删除整份试卷”时才填写 mode=paper；不能因笼统的删除请求扩大范围。
+  整卷删除仍保留历史题目、作答、答案和成绩。update 仅支持 papers 改名，需要 set_name。
 5 用户一次询问多类数据（如"收藏了几个题、有几个学习空间"）时，输出：
 {"entities": [最多 3 个单实体查询对象，结构同上，action 均为 select], "explanation": "一句话"}
 此时不要再输出顶层 entity；每个对象各自带 filters 与 aggregate。
 6 拿不准的实体填 unknown，不要猜。
+7 mode 只用于单实体 papers 删除，多实体查询和其他 action 不要输出 mode。
+示例：
+“删除我的试卷” → {"action":"delete","entity":"papers","mode":"record"}
+“整卷删除我的试卷” → {"action":"delete","entity":"papers","mode":"paper"}
 只输出 JSON。"""

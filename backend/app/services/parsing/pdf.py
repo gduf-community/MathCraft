@@ -15,7 +15,7 @@ class PdfParser:
 
     def parse(self, file_path: Path) -> list[ParsedBlock]:
         with fitz.open(file_path) as doc:
-            pages = [page.get_text("text").strip() for page in doc]
+            pages = [page.get_textpage(flags=fitz.TEXTFLAGS_TEXT).extractText().strip() for page in doc]
         total = sum(len(t) for t in pages)
         if pages and total / len(pages) < MIN_CHARS_PER_PAGE:
             # 扫描版：交给 OCR 引擎（当前为占位，会抛出明确异常）

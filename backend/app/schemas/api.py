@@ -1,9 +1,13 @@
 """出题、题目、收藏、对话的请求模型。"""
 import base64
 from binascii import Error as Base64Error
-from typing import Self
+from datetime import datetime
+from typing import Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.schemas.question import Question
 
 
 class TypeCountBody(BaseModel):
@@ -13,6 +17,7 @@ class TypeCountBody(BaseModel):
 
 
 class GenerateStartBody(BaseModel):
+    request_id: UUID | None = None
     # 新前端使用 bank_id / document_id；旧前端仍可只传 kb_id / doc_id
     bank_id: str = Field(default="", max_length=40)
     document_id: str = Field(default="", max_length=40)
@@ -25,6 +30,55 @@ class GenerateStartBody(BaseModel):
     # 兼容旧前端的字段名
     kb_id: str | None = None
     doc_id: str | None = None
+
+
+class GenerateTaskResponse(BaseModel):
+    """可恢复的参数化任务标识。"""
+
+    task_id: str
+
+
+class GenerationReviewStats(BaseModel):
+    """生成审核的计数摘要。"""
+
+    duplicates: int
+    repaired: int
+    regenerated: int
+    solved: int
+
+
+class GenerationError(BaseModel):
+    """脱敏任务错误及原题不足提示。"""
+
+    message: str
+
+
+class GenerationConfirmationError(GenerationError):
+    """原题数量不足时的结构化确认信息。"""
+
+    kind: str
+    available: int
+    requested: int
+
+
+class GenerateProgressResponse(BaseModel):
+    """业务状态和执行退出分别报告，done 代表两者均已结束。"""
+
+    status: Literal["queued", "running", "canceling", "canceled", "done", "failed", "interrupted"]
+    execution_finished: bool
+    progress: int
+    stage: str
+    done: bool
+    batch_id: str | None
+    questions: list[Question]
+    review: GenerationReviewStats | None
+    error: GenerationConfirmationError | GenerationError | None
+
+
+class GenerateCancellationResponse(GenerateProgressResponse):
+    """取消后仍存在的本任务题目 ID，供清空覆盖部分删除批次。"""
+
+    question_ids: list[str]
 
 
 class QuestionUpdateBody(BaseModel):
@@ -62,6 +116,26 @@ class FavoriteMoveBody(BaseModel):
 class ChatSessionCreateBody(BaseModel):
     bank_id: str = Field(min_length=1)
     document_id: str = Field(min_length=1)
+
+
+class ChatHistoryMessageResponse(BaseModel):
+    """历史消息的持久化展示字段。"""
+
+    id: str
+    role: Literal["user", "assistant"]
+    text: str
+    batch_id: str | None
+    created_at: datetime
+
+
+class ChatSessionDetailResponse(BaseModel):
+    """恢复会话时同时恢复服务端模式，避免发送时隐式切换。"""
+
+    session_id: str
+    bank_id: str
+    document_id: str
+    mode: Literal["generate", "creative", "qa", "data"]
+    messages: list[ChatHistoryMessageResponse]
 
 
 class ChatMessageBody(BaseModel):

@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
+from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -20,6 +21,7 @@ from app.models import (
     User,
 )
 from app.models.base import new_id, utcnow
+from app.services.paper_state import lock_paper
 
 TYPE_ORDER = ["single", "multiple", "judge", "blank", "compute", "essay"]
 
@@ -102,7 +104,7 @@ def paper_question_payload(pq: PaperQuestion, include_answer: bool = True) -> di
     return payload
 
 
-def publications(db: Session, paper_id: str) -> list[tuple[PaperPublication, StudySpace]]:
+def publications(db: Session, paper_id: str) -> list[Row[PaperPublication, StudySpace]]:
     return (
         db.query(PaperPublication, StudySpace)
         .join(StudySpace, StudySpace.id == PaperPublication.space_id)
@@ -138,13 +140,19 @@ def _student_count_for_paper(db: Session, paper_id: str) -> int:
     return total
 
 
-def _latest_attempt(db: Session, paper_id: str, student_id: str, space_id: str | None = None) -> PaperAttempt | None:
+def _latest_attempt(
+    db: Session, paper_id: str, student_id: str, space_id: str | None = None,
+    *, submitted_only: bool = False,
+) -> PaperAttempt | None:
     q = db.query(PaperAttempt).filter(
         PaperAttempt.paper_id == paper_id,
         PaperAttempt.student_id == student_id,
     )
     if space_id:
         q = q.filter(PaperAttempt.space_id == space_id)
+    paper = db.get(Paper, paper_id)
+    if submitted_only or (paper is not None and (paper.closed or paper.deleted)):
+        q = q.filter(PaperAttempt.status == "submitted")
     return q.order_by(PaperAttempt.started_at.desc()).first()
 
 
@@ -154,6 +162,7 @@ def paper_payload(
     viewer: User,
     include_questions: bool = True,
     space_id: str | None = None,
+    include_history: bool = False,
 ) -> dict:
     pubs = publications(db, paper.id)
     spaces = [
@@ -165,7 +174,10 @@ def paper_payload(
         }
         for pub, space in pubs
     ]
-    latest = _latest_attempt(db, paper.id, viewer.id, space_id) if viewer.role == "student" else None
+    latest = _latest_attempt(
+        db, paper.id, viewer.id, space_id,
+        submitted_only=any(pub.space_id == space_id and pub.stopped for pub, _space in pubs),
+    ) if viewer.role == "student" else None
     submitted = bool(latest and latest.status == "submitted")
 
     data = {
@@ -177,11 +189,16 @@ def paper_payload(
         "question_count": paper.question_count,
         "total_score": paper.total_score,
         "status": paper.status,
+        "closed": bool(paper.closed),
+        "deleted": bool(paper.deleted),
         "saved_to_records": bool(paper.saved_to_records),
         "allow_review": bool(paper.allow_review),
         "allow_retake": bool(paper.allow_retake),
         "exam_window": (
-            {"start": _aware(paper.exam_start), "end": _aware(paper.exam_end)}
+            {
+                "start": _aware(paper.exam_start) if paper.exam_start is not None else None,
+                "end": _aware(paper.exam_end) if paper.exam_end is not None else None,
+            }
             if paper.exam_start or paper.exam_end
             else None
         ),
@@ -198,9 +215,22 @@ def paper_payload(
             .order_by(PaperQuestion.order_no)
             .all()
         )
+        if include_history:
+            historical_ids = {
+                question_id
+                for attempt in db.query(PaperAttempt).filter_by(paper_id=paper.id).all()
+                for question_id in json.loads(attempt.question_ids_json or "[]")
+            }
+            rows = [row for row in rows if not row.removed or row.id in historical_ids]
+        else:
+            rows = [row for row in rows if not row.removed]
         # 他人试卷仅在交卷且允许复盘时下发答案，个人练习拥有者保留查看权限
         include_answer = viewer.id == paper.owner_id or (submitted and bool(paper.allow_review))
-        data["questions"] = [paper_question_payload(r, include_answer) for r in rows]
+        data["questions"] = [
+            {**paper_question_payload(row, include_answer),
+             "no": row.order_no if include_history else index}
+            for index, row in enumerate(rows, 1)
+        ]
     return data
 
 
@@ -273,14 +303,28 @@ def create_paper(db: Session, user: User, body) -> Paper:
     return paper
 
 
+def _check_publication_removal(db: Session, paper: Paper, pub: PaperPublication) -> None:
+    """在试卷写门禁内确认指定空间的发布可移除。"""
+    if db.query(PaperAttempt.id).filter_by(
+        paper_id=paper.id, space_id=pub.space_id,
+    ).first():
+        raise AppError(
+            "PAPER_HAS_ATTEMPTS",
+            "该空间已有作答，不能移除发布；请停止作答或整卷删除以保留历史",
+            status_code=409,
+        )
+    if not pub.stopped:
+        raise AppError("PAPER_PUBLICATION_OPEN", "请先停止作答，才能移除发布", status_code=409)
+
+
 def _sync_publications(db: Session, paper: Paper, user: User, space_ids: list[str]) -> None:
     desired = {s.id: s for s in validate_space_ids(db, user, space_ids)}
     existing = {pub.space_id: pub for pub, _s in publications(db, paper.id)}
     # 删除不在目标里的发布记录；有作答时禁止
     for sid, pub in existing.items():
         if sid not in desired:
-            if db.query(PaperAttempt).filter(PaperAttempt.paper_id == paper.id, PaperAttempt.space_id == sid).first():
-                raise AppError("FORBIDDEN", "该空间已有学生作答，不能移除发布", status_code=409)
+            db.refresh(pub)
+            _check_publication_removal(db, paper, pub)
             db.delete(pub)
     # 新增
     for sid in desired:
@@ -296,6 +340,7 @@ def _sync_publications(db: Session, paper: Paper, user: User, space_ids: list[st
 
 
 def update_paper(db: Session, paper: Paper, user: User, body) -> Paper:
+    paper = lock_paper(db, paper.id)
     if body.name is not None:
         paper.name = body.name.strip()
 
@@ -344,10 +389,7 @@ def update_paper(db: Session, paper: Paper, user: User, body) -> Paper:
             paper.status = "published"
             paper.published_at = paper.published_at or utcnow()
         else:
-            if db.query(PaperAttempt).filter(PaperAttempt.paper_id == paper.id).first():
-                raise AppError("FORBIDDEN", "已有学生作答，不能取消发布", status_code=409)
-            for pub, _s in publications(db, paper.id):
-                db.delete(pub)
+            _sync_publications(db, paper, user, [])
             paper.status = "draft"
 
     db.commit()
@@ -356,6 +398,7 @@ def update_paper(db: Session, paper: Paper, user: User, body) -> Paper:
 
 
 def publish_paper(db: Session, paper: Paper, user: User, body) -> Paper:
+    paper = lock_paper(db, paper.id)
     if user.role != "teacher":
         raise AppError("FORBIDDEN", "只有教师可以发布试卷", status_code=403)
     validate_exam_window(body.exam_start, body.exam_end)
@@ -388,14 +431,47 @@ def get_publication(db: Session, paper_id: str, space_id: str) -> PaperPublicati
 
 
 def set_publication_stopped(db: Session, pub: PaperPublication, stopped: bool) -> None:
+    lock_paper(db, pub.paper_id)
+    db.refresh(pub)
     pub.stopped = stopped
     pub.stopped_at = utcnow() if stopped else None
     db.commit()
 
 
+def set_closed(db: Session, paper: Paper, closed: bool) -> Paper:
+    """关闭只阻止新作答及交卷；历史复盘继续可用。"""
+    paper = lock_paper(db, paper.id)
+    paper.closed = closed
+    db.commit()
+    return paper
+
+
+def delete_paper(
+    db: Session, paper: Paper, mode: str = "record", *, commit: bool = True,
+) -> None:
+    """移除记录或关闭后的试卷，保留发布、题目、答案及历史统计。"""
+    paper = lock_paper(db, paper.id)
+    has_pub = db.query(PaperPublication.id).filter_by(paper_id=paper.id).first()
+    if mode == "record" and paper.status == "published" and has_pub:
+        paper.saved_to_records = False
+    else:
+        if not paper.closed:
+            raise AppError("PAPER_NOT_CLOSED", "请先关闭试卷，才能删除", 409)
+        if db.query(PaperPublication.id).filter_by(paper_id=paper.id, stopped=False).first():
+            raise AppError("PAPER_PUBLICATION_OPEN", "请先停止所有学习空间中的作答", 409)
+        if db.query(PaperAttempt.id).filter_by(paper_id=paper.id, status="grading").first():
+            raise AppError("GRADING_BUSY", "试卷正在批卷，请稍后删除", 409)
+        paper.deleted = True
+        paper.saved_to_records = False
+    if commit:
+        db.commit()
+
+
 def remove_publication(db: Session, paper: Paper, pub: PaperPublication) -> None:
-    if not pub.stopped:
-        raise AppError("FORBIDDEN", "请先停止作答，才能从空间删除", status_code=403)
+    """停止且被移除空间没有该试卷作答时允许移除发布，否则保留该空间历史入口。"""
+    paper = lock_paper(db, paper.id)
+    db.refresh(pub)
+    _check_publication_removal(db, paper, pub)
     db.delete(pub)
     db.flush()
     if not db.query(PaperPublication).filter(PaperPublication.paper_id == paper.id).first():
@@ -404,26 +480,27 @@ def remove_publication(db: Session, paper: Paper, pub: PaperPublication) -> None
 
 
 def remove_paper_questions(db: Session, paper: Paper, paper_question_ids: list[str]) -> Paper:
-    if db.query(PaperAttempt).filter(PaperAttempt.paper_id == paper.id).first():
-        raise AppError("FORBIDDEN", "已有学生作答，不能删除题目", status_code=409)
+    paper = lock_paper(db, paper.id)
+    if not paper.closed:
+        raise AppError("PAPER_NOT_CLOSED", "请先关闭试卷，才能删除题目", 409)
+    if db.query(PaperAttempt).filter_by(paper_id=paper.id, status="grading").first():
+        raise AppError("GRADING_BUSY", "试卷正在批卷，请稍后删除", 409)
     rows = (
         db.query(PaperQuestion)
-        .filter(PaperQuestion.paper_id == paper.id, PaperQuestion.id.in_(paper_question_ids))
+        .filter(PaperQuestion.paper_id == paper.id, PaperQuestion.id.in_(paper_question_ids), PaperQuestion.removed.is_(False))
         .all()
     )
     if not rows:
         raise AppError("NOT_FOUND", "题目不在该试卷中", status_code=404)
     for r in rows:
-        db.delete(r)
+        r.removed = True
     db.flush()
     remaining = (
         db.query(PaperQuestion)
-        .filter(PaperQuestion.paper_id == paper.id)
+        .filter(PaperQuestion.paper_id == paper.id, PaperQuestion.removed.is_(False))
         .order_by(PaperQuestion.order_no)
         .all()
     )
-    for i, r in enumerate(remaining, 1):
-        r.order_no = i
     paper.question_count = len(remaining)
     paper.total_score = sum(r.score for r in remaining)
     paper.modules_order_json = json.dumps(
@@ -449,19 +526,27 @@ def list_papers(
     include_drafts: bool = True,
     saved_only: bool = False,
     space_id: str | None = None,
+    include_history: bool = False,
 ) -> list[dict]:
     """组卷记录严格按账号隔离：只返回当前用户自己创建的试卷。
 
     学生作答老师发布的试卷通过学习空间（space_papers）与作答接口进入，
     不混入学生的组卷记录列表。
     """
-    papers = {p.id: p for p in db.query(Paper).filter(Paper.owner_id == user.id).all()}
+    query = db.query(Paper).filter(Paper.owner_id == user.id)
+    if not include_history:
+        query = query.filter(Paper.deleted.is_(False))
+    papers = {p.id: p for p in query.all()}
 
     out = []
     for p in sorted(papers.values(), key=lambda x: x.created_at, reverse=True):
+        if p.deleted and not db.query(PaperAttempt.id).filter_by(
+            paper_id=p.id, status="submitted",
+        ).first():
+            continue
         if not include_drafts and p.status != "published":
             continue
-        if saved_only and not p.saved_to_records:
+        if saved_only and not p.saved_to_records and not (include_history and p.deleted):
             continue
         if space_id:
             exists = (
@@ -498,7 +583,17 @@ def space_papers(db: Session, space: StudySpace, viewer: User) -> list[dict]:
             urge_map[pid] = last
     out = []
     for pub, paper in rows:
-        latest = _latest_attempt(db, paper.id, viewer.id, space.id) if viewer.role == "student" else None
+        if paper.deleted:
+            history = db.query(PaperAttempt.id).filter_by(
+                paper_id=paper.id, space_id=space.id, status="submitted",
+            )
+            if viewer.role == "student":
+                history = history.filter(PaperAttempt.student_id == viewer.id)
+            if history.first() is None:
+                continue
+        latest = _latest_attempt(
+            db, paper.id, viewer.id, space.id, submitted_only=pub.stopped,
+        ) if viewer.role == "student" else None
         out.append(
             {
                 "id": paper.id,
@@ -507,10 +602,15 @@ def space_papers(db: Session, space: StudySpace, viewer: User) -> list[dict]:
                 "question_count": paper.question_count,
                 "total_score": paper.total_score,
                 "status": paper.status,
+                "closed": bool(paper.closed),
+                "deleted": bool(paper.deleted),
                 "allow_review": bool(paper.allow_review),
                 "allow_retake": bool(paper.allow_retake),
                 "exam_window": (
-                    {"start": _aware(paper.exam_start), "end": _aware(paper.exam_end)}
+                    {
+                        "start": _aware(paper.exam_start) if paper.exam_start is not None else None,
+                        "end": _aware(paper.exam_end) if paper.exam_end is not None else None,
+                    }
                     if paper.exam_start or paper.exam_end
                     else None
                 ),
@@ -534,7 +634,14 @@ def space_papers(db: Session, space: StudySpace, viewer: User) -> list[dict]:
 
 
 def urge_paper(db: Session, paper: Paper, space: StudySpace, teacher: User) -> dict:
-    """催交：同一（试卷, 空间）24 小时内只允许一次。"""
+    """统一写门禁内检查可作答状态及同一发布的 24 小时催交冷却。"""
+    paper = lock_paper(db, paper.id)
+    pub = get_publication(db, paper.id, space.id)
+    db.refresh(pub)
+    if paper.closed:
+        raise AppError("PAPER_CLOSED", "该试卷已关闭，不能催交", status_code=403)
+    if pub.stopped:
+        raise AppError("PAPER_STOPPED", "本空间已停止作答，不能催交", status_code=403)
     last = (
         db.query(PaperUrge)
         .filter(PaperUrge.paper_id == paper.id, PaperUrge.space_id == space.id)
@@ -568,7 +675,7 @@ def urge_feed(db: Session, student: User) -> dict:
             & (SpaceMember.user_id == student.id)
             & (SpaceMember.status == "active"),
         )
-        .filter(StudySpace.status == "active", Paper.status == "published")
+        .filter(StudySpace.status == "active", Paper.status == "published", Paper.deleted.is_(False))
         .order_by(PaperUrge.created_at.asc())
         .all()
     )
@@ -590,7 +697,7 @@ def urge_feed(db: Session, student: User) -> dict:
                 "space_name": space.name,
                 "teacher_name": teacher.display_name,
                 "created_at": created,
-                "exam_end": _aware(paper.exam_end),
+                "exam_end": _aware(paper.exam_end) if paper.exam_end is not None else None,
             }
         )
     return {"unread_count": unread, "items": items}
@@ -700,7 +807,12 @@ def statistics(db: Session, paper: Paper, space_id: str) -> dict:
     result_questions = []
     for pq in questions:
         rows = answers_by_pq.get(pq.id, [])
-        total = len(attempts)
+        total = sum(
+            1 for attempt in attempts
+            if not attempt.question_ids_json or pq.id in json.loads(attempt.question_ids_json)
+        )
+        if pq.removed and total == 0:
+            continue
         average = round(sum(r.score for r in rows) / total, 2) if total else 0.0
         correct = sum(1 for r in rows if r.is_correct)
         item = {

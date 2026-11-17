@@ -410,3 +410,4 @@ def test_thinking_compatibility_retry_keeps_success_semantics(
     assert len(requests) == 2
     assert requests[0]["thinking"] == {"type": "disabled"}
     assert "thinking" not in requests[1]
+    assert requests[1]["chat_template_kwargs"] == {"thinking": False}

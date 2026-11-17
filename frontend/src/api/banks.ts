@@ -51,6 +51,9 @@ export interface BankMember {
 
 export interface ManagedBank {
   id: string
+  status: ApiBank['status']
+  stage?: string | null
+  errorMessage?: string | null
   name: string
   code: string
   memberCount: number
@@ -103,10 +106,16 @@ function mapMember(m: ApiBankMember): BankMember {
 
 async function enrich(bank: ApiBank, started: number): Promise<ManagedBank> {
   assertCurrentSession(started)
-  const [members, docs] = await Promise.all([listBankMembers(bank.id), listDocuments(bank.id)])
+  const deleting = bank.status === 'deleting'
+  const [members, docs] = deleting
+    ? [[], []]
+    : await Promise.all([listBankMembers(bank.id), listDocuments(bank.id)])
   assertCurrentSession(started)
   return {
     id: bank.id,
+    status: bank.status,
+    stage: bank.stage,
+    errorMessage: bank.error_message,
     name: bank.name,
     code: bank.code,
     memberCount: bank.member_count,
@@ -117,12 +126,12 @@ async function enrich(bank: ApiBank, started: number): Promise<ManagedBank> {
     quitted: bank.quitted,
     source: bank.source,
     myRole: bank.my_role,
-    canUpload: bank.can_upload_document,
-    canDownload: bank.can_download_document,
-    canDeleteDoc: bank.can_delete_document,
-    canManageMembers: bank.can_manage_members,
-    canEdit: bank.can_edit_bank,
-    canTransfer: bank.can_transfer_bank,
+    canUpload: !deleting && bank.can_upload_document,
+    canDownload: !deleting && bank.can_download_document,
+    canDeleteDoc: !deleting && bank.can_delete_document,
+    canManageMembers: !deleting && bank.can_manage_members,
+    canEdit: !deleting && bank.can_edit_bank,
+    canTransfer: !deleting && bank.can_transfer_bank,
     canDelete: bank.can_delete_bank,
   }
 }

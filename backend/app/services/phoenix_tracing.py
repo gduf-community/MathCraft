@@ -218,25 +218,33 @@ def _end(span: "Span | None", error: str | None = None, *, incomplete: bool = Fa
         logger.warning("Phoenix span completion unavailable")
 
 
-def trace_run(entrypoint: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
+def trace_run(
+    entrypoint: str, *, run_id_kwarg: str | None = None, force_new: bool = False,
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Group a current business execution without changing its result or signature."""
     def decorate(function: Callable[P, T]) -> Callable[P, T]:
         @wraps(function)
         def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
             runtime = _runtime
-            if runtime is None or _run.get() is not None:
+            if not force_new and (runtime is None or _run.get() is not None):
                 return function(*args, **kwargs)
-            try:
-                run_id = "run_" + uuid4().hex
-                span = runtime.provider.get_tracer("mathcraft.phoenix").start_span(
-                    "mathcraft." + entrypoint,
-                    attributes={"openinference.span.kind": "CHAIN", "mathcraft.run_id": run_id,
-                                "mathcraft.entrypoint": entrypoint},
-                )
-            except Exception:
-                logger.warning("Phoenix run tracing unavailable")
-                return function(*args, **kwargs)
-            token = _run.set(_RunContext(run_id, entrypoint, span))
+            span = None
+            context = None
+            if runtime is not None:
+                try:
+                    supplied = kwargs.get(run_id_kwarg) if run_id_kwarg is not None else None
+                    run_id = (supplied if isinstance(supplied, str)
+                              and _IDENTIFIER.fullmatch(supplied) else "run_" + uuid4().hex)
+                    span = runtime.provider.get_tracer("mathcraft.phoenix").start_span(
+                        "mathcraft." + entrypoint,
+                        attributes={"openinference.span.kind": "CHAIN", "mathcraft.run_id": run_id,
+                                    "mathcraft.entrypoint": entrypoint},
+                    )
+                    context = _RunContext(run_id, entrypoint, span)
+                except Exception:
+                    logger.warning("Phoenix run tracing unavailable")
+            # A forced business run must not inherit its parent when tracing is unavailable.
+            token = _run.set(context)
             error = None
             try:
                 return function(*args, **kwargs)

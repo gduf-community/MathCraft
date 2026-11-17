@@ -8,7 +8,13 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 文档支持 PDF、DOCX、XLSX、Markdown 和 TXT；扫描件通过 MinerU OCR 解析，检索采用向量与全文混合召回、重排，出题与批卷使用 DeepSeek。
 
-对话提供快速出题、创新命题、知识答疑和数据管理四模式。生成阶段在后端流式解析并校验题目，界面通过进度轮询等待审核后的结果；题目预览中勾选题目后可导出 Word，设置题型顺序、答案和解析的位置。
+对话提供快速出题、创新命题、知识答疑和数据管理四模式，右侧历史会话支持继续已有对话。出题先命制题干，再独立解题生成答案、选项和解析，审核后按题型缺口尝试补齐；界面通过进度轮询等待结果。题目预览中勾选题目后可导出 Word，设置题型顺序、答案和解析的位置。
+
+试卷支持关闭和恢复作答，删除保留已有作答及成绩；出题任务状态存入 SQL，服务重启后未完成的任务标为中断，用户可重新发起。预览页一键清空只删除题目，保留对话；运行期间暂不可清空，后台取消和最终提交继续校验运行身份。
+
+学习空间可在停止作答后移除尚无作答记录的发布；已有作答保留历史入口。删除未完成的题库与资料在管理页提供继续清理入口。
+
+两类出题入口已接入正式运行台账，运维 V2 提供管理员概览、运行列表和详情查询；前端已对接 V2 概览、运行列表与基本详情。台账不可用时查询返回 503，不回退演示数据。范围、字段和交接见[运维查询 V2](docs/design/运维查询V2接口与查询设计.md)。
 
 ## 目录结构
 
@@ -20,15 +26,24 @@ MathCraft/
 │   ├── app/                  # 接口、数据模型与业务服务
 │   ├── alembic/              # 数据库迁移
 │   ├── scripts/              # 配置初始化与账号管理
-│   ├── tests/                # 后端测试
+│   ├── tests/                # 后端测试与隔离页面联调辅助
 │   └── README.md             # 后端配置、迁移与排错
 ├── frontend/                 # React + TypeScript 前端
 │   ├── src/                  # 页面、组件、API 与状态管理
 │   └── README.md             # 前端开发说明
-├── docs/                     # API 文档与设计说明
+├── docs/                     # API、设计与维护文档
 │   ├── api.md                # API 索引
-│   └── design/               # 设计、实施与验证记录
+│   ├── 测试与持续集成.md     # 测试范围与 CI 维护说明
+│   ├── design/               # 功能与架构设计
+│   ├── requirements/         # 产品需求与待定讨论
+│   ├── implementation/       # 实施、交接与历史验收
+│   ├── research/             # 调查与评估
+│   ├── reference/            # 参考清单
+│   ├── operations/           # 运维手册
+│   └── archive/              # 已失效方案归档
 ├── tools/                    # 文档生成与维护工具
+│   ├── archive/              # 失效脚本历史归档，不用于当前验收
+│   └── ops_g0/               # 历史工具及独立测试
 ├── apps/desktop/             # 桌面客户端预留目录
 ├── packages/contracts/       # 共享契约预留目录
 ├── compose.yaml              # 本地 Redis 容器
@@ -36,7 +51,6 @@ MathCraft/
 ├── pyproject.toml            # 仓库级依赖与检查配置
 ├── openapi.json              # 接口契约
 ├── AGENTS.md                 # 协作约定
-├── GLOSSARY.md               # 领域术语
 └── STUBS.md                  # 开发演示与历史替身说明
 ```
 
@@ -105,9 +119,11 @@ OpenAI 兼容客户端使用 `openai<3`：当前追踪适配基于 `httpx`，不
 
 MinerU Token 在“设置 → 模型与服务”保存，个人配置优先；部署默认 Token 使用 `app/local_secrets.py` 的 `MINERU_DEFAULT_TOKEN`。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不生效，已有本机文件不会自动迁移。嵌入和重排模型仍由管理员“模型与检索”维护。
 
+平台生成模型凭据支持管理员接口 `/api/admin/llm-settings`，使用 `cryptography` 加密保存。调用优先使用个人 Key，其次为平台凭据，最后为部署默认；个人 Key 被模型服务拒绝时可回退平台配置。加密主密钥位于上传目录父级的 `secret.key`（默认 `backend/data/secret.key`），备份数据库时一并备份该文件。
+
 ### 4. 迁移数据库并创建首个管理员
 
-继续在 `backend/` 执行：
+已有数据应先备份并在副本验证；若曾使用旧 V2 同号迁移或来源不明，须先按[后端迁移说明](backend/README.md#迁移与验证)核对并制定修复方案。完成核验后继续在 `backend/` 执行：
 
 ```powershell
 New-Item -ItemType Directory -Path data -Force | Out-Null
@@ -176,7 +192,7 @@ docker compose down             # 移除容器，保留数据卷
 - 登录按钮显示“认证配置不可用”：确认认证密钥已初始化，开发配置为 `APP_ENV=development`、`TURNSTILE_ENABLED=false`，按上述回环地址与 `--no-proxy-headers` 启动，然后重启后端、刷新页面。检查启动环境变量是否覆盖 `.env`。
 - 前端请求失败：确认后端 8000 端口和 Redis 均已启动；邮件、向量、OCR 等依赖的状态可从健康检查查看。
 - Chroma 在 Windows 报 `code 14`：核对启动进程的 `TEMP/TMP` 是否可写，处理步骤见 [后端说明](backend/README.md)。
-- 删除资料提示 `DATABASE_BUSY`：短暂写锁会自动有限重试；持续占锁时保留资料与原件，请稍后重试并检查其他写入进程。不要根据失败状态或零切片计数跳过索引清理，见 [删除与锁竞争说明](docs/design/知识库模块说明.md#删除写锁竞争修复2026-11-12)。
+- 删除资料提示 `DATABASE_BUSY` 或 `DELETION_PENDING`：短暂写锁会有限重试；已登记删除的资源进入不可用状态，重试或重启后继续清理，见 [删除与恢复边界](docs/design/数据一致性与故障恢复设计.md)。
 - 删除资料的全文索引清理出现 `SQLITE_CANTOPEN / 14`：更新后重启后端以应用 SQLite 内存临时存储配置；数据库与 WAL 仍保存在磁盘。该错误与写锁竞争分别处理，见 [后端排错说明](backend/README.md#常见问题)。
 
 生产部署需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true` 并配置 Cloudflare 站点信息，关闭开发账号能力，配置持久化路径与备份。服务器通过 SSH 连接，部署前按 [后端迁移说明](backend/README.md#迁移与验证) 完成备份、迁移与审计。
@@ -200,6 +216,8 @@ uv sync --group dev
 uv run pytest -q
 ```
 
+开发依赖包含 `pytest-xdist`，可使用 `pytest -n 4 --dist loadfile` 并行执行。当前测试范围与隔离说明见[测试与持续集成](docs/测试与持续集成.md)。
+
 前端在 `frontend/` 执行：
 
 ```powershell
@@ -212,12 +230,13 @@ npm run build
 
 - [后端说明](backend/README.md)、[前端说明](frontend/README.md)：开发、配置与排错。
 - [API 文档](docs/api.md)、[OpenAPI 契约](openapi.json)：接口与数据字段。
-- [账号与权限](docs/design/账号系统整合与审查修复.md)、[认证与账号安全](docs/design/登录视觉恢复与历史前端对照.md)。
+- [数据一致性与故障恢复设计](docs/design/数据一致性与故障恢复设计.md)：关闭与历史作答、任务持久化、删除恢复及缓存完整性。
+- [账号与权限](docs/implementation/账号系统整合与审查修复.md)、[认证与账号安全](docs/implementation/登录视觉恢复与历史前端对照.md)。
 - [模型配置](docs/design/模型配置来源与普通知识库流程.md)、[知识库](docs/design/知识库模块说明.md)。
 - [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
-- [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/design/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/design/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
-- [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/design/运维后台运行手册.md)、[可选追踪](docs/design/Phoenix可选扩展.md)。
-- [协作约定](AGENTS.md)、[领域术语](GLOSSARY.md)。
+- [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/requirements/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/research/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
+- [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/operations/运维后台运行手册.md)、[台账基础](docs/design/运维后台运行台账基础.md)、[入口接入](docs/design/运维后台出题入口接入.md)、[前端 V2](docs/implementation/运维后台前端V2适配与联调.md)和[可选追踪](docs/design/Phoenix可选扩展.md)。
+- [协作约定](AGENTS.md)。
 
 ## 许可证
 

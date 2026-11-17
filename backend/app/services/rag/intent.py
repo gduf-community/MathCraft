@@ -5,6 +5,11 @@
 - 强关键词指向别的模式时才调 LLM 复核，避免误拦；
 - LLM 失败或拿不准时保守放行当前模式。
 """
+from collections.abc import Callable
+
+from app.services.generation_cancellation import (
+    GenerationCanceled, cancellation_kwargs, check_cancellation, run_checked,
+)
 from app.services.rag.llm import chat_json
 from app.services.rag.modes import DEFAULT_MODE, MODES, mode_label
 from app.services.rag.prompts import INTENT_SYSTEM
@@ -54,21 +59,29 @@ def keyword_intent(message: str, current_mode: str) -> dict | None:
     return None
 
 
-def detect_intent(message: str, current_mode: str, api_key: str | None = None) -> dict:
+def detect_intent(
+    message: str, current_mode: str, api_key: str | None = None, *,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict:
     """返回 {intent, confidence, slots, need_confirm, suggested_template, reason}。"""
+    check_cancellation(cancel_check)
     current = current_mode if current_mode in MODES else DEFAULT_MODE
     kw = keyword_intent(message, current)
     if kw:
         return kw
     try:
-        data = chat_json(
+        data = run_checked(
+            cancel_check, chat_json,
             [
                 {"role": "system", "content": INTENT_SYSTEM},
                 {"role": "user", "content": f"当前模式：{current}（{mode_label(current)}）\n用户消息：{message}"},
             ],
             api_key=api_key,
             thinking_off=True,
+            **cancellation_kwargs(cancel_check),
         )
+    except GenerationCanceled:
+        raise
     except Exception:  # noqa: BLE001 意图识别失败不阻塞对话，保守放行当前模式
         data = {}
     confidence = (data.get("confidence") if isinstance(data, dict) else None)

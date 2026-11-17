@@ -194,10 +194,7 @@ export default function HistorySidebar() {
           title="删除对话"
           message={`将删除「${pendingDelete.title}」的对话记录，操作不可恢复。确定继续吗？`}
           confirmText="确认删除"
-          onConfirm={() => {
-            void removeSession(pendingDelete.id)
-            setPendingDelete(null)
-          }}
+          onConfirm={() => removeSession(pendingDelete.id)}
           onClose={() => setPendingDelete(null)}
         />
       )}

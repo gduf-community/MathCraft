@@ -151,6 +151,9 @@ export interface ApiBankCreator {
 
 export interface ApiBank {
   id: string
+  status: 'active' | 'deleting'
+  stage?: string | null
+  error_message?: string | null
   name: string
   code: string
   creator: ApiBankCreator | null
@@ -184,6 +187,7 @@ function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
 function isApiBank(value: unknown): value is ApiBank {
   return isRecord(value)
     && typeof value.id === 'string' && typeof value.name === 'string'
+    && (value.status === 'active' || value.status === 'deleting')
     && typeof value.code === 'string' && typeof value.member_count === 'number'
     && typeof value.capacity === 'number' && typeof value.quitted === 'boolean'
     && (value.source === 'owned' || value.source === 'joined')
@@ -375,6 +379,17 @@ export async function viewDocument(bankId: string, docId: string): Promise<void>
 
 /* ---------------- 出题与题目 ---------------- */
 
+export interface GenerateBody {
+  request_id?: string
+  bank_id: string
+  document_id: string
+  types: { type: QuestionType; count: number }[]
+  difficulty: Difficulty
+  scope?: string
+  source_mode?: string
+  existing_stems?: string[]
+}
+
 export interface ApiQuestion {
   id: string
   paper_question_id?: string
@@ -411,6 +426,7 @@ export interface ApiQuestion {
 export function mapQuestion(q: ApiQuestion): Question {
   return {
     id: q.paper_question_id ?? q.id,
+    no: q.no,
     type: q.type,
     score: q.score,
     difficulty: q.difficulty,
@@ -425,6 +441,39 @@ export function mapQuestion(q: ApiQuestion): Question {
     favGroupId: q.favorite_group_id ?? undefined,
     docName: q.doc_name ?? '',
   }
+}
+
+export async function startGeneration(body: GenerateBody): Promise<{ task_id: string }> {
+  return request<{ task_id: string }>('/api/generate/start', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export interface GenerateProgress {
+  status: 'queued' | 'running' | 'canceling' | 'canceled' | 'done' | 'failed' | 'interrupted'
+  execution_finished: boolean
+  question_ids?: string[]
+  progress: number
+  stage: string
+  done: boolean
+  batch_id: string | null
+  questions: ApiQuestion[]
+  /** 出题中间件的处理统计：去重、重出、补解析的题数 */
+  review?: { duplicates: number; repaired?: number; regenerated: number; solved: number } | null
+  error: { message?: string; kind?: string; available?: number; requested?: number } | null
+}
+
+export async function getGenerationProgress(taskId: string): Promise<GenerateProgress> {
+  return request<GenerateProgress>(`/api/generate/progress/${taskId}`)
+}
+
+export async function findGenerationRequest(requestId: string): Promise<{ task_id: string }> {
+  return request(`/api/generate/requests/${requestId}`)
+}
+
+export async function cancelGeneration(taskId: string): Promise<GenerateProgress & { question_ids: string[] }> {
+  return request(`/api/generate/cancel/${taskId}`, { method: 'POST' })
 }
 
 export async function latestBatch(
@@ -604,12 +653,14 @@ export async function removeSpaceMember(spaceId: string, userId: string): Promis
 /** 空间内发布的试卷（学生作答入口；与组卷记录严格隔离） */
 export interface ApiSpacePaper {
   id: string
+  closed: boolean
+  deleted: boolean
   name: string
   created_at: string
   question_count: number
   total_score: number
   status: string
-  exam_window: { start: string; end: string } | null
+  exam_window: { start: string | null; end: string | null } | null
   stopped: boolean
   submitted_count: number
   student_count: number
@@ -667,6 +718,8 @@ export interface ApiPaperSpace {
 
 export interface ApiPaper {
   id: string
+  closed: boolean
+  deleted: boolean
   name: string
   owner_id: string
   created_at: string
@@ -677,7 +730,7 @@ export interface ApiPaper {
   saved_to_records: boolean
   allow_review: boolean
   allow_retake: boolean
-  exam_window: { start: string; end: string } | null
+  exam_window: { start: string | null; end: string | null } | null
   spaces: ApiPaperSpace[]
   submitted_count: number
   student_count: number
@@ -706,11 +759,14 @@ export function toIso(value?: string | null): string | null {
 export function mapPaper(p: ApiPaper): AssembleRecord {
   return {
     id: p.id,
+    closed: p.closed,
+    deleted: p.deleted,
     name: p.name,
     createdAt: formatDateTime(p.created_at),
     questionCount: p.question_count,
     totalScore: p.total_score,
     spaces: p.spaces.map((s) => s.name),
+    publications: p.spaces.map((s) => ({ spaceId: s.space_id, stopped: s.stopped })),
     published: p.status === 'published',
     questions: p.questions?.map(mapQuestion),
     examWindow: p.exam_window
@@ -753,10 +809,12 @@ function paperBody(payload: PaperCreatePayload) {
 
 export async function listPapers(params: {
   include_drafts?: boolean
+  include_history?: boolean
   saved?: boolean
   space_id?: string
 } = {}): Promise<ApiPaper[]> {
   const search = new URLSearchParams()
+  search.set('include_history', String(params.include_history ?? true))
   if (params.include_drafts !== undefined) search.set('include_drafts', String(params.include_drafts))
   if (params.saved !== undefined) search.set('saved', String(params.saved))
   if (params.space_id) search.set('space_id', params.space_id)
@@ -767,8 +825,16 @@ export async function createPaperApi(payload: PaperCreatePayload): Promise<ApiPa
   return request<ApiPaper>('/api/papers', { method: 'POST', body: JSON.stringify(paperBody(payload)) })
 }
 
-export async function getPaperApi(id: string): Promise<ApiPaper> {
-  return request<ApiPaper>(`/api/papers/${id}`)
+export async function getPaperApi(id: string, history = false): Promise<ApiPaper> {
+  return request<ApiPaper>(`/api/papers/${id}${history ? '?history=true' : ''}`)
+}
+
+export async function closePaperApi(id: string): Promise<ApiPaper> {
+  return request<ApiPaper>(`/api/papers/${id}/close`, { method: 'POST' })
+}
+
+export async function reopenPaperApi(id: string): Promise<ApiPaper> {
+  return request<ApiPaper>(`/api/papers/${id}/reopen`, { method: 'POST' })
 }
 
 export async function updatePaperApi(
@@ -859,19 +925,36 @@ export async function getStatistics(paperId: string, spaceId: string): Promise<A
 
 export interface ApiAttempt {
   id: string
-  status: 'answering' | 'submitted'
+  status: 'answering' | 'grading' | 'submitted'
   score: number | null
   total_score: number
   started_at: string
   submitted_at: string | null
 }
 
+export interface ApiAttemptQuestion {
+  paper_question_id: string
+  no: number
+  type: QuestionType
+  score: number
+  difficulty: Difficulty
+  stem: string
+  options: OptionItem[]
+  knowledge_point: string
+  answer?: string
+  analysis?: string
+}
+
+export function mapAttemptQuestion(question: ApiAttemptQuestion): Question {
+  return mapQuestion({ ...question, id: question.paper_question_id })
+}
+
 export interface ApiAttemptPayload {
-  paper: { id: string; name: string; total_score: number; allow_review: boolean; allow_retake: boolean; exam_window: { start: string; end: string } | null; stopped: boolean }
+  paper: { id: string; name: string; total_score: number; allow_review: boolean; allow_retake: boolean; exam_window: { start: string | null; end: string | null } | null; stopped: boolean; closed: boolean; deleted: boolean }
   space: { id: string; name: string } | null
-  questions: ApiQuestion[]
+  questions: ApiAttemptQuestion[]
   attempt: ApiAttempt | null
-  answers: { paper_question_id: string; choices: string[]; text: string; score: number; is_correct: boolean; grading_note?: string | null }[]
+  answers: { paper_question_id: string; choices: string[]; text: string; score: number; is_correct: boolean; grading_note: string | null }[]
 }
 
 export async function getAttempt(paperId: string, spaceId?: string | null): Promise<ApiAttemptPayload> {
@@ -889,7 +972,7 @@ export async function createAttempt(paperId: string, spaceId?: string | null): P
 export async function submitAttempt(
   attemptId: string,
   answers: { paper_question_id: string; choices: string[]; text: string }[],
-): Promise<{ attempt_id: string; score: number; total_score: number; detail: { paper_question_id: string; score: number; is_correct: boolean; answer: string; analysis: string }[] }> {
+): Promise<{ attempt_id: string; score: number; total_score: number; detail: { paper_question_id: string; score: number; is_correct: boolean; answer?: string; analysis?: string }[] }> {
   return request(`/api/attempts/${attemptId}/submit`, {
     method: 'POST',
     body: JSON.stringify({ answers }),
@@ -984,7 +1067,12 @@ export interface ApiChatMessage {
   created_at?: string
 }
 
-export async function getChatSession(sessionId: string): Promise<{ messages: ApiChatMessage[] }> {
+export interface BackendChatDetail {
+  mode: ChatMode
+  messages: ApiChatMessage[]
+}
+
+export async function getChatSession(sessionId: string): Promise<BackendChatDetail> {
   return request(`/api/chat/sessions/${sessionId}`)
 }
 
@@ -1050,13 +1138,11 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export interface ApiNotification {
   id: string
-  kind: 'bank_ready' | 'bank_failed' | 'ops_alert_trigger' | 'ops_alert_reminder' | 'ops_alert_recovery'
+  kind: 'bank_ready' | 'bank_failed'
   title: string
   body: string
   bank_id?: string | null
   document_name?: string | null
-  ops_alert_id?: string | null
-  ops_episode_no?: number | null
   read: boolean
   created_at: string
 }

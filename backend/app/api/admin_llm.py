@@ -9,6 +9,7 @@ from app.deps import require_admin, get_db
 from app.errors import AppError
 from app.models import User
 from app.models.platform_llm import PlatformLlmSetting
+from app.services.rag.llm import invalidate_platform_cache
 from app.services.secure_store import MASK_PLACEHOLDER, decrypt_secret, encrypt_secret, mask_secret
 
 router = APIRouter(prefix="/api/admin/llm-settings", tags=["admin"])
@@ -82,4 +83,5 @@ def save_llm_settings(
     row.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(row)
+    invalidate_platform_cache()
     return _payload(row)

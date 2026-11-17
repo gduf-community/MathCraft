@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.errors import AppError
@@ -24,6 +25,7 @@ from app.services import phoenix_tracing
 
 from app.api import (
     admin,
+    admin_ops,
     admin_llm,
     admin_rag,
     attempts,
@@ -54,8 +56,14 @@ async def lifespan(_app: FastAPI):
     from app.db import SessionLocal
     from app.models import Document
     from app.services.rag_settings import recover_interrupted_rebuild
+    from app.services.generation import recover_interrupted_generation
+    from app.services.attempts import recover_interrupted_grading
+    from app.services.banks import recover_pending_deletions
 
     recover_interrupted_rebuild()
+    recover_interrupted_generation()
+    recover_interrupted_grading()
+    recover_pending_deletions()
 
     db = SessionLocal()
     try:
@@ -78,6 +86,9 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        from app.services.generation_lifecycle import mark_active_unknown
+
+        await run_in_threadpool(mark_active_unknown)
         phoenix_tracing.shutdown()
 
 
@@ -94,6 +105,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(admin_ops.router)
 app.include_router(admin_rag.router)
 app.include_router(admin_llm.router)
 app.include_router(users.router)

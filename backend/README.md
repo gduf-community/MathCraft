@@ -10,17 +10,25 @@ backend/
 │   ├── main.py          # 应用入口
 │   ├── config.py        # 配置定义与 backend/.env 加载
 │   ├── api/             # HTTP 与 WebSocket 路由
+│   │   ├── admin_ops.py # V2 管理员只读运行查询
 │   │   └── export.py    # POST /api/export/docx 与导出请求契约
 │   ├── models/          # 数据库模型
+│   │   └── ops_run.py   # 最小运行摘要、UTC 时间和状态分类
 │   ├── schemas/         # 请求与响应契约
+│   │   └── ops.py      # V2 查询参数与响应模型
 │   └── services/        # 认证、文档、RAG 与教学业务
+│       ├── ops_queries.py # 复用正式 ops_runs 映射，缺少模型时报告不可用
 │       ├── export_docx.py # Word 排版及数学公式转换
 │       ├── phoenix_tracing.py # 可选元数据追踪与线程上下文传递
+│       ├── ops_runs.py  # 台账受理、观察与批次同事务完成写入
+│       ├── generation_lifecycle.py # 出题受理、异常收尾及在途运行封口
+│       ├── generation_cancellation.py # 生成与审核的协作取消边界
 │       └── rag/         # 检索与四模式对话
 │           ├── skills.py # 四模式技能注册、执行上下文与延迟导入
 │           └── question_gen.py # 模型流式接收、滚动解析与题目校验
 ├── alembic/             # 数据库迁移
-├── scripts/             # 认证密钥、管理员及迁移审计工具
+│   └── versions/n9a0b1c23456_add_ops_runs.py # 最小运行台账增量迁移
+├── scripts/             # 认证密钥、管理员及迁移审计工具；旧冒烟脚本已归档到 tools/archive
 ├── tests/               # 后端测试与外部服务替身
 ├── .env.example         # 本机开发配置模板
 ├── pyproject.toml       # 后端依赖
@@ -28,6 +36,16 @@ backend/
 ```
 
 ## 启动与配置
+
+参数化异步出题接口保留按任务取消与执行退出检查。当前对话前端使用历史会话侧栏，预览清空只删除题目并保留对话；生成期间禁止清空。
+部署前执行既有 Alembic 升级入口，包含 `o0b1c2d34567` 的请求身份与执行退出字段。
+接口及异常边界见[快速出题取消与清空](../docs/implementation/快速出题取消与清空.md)。
+
+管理员运行查询提供 `/api/admin/ops/overview`、`/api/admin/ops/runs` 和
+`/api/admin/ops/runs/{run_id}`，使用 V2 最小摘要、UTC 受理时间筛选和 limit/offset 分页。
+查询读取正式台账模型，两类出题入口已写入运行记录；部署前须升级既有 Alembic 迁移，
+不自动创建生产表。表缺失、契约不兼容或读取失败返回 `503 OPS_DATA_UNAVAILABLE`。
+前端已适配 V2，隔离页面联调已完成；部署验收仍待进行。字段和状态见[查询 V2 实现与交接](../docs/design/运维查询V2接口与查询设计.md)。
 
 需要 Python 3.11 及以上、uv、Redis 7 及以上。以下使用 PowerShell；完整前后端启动说明见 [根 README](../README.md#启动方法)。
 
@@ -78,7 +96,11 @@ DeepSeek 与 MinerU 个人凭据在应用“设置 → 模型与服务”保存�
 
 后端环境模板只有本目录的 [.env.example](.env.example)，仓库根模板仅作配置入口指引。MinerU Token 不从 `.env` 读取：个人 Token 优先，没有时使用 `app/local_secrets.py` 中的 `MINERU_DEFAULT_TOKEN`，格式见 [占位样例](app/local_secrets.example.py)。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不属于当前后端配置；已有 `.env` 中这些字段不会自动迁移或覆盖个人设置。OCR 地址和解析模型仍由 `app/services/mineru.py` 固定。
 
+平台生成模型配置通过管理员接口 `GET/PUT /api/admin/llm-settings` 维护；密钥由 `cryptography` 加密落库，个人 Key 优先于平台凭据与部署默认。主密钥在上传目录父级的 `secret.key`（默认 `backend/data/secret.key`），与 SQL 一起备份，首次并发创建不会覆盖已发布密钥。根目录与后端依赖清单均包含该加密依赖。
+
 ### 3. 迁移与创建管理员
+
+已有数据先备份并在副本验证；旧 V2 同号迁移或来源不明的数据库须先按[迁移与验证](#迁移与验证)核对并制定修复方案，再执行以下命令。
 
 ```powershell
 New-Item -ItemType Directory -Path data -Force | Out-Null
@@ -113,7 +135,15 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 配置默认值为 `PHOENIX_ENABLED=false`、`PHOENIX_ENDPOINT=http://127.0.0.1:6017/v1/traces`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。修改开关后重启后端；本机容器默认无认证，仅限可信单机，远程须使用 HTTPS、独立认证和 API key。
 
-当前没有 `ops_runs` 表。`trace_run` 内部创建 `run_` 标识，`current_run_id()` 供后续台账复用；根 span OK 仅表示函数正常返回，LLM 错误独立记录。导出失败不改变业务结果。启停及完整边界见 [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)。
+两类出题入口已通过 `GenerationRun` 接入 SQL 台账。`accept` 优先使用显式 ID 或 `current_run_id()`，追踪关闭时仍独立生成 ID；`/start` 受理后将同一 ID 传入后台并供 Phoenix 根 span 复用。根 span OK 仅表示函数正常返回，导出失败不改变业务结果。启停边界见 [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)。
+
+## 最小运行台账基础
+
+运维台账迁移 `n9a0b1c23456` 接在主线汇合节点 `m8f9a0b12345` 后，按现有备份与副本验证流程升级后创建空表，不回填旧批次。非空台账拒绝降级，以免静默丢失历史。
+
+`RunLedger.accept` 默认使用自己的短事务，也可参加调用方事务，让持久任务与台账同时受理；`start/fail/cancel/unknown` 使用短事务，`complete_in_transaction` 只参加调用方已有事务。`persist_batch` 在提交前 flush 业务行并写入完成记录，批次与完成事实一起提交。只有实际出题受理才创建记录，澄清或答疑不会创建。单 worker 下重叠会话消息返回 `CHAT_BUSY/409`；检查点确认取消才记录 canceled。
+
+字段、事务与剩余中断边界见 [运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)。正常关闭只封口本进程登记的在途 ID；单实例、单 worker 启动恢复在标记持久任务和会话中断的同一事务，将未终结对话台账及关联持久任务的未终结台账记为 `unknown` 和 `EXECUTION_INTERRUPTED`，不扫描无持久任务关联的参数化台账。管理员查询与 V2 前端已接入；HTTP 契约见 [API 文档](../docs/api.md)。
 
 ## 对话、生成与 Word 导出
 
@@ -125,6 +155,12 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-
 
 已有部署升级前备份 SQLite、Chroma 与文件目录，先在受控副本迁移并审计，再在维护窗口升级目标库。SQLite 备份需包含已提交的 WAL 数据，可使用 backup API；SQL 备份不包含向量、上传原件、OCR、头像或 Redis。
 
+ACID 迁移 `j5e6f7a8b901` 增加试卷关闭与历史快照字段、持久出题任务及删除操作记录；升级后未完成任务在启动时标记中断，删除继续恢复。完整边界见 [数据一致性与故障恢复设计](../docs/design/数据一致性与故障恢复设计.md)。
+
+迁移链保留正文证据版本 `j5e6f7a89012` 和出题运行版本 `k6f7a8b90123`，通过 `m8f9a0b12345` 与 ACID 分支汇合，再应用台账迁移 `n9a0b1c23456`。旧 V2 曾用与 ACID 相同的 `j5e6f7a8b901` 创建台账；已使用旧迁移或来源不明的数据库不得直接升级或仅覆盖版本标记，须先按[台账兼容性说明](../docs/design/运维后台运行台账基础.md#旧-v2-同号迁移的部署兼容性)核对结构与数据并制定修复方案。
+
+当前唯一迁移头为 `p1c2d3e45678`，汇合 main 的生成取消迁移 `o0b1c2d34567` 与 agent 的平台模型迁移 `j5f6g7h8i900`。空库及来自任一分支的现有数据库均使用同一 `upgrade head` 入口，不改写既有版本标记；平台凭据密文与历史业务数据原样保留。
+
 以下示例在独立 PowerShell 终端、`backend/` 目录执行。将示例绝对路径替换为实际副本路径，确认环境变量指向副本后再执行迁移：
 
 ```powershell
@@ -133,7 +169,7 @@ uv run alembic upgrade head
 uv run python scripts/auth_migration.py audit --operator-confirmed --database 'C:/mathcraft-backup/mathcraft.db'
 ```
 
-审计为只读，检查版本、结构和账号约束。完成后关闭该终端，避免副本地址影响正常启动；详细边界见 [账号与迁移设计](../docs/design/账号系统整合与审查修复.md)。
+审计为只读，检查版本、结构和账号约束。完成后关闭该终端，避免副本地址影响正常启动；详细边界见 [账号与迁移设计](../docs/implementation/账号系统整合与审查修复.md)。
 
 生产需设置 `APP_ENV=production`、`TURNSTILE_ENABLED=true`，补齐 Cloudflare 站点配置，关闭开发账号并清空开发账号字段。服务器通过 SSH 连接；同一部署保持认证密钥一致，不在每次启动时重新生成。
 
@@ -141,7 +177,7 @@ uv run python scripts/auth_migration.py audit --operator-confirmed --database 'C
 
 - **认证配置不可用**：确认两项认证密钥已初始化。本机使用 `APP_ENV=development`、`TURNSTILE_ENABLED=false` 并按上述回环地址启动；生产需要完整 Turnstile 配置。环境变量可覆盖 `.env`。
 - **邮箱功能不可用**：配置 SMTP；人机验证开关不替代邮件验证码或邮件服务。
-- **删除资料提示数据库繁忙（`DATABASE_BUSY`）**：删除会先预热 Chroma，并对 SQLite 短暂写锁做有限重试；持续占锁时保留资料和原件，稍后重试。检查并发写入或其他进程是否长期持有数据库事务。失败状态或零切片计数不代表没有残余索引，不能通过跳过向量清理强制删除。
+- **删除资料提示 `DATABASE_BUSY` 或 `DELETION_PENDING`**：删除先预热 Chroma，再登记持久删除意图；短暂写锁有限重试。意图提交后资源进入 `deleting`，部分清理失败可重试，启动时也会继续恢复。只有完整清理成功才返回 204，不能根据零切片计数跳过向量清理。
 - **删除资料时全文索引报 `SQLITE_CANTOPEN / 14`**：这不是写锁错误。SQLite 连接已配置 `temp_store=MEMORY`，避免 FTS5 临时结构依赖进程临时目录；数据库及 WAL 仍保存在磁盘。更新后须重启后端，临时结构较大时会增加内存占用。该设置不能修复数据库自身路径不可访问的问题。
 - **Chroma 报 `code 14` 或向量写入失败**：除数据路径权限外，检查启动进程的 `TEMP/TMP` 能否实际创建文件；目录存在或权限标志显示可写，不代表文件操作一定成功。临时目录故障也可能表现为元数据段 compaction 失败，且心跳和嵌入探测仍正常。Windows 可在 `backend/` 启动前为当前终端指定可写目录：
 
@@ -167,12 +203,14 @@ uv run ruff check app tests
 
 测试使用临时 SQLite、每测试独立 fakeredis 和假 SMTP、Turnstile、模型服务，夹具禁止外部网络，不连接或清空本机 Redis。接口变更后同步根 `openapi.json` 和 [API 文档](../docs/api.md)，生成命令见 [协作约定](../AGENTS.md)。
 
+开发依赖包含 `pytest-xdist`，可使用 `uv run pytest -n 4 --dist loadfile` 并行执行。旧 G0 测试位于 `tools/ops_g0/tests/`，已移出当前应用默认套件；两份旧登录冒烟脚本位于 `tools/archive/legacy-smoke/`，仅供历史参考。当前验证范围见[测试与持续集成](../docs/测试与持续集成.md)。
+
 ## 相关文档
 
 - [根 README](../README.md)、[前端说明](../frontend/README.md)：项目介绍与前后端启动。
 - [API 文档](../docs/api.md)、[OpenAPI 契约](../openapi.json)：完整接口。
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
 - [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
-- [账号与权限](../docs/design/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
-- 后台待实现方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)和[三人实施分工](../docs/design/运维后台三人实施分工方案.md)。覆盖两条出题入口，后续新增最小 `ops_runs`，只做概览和运行查询。
-- [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/design/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。
+- [账号与权限](../docs/implementation/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
+- 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)和[查询 V2](../docs/design/运维查询V2接口与查询设计.md)。台账、两类入口、管理员查询与 V2 前端已接通并完成隔离联调，部署待验收。
+- [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/operations/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。

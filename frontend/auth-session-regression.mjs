@@ -1,10 +1,10 @@
-/* global process, console, URL, Response, FormData, Blob, Headers */
+/* global console, URL, Response, FormData, Blob, Headers */
 /** HTTP 与 XHR 上传会话边界回归：使用真实模块，仅替换浏览器和网络。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-const require = createRequire(process.env.AUTH_TYPESCRIPT_PACKAGE ?? new URL('./package.json', import.meta.url))
+const require = createRequire(new URL('./package.json', import.meta.url))
 const ts = require('typescript')
 const tabStorage = new Map()
 globalThis.sessionStorage = {
@@ -288,7 +288,8 @@ console.log('PASS: actual uploadDocument preflight, one expired retry + progress
 
 // 新建并上传是独立写接口，必须验证其实际 XHR 错误解析及会话保护。
 const createdBank = {
-  bank: { id: 'bank-A', name: '合成题库', code: 'fake-code', creator: { id: 'A', display_name: 'A' },
+  bank: { id: 'bank-A', status: 'active', stage: null, error_message: null,
+    name: '合成题库', code: 'fake-code', creator: { id: 'A', display_name: 'A' },
     member_count: 1, capacity: 100, source: 'owned', quitted: false, my_role: 'creator',
     can_upload_document: true, can_download_document: true, can_delete_document: true,
     can_manage_members: true, can_edit_bank: true, can_transfer_bank: false, can_delete_bank: true },

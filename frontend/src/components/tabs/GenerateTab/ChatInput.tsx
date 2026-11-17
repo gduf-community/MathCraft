@@ -67,8 +67,10 @@ export default function ChatInput() {
     inputDraft, setInputDraft, sendChat, botThinking, showToast,
     selectedDocId, pauseChat, chatImages, removeChatImage,
     mode, setMode, sessionMode, modeVisible, messages, confirmBusy, pendingConfirm,
+    sessionLoading, questionsClearing, generating, generationRecoveryError,
   } = useApp()
-  const interactionBusy = botThinking || confirmBusy || pendingConfirm !== null
+  const interactionBusy = botThinking || sessionLoading || questionsClearing || generating
+    || generationRecoveryError !== null || confirmBusy || pendingConfirm !== null
   const canSend = (inputDraft.trim().length > 0 || chatImages.length > 0) && !interactionBusy
 
   const submit = () => {

@@ -1,4 +1,4 @@
-"""流式题目边界：及时交付、残损输出修复及可诊断的契约错误。"""
+"""题目流边界：残损输出修复、资源释放及可诊断的契约错误。"""
 
 import json
 from unittest.mock import Mock
@@ -6,6 +6,8 @@ from unittest.mock import Mock
 import pytest
 
 from app.services.rag import question_gen
+from app.services.generation_cancellation import GenerationCanceled
+from app.schemas.question import GenerateParams, Question, QuestionType, TypeCount
 from app.services.rag.question_gen import (
     QuestionOutputError,
     _RollingParser,
@@ -81,6 +83,124 @@ def test_stream_rejects_scalars_and_damaged_output_as_question_errors(
 
     assert caught.value.summary
     assert caught.value.raw_excerpt == output
+
+
+def test_schema_failure_closes_active_model_stream(monkeypatch):
+    closed = []
+
+    def stream(*args, **kwargs):
+        try:
+            yield '{"questions": [{"type": "single"}]}'
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    with pytest.raises(QuestionOutputError):
+        _stream_questions([], budget=100, api_key=None)
+    assert closed == [True]
+
+
+def test_stream_preserves_split_bare_latex_commands(monkeypatch):
+    """先收齐再修复，JSON 控制转义与跨分片命令均不能损坏公式。"""
+    output = r'{"questions":[{"type":"compute","stem":"求 $\frac{1}{2} + \neq$"}]}'
+    boundary = output.index("frac") + 2
+    monkeypatch.setattr(
+        question_gen.llm, "chat_stream", lambda *a, **k: iter([
+            output[:boundary], output[boundary:],
+        ]),
+    )
+    question, = _stream_questions([], budget=100, api_key=None)
+    assert question.stem == r"求 $\frac{1}{2} + \neq$"
+
+
+@pytest.mark.parametrize("failure", ["transport", "canceled"])
+def test_stream_closes_before_propagating_failure(monkeypatch, failure):
+    """收流异常或解析前取消时都关闭流，取消后不进入 JSON 解析。"""
+    closed = []
+    consumed = []
+
+    def stream(*args, **kwargs):
+        try:
+            yield json.dumps({"questions": [_question("完整题目")]}, ensure_ascii=False)
+            consumed.append(True)
+            if failure == "transport":
+                raise RuntimeError("synthetic stream failure")
+        finally:
+            closed.append(True)
+
+    def check_canceled():
+        if consumed and failure == "canceled":
+            raise GenerationCanceled("synthetic cancellation")
+
+    parser = Mock(side_effect=AssertionError("failed stream must not be parsed"))
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    monkeypatch.setattr(question_gen, "_RollingParser", parser)
+    error = RuntimeError if failure == "transport" else GenerationCanceled
+    with pytest.raises(error):
+        _stream_questions([], budget=100, api_key=None, cancel_check=check_canceled)
+    assert closed == [True]
+    parser.assert_not_called()
+
+
+@pytest.mark.parametrize("qtype", [QuestionType.single, QuestionType.judge])
+def test_gen_batch_discards_fast_model_solution_and_options(monkeypatch, qtype):
+    """模型违背命题协议返回完整解答时，命题边界也必须丢弃该解答。"""
+    payload = {
+        "type": qtype.value, "stem": "函数的导数在原点是否等于零？",
+        "answer": "B", "analysis": "快速模型给出的未经独立验证的解析。",
+        "options": [{"label": "A", "text": "错误的判断选项一"},
+                    {"label": "B", "text": "错误的判断选项二"}],
+    }
+    monkeypatch.setattr(question_gen.llm, "chat_stream", lambda *a, **k: iter([
+        json.dumps({"questions": [payload]}, ensure_ascii=False),
+    ]))
+    tc = TypeCount(type=qtype, count=1)
+    params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", types=[tc])
+    question, = question_gen._gen_batch(
+        tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "fixture context"}], "",
+    )
+    assert question.answer == question.analysis == ""
+    assert [item.model_dump() for item in question.options] == ([
+        {"label": "A", "text": "正确"}, {"label": "B", "text": "错误"},
+    ] if qtype == QuestionType.judge else [])
+
+
+def test_generation_refills_through_fifth_round_and_reports_zero_to_hundred(monkeypatch):
+    attempts = []
+    progress = []
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-document",
+        types=[TypeCount(type=QuestionType.blank, count=1)],
+    )
+
+    def generate(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 5:
+            raise ValueError("fixture batch failed")
+        return [Question(type=QuestionType.blank, stem="第五轮完成的题目")]
+
+    monkeypatch.setattr(question_gen, "_gen_batch", generate)
+    result = question_gen.generate_questions(
+        params, "fake.pdf", retrieve_fn=lambda query: [{"text": "fixture context"}],
+        progress_cb=lambda percent, stage: progress.append(percent),
+    )
+    assert len(result) == 1 and len(attempts) == 5
+    assert progress[0] == 0 and progress[-1] == 100
+    assert progress == sorted(progress)
+
+
+def test_high_pressure_planning_budget_and_scoped_fallback(monkeypatch):
+    requests = []
+
+    def plan(messages, **kwargs):
+        requests.append(kwargs)
+        return {"points": ["分部积分", "分部积分"]}
+
+    monkeypatch.setattr(question_gen.llm, "chat_json", plan)
+    points = question_gen._plan_points("定积分", "填空题", "高", 25, [], None)
+    assert requests[0]["max_tokens"] == question_gen.HIGH_PRESSURE_PLAN_TOKENS
+    assert len(points) == 25 and len(set(points)) == 25
+    assert all("定积分" in point for point in points[1:])
 
 
 @pytest.mark.parametrize("repaired", [42, {"unexpected": "dictionary"}, None])

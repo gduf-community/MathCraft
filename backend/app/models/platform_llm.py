@@ -1,5 +1,5 @@
 """平台级 LLM 默认凭据：学校自部署模型接入的单行配置，API Key 静态加密存储。"""
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base

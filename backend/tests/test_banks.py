@@ -70,7 +70,6 @@ def test_three_member_roles_have_expected_capabilities(client, teacher, student)
 
 def test_editor_can_modify_documents_but_cannot_manage_members(client, teacher, student):
     bank = create_bank(client, teacher)
-    student_id = _me(client, student)["id"]
     assert add_member(client, teacher, bank["id"], role="editor").status_code == 201
 
     document = upload_markdown(client, student, bank["id"])

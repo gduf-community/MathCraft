@@ -68,19 +68,37 @@ def _build_escape_repairs() -> list[tuple[str, str]]:
 
 
 _ESCAPE_REPAIRS = _build_escape_repairs()
-# 两个及以上反斜杠紧跟命令名：合法 LaTeX 里不存在，属过度转义
-_OVER_ESCAPE_RE = re.compile(r"(\\{2,})([a-zA-Z]+)")
+_OVER_ESCAPE_RE = re.compile(
+    r"(\\+)(?:(begin|end)\{([a-zA-Z]+\*?)\}|([a-zA-Z]+))?"
+)
 # 退格与换页在正常正文里不该出现，残留即说明还原未覆盖
 _RESIDUAL_CONTROL = re.compile(r"[\x08\x0c]")
 
 
-def _collapse_over_escaped(text: str) -> str:
-    """把 \\\\neq 这类过度转义折叠成 \\neq；矩阵换行 \\\\ 不受影响。"""
-    def repl(match: re.Match) -> str:
-        name = match.group(2)
-        if name in _MATH_COMMAND_SET:
-            return "\\" + name
-        return match.group(0)
+def _collapse_over_escaped(text: str, *, collapse_noncommands: bool = False) -> str:
+    """折叠过转义，保留多行环境内的行分隔符与紧接其后的命令。"""
+    environments: list[str] = []
+
+    def repl(match: re.Match[str]) -> str:
+        slashes, boundary, environment, command = match.groups()
+        name = boundary or command
+        count = len(slashes)
+        row_command = (
+            count >= 3 and count % 2 == 1 and name is not None
+            and bool(environments) and environments[-1].removesuffix("*") in _ROW_ENVS
+        )
+        if not row_command:
+            if count >= 2 and name in _MATH_COMMAND_SET:
+                slashes = "\\"
+            elif collapse_noncommands and count >= 3 and (
+                name is not None or text[match.end():match.end() + 1] != "$"
+            ):
+                slashes = "\\\\"
+        if boundary == "begin" and environment is not None:
+            environments.append(environment)
+        elif boundary == "end" and environments and environments[-1] == environment:
+            environments.pop()
+        return slashes + match.group(0)[count:]
 
     return _OVER_ESCAPE_RE.sub(repl, text)
 
@@ -148,61 +166,49 @@ def escape_bare_commands_in_json(raw: str) -> str:
     return "".join(out)
 
 
-def fix_delimiters(text: str) -> str:
-    """对一段题干/答案/解析执行全部机械修复；定界不配对时保持原文交由上层重试。"""
-    if not text:
-        return text
-    # 0 先还原被 JSON 转义吃掉的反斜杠，后续替换都依赖恢复后的正确命令
-    cleaned = restore_escape_artifacts(text)
-    # 0.5 折叠连续反斜杠：矩阵换行只需两个，四个会渲染成多余的空行
-    cleaned = re.sub(r"\\{3,}", lambda _m: "\\\\", cleaned)
-    # 1 字面 \n 转真换行；\neq \nabla \nu \notin 这类命令必须豁免，否则会被拦腰截断
-    cleaned = re.sub(r"\\n(?![a-zA-Z])", "\n", cleaned)
-    # 2 \( \) 与 \[ \] 定界
-    cleaned = cleaned.replace(r"\(", "$").replace(r"\)", "$")
-    cleaned = cleaned.replace(r"\[", "$$").replace(r"\]", "$$")
-    if _ESCAPED_DOLLAR.search(cleaned):
-        cleaned = _ESCAPED_DOLLAR.sub("＄", cleaned)  # 极少见：转义美元符占位避免分段错乱
-    # 3 裸命令包裹：跳过公式区内部，只处理 $ 定界之外的文本
-    parts = _split_dollar_spans(cleaned)
-    # 判据必须是 $ 的个数，不能数数学段：整段只有一处行内公式时数学段就是 1，
-    # 按段数判会被当成不配对而整段跳过修复，裸环境永远补不上定界符
-    if len(re.findall(r"(?<!\$)\$(?!\$)", cleaned)) % 2 == 1:
-        # $ 不配对：机械包裹会错位，保持原样交给上层重试
-        return cleaned.replace("＄", "\\$")
-    rebuilt = "".join(_wrap_bare_commands(seg) if not is_math else seg
-                      for seg, is_math in parts)
-    return rebuilt.replace("＄", "\\$")
+def _dollar_tokens(text: str) -> list[tuple[int, str]]:
+    """读取未转义的美元定界符，保留普通文本中的货币符号。"""
+    tokens: list[tuple[int, str]] = []
+    consumed = 0
+    for match in re.finditer(r"\$", text):
+        if match.start() < consumed:
+            continue
+        preceding = match.start() - 1
+        while preceding >= 0 and text[preceding] == "\\":
+            preceding -= 1
+        if (match.start() - preceding - 1) % 2 == 0:
+            delimiter = "$$" if text.startswith("$$", match.start()) else "$"
+            tokens.append((match.start(), delimiter))
+            consumed = match.start() + len(delimiter)
+    return tokens
 
 
-def latex_issue(text: str) -> str | None:
-    """与 fix_delimiters 配套的校验：返回首个仍无法机械修复的问题，无问题返回 None。"""
-    if not text:
-        return None
-    if _RESIDUAL_CONTROL.search(text):
-        return "残留控制字符（反斜杠转义损坏）"
-    if len(re.findall(r"(?<!\$)\$(?!\$)", text)) % 2 == 1:
-        return "$ 定界不配对"
-    for seg, is_math in _split_dollar_spans(text):
-        if not is_math and _bare_command_spans(seg):
-            return "存在未用 $ 包裹的数学命令"
-    return None
-
-_ESCAPED_DOLLAR = re.compile(r"\\\$")
-_SEGMENT_SPLIT = re.compile(r"(\$\$[^$]*\$\$|\$[^$]*\$)")
+def _delimiter_issue(text: str) -> str | None:
+    """校验行内与展示定界符严格同类配对。"""
+    opened = ""
+    for _start, delimiter in _dollar_tokens(text):
+        if not opened:
+            opened = delimiter
+        elif opened == delimiter:
+            opened = ""
+        else:
+            return "$ 定界不配对"
+    return f"{opened} 定界不配对" if opened else None
 
 
 def _split_dollar_spans(text: str) -> list[tuple[str, bool]]:
     """按 $ / $$ 分段：返回 (片段, 是否公式区)。"""
-    parts = _SEGMENT_SPLIT.split(text)
     out: list[tuple[str, bool]] = []
-    for part in parts:
-        if not part:
-            continue
-        if part.startswith("$"):
-            out.append((part, True))
-        else:
-            out.append((part, False))
+    tokens = _dollar_tokens(text)
+    previous = 0
+    for index in range(0, len(tokens) - 1, 2):
+        start, _delimiter = tokens[index]
+        end_start, end_delimiter = tokens[index + 1]
+        end = end_start + len(end_delimiter)
+        out.append((text[previous:start], False))
+        out.append((text[start:end], True))
+        previous = end
+    out.append((text[previous:], False))
     return out
 
 
@@ -290,6 +296,10 @@ _DISPLAY_ENVS = frozenset({
     "aligned", "align", "align*", "alignedat", "gather", "gather*",
     "gathered", "split", "cases", "array", "eqnarray", "multline",
 })
+_ROW_ENVS = _DISPLAY_ENVS | frozenset({
+    "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix",
+    "alignat", "flalign", "dcases", "rcases",
+})
 
 
 def _wrap_bare_commands(segment: str) -> str:
@@ -305,3 +315,38 @@ def _wrap_bare_commands(segment: str) -> str:
         index = end
     result.append(segment[index:])
     return "".join(result)
+
+
+def fix_delimiters(text: str) -> str:
+    """对一段题干/答案/解析执行全部机械修复；定界不配对时保持原文交由上层重试。"""
+    if not text:
+        return text
+    cleaned = restore_escape_artifacts(text)
+    cleaned = _collapse_over_escaped(cleaned, collapse_noncommands=True)
+    # 字面换行转换保留矩阵行分隔符和以 n 开头的命令。
+    cleaned = re.sub(r"(?<!\\)\\n(?![a-zA-Z])", "\n", cleaned)
+    # 2 \( \) 与 \[ \] 定界
+    cleaned = cleaned.replace(r"\(", "$").replace(r"\)", "$")
+    cleaned = cleaned.replace(r"\[", "$$").replace(r"\]", "$$")
+    if _delimiter_issue(cleaned):
+        return cleaned
+    # 3 裸命令包裹：跳过公式区内部，只处理 $ 定界之外的文本
+    parts = _split_dollar_spans(cleaned)
+    rebuilt = "".join(_wrap_bare_commands(seg) if not is_math else seg
+                      for seg, is_math in parts)
+    return rebuilt
+
+
+def latex_issue(text: str) -> str | None:
+    """与 fix_delimiters 配套的校验：返回首个仍无法机械修复的问题，无问题返回 None。"""
+    if not text:
+        return None
+    if _RESIDUAL_CONTROL.search(text):
+        return "残留控制字符（反斜杠转义损坏）"
+    issue = _delimiter_issue(text)
+    if issue:
+        return issue
+    for seg, is_math in _split_dollar_spans(text):
+        if not is_math and _bare_command_spans(seg):
+            return "存在未用 $ 包裹的数学命令"
+    return None

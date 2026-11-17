@@ -1,7 +1,7 @@
 """出题服务：混合检索参考片段 + DeepSeek 流式 JSON + Pydantic 强校验。
 
 - 提示词注入 Schema 与 Few-Shot，输出要求放在 <questions> XML 标签内（近因效应）
-- 流式生成、滚动解析：每个完整题目对象立即做 Pydantic 校验，有错立刻阻断
+- 流式接收后统一修复 JSON 转义，再逐个解析并做 Pydantic 校验
 - 校验失败先用 JSON Repair 抢救，再带错误信息重试一次
 - original 模式下先统计材料中该题型的原题数量，不足时抛 NeedConfirmError 询问用户
 - existing_stems 用于跨请求全局去重：prompt 约束 + 生成后按归一化题干过滤
@@ -19,6 +19,12 @@ from pydantic import ValidationError
 
 from app.schemas.question import GenerateParams, Question, QuestionType
 from app.services import latex_utils
+from app.services.generation_cancellation import (
+    GenerationCanceled,
+    cancellation_kwargs,
+    check_cancellation,
+    run_checked,
+)
 from app.services.rag import retrieval, vectorstore
 from app.services.rag import llm
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
@@ -192,28 +198,33 @@ class _RollingParser:
         return out
 
 
-def _stream_questions(messages: list[dict], budget: int, api_key: str | None) -> list[Question]:
-    """流式收完再统一解析。
-
-    不能边收边解析：模型在 JSON 字符串里写 \\neq、\\left、\\frac 这类单反斜杠时，
-    raw_decode 会因非法转义中断，json_repair 又会把 \\n 当换行吃掉，两种都写坏公式。
-    改为先累积原文、补齐反斜杠后再解析，单次调用只出一题，牺牲的增量解析收益很小。
-    """
+def _stream_questions(
+    messages: list[dict], budget: int, api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
+) -> list[Question]:
+    """收完流并修复 JSON 转义后解析，取消和失败时始终释放模型流。"""
+    check_cancellation(cancel_check)
     chunks: list[str] = []
+    stream = llm.chat_stream(
+        messages, api_key=api_key, max_tokens=budget, thinking_off=True,
+        **cancellation_kwargs(cancel_check),
+    )
     try:
-        for delta in llm.chat_stream(messages, api_key=api_key, max_tokens=budget, thinking_off=True):
+        for delta in stream:
             chunks.append(delta)
+        check_cancellation(cancel_check)
+        raw_text = latex_utils.escape_bare_commands_in_json("".join(chunks))
+        parser = _RollingParser()
+        parser.feed(raw_text)
+        collected = parser.extract(_schema_validate) + parser.finish(_schema_validate)
+        check_cancellation(cancel_check)
     except QuestionOutputError as exc:
         exc.raw_excerpt = "".join(chunks)[-1500:]
         raise
-    raw_text = latex_utils.escape_bare_commands_in_json("".join(chunks))
-    parser = _RollingParser()
-    parser.feed(raw_text)
-    try:
-        collected = parser.extract(_schema_validate) + parser.finish(_schema_validate)
-    except QuestionOutputError as exc:
-        exc.raw_excerpt = raw_text[-1500:]
-        raise
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
     if not collected:
         raise QuestionOutputError("未解析出任何题目对象", raw_text[-1500:])
     return collected
@@ -284,8 +295,10 @@ def _gen_batch(
     hits: list[dict],
     directive: str,
     hint: str = "",
+    cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """一次生成 count 道题：流式输出 + 滚动校验，Schema 失败带错误信息重试一次。"""
+    check_cancellation(cancel_check)
     type_label = TYPE_LABELS[tc.type]
     extra = f"- 知识点范围：{scope}" if scope else ""
     if scope and tc.count >= HIGH_PRESSURE_THRESHOLD:
@@ -341,6 +354,7 @@ def _gen_batch(
     last_raw = ""
     questions: list[Question] = []
     for attempt in range(2):
+        check_cancellation(cancel_check)
         msgs = base_messages
         if attempt and last_error is not None:
             msgs = base_messages + [
@@ -352,7 +366,10 @@ def _gen_batch(
                 )},
             ]
         try:
-            questions = _stream_questions(msgs, budget, api_key)
+            questions = run_checked(
+                cancel_check, _stream_questions, msgs, budget, api_key,
+                **cancellation_kwargs(cancel_check),
+            )
             break
         except QuestionOutputError as exc:
             last_error = exc
@@ -367,8 +384,10 @@ def _gen_batch(
         q.score = DEFAULT_SCORES.get(tc.type, 5)
         q.difficulty = params.difficulty
         q.docName = doc_name
-        if tc.type == QuestionType.judge and not q.options:
-            # 判断题选项恒为 正确/错误；answer 由解题模型填充
+        q.answer = ""
+        q.analysis = ""
+        q.options = []
+        if tc.type == QuestionType.judge:
             from app.schemas.question import OptionItem
 
             q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
@@ -404,6 +423,7 @@ def _plan_points(
     count: int,
     hits: list[dict],
     api_key: str | None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> list[str]:
     """规划层：先产出 count 个互不重复的细分考点，执行层按考点锚定逐题命制。
 
@@ -411,6 +431,7 @@ def _plan_points(
     撞车后被查重砍掉再重出反而更慢，先分摊考点比事后去重便宜得多。
     高压长任务（count 达到阈值）放大考点输出预算，保证考点写得具体且够数。
     """
+    check_cancellation(cancel_check)
     if count < 2:
         return []
     context = _build_context(hits)[:1500]
@@ -420,17 +441,22 @@ def _plan_points(
     )
     plan_tokens = HIGH_PRESSURE_PLAN_TOKENS if count >= HIGH_PRESSURE_THRESHOLD else 800
     try:
-        data = llm.chat_json(
-            [{"role": "user", "content": prompt}],
-            api_key=api_key,
-            max_tokens=plan_tokens,
-            thinking_off=True,
+        messages = [{"role": "user", "content": prompt}]
+        data = run_checked(
+            cancel_check, llm.chat_json, messages,
+            api_key=api_key, max_tokens=plan_tokens, thinking_off=True,
+            **cancellation_kwargs(cancel_check),
         )
+    except GenerationCanceled:
+        raise
     except Exception:  # noqa: BLE001
-        return []  # 规划失败就按原来的并行出题，不阻断
+        check_cancellation(cancel_check)
+        data = {}
+    check_cancellation(cancel_check)
     points: list[str] = []
     seen: set[str] = set()
-    for raw in (data.get("points") or []):
+    raw_points = data.get("points") if isinstance(data, dict) else None
+    for raw in raw_points if isinstance(raw_points, list) else []:
         text = str(raw).strip()
         key = text.lower()
         if text and key not in seen:
@@ -458,6 +484,7 @@ def _gen_for_type(
     retrieve_fn: RetrieveFn | None = None,
     report: Callable[[float, str], None] | None = None,
     directive: str = "",
+    cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。
 
@@ -466,11 +493,14 @@ def _gen_for_type(
     """
     from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
+    check_cancellation(cancel_check)
     type_label = TYPE_LABELS[tc.type]
 
     # original 模式：先确认材料原题数量是否足够
     if params.source_mode == "original":
-        available = count_available_originals(params.kb_id, params.doc_id, tc.type)
+        available = run_checked(
+            cancel_check, count_available_originals, params.kb_id, params.doc_id, tc.type,
+        )
         if available is not None and available < tc.count:
             raise NeedConfirmError(type_label, available, tc.count)
 
@@ -484,21 +514,23 @@ def _gen_for_type(
     retrieve = retrieve_fn or (
         lambda q: retrieval.retrieve_for_generation(params.kb_id, q, params.doc_id or None, hyde_text)
     )
-    hits = retrieve(" ".join(query_parts))
+    hits = run_checked(cancel_check, retrieve, " ".join(query_parts))
     if not hits:
         raise ValueError(f"知识库中没有可参考的内容，请先上传文档（检索「{type_label}」无结果）")
 
     # 先分摊考点，再并发命题：十道题各自撞同一个考点是去重与重出的主要来源
     if report:
         report(0.06, f"正在规划「{type_label}」的考点分布")
-    points = _plan_points(scope, type_label, params.difficulty.value, tc.count, hits, api_key)
+    points = _plan_points(
+        scope, type_label, params.difficulty.value, tc.count, hits, api_key,
+        **cancellation_kwargs(cancel_check),
+    )
 
     collected: list[Question] = []
     taken = set(avoid_norm)
     errors: list[Exception] = []
-    # 执行层补齐：生成不足时最多 MAX_FILL_ROUNDS 轮，每轮按剩余数量重新拆批，
-    # 并从考点计划中接续未使用的考点，高压长任务靠多轮补齐保证数量严格达标
     for round_no in range(MAX_FILL_ROUNDS):
+        check_cancellation(cancel_check)
         need = tc.count - len(collected)
         if need <= 0:
             break
@@ -514,10 +546,12 @@ def _gen_for_type(
                                 thread_name_prefix="qgen-batch") as pool:
             futures = [
                 pool.submit(
-                    _gen_batch, tc, params, doc_name, scope, size, snapshot,
+                    run_checked, cancel_check, _gen_batch,
+                    tc, params, doc_name, scope, size, snapshot,
                     mixed_difficulty, api_key, hits, directive,
                     # 按已完成题数取考点，补齐轮次接着往后排，避免重复同一考点
                     points[len(collected) + index] if len(collected) + index < len(points) else "",
+                    **cancellation_kwargs(cancel_check),
                 )
                 for index, size in enumerate(batch_sizes)
             ]
@@ -525,7 +559,11 @@ def _gen_for_type(
                 # 单批失败（截断、限流）只丢这一批，剩余数量由下一轮补齐
                 try:
                     batch = future.result()
+                    check_cancellation(cancel_check)
+                except GenerationCanceled:
+                    raise
                 except Exception as exc:  # noqa: BLE001
+                    check_cancellation(cancel_check)
                     errors.append(exc)
                     continue
                 for q in batch:
@@ -562,16 +600,23 @@ def generate_questions(
     hyde_text: str | None = None,
     retrieve_fn: RetrieveFn | None = None,
     directive: str = "",
+    cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """按题型并行出题：每个题型一个独立 agent（线程），全部完成后汇总呈现。
 
     - 进度 = 各 agent 内部完成度（0~1）按题数加权的均值，映射到 5~95%
     - 去重集合每个 agent 独立副本：不同题型的题干天然不同，无需共享可变状态
     - 任一 agent 失败（原题不足 / 检索为空 / 模型超时）整体抛出该异常
+    - cancel_check 在工作边界检查取消，异常在已发起线程全部结束后向调用方传播
+    - cancel_check 会被多个线程调用，调用方不得在回调中跨线程复用 SQL Session
     """
     import threading
     from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
+    check_cancellation(cancel_check)
+    if progress_cb:
+        progress_cb(0, "准备生成题目")
+    check_cancellation(cancel_check)
     avoid_base = {_norm_stem(s) for s in (existing_stems or []) if s}
     weights = [max(1, tc.count) for tc in params.types]
     total_weight = sum(weights)
@@ -581,6 +626,7 @@ def generate_questions(
 
     def make_report(idx: int) -> Callable[[float, str], None]:
         def report(frac: float, stage: str) -> None:
+            check_cancellation(cancel_check)
             with lock:
                 fracs[idx] = max(fracs[idx], min(1.0, max(0.0, frac)))
                 stages[idx] = stage
@@ -589,10 +635,12 @@ def generate_questions(
                     overall = 5 + int(90 * weighted)
                     bottleneck = min(range(len(fracs)), key=lambda i: fracs[i])
                     progress_cb(min(overall, 95), stages[bottleneck])
+            check_cancellation(cancel_check)
 
         return report
 
     def run_one(idx: int, tc) -> None:
+        check_cancellation(cancel_check)
         fresh = _gen_for_type(
             tc,
             params,
@@ -605,7 +653,9 @@ def generate_questions(
             retrieve_fn=retrieve_fn,
             report=make_report(idx),
             directive=directive,
+            **cancellation_kwargs(cancel_check),
         )
+        check_cancellation(cancel_check)
         results[idx] = fresh
 
     results: list[list[Question] | None] = [None] * len(params.types)
@@ -615,13 +665,16 @@ def generate_questions(
             futures = [pool.submit(run_one, idx, tc) for idx, tc in enumerate(params.types)]
             for future in futures:
                 future.result()
+                check_cancellation(cancel_check)
     else:
         run_one(0, params.types[0])
 
+    check_cancellation(cancel_check)
     out: list[Question] = []
     for fresh in results:
         if fresh:
             out.extend(fresh)
     if progress_cb:
-        progress_cb(96, f"正在校验题目格式与去重（共 {len(out)}/{sum(weights)} 题）")
+        progress_cb(100, f"题目生成完成（共 {len(out)}/{sum(weights)} 题）")
+    check_cancellation(cancel_check)
     return out

@@ -2,7 +2,7 @@
  * 学生作答视图：真实后端 attempt 流程。
  * 打开时读取已有作答；交卷调后端批卷；复盘读取答案与解析。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, Loader2 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { TYPE_LABELS } from '../../../constants'
@@ -12,6 +12,7 @@ import * as api from '../../../api/backend'
 
 interface Props {
   record: AssembleRecord
+  spaceId?: string
 }
 
 interface AnswerValue {
@@ -21,15 +22,8 @@ interface AnswerValue {
 
 type Phase = 'answering' | 'review'
 
-export default function AnswerView({ record }: Props) {
-  const { spaces, markRecordAnswered, showToast } = useApp()
-  const spaceId = useMemo(() => {
-    for (const name of record.spaces) {
-      const found = spaces.find((s) => s.name === name)
-      if (found) return found.id
-    }
-    return undefined
-  }, [record.spaces, spaces])
+export default function AnswerView({ record, spaceId }: Props) {
+  const { markRecordAnswered, showToast } = useApp()
 
   const [questions, setQuestions] = useState<Question[]>(record.questions ?? [])
   const [attemptId, setAttemptId] = useState<string | null>(null)
@@ -44,13 +38,22 @@ export default function AnswerView({ record }: Props) {
   const [allowReview, setAllowReview] = useState(record.allowReview ?? true)
   const [allowRetake, setAllowRetake] = useState(record.allowRetake ?? false)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [paperState, setPaperState] = useState({ closed: record.closed, deleted: record.deleted, stopped: !!record.stopped })
+  const [busy, setBusy] = useState(false)
+  const requestBusy = useRef(false)
+  const closed = record.closed || paperState.closed || record.deleted || paperState.deleted
+  const unavailable = closed || paperState.stopped || !!record.stopped || !!loadError
+    || !!(record.examWindow?.start && Date.now() < new Date(record.examWindow.start).getTime())
+    || !!(record.examWindow?.end && Date.now() >= new Date(record.examWindow.end).getTime())
 
   const applyPayload = (data: api.ApiAttemptPayload, submitted: boolean) => {
-    setQuestions(data.questions.map(api.mapQuestion))
+    setQuestions(data.questions.map(api.mapAttemptQuestion))
     setAttemptId(data.attempt?.id ?? null)
-    setTotalScore(data.paper.total_score)
+    setTotalScore(data.attempt?.total_score ?? data.paper.total_score)
     setAllowReview(data.paper.allow_review)
     setAllowRetake(data.paper.allow_retake)
+    setPaperState({ closed: data.paper.closed, deleted: data.paper.deleted, stopped: data.paper.stopped })
     const next: Record<string, AnswerValue> = {}
     for (const a of data.answers) {
       next[a.paper_question_id] = { choices: a.choices, text: a.text }
@@ -58,7 +61,7 @@ export default function AnswerView({ record }: Props) {
     setAnswers(next)
     if (submitted) {
       setPhase('review')
-      setResult({ score: data.attempt?.score ?? 0, total: data.paper.total_score })
+      setResult({ score: data.attempt?.score ?? 0, total: data.attempt?.total_score ?? data.paper.total_score })
       setPerQuestionScore(Object.fromEntries(data.answers.map((a) => [a.paper_question_id, a.score])))
     } else {
       setPhase('answering')
@@ -68,6 +71,7 @@ export default function AnswerView({ record }: Props) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setLoadError(null)
     void api
       .getAttempt(record.id, spaceId)
       .then((data) => {
@@ -77,7 +81,8 @@ export default function AnswerView({ record }: Props) {
       .catch((err) => {
         if (cancelled) return
         showToast(err instanceof Error ? err.message : '打开作答页失败')
-        setQuestions(record.questions ?? [])
+        setLoadError(err instanceof Error ? err.message : '打开作答页失败')
+        setQuestions([])
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -86,7 +91,7 @@ export default function AnswerView({ record }: Props) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [record.id, spaceId])
+  }, [record.id, record.closed, record.stopped, spaceId])
 
   useEffect(() => {
     if (modal !== 'grading') return
@@ -98,7 +103,7 @@ export default function AnswerView({ record }: Props) {
   }, [modal])
 
   const toggleChoice = (q: Question, label: string) => {
-    if (phase !== 'answering') return
+    if (phase !== 'answering' || unavailable || busy) return
     setAnswers((prev) => {
       const cur = prev[q.id] ?? { choices: [], text: '' }
       let choices: string[]
@@ -112,27 +117,69 @@ export default function AnswerView({ record }: Props) {
   }
 
   const setText = (q: Question, text: string) => {
-    if (phase !== 'answering') return
+    if (phase !== 'answering' || unavailable || busy) return
     setAnswers((prev) => ({ ...prev, [q.id]: { choices: [], text } }))
   }
 
   const submit = async () => {
+    if (unavailable || requestBusy.current || phase !== 'answering') return
     const answeredCount = Object.values(answers).filter((v) => v.choices.length || v.text.trim()).length
     if (!answeredCount) {
       showToast('请先作答至少一道题再交卷')
       return
     }
     setModal('grading')
+    requestBusy.current = true
+    setBusy(true)
     try {
-      let id = attemptId
+      const current = await api.getAttempt(record.id, spaceId)
+      setPaperState({ closed: current.paper.closed, deleted: current.paper.deleted, stopped: current.paper.stopped })
+      if (current.attempt?.status === 'submitted') {
+        applyPayload(current, true)
+        markRecordAnswered(record.id, true)
+        setModal(null)
+        showToast('该次作答已交卷，请查看已有结果')
+        return
+      }
+      if (current.paper.closed || current.paper.deleted || current.paper.stopped) throw new Error('试卷已关闭或停止作答，无法交卷')
+      const currentQuestions = current.questions.map(api.mapAttemptQuestion)
+      if (currentQuestions.length !== questions.length
+        || currentQuestions.some(question => !questions.some(previous => previous.id === question.id))) {
+        setQuestions(currentQuestions)
+        setAnswers(previous => Object.fromEntries(currentQuestions.map(question => [
+          question.id, previous[question.id] ?? { choices: [], text: '' },
+        ])))
+        setTotalScore(current.attempt?.total_score ?? current.paper.total_score)
+        throw new Error('试卷题目已更新，请检查答案后重新交卷')
+      }
+      let id = current.attempt?.id ?? null
+      let confirmedQuestions = currentQuestions
       if (!id) {
         const created = await api.createAttempt(record.id, spaceId)
         id = created.attempt?.id ?? null
         setAttemptId(id)
-        setQuestions(created.questions.map(api.mapQuestion))
+        confirmedQuestions = created.questions.map(api.mapAttemptQuestion)
+        setPaperState({ closed: created.paper.closed, deleted: created.paper.deleted, stopped: created.paper.stopped })
+        setTotalScore(created.attempt?.total_score ?? created.paper.total_score)
+        if (created.attempt?.status === 'submitted') {
+          applyPayload(created, true)
+          markRecordAnswered(record.id, true)
+          setModal(null)
+          showToast('该次作答已交卷，请查看已有结果')
+          return
+        }
+        if (confirmedQuestions.length !== questions.length
+          || confirmedQuestions.some(question => !questions.some(previous => previous.id === question.id))) {
+          setQuestions(confirmedQuestions)
+          setAnswers(previous => Object.fromEntries(confirmedQuestions.map(question => [
+            question.id, previous[question.id] ?? { choices: [], text: '' },
+          ])))
+          throw new Error('试卷题目已更新，本次尚未交卷，请检查答案后重新交卷')
+        }
       }
       if (!id) throw new Error('创建作答记录失败')
-      const payload = questions.map((q) => ({
+      setAttemptId(id)
+      const payload = confirmedQuestions.map((q) => ({
         paper_question_id: q.id,
         choices: answers[q.id]?.choices ?? [],
         text: answers[q.id]?.text ?? '',
@@ -141,10 +188,14 @@ export default function AnswerView({ record }: Props) {
       setProgress(100)
       setResult({ score: res.score, total: res.total_score })
       setPerQuestionScore(Object.fromEntries(res.detail.map((d) => [d.paper_question_id, d.score])))
+      markRecordAnswered(record.id, true)
       window.setTimeout(() => setModal('result'), 200)
     } catch (err) {
       setModal(null)
       showToast(err instanceof Error ? err.message : '交卷失败')
+    } finally {
+      requestBusy.current = false
+      setBusy(false)
     }
   }
 
@@ -165,6 +216,9 @@ export default function AnswerView({ record }: Props) {
 
   /** 修改答案：基于上一次提交的答案重新进入作答，可修改后再次交卷 */
   const modifyAnswer = async () => {
+    if (unavailable || requestBusy.current || !allowRetake) return
+    requestBusy.current = true
+    setBusy(true)
     setModal(null)
     try {
       const created = await api.createAttempt(record.id, spaceId)
@@ -175,6 +229,9 @@ export default function AnswerView({ record }: Props) {
       showToast('已回到作答，可修改答案后重新交卷')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '修改答案失败')
+    } finally {
+      requestBusy.current = false
+      setBusy(false)
     }
   }
 
@@ -194,6 +251,8 @@ export default function AnswerView({ record }: Props) {
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-6 pb-3 pt-4">
         <span className="text-sm font-bold text-ink">{record.name}</span>
         <span className="rounded-full bg-primary-light px-2.5 py-0.5 text-xs text-primary">作答模式</span>
+        {closed && <span role="status" className="text-xs text-ink-3">试卷已关闭，已交卷记录仍可查看</span>}
+        {loadError && <span role="alert" className="text-xs text-danger">{loadError}</span>}
         <span className="text-xs text-ink-3">
           已答 {answeredCount} / {questions.length} 题 · 满分 {totalScore} 分
         </span>
@@ -216,7 +275,8 @@ export default function AnswerView({ record }: Props) {
               <button
                 type="button"
                 onClick={() => void modifyAnswer()}
-                className="rounded-lg border border-line px-4 py-1.5 text-sm text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
+                disabled={unavailable || busy}
+                className="rounded-lg border border-line px-4 py-1.5 text-sm text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 修改答案
               </button>
@@ -226,7 +286,10 @@ export default function AnswerView({ record }: Props) {
           <button
             type="button"
             onClick={() => void submit()}
-            className="rounded-full bg-primary px-5 py-1.5 text-sm font-medium text-white shadow-[0_2px_8px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
+            disabled={unavailable || busy}
+            aria-busy={busy}
+            title={unavailable ? '试卷已关闭、停止作答或不在作答时间内' : undefined}
+            className="rounded-full bg-primary px-5 py-1.5 text-sm font-medium text-white shadow-[0_2px_8px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
           >
             交卷
           </button>
@@ -236,12 +299,12 @@ export default function AnswerView({ record }: Props) {
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-8 pt-4">
         {questions.map((q, i) => {
           const value = answers[q.id]
-          const locked = phase === 'review'
+          const locked = phase === 'review' || unavailable || busy
           return (
             <article key={q.id} className="rounded-xl border border-line bg-white p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-sm font-semibold text-white">
-                  {i + 1}
+                  {q.no ?? i + 1}
                 </span>
                 <span className="rounded bg-primary-light px-2 py-0.5 text-xs font-medium text-primary">
                   {TYPE_LABELS[q.type]}
@@ -301,6 +364,7 @@ export default function AnswerView({ record }: Props) {
               {q.options.length === 0 && (
                 <textarea
                   value={value?.text ?? ''}
+                  aria-label={`第 ${q.no ?? i + 1} 题答案`}
                   readOnly={locked}
                   onChange={(e) => setText(q, e.target.value)}
                   rows={2}
@@ -360,7 +424,8 @@ export default function AnswerView({ record }: Props) {
                       <button
                         type="button"
                         onClick={() => void modifyAnswer()}
-                        className="flex-1 rounded-lg border border-line px-4 py-2.5 text-sm text-ink-2 transition-colors hover:border-primary/50 hover:text-primary"
+                        disabled={unavailable || busy}
+                        className="flex-1 rounded-lg border border-line px-4 py-2.5 text-sm text-ink-2 transition-colors hover:border-primary/50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         修改答案
                       </button>

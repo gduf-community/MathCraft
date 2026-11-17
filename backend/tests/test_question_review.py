@@ -7,6 +7,7 @@ import pytest
 
 from app.db import SessionLocal, Base, engine
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
+from app.services.generation_cancellation import GenerationCanceled
 from app.services import latex_utils, question_review
 from app.services.question_review import review_questions as real_review
 
@@ -230,7 +231,7 @@ def test_solver_failure_drops_question(db, monkeypatch):
             system = messages[0]["content"]
             if "独立数学审题人" in system:
                 return json.loads(_review_json(GOOD_SCORES))
-            return {"analysis": "解析", "confidence": "high"}  # 缺 answer_text
+            return {"analysis": "解析", "confidence": "high"}  # 缺 answer
 
     monkeypatch.setattr(question_review.llm, "chat_json", NoSolveChatJson())
 
@@ -330,8 +331,8 @@ def test_solver_invalid_output_leaves_question_unsolved(monkeypatch):
         question = _q("无效解题输出回归")
         stats = question_review.ReviewStats()
         question_review._solve_all([question], "fake-key", stats)
-        # 解题失败时清空答案与解析：修补阶段自填的答案未经独立求解，不能带进题库
-        assert question.answer == "" and question.analysis == ""
+        # 求解失败保留旧题；新题独立求解门禁由审核外层负责。
+        assert question.answer == "A" and question.analysis == "旧解析"
         assert stats.solved == 0
 
 def test_answer_normalization():
@@ -346,3 +347,341 @@ def test_answer_normalization():
     )
     assert question_review._normalize_answer(judge, "错误") == "错误"
     assert question_review._normalize_answer(judge, "正确") == "正确"
+
+
+@pytest.mark.parametrize("qtype,payload", [
+    (QuestionType.single, {"answer": "1", "distractors": ["$1$", "2", "3"]}),
+    (QuestionType.single, {"answer": "1", "distractors": ["2", "2", "3"]}),
+    (QuestionType.single, {"answer": {}, "distractors": ["2", "3", "4"]}),
+    (QuestionType.multiple, {"answer": ["1", "1"], "distractors": ["2", "3"]}),
+    (QuestionType.multiple, {"answer": ["1", "2"], "distractors": ["2", "3"]}),
+    (QuestionType.blank, {"answer": ""}),
+    (QuestionType.blank, {"answer": {"unexpected": "shape"}}),
+    (QuestionType.blank, {"answer": "$$未闭合"}),
+    (QuestionType.judge, {"answer": "无法判断"}),
+])
+def test_invalid_solver_output_preserves_entire_existing_question(monkeypatch, qtype, payload):
+    question = _q("已有答案的保护回归", qtype)
+    question.selfCheck = {"note": "旧备注"}
+    before = question.model_dump()
+    def solve(messages, **kwargs):
+        if messages[0]["content"] == question_review.SOLVE_ANSWER_SYSTEM:
+            return {"answer": payload.get("answer"), "confidence": "low"}
+        return {**payload, "analysis": "关键步骤"}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    stats = question_review.ReviewStats()
+    question_review._solve_all([question], None, stats)
+    assert question.model_dump() == before
+    assert stats.solved == 0
+
+
+def test_solver_transport_failure_preserves_existing_question(db, monkeypatch):
+    question = _q("已有完整答案")
+    before = question.model_dump()
+
+    def fail(*args, **kwargs):
+        raise question_review.llm.LLMError("模型调用失败，请稍后重试")
+
+    monkeypatch.setattr(question_review.llm, "chat_json", fail)
+    monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-document",
+        types=[TypeCount(type=QuestionType.single, count=1)],
+    )
+    result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None)
+    assert result == [question]
+    assert question.answer == before["answer"]
+    assert question.options == [OptionItem.model_validate(item) for item in before["options"]]
+    assert question.analysis == before["analysis"]
+    assert stats.solved == 0
+
+
+@pytest.mark.parametrize("source", ["repair", "regenerate"])
+def test_fast_model_answer_cannot_replace_independent_solution(db, monkeypatch, source):
+    question = _q("无答案的新题：求函数在原点的导数。")
+    question.answer = ""
+    question.analysis = ""
+    replacement = _q("快速模型修改题干后的答案尚未独立验证。")
+    replacement.id = question.id
+    monkeypatch.setattr(question_review, "evaluate", lambda q, *a, **k: {
+        "passed": q is replacement, "total": 3.5,
+    })
+    monkeypatch.setattr(question_review, "_repair", lambda *a, **k: (
+        replacement if source == "repair" else None
+    ))
+    monkeypatch.setattr(question_review, "_regen", lambda *a, **k: [replacement])
+    monkeypatch.setattr(question_review, "_solve_one", lambda *a, **k: False)
+    params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc",
+                            types=[TypeCount(type=QuestionType.single, count=1)])
+    result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None)
+    assert result == []
+    assert stats.solved == 0
+    assert stats.repaired == (1 if source == "repair" else 0)
+    assert stats.regenerated == (1 if source == "regenerate" else 0)
+
+
+@pytest.mark.parametrize("source_mode", ["new", "variant_data", "variant_context", "original"])
+@pytest.mark.parametrize("qtype", list(QuestionType))
+def test_real_gen_batch_cannot_deliver_fast_model_answer_without_solving(
+    db, monkeypatch, source_mode, qtype,
+):
+    """真实流式解析和命题后处理必须阻断快速模型答案冒充已有有效题。"""
+    payload = {
+        "type": qtype.value, "stem": "命题边界回归：求函数在给定点处的导数。",
+        "answer": "A", "analysis": "",
+        "options": [{"label": "A", "text": "快速模型选项一"},
+                    {"label": "B", "text": "快速模型选项二"}],
+    }
+    stream_calls, solve_calls = [], []
+
+    def stream(*args, **kwargs):
+        stream_calls.append(1)
+        yield json.dumps({"questions": [payload]}, ensure_ascii=False)
+
+    def solve(*args, **kwargs):
+        solve_calls.append(1)
+        return {}
+
+    monkeypatch.setattr(question_review.question_gen.llm, "chat_stream", stream)
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
+    tc = TypeCount(type=qtype, count=1)
+    params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", types=[tc],
+                            source_mode=source_mode)
+    generated = question_review.question_gen._gen_batch(
+        tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "fixture context"}], "",
+    )
+    result, stats = real_review(db, "fake-user", generated, params, "fake.pdf", None)
+    assert result == []
+    assert stats.solved == 0
+    assert stream_calls == [1] and solve_calls == [1, 1]
+    assert generated[0].answer == generated[0].analysis == ""
+    expected = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
+    assert generated[0].options == (expected if qtype == QuestionType.judge else [])
+
+
+def test_original_existing_question_survives_failed_independent_solve(db, monkeypatch):
+    """已有有效原题直接送审，不经模型命题边界时继续保留原答案、解析与选项。"""
+    question = _q("题库直接提取的有效原题：求函数的导数。")
+    before = question.model_dump()
+    monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: {})
+    monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
+    params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", source_mode="original",
+                            types=[TypeCount(type=QuestionType.single, count=1)])
+    result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None)
+    assert result == [question] and stats.solved == 0
+    assert question.answer == before["answer"]
+    assert question.analysis == before["analysis"]
+    assert [item.model_dump() for item in question.options] == before["options"]
+
+
+def test_cross_round_stems_share_normalized_review_corpus(db, monkeypatch):
+    stem = "求函数 $y=x^2$ 在原点的导数"
+    monkeypatch.setattr(question_review, "load_corpus", lambda *a: [stem + "."])
+    monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
+    monkeypatch.setattr(question_review, "_regen", lambda *a, **k: [])
+    monkeypatch.setattr(question_review, "_solve_one", lambda *a, **k: False)
+    seen = []
+    drop = question_review._drop_duplicates
+
+    def check_corpus(questions, corpus, **kwargs):
+        seen.append(list(corpus))
+        return drop(questions, corpus, **kwargs)
+
+    monkeypatch.setattr(question_review, "_drop_duplicates", check_corpus)
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc",
+        types=[TypeCount(type=QuestionType.single, count=1)],
+        existing_stems=[stem + "?", "证明数列的极限等于给定常数."],
+    )
+    result, stats = real_review(
+        db, "fake-user", [_q("证明数列的极限等于给定常数?")], params, "fake.pdf", None,
+    )
+    assert result == []
+    assert stats.duplicates == 1
+    assert seen[0] == [stem + ".", "证明数列的极限等于给定常数."]
+
+
+def test_multiple_solver_maps_all_correct_answers_to_shuffled_labels(monkeypatch):
+    question = _q("多选题回归", QuestionType.multiple)
+    def solve(messages, **kwargs):
+        if messages[0]["content"] == question_review.SOLVE_ANSWER_SYSTEM:
+            return {"answer": ["1", "2"]}
+        return {"distractors": ["3", "4"], "analysis": "逐项判断正确项为 1、2。"}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    assert question_review._solve_one(question, None)
+    assert len(question.answer) == 2
+    assert {item.text for item in question.options if item.label in question.answer} == {"1", "2"}
+
+
+def test_canceled_solver_batch_does_not_apply_already_solved_candidates(monkeypatch):
+    questions = [_q("第一题"), _q("第二题")]
+    snapshots = [question.model_dump() for question in questions]
+    calls = []
+
+    def solve(messages, **kwargs):
+        calls.append(messages)
+        if len(calls) == 3:
+            raise GenerationCanceled("fixture canceled")
+        if messages[0]["content"] == question_review.SOLVE_ANSWER_SYSTEM:
+            return {"answer": "18", "confidence": "low"}
+        return {"distractors": ["-18", "81", "8.1"], "analysis": "关键步骤得 18。"}
+
+    monkeypatch.setattr(question_review, "_THINK_WORKERS", 1)
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    stats = question_review.ReviewStats()
+    with pytest.raises(GenerationCanceled):
+        question_review._solve_all(questions, None, stats)
+    assert len(calls) == 3  # 第一题两步已完成，第二题取消时仍不得回写第一题。
+    assert [question.model_dump() for question in questions] == snapshots
+    assert stats.solved == 0
+
+
+def test_review_releases_read_transaction_before_models_and_progress(db, monkeypatch):
+    checks = []
+    phases = []
+
+    def model(messages, **kwargs):
+        checks.append(not db.in_transaction())
+        return {"answer": "1", "analysis": "关键步骤得 1。"}
+
+    def evaluate(*args, **kwargs):
+        checks.append(not db.in_transaction())
+        return {"unknown": True}
+
+    def progress(percent, stage):
+        checks.append(not db.in_transaction())
+        phases.append(percent)
+
+    monkeypatch.setattr(question_review.llm, "chat_json", model)
+    monkeypatch.setattr(question_review, "evaluate", evaluate)
+    question = Question(type=QuestionType.blank, stem="求导")
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-document",
+        types=[TypeCount(type=QuestionType.blank, count=1)],
+    )
+    result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None,
+                                progress=progress)
+    assert result[0].answer == "1" and stats.solved == 1
+    assert checks and all(checks)
+    assert phases[-1] == 100
+    assert not db.in_transaction()
+
+
+@pytest.mark.parametrize("conclusion,answer,agrees", [
+    ("", "5", True),
+    ("5", "25", False),
+    ("$5$", "5", True),
+    ("结果为 5", "5", True),
+])
+def test_optional_conclusion_keeps_agent_comparison(conclusion, answer, agrees):
+    assert question_review._answers_agree(conclusion, answer) is agrees
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_contradictory_explanation_restarts_solving_without_partial_updates(monkeypatch, recovers):
+    calls = []
+    answers = iter(["17", "5" if recovers else "17"])
+
+    def solve(messages, **kwargs):
+        system = messages[0]["content"]
+        calls.append(system)
+        if system == question_review.SOLVE_ANSWER_SYSTEM:
+            return {"answer": next(answers)}
+        assert "thinking_off" not in kwargs
+        return {
+            "analysis": "按题干计算得到 5。", "conclusion": "5",
+            "distractors": ["1", "2", "3"],
+        }
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    question = _q("答案与解析矛盾")
+    before = question.model_dump()
+    stats = question_review.ReviewStats()
+    solved = question_review._solve_all([question], None, stats)
+    assert len(calls) == 4
+    assert solved == ({id(question)} if recovers else set())
+    assert stats.solved == int(recovers)
+    if recovers:
+        assert next(item.text for item in question.options if item.label == question.answer) == "5"
+    else:
+        assert question.model_dump() == before
+
+
+@pytest.mark.parametrize("phase", ["answer", "explain"])
+@pytest.mark.parametrize("transport_error", [False, True])
+def test_two_solver_phases_retry_independently(monkeypatch, phase, transport_error):
+    calls = {"answer": 0, "explain": 0}
+
+    def solve(messages, **kwargs):
+        step = "answer" if messages[0]["content"] == question_review.SOLVE_ANSWER_SYSTEM else "explain"
+        calls[step] += 1
+        if step == phase and calls[step] == 1:
+            if transport_error:
+                raise question_review.llm.LLMError("fixture unavailable")
+            return {}
+        if step == "answer":
+            assert kwargs["thinking"] is True
+            return {"answer": "18"}
+        assert "thinking_off" not in kwargs
+        return {"analysis": "结果为 18。", "distractors": ["1", "2", "3"]}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    assert question_review._solve_one(_q("分阶段重试"), None)
+    assert calls == {"answer": 1 + int(phase == "answer"), "explain": 1 + int(phase == "explain")}
+
+
+@pytest.mark.parametrize("phase", ["answer", "explain"])
+@pytest.mark.parametrize("transport_error", [False, True])
+def test_two_step_cancellation_propagates_without_retry(monkeypatch, phase, transport_error):
+    canceled = threading.Event()
+    calls = []
+
+    def check():
+        if canceled.is_set():
+            raise GenerationCanceled("fixture canceled")
+
+    def solve(messages, **kwargs):
+        assert kwargs["cancel_check"] is check
+        step = "answer" if messages[0]["content"] == question_review.SOLVE_ANSWER_SYSTEM else "explain"
+        calls.append(step)
+        if step == phase:
+            canceled.set()
+            if transport_error:
+                raise question_review.llm.LLMError("fixture unavailable")
+            return {}
+        return {"answer": "18"}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    question = _q("取消保护")
+    before = question.model_dump()
+    with pytest.raises(GenerationCanceled):
+        question_review._solve_one(question, None, cancel_check=check)
+    assert calls == (["answer"] if phase == "answer" else ["answer", "explain"])
+    assert question.model_dump() == before
+
+
+@pytest.mark.parametrize("answer_payload,explain_payload", [
+    ({"answer": ["1"]}, {}),
+    ({"answer": 1}, {}),
+    ({"answer": "1"}, {"analysis": {"invalid": "shape"}}),
+    ({"answer": "1"}, {"distractors": [2, "3", "4"]}),
+    ({"answer": "1"}, {"distractors": "234"}),
+    ({"answer": "1"}, {"conclusion": ["1"]}),
+    ({"answer": "1"}, {"distractors": ["2", "$2$", "4"]}),
+])
+def test_two_step_solver_rejects_wrong_field_types_and_normalized_duplicates(
+    monkeypatch, answer_payload, explain_payload,
+):
+    def solve(messages, **kwargs):
+        if messages[0]["content"] == question_review.SOLVE_ANSWER_SYSTEM:
+            return answer_payload
+        return {"analysis": "关键步骤", "distractors": ["2", "3", "4"], **explain_payload}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    question = _q("严格字段验证")
+    before = question.model_dump()
+    assert not question_review._solve_one(question, None)
+    assert question.model_dump() == before

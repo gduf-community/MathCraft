@@ -13,8 +13,7 @@ from app.deps import (
 )
 from app.errors import AppError
 from app.models import SpaceMember, StudySpace, User
-from app.models.base import new_id
-from app.schemas.space import SpaceCreateBody, SpaceJoinBody, SpaceUpdateBody
+from app.schemas.space import SpaceCreateBody, SpaceJoinBody, SpacePaperRead, SpaceUpdateBody
 from app.services import papers, spaces
 
 router = APIRouter(prefix="/api/spaces", tags=["spaces"])
@@ -60,29 +59,7 @@ def join_space(
     user: User = Depends(require_student),
     db: Session = Depends(get_db),
 ):
-    code = body.code.strip().upper()
-    space = db.query(StudySpace).filter(StudySpace.code == code, StudySpace.status == "active").one_or_none()
-    if space is None:
-        raise AppError("SPACE_CODE_NOT_FOUND", "未找到该编号的学习空间", status_code=404)
-
-    existing = (
-        db.query(SpaceMember)
-        .filter(SpaceMember.space_id == space.id, SpaceMember.user_id == user.id)
-        .one_or_none()
-    )
-    if existing and existing.status == "removed":
-        raise AppError("SPACE_JOIN_FORBIDDEN", "已被移出该空间，请联系创建者", status_code=403)
-    if existing and existing.status == "active":
-        raise AppError("ALREADY_IN_SPACE", "你已在该学习空间中", status_code=409)
-    if spaces.member_count(db, space.id) >= space.capacity:
-        raise AppError("SPACE_FULL", "该学习空间人数已满", status_code=409)
-
-    if existing:
-        existing.status = "active"
-        existing.role = "member"
-    else:
-        db.add(SpaceMember(id=new_id("sm"), space_id=space.id, user_id=user.id, role="member", status="active"))
-    db.commit()
+    space = spaces.join_space(db, user, body.code.strip().upper())
     return spaces.space_payload(db, space, user)
 
 
@@ -152,7 +129,7 @@ def remove_member(
     return None
 
 
-@router.get("/{space_id}/papers")
+@router.get("/{space_id}/papers", response_model=list[SpacePaperRead])
 def list_space_papers(
     access: SpaceAccess = Depends(get_space_access),
     db: Session = Depends(get_db),

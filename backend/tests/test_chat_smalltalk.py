@@ -87,7 +87,7 @@ def test_smalltalk_never_triggers_mode_mismatch(client, teacher, monkeypatch):
 
     captured: dict = {}
     monkeypatch.setattr(chat_api, "answer_casually",
-                        lambda mode, doc_name, history, message, api_key=None:
+                        lambda mode, doc_name, history, message, api_key=None, **kwargs:
                         captured.setdefault("message", message)
                         or "你好呀，我是智能出题助手。")
     monkeypatch.setattr(chat_api, "detect_intent", lambda *a, **kw: {

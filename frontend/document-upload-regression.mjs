@@ -1,16 +1,12 @@
-/* global process, URL, console, window, document, File, DataTransfer, Event, DragEvent */
+/* global URL, console, window, document, File, DataTransfer, Event, DragEvent */
 /** 离线真实组件回归：真实弹窗、上传 hook、banks 映射和 Toast；仅替换请求、会话与预览边界。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { build } from 'esbuild'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const source = await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8')
 const requestExports = [...source.matchAll(/export (?:async )?function (\w+)/g)]
 const stubs = {
@@ -73,9 +69,8 @@ const bundle = await build({
     }))
   }}],
 })
-const browser = await chromium.launch({executablePath:process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe',
-), headless:true})
+await withResources(async use => {
+const browser = use(await launchBrowser())
 const runtimeErrors = []
 const passed = []
 
@@ -169,8 +164,28 @@ async function toast(page, variant, contains) {
     const latest = window.uploadHarness.toasts.at(-1)
     return latest?.variant === variant && latest.text.includes(contains)
   }, {variant, contains})
-  const color = {error:'border-red-700', success:'border-emerald-700', info:'border-slate-700'}[variant]
-  assert.ok(await page.locator(`.${color}`).count(), '真实 Toast 使用正确语义颜色')
+  const role = variant === 'error' ? 'alert' : 'status'
+  const announcement = page.locator(`[role="${role}"][aria-atomic="true"]`).filter({hasText:contains})
+  await announcement.waitFor()
+  assert.equal(await announcement.getAttribute('aria-live'), variant === 'error' ? 'assertive' : 'polite')
+  const visual = page.locator('.pointer-events-auto').filter({hasText:contains})
+  assert.equal(await visual.count(), 1, '真实 Toast 同时显示可见提示')
+  assert.equal(await visual.isVisible(), true)
+  const variantClasses = {
+    info: ['bg-primary-weak/95', 'text-ink'],
+    success: ['bg-emerald-50/95', 'text-emerald-700'],
+    error: ['bg-red-50/95', 'text-red-500'],
+  }
+  assert.equal(await visual.evaluate((element, classes) =>
+    classes.every(name => element.classList.contains(name)), variantClasses[variant]), true,
+  '真实 Toast 使用 agent 的柔和浅色变体，并保留错误与状态播报语义')
+}
+
+async function assertFileCount(page, expected) {
+  const files = page.getByRole('listitem')
+  if (expected > 0) await files.nth(expected - 1).waitFor()
+  await files.nth(expected).waitFor({state:'detached'})
+  assert.equal(await files.count(), expected)
 }
 
 function fixture(id, format = 'TXT', status = 'ready') {
@@ -180,7 +195,7 @@ function fixture(id, format = 'TXT', status = 'ready') {
     ocr_status:status === 'failed' ? 'failed' : null}
 }
 
-try {
+{
   const validation = await mount()
   const input = validation.locator('input[type=file]')
   assert.equal(await input.getAttribute('multiple'), '')
@@ -189,7 +204,7 @@ try {
     ...['PDF', 'DOCX', 'XLSX', 'md', 'markdown', 'TXT'].map(format => ({name:`valid.${format}`})),
     {name:'empty.txt', text:''}, {name:'bad.exe'}, {name:'bad.constructor'}, {name:'no-extension'},
   ])
-  assert.equal(await validation.getByRole('listitem').count(), 6)
+  await assertFileCount(validation, 6)
   await toast(validation, 'error', '空文件')
   assert.match(await validation.evaluate(() => window.uploadHarness.toasts.at(-1).text), /格式不支持/)
   await choose(validation, [
@@ -198,9 +213,9 @@ try {
     {name:'same.txt', text:'different size', lastModified:10},
     {name:'same.txt', text:'one', lastModified:11},
   ], true)
-  assert.equal(await validation.getByRole('listitem').count(), 9)
+  await assertFileCount(validation, 9)
   await choose(validation, [{name:'same.txt', text:'one', lastModified:10}])
-  assert.equal(await validation.getByRole('listitem').count(), 9)
+  await assertFileCount(validation, 9)
   await toast(validation, 'error', '重复')
   const zone = validation.getByRole('button', {name:'选择或拖入文档'})
   for (const key of ['Enter', 'Space']) {
@@ -228,7 +243,7 @@ try {
   await draft.evaluate(() => { window.uploadHarness.held.createBankWithDocument = true })
   await draft.getByRole('button', {name:'创建', exact:true}).click()
   await draft.waitForFunction(() => window.uploadHarness.pending.createBankWithDocument?.length === 1)
-  assert.equal(await draft.getByRole('listitem').count(), 2)
+  await assertFileCount(draft, 2)
   assert.equal(await draft.getByLabel('题库名称', {exact:true}).inputValue(), '保留的合成草稿')
   assert.equal(await draft.getByRole('button', {name:'关闭新建题库'}).isDisabled(), true)
   assert.equal(await draft.getByRole('button', {name:'取消', exact:true}).isDisabled(), true)
@@ -238,7 +253,7 @@ try {
   await toast(draft, 'error', '等待本批完成')
   await draft.evaluate(() => window.uploadHarness.reject('createBankWithDocument', '服务端拒绝：超过文件大小限制'))
   await toast(draft, 'error', '超过文件大小限制')
-  assert.equal(await draft.getByRole('listitem').count(), 2)
+  await assertFileCount(draft, 2)
   assert.equal(await draft.getByLabel('题库名称', {exact:true}).isEnabled(), true)
   assert.equal(await draft.getByLabel('题库名称', {exact:true}).inputValue(), '保留的合成草稿')
   assert.equal(await draft.evaluate(() => window.uploadHarness.calls.filter(call => call.name === 'uploadDocument').length), 0)
@@ -246,7 +261,7 @@ try {
   await draft.waitForFunction(() => window.uploadHarness.pending.createBankWithDocument?.length === 1)
   await draft.evaluate(() => window.uploadHarness.finish('createBankWithDocument'))
   await draft.waitForFunction(() => window.uploadHarness.closed === 1)
-  assert.equal(await draft.getByRole('listitem').count(), 0)
+  await assertFileCount(draft, 0)
   await toast(draft, 'success', '全部受理')
   assert.equal(await draft.evaluate(() => window.uploadHarness.changed), 2)
   passed.push('真实 multiple 选择、首请求未受理/大小拒绝保留名称与所有文件、忙时禁止关闭与加入、失败可重试')
@@ -264,14 +279,14 @@ try {
   assert.equal(await partial.evaluate(() => window.uploadHarness.calls.filter(call => call.name === 'uploadDocument').length), 0)
   await partial.evaluate(() => window.uploadHarness.finish('createBankWithDocument'))
   await partial.waitForFunction(() => window.uploadHarness.pending.uploadDocument?.length === 1)
-  assert.equal(await partial.getByRole('listitem').count(), 2)
+  await assertFileCount(partial, 2)
   assert.equal(await partial.getByLabel('题库名称', {exact:true}).isDisabled(), true)
   await partial.evaluate(() => window.uploadHarness.reject('uploadDocument', '合成的第二个文件失败'))
   await partial.waitForFunction(() => window.uploadHarness.calls.filter(call => call.name === 'uploadDocument').length === 2)
   assert.equal(await partial.evaluate(() => window.uploadHarness.pending.uploadDocument.length), 1)
   await partial.evaluate(() => window.uploadHarness.finish('uploadDocument'))
   await partial.getByRole('button', {name:'重试未提交文件'}).waitFor()
-  assert.equal(await partial.getByRole('listitem').count(), 1)
+  await assertFileCount(partial, 1)
   assert.match(await partial.getByRole('listitem').innerText(), /two.docx/)
   assert.equal(await partial.evaluate(() => window.uploadHarness.closed), 0)
   await partial.getByRole('button', {name:'重试未提交文件'}).click()
@@ -411,6 +426,6 @@ try {
 
   assert.deepEqual(runtimeErrors, [], '离线真实组件无未处理异常')
   console.log(JSON.stringify({passed:passed.length, cases:passed}, null, 2))
-} finally {
-  await browser.close()
 }
+
+})

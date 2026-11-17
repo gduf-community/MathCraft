@@ -177,7 +177,7 @@ def test_confirmation_is_bound_to_original_session(
 ):
     bank, doc, session_id, owner = chat_context
     paper_id = new_id("p")
-    db.add(Paper(id=paper_id, owner_id=owner.id, name="待确认试卷"))
+    db.add(Paper(id=paper_id, owner_id=owner.id, name="待确认试卷", closed=True))
     db.commit()
     confirm_id = _data_preview(client, teacher, session_id, monkeypatch)
     other = client.post("/api/chat/sessions", headers=teacher,
@@ -186,11 +186,11 @@ def test_confirmation_is_bound_to_original_session(
     denied = client.post(f"/api/chat/sessions/{other}/confirm", headers=teacher, json=body)
     assert denied.status_code == 403
     assert denied.json()["detail"]["code"] == "CONFIRM_FORBIDDEN"
-    assert db.get(Paper, paper_id) is not None
+    assert not db.get(Paper, paper_id).deleted
     accepted = client.post(f"/api/chat/sessions/{session_id}/confirm", headers=teacher, json=body)
     assert accepted.status_code == 200, accepted.text
     db.expire_all()
-    assert db.get(Paper, paper_id) is None
+    assert db.get(Paper, paper_id).deleted
 
 
 def test_revoked_bank_membership_blocks_messages_and_confirmations(

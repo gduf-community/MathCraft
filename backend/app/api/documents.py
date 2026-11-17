@@ -9,19 +9,20 @@ from app.config import BASE_DIR
 from app.db import get_db
 from app.deps import (
     BankAccess,
+    DeletionAccess,
     get_bank_access,
     require_bank_admin,
+    require_document_deletion_admin,
 )
 from app.errors import AppError
 from app.models import Document
 from app.schemas.auth import ErrorResponse
-from app.schemas.bank import SearchBody
+from app.schemas.bank import DocumentResponse, SearchBody
 from app.services import banks as bank_service
 from app.services import documents as doc_service
 from app.services.model_settings import get_effective_deepseek_key, get_effective_mineru_token
 from app.services.rag import embeddings, vectorstore
 from app.services.rag_runtime import with_snapshot
-from app.services.rag_settings import assert_mutations_allowed
 
 router = APIRouter(prefix="/api/banks/{bank_id}", tags=["documents"])
 
@@ -54,7 +55,7 @@ def _get_document(bank_id: str, document_id: str, db: Session) -> Document:
     return doc
 
 
-@router.get("/documents")
+@router.get("/documents", response_model=list[DocumentResponse])
 def list_documents(
     access: BankAccess = Depends(get_bank_access),
     db: Session = Depends(get_db),
@@ -65,23 +66,26 @@ def list_documents(
         .order_by(Document.created_at.desc())
         .all()
     )
-    return [_doc_payload(d) for d in docs]
+    return [_doc_payload(d) for d in docs] + bank_service.pending_document_payloads(
+        db, access.bank.id,
+    )
 
 
 @router.post("/documents", status_code=202)
-async def upload_document(
+def upload_document(
     background: BackgroundTasks,
     file: UploadFile,
     access: BankAccess = Depends(require_bank_admin),
     db: Session = Depends(get_db),
 ):
     """上传文档：保存文件后立即返回，解析/OCR/切片/向量化在后台进行。"""
-    content = await file.read()
+    content = file.file.read()
     result = doc_service.queue_upload(
         db, background, access.bank.id, access.member.user_id,
         file.filename or "", content,
         get_effective_mineru_token(db, access.member.user_id),
         deepseek_api_key=get_effective_deepseek_key(db, access.member.user_id),
+        actor=access.user,
     )
     return result
 
@@ -103,11 +107,8 @@ def reprocess_document(
     access: BankAccess = Depends(require_bank_admin),
     db: Session = Depends(get_db),
 ):
-    assert_mutations_allowed(db)
     doc = _get_document(access.bank.id, document_id, db)
-    if doc.status not in ("failed", "ready"):
-        raise AppError("BAD_STATE", "仅失败或已完成的文档可重新解析", status_code=400)
-    doc_service.requeue_document(db, doc)
+    doc_service.requeue_document(db, doc, actor=access.user)
     mineru_token = get_effective_mineru_token(db, access.member.user_id)
     deepseek_api_key = get_effective_deepseek_key(db, access.member.user_id)
     background.add_task(
@@ -152,6 +153,8 @@ def download_document(
 ):
     """下载当前 storage_path 指向的产物；inline=1 供浏览器直接查看。"""
     doc = _get_document(access.bank.id, document_id, db)
+    if doc.status == "deleting":
+        raise AppError("DOCUMENT_NOT_FOUND", "文档正在删除，不可下载", status_code=404)
     p = Path(doc.storage_path)
     if not p.is_absolute():
         p = BASE_DIR / p
@@ -173,17 +176,16 @@ def download_document(
 @router.delete("/documents/{document_id}", status_code=204, responses={
     503: {
         "model": ErrorResponse,
-        "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
+        "description": "删除未完成；资源保持不可用并保留恢复记录与待清理原件，可重试删除",
     },
 })
 def delete_document(
     document_id: str,
-    access: BankAccess = Depends(require_bank_admin),
+    access: DeletionAccess = Depends(require_document_deletion_admin),
     db: Session = Depends(get_db),
 ):
-    doc = _get_document(access.bank.id, document_id, db)
     try:
-        bank_service.purge_document(db, doc, actor=access.user)
+        bank_service.purge_document_by_id(db, access.bank.id, document_id, actor=access.user)
     except vectorstore.VectorStoreError as exc:
         raise AppError("VECTOR_STORE_UNAVAILABLE", str(exc), status_code=503) from exc
     return None

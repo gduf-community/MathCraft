@@ -9,6 +9,11 @@
 
 记忆只在当前请求内生效，不持久化、不跨会话共享；持久化仍由 ChatMessage 落库承担。
 """
+from collections.abc import Callable
+
+from app.services.generation_cancellation import (
+    GenerationCanceled, cancellation_kwargs, run_checked,
+)
 from app.services.rag.modes import DEFAULT_MODE, mode_label
 
 # 短期记忆窗口：3-5 轮，取 4 轮（一轮 = user + assistant 两条消息）
@@ -91,6 +96,7 @@ SMALLTALK_EXTRA = """
 
 def answer_casually(
     mode: str, doc_name: str, history: list[dict], message: str, api_key: str | None = None,
+    *, cancel_check: Callable[[], None] | None = None,
 ) -> str:
     """非出题、非业务消息的自由对话：基于短期记忆自然回应。
 
@@ -107,8 +113,12 @@ def answer_casually(
             messages.append({"role": role, "content": str(item["text"])})
     messages.append({"role": "user", "content": message})
     try:
-        reply = chat_text(messages, api_key=api_key, temperature=0.6,
-                          max_tokens=600, thinking_off=True)
+        reply = run_checked(
+            cancel_check, chat_text, messages, api_key=api_key, temperature=0.6,
+            max_tokens=600, thinking_off=True, **cancellation_kwargs(cancel_check),
+        )
+    except GenerationCanceled:
+        raise
     except Exception:  # noqa: BLE001  对话回复失败降级为引导文案
         return "这条消息我没对应上出题需求。要出题的话，告诉我题型、数量、难度和知识点范围即可。"
     return reply.strip() or "我在的。要出题的话，告诉我题型、数量、难度和知识点范围即可。"

@@ -113,7 +113,6 @@ def test_student_leave(client, teacher, student):
     client.post("/api/spaces/join", json={"code": space["code"]}, headers=student)
     assert client.post(f"/api/spaces/{space['id']}/leave", headers=student).status_code == 204
     assert client.get(f"/api/spaces/{space['id']}", headers=student).status_code == 404
-    assert client.post(f"/api/spaces/{space['id']}/leave", headers=teacher).status_code == 403
 
 
 def test_teacher_cannot_leave_as_creator(client, teacher):

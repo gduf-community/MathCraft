@@ -1,16 +1,13 @@
 /* global URL, console, process, window, Event, File, Response, AbortSignal */
 /** 主线整合风险回归：真实 React/题库适配层，内存假服务，浏览器所有网络均阻断。 */
 import assert from 'node:assert/strict'
+import { runChatHistoryCases, runGenerationTaskCases } from './merge-session-cases.mjs'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { build } from 'esbuild'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 const backend = await readFile(new URL('./src/api/backend.ts', import.meta.url), 'utf8')
 const exports = [...backend.matchAll(/export (async )?function (\w+)/g)]
 const stubs = {
@@ -35,9 +32,10 @@ const stubs = {
 }
 const bundle = await build({
   stdin: { contents: `
-    import React, {useEffect} from 'react';
+    import React, {useCallback, useEffect, useRef, useState} from 'react';
     import {createRoot} from 'react-dom/client';
     import {AppProvider, useApp} from './src/store/AppContext';
+    import {ApiError} from './src/api/backend';
     import {ToastProvider} from './src/store/ToastContext';
     import Toast from './src/components/ui/Toast';
     import {SettingsPage} from './src/components/settings/SettingsPage';
@@ -46,6 +44,24 @@ const bundle = await build({
     import BankViewModal from './src/components/tabs/BankTab/BankViewModal';
     import TopBar from './src/components/layout/TopBar';
     import ChatInput from './src/components/tabs/GenerateTab/ChatInput';
+    import TabBar from './src/components/layout/TabBar';
+    import HistorySidebar from './src/components/layout/HistorySidebar';
+    import ConfirmDialog from './src/components/ui/ConfirmDialog';
+    import {useGenerationTask} from './src/store/useGenerationTask';
+    function TaskHarness() {
+      const h = window.mergeHarness;
+      const initialGeneration = useRef(h.generation);
+      const mounted = useRef(true);
+      const isCurrent = useCallback(() => mounted.current && initialGeneration.current === h.generation, [h]);
+      const onDeleted = useCallback(ids => { h.deletedIds.push(...ids); }, [h]);
+      const task = useGenerationTask(h.user.userId, isCurrent, onDeleted);
+      const [confirmReset, setConfirmReset] = useState(false);
+      useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+      useEffect(() => { window.generationTask = task; }, [task]);
+      return <>{task.generationRecoveryError && <button onClick={() => setConfirmReset(true)}>重置恢复记录</button>}
+        {confirmReset && <ConfirmDialog title="重置恢复记录" message="确认重置合成恢复记录"
+          onConfirm={task.resetGenerationRecovery} onClose={() => setConfirmReset(false)}/>}</>;
+    }
     import RecordsTab from './src/components/tabs/RecordsTab';
     function Harness() {
       const app = useApp(), h = window.mergeHarness;
@@ -59,6 +75,8 @@ const bundle = await build({
       }};
       return <>
         <TopBar/>
+        <TabBar/>
+        {h.mode === 'history' && <HistorySidebar/>}
         {h.mode === 'settings' && <>
           <button onClick={() => app.setActiveTab('settings')}>打开个人设置</button>
           <button onClick={() => app.setActiveTab('preview')}>离开个人设置</button>
@@ -76,8 +94,9 @@ const bundle = await build({
       </>;
     }
     const root = createRoot(document.getElementById('root'));
+    window.mergeApiError = ApiError;
     window.unmountMerge = () => root.unmount();
-    window.remountMerge = () => root.render(<ToastProvider key={window.mergeHarness.generation}><AppProvider><Harness/></AppProvider><Toast/></ToastProvider>);
+    window.remountMerge = () => root.render(<ToastProvider key={window.mergeHarness.generation}>{window.mergeHarness.mode === 'task' ? <TaskHarness/> : <AppProvider><Harness/></AppProvider>}<Toast/></ToastProvider>);
     window.remountMerge();
   `, resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'jsx' },
   bundle: true, write: false, format: 'iife', jsx: 'automatic',
@@ -88,23 +107,23 @@ const bundle = await build({
     builder.onLoad({ filter: /.*/, namespace: 'merge-fakes' }, args => ({ contents: stubs[args.path] }))
   } }],
 })
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe',
-), headless: true })
+await withResources(async use => {
+const browser = use(await launchBrowser())
 const errors = []
 const failures = []
 let passed = 0
 function pass(message) { passed++; console.log('PASS:', message) }
-async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'TXT') {
+async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'TXT', documentStatus = 'parsing') {
   const page = await browser.newPage()
   page.setDefaultTimeout(15000)
   await page.route('**/*', route => route.abort())
   page.on('pageerror', error => { errors.push(error.message); console.error('BROWSER:', error.message) })
-  await page.setContent('<div id="root"></div>')
-  await page.evaluate(({ mode, role, memberRole, format }) => {
+  await page.route('http://localhost/', route => route.fulfill({contentType:'text/html', body:'<div id="root"></div>'}))
+  await page.goto('http://localhost/')
+  await page.evaluate(({ mode, role, memberRole, format, documentStatus }) => {
     const h = window.mergeHarness = { mode, generation: 0, closed: 0, changed: 0,
       changedDocumentIds: [], changeRefreshesFinished: 0,
-      calls: [], timers: new Map(), timerId: 0, listeners:new Set(),
+      deletedIds: [], calls: [], timers: new Map(), timerId: 0, listeners:new Set(),
       user: {userId:'A', username:'fake-A', displayName:'合成用户', role, emailVerified:false},
       notifications: [], held: {}, pending: {}, documents: {}, preview: '# 远端文档预览\n\n**原样文本** $x$',
     }
@@ -129,18 +148,22 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
     h.paperRows = mode === 'records' ? [{id:'paper-old', name:'旧试卷', createdAt:'2026-11-11',
       questionCount:0, totalScore:0, spaces:[], published:false, questions:[], modulesOrder:[],
       savedToRecords:true, answered:false}] : []
-    h.apiBank = {id:'bank-A', name:'合成题库', code:'fake-code', creator:{id:'A', display_name:'合成用户'},
+    h.apiBank = {id:'bank-A', status:'active', stage:null, error_message:null,
+      name:'合成题库', code:'fake-code', creator:{id:'A', display_name:'合成用户'},
       member_count:1, capacity:100, source:'owned', quitted:false, my_role:memberRole,
       can_upload_document:memberRole !== 'readonly', can_download_document:true,
       can_delete_document:memberRole !== 'readonly', can_manage_members:memberRole === 'creator',
       can_edit_bank:memberRole === 'creator', can_transfer_bank:false, can_delete_bank:memberRole === 'creator'}
-    h.bank = {id:'bank-A', name:'合成题库', code:'fake-code', creator:'合成用户',
+    h.bank = {id:'bank-A', status:'active', stage:null, errorMessage:null,
+      name:'合成题库', code:'fake-code', creator:'合成用户',
       memberCount:1, capacity:100, source:'owned', myRole:memberRole,
       canUpload:memberRole !== 'readonly', canDownload:true, canDeleteDoc:memberRole !== 'readonly',
       canManageMembers:memberRole === 'creator', canEdit:memberRole === 'creator', canDelete:memberRole === 'creator',
-      docs:[{id:'doc-bank-A', name:'bank-A.' + format.toLowerCase(), format, size:'12 B', status:'parsing', stage:'正在解析', progress:25}],
+      docs:[{id:'doc-bank-A', name:'bank-A.' + format.toLowerCase(), format, size:'12 B', status:documentStatus, stage:'正在解析', progress:25}],
       members:[{id:'member-A', userId:'A', name:'合成用户', role:memberRole, isMe:true, isCreator:memberRole === 'creator'}]}
     const defaults = {
+      listChatSessions: () => h.sessions ?? [],
+      getChatSession: id => ({session_id:id, mode:'generate', messages:[]}), listQuestions: () => ({items:[]}),
       listBanks: () => h.banks ?? [h.apiBank], latestBatch: () => ({batch_id:null, questions:[]}),
       getModelSettings: () => ({deepseek_model:'fake-deepseek', deepseek_key_configured:false,
         deepseek_key_masked:null, mineru_token_configured:false, mineru_token_masked:null,
@@ -170,7 +193,11 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
       deleteChatSession: () => {}, batchDeleteQuestions: () => {},
       getChatProgress: () => ({active:true, percent:20, stage:'合成进度'}), cancelChat: () => {},
       startGeneration: () => ({task_id:'fake-task'}),
-      getGenerationProgress: () => ({done:false, progress:10, stage:'生成中'}),
+      findGenerationRequest: () => ({task_id:'fake-task'}),
+      cancelGeneration: () => ({done:true, execution_finished:true, status:'canceled', progress:0,
+        stage:'已取消', questions:[], question_ids:[], batch_id:null, error:null}),
+      getGenerationProgress: () => ({done:false, execution_finished:false, status:'running',
+        progress:10, stage:'生成中', questions:[], batch_id:null, error:null}),
       clearUrgeBadge: () => {}, markNotificationsRead: () => {},
     }
     h.backend = new Proxy({}, {get: (target, name) => (...args) => {
@@ -187,9 +214,9 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
       if (index < 0) throw new Error('No pending ' + name + ' for ' + bankId)
       h.pending[name].splice(index, 1)[0].resolve(value)
     }
-  }, {mode, role, memberRole, format})
+  }, {mode, role, memberRole, format, documentStatus})
   await page.addScriptTag({ content: bundle.outputFiles[0].text })
-  await page.waitForFunction(() => window.mergeApp && window.mergeHarness.calls.some(call => call.name === 'listSpaces'))
+  await page.waitForFunction(() => window.mergeHarness.mode === 'task' ? !!window.generationTask : window.mergeApp && window.mergeHarness.calls.some(call => call.name === 'listSpaces'))
   return page
 }
 async function attachFiles(page) {
@@ -225,7 +252,8 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   }, {entity, action})
   await page.waitForFunction(() => window.mergeApp.pendingConfirm?.id === 'cache-confirm')
 }
-try {
+{
+  if (!(process.argv.includes('--chat-only') || process.argv.includes('--generation-only'))) {
   const settings = await mount('settings')
   await settings.getByRole('button', {name:'打开个人设置', exact:true}).click()
   const key = settings.getByLabel('新的 DeepSeek API Key', {exact:true})
@@ -258,6 +286,7 @@ try {
     const h = window.mergeHarness; h.held.getModelSettings = true; h.finish('saveModelSettings');
   })
   await settings.waitForFunction(() => window.mergeHarness.pending.getModelSettings?.length === 1)
+  await settings.waitForFunction(input => input.value === '', await key.elementHandle())
   assert.equal(await key.inputValue(), '')
   assert.equal(await settings.evaluate(() => !window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), true)
   await leaveSettings.click()
@@ -448,8 +477,11 @@ try {
   })
 
   for (const mode of ['edit', 'view']) {
-    const deletion = await mount(mode, 'teacher', mode === 'edit' ? 'creator' : 'editor')
+    const deletion = await mount(mode, 'teacher', mode === 'edit' ? 'creator' : 'editor', 'TXT', 'ready')
     try {
+      await deletion.evaluate(() => window.mergeHarness.tick(3000))
+      await deletion.waitForFunction(() =>
+        !window.document.querySelector('button[title="删除文档"]').disabled)
       await selectBank(deletion)
       await deletion.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
       await deletion.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
@@ -807,7 +839,7 @@ try {
   pass('notifications preserve selected bank, reject late document refresh and stop polling after identity change')
 
   for (const phase of ['getDocument', 'listDocuments']) {
-    for (const action of ['selectDoc', 'clearAll']) {
+    for (const action of ['selectDoc', 'startNewChat']) {
       await providerCase(`upload auto-selection expires after ${action} while ${phase} is held, preserving the new chat`, async page => {
         await page.evaluate(() => {
           const h = window.mergeHarness
@@ -826,7 +858,7 @@ try {
         await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
         await page.evaluate(action => {
           if (action === 'selectDoc') window.mergeApp.selectDoc('doc-other')
-          else window.mergeApp.clearAll()
+          else window.mergeApp.startNewChat()
         }, action)
         await settleRender(page)
         await page.evaluate(() => {
@@ -938,7 +970,7 @@ try {
   }
 
   for (const phase of ['listFavorites', 'listPapers', 'getPaperApi']) {
-    for (const action of ['clearAll', 'selectDoc', 'endSession']) {
+    for (const action of ['startNewChat', 'selectDoc', 'endSession']) {
       await providerCase(`confirmation cache refresh ${phase} completed after ${action} cannot overwrite current resources`, async page => {
         await page.waitForFunction(() => window.mergeApp.records.length === 1 && window.mergeApp.favorites.length === 1)
         await prepareConfirmation(page, phase === 'listFavorites' ? 'favorites' : 'papers')
@@ -952,7 +984,7 @@ try {
         await page.waitForFunction(phase => window.mergeHarness.pending[phase]?.length === 1, phase)
         assert.equal(await page.evaluate(() => window.mergeApp.pendingConfirm), null)
         await page.evaluate(action => {
-          if (action === 'clearAll') window.mergeApp.clearAll()
+          if (action === 'startNewChat') window.mergeApp.startNewChat()
           if (action === 'selectDoc') window.mergeApp.selectDoc('doc-other')
           if (action === 'endSession') window.mergeHarness.invalidate()
         }, action)
@@ -991,7 +1023,7 @@ try {
     assert.deepEqual(await page.evaluate(() => window.mergeApp.records), [])
   }, 'records')
 
-  for (const action of ['clearAll', 'selectDoc', 'selectKb', 'endSession']) {
+  for (const action of ['startNewChat', 'selectDoc', 'selectKb', 'endSession']) {
     await providerCase(`late confirmation after ${action} cannot restore messages or change a newer confirmation`, async page => {
       await selectBank(page)
       await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
@@ -1013,13 +1045,14 @@ try {
         void window.mergeApp.confirmOperation(true)
         void window.mergeApp.confirmOperation(false)
       })
-      await page.waitForFunction(() => window.mergeHarness.pending.confirmChat?.length === 1)
+      await page.waitForFunction(() =>
+        window.mergeHarness.pending.confirmChat?.length === 1 && window.mergeApp.confirmBusy)
       assert.equal(await page.evaluate(() => window.mergeApp.confirmBusy), true)
       assert.equal(await page.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'confirmChat').length), 1)
       assert.equal(await page.getByRole('button', {name:'发送', exact:true}).isDisabled(), true)
       await page.evaluate(action => {
         const app = window.mergeApp, h = window.mergeHarness
-        if (action === 'clearAll') app.clearAll()
+        if (action === 'startNewChat') app.startNewChat()
         if (action === 'selectDoc') app.selectDoc('doc-other')
         if (action === 'selectKb') app.selectKb('bank-B')
         if (action === 'endSession') h.invalidate()
@@ -1061,7 +1094,7 @@ try {
       void window.mergeApp.confirmOperation(true)
     })
     await page.waitForFunction(() => window.mergeApp.confirmBusy)
-    await page.evaluate(() => window.mergeApp.clearAll())
+    await page.evaluate(() => window.mergeApp.startNewChat())
     await settleRender(page)
     await page.evaluate(async () => {
       window.mergeHarness.nextConfirm = 'second'
@@ -1082,7 +1115,7 @@ try {
     assert.equal(await page.evaluate(() => window.mergeApp.messages.filter(message => message.text === '新删除已完成').length), 1)
   })
 
-  for (const action of ['clearAll', 'selectDoc', 'selectKb', 'sendChat', 'endSession']) {
+  for (const action of ['startNewChat', 'selectDoc', 'selectKb', 'sendChat', 'endSession']) {
     await providerCase(`image reading completed after ${action} cannot append stale attachments`, async page => {
       await selectBank(page)
       await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
@@ -1097,7 +1130,7 @@ try {
       })
       await page.evaluate(action => {
         const app = window.mergeApp
-        if (action === 'clearAll') app.clearAll()
+        if (action === 'startNewChat') app.startNewChat()
         if (action === 'selectDoc') app.selectDoc('doc-other')
         if (action === 'selectKb') app.selectKb('bank-B')
         if (action === 'sendChat') void app.sendChat('发送时还未读完图片')
@@ -1140,7 +1173,7 @@ try {
     assert.equal(await page.evaluate(() => window.mergeApp.inputDraft), '编辑图片消息')
   })
 
-  for (const action of ['clearAll', 'selectDoc', 'selectKb']) {
+  for (const action of ['startNewChat', 'selectDoc', 'selectKb']) {
     await providerCase(`chat response after ${action} cannot restore mode, confirmation, questions or polling state`, async page => {
       await selectBank(page)
       await page.evaluate(() => window.mergeApp.selectDoc('doc-bank-A'))
@@ -1152,7 +1185,7 @@ try {
       await page.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
       await page.evaluate(action => {
         const app = window.mergeApp
-        if (action === 'clearAll') app.clearAll()
+        if (action === 'startNewChat') app.startNewChat()
         if (action === 'selectDoc') app.selectDoc('doc-other')
         if (action === 'selectKb') app.selectKb('bank-B')
       }, action)
@@ -1172,6 +1205,12 @@ try {
     })
   }
 
+
+  }
+  await runChatHistoryCases({providerCase, selectBank, settleRender})
+  await runGenerationTaskCases({providerCase, settleRender})
+
+  if (!(process.argv.includes('--chat-only') || process.argv.includes('--generation-only'))) {
   const chat = await mount('context')
   await chat.evaluate(() => { window.mergeApp.selectKb('bank-A'); window.mergeApp.selectDoc('doc-bank-A') })
   await chat.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
@@ -1188,19 +1227,15 @@ try {
   assert.equal(await chat.evaluate(() => [...window.mergeHarness.timers.values()].filter(timer => timer.delay === 1500).length), 1)
   await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', window.mergeHarness.chatReply({reply:'新结果'})))
   await chat.waitForFunction(() => !window.mergeApp.botThinking && window.mergeApp.messages.some(message => message.text === '新结果'))
-  await chat.evaluate(() => { void window.mergeApp.generate().then(() => { window.mergeHarness.generationFinished = true }) })
-  await chat.waitForFunction(() => window.mergeHarness.calls.some(call => call.name === 'getGenerationProgress'))
-  const progressCalls = await chat.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'getGenerationProgress').length)
-  await chat.evaluate(() => { window.mergeHarness.generation++ })
-  await chat.waitForFunction(() => window.mergeHarness.generationFinished)
-  assert.equal(await chat.evaluate(() => window.mergeHarness.calls.filter(call => call.name === 'getGenerationProgress').length), progressCalls)
   await chat.evaluate(() => window.unmountMerge())
   assert.equal(await chat.evaluate(() => window.mergeHarness.timers.size), 0)
   await chat.close()
   assert.deepEqual(errors, [])
-  pass('paused chat keeps newer results/ownership, generation polling stops on identity change, unmount removes all polling')
+  pass('paused chat keeps newer results/ownership and unmount removes all polling')
+  }
+  assert.deepEqual(errors, [])
   console.log(`主线整合回归：${passed} 组通过，${failures.length} 组失败`)
   assert.deepEqual(failures, [], '整合回归发现产品行为与约定不符；保留失败断言，不修改产品代码')
-} finally {
-  await browser.close()
 }
+
+})

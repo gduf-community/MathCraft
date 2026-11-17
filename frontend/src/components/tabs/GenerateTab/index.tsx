@@ -11,10 +11,11 @@ export default function GenerateTab() {
   const {
     messages, botThinking, uploadDocument, profile, retryChat, editChat,
     showToast, chatProgress, chatStartedAt, addChatImages, pendingConfirm, confirmBusy,
-    sessionLoading,
+    sessionLoading, questionsClearing, generating, generationRecoveryError,
   } = useApp()
   const showWelcome = messages.length === 0 && !botThinking && pendingConfirm === null && !sessionLoading
-  const interactionBusy = botThinking || confirmBusy || pendingConfirm !== null
+  const interactionBusy = botThinking || sessionLoading || questionsClearing || generating
+    || generationRecoveryError !== null || confirmBusy || pendingConfirm !== null
   const [dragOver, setDragOver] = useState(false)
   const [now, setNow] = useState(() => Date.now())
 

@@ -73,6 +73,7 @@ export default function BankTab() {
   const [owned, setOwned] = useState<ManagedBank[]>([])
   const [joined, setJoined] = useState<ManagedBank[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [editTarget, setEditTarget] = useState<ManagedBank | null>(null)
   const [viewTarget, setViewTarget] = useState<ManagedBank | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -83,13 +84,26 @@ export default function BankTab() {
     const [o, j] = await Promise.all([bankApi.listOwned(), bankApi.listJoined()])
     setOwned(o)
     setJoined(j)
+    setLoadError('')
     // 同步刷新智能出题侧边栏的「选择题库文档」选项
-    void refreshKbs()
+    await refreshKbs()
   }, [refreshKbs])
 
   useEffect(() => {
-    void refresh().finally(() => setLoading(false))
+    void refresh().catch((err) => {
+      setLoadError(err instanceof Error ? err.message : '刷新题库失败')
+    }).finally(() => setLoading(false))
   }, [refresh])
+
+  const refreshAfterChange = async (message = '刷新题库失败') => {
+    try {
+      await refresh()
+    } catch (err) {
+      const detail = `${message}：${err instanceof Error ? err.message : '请稍后重试'}`
+      setLoadError(detail)
+      showToast(detail)
+    }
+  }
 
   const rowButton = 'inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors'
   const editBtn = `${rowButton} border border-primary/30 bg-primary-light/50 text-primary hover:bg-primary-light`
@@ -97,6 +111,10 @@ export default function BankTab() {
 
   return (
     <div className="flex-1 overflow-y-auto p-5">
+      {loadError && <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <span>{loadError}</span>
+        <button type="button" onClick={() => void refreshAfterChange()} className="shrink-0 rounded px-2 py-1 underline">重新读取</button>
+      </div>}
       {/* 子标签页 */}
       <div className="flex items-center gap-7 border-b border-line px-1">
         {(
@@ -164,7 +182,14 @@ export default function BankTab() {
                   <td className="px-5 py-3.5">
                     <div className="flex items-center gap-3">
                       <FolderIcon />
-                      <span className="text-sm font-medium text-ink">{b.name}</span>
+                      <div className="min-w-0">
+                        <span className="text-sm font-medium text-ink">{b.name}</span>
+                        {b.status === 'deleting' && <>
+                          <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">删除中</span>
+                          <p className="mt-1 text-xs text-ink-3">{b.stage || '清理尚未完成，请继续清理'}</p>
+                          {b.errorMessage && <p className="mt-1 break-words text-xs text-red-700">{b.errorMessage}</p>}
+                        </>}
+                      </div>
                     </div>
                   </td>
                   <td className="px-3 py-3.5">
@@ -175,17 +200,17 @@ export default function BankTab() {
                   </td>
                   <td className="px-5 py-3.5">
                     <div className="flex items-center justify-end gap-2">
-                      <button type="button" onClick={async () => {
+                      <button type="button" disabled={!b.canEdit || b.status === 'deleting'} onClick={async () => {
                         try {
                           setEditTarget(await bankApi.getBankDetail(b.id))
                         } catch (err) {
                           showToast(err instanceof Error ? err.message : '读取题库最新信息失败')
                         }
-                      }} className={editBtn}>
+                      }} className={`${editBtn} disabled:cursor-not-allowed disabled:opacity-40`}>
                         <Pencil size={12} /> 编辑
                       </button>
-                      <button type="button" onClick={() => setDeleteTarget(b)} className={dangerBtn}>
-                        <Trash2 size={12} /> 删除
+                      <button type="button" disabled={!b.canDelete} onClick={() => setDeleteTarget(b)} className={`${dangerBtn} disabled:cursor-not-allowed disabled:opacity-40`}>
+                        <Trash2 size={12} /> {b.status === 'deleting' ? '继续清理' : '删除'}
                       </button>
                     </div>
                   </td>
@@ -218,24 +243,30 @@ export default function BankTab() {
           onClose={() => setEditTarget(null)}
           onChanged={(deletedDocumentId) => {
             if (deletedDocumentId) invalidateDocument(editTarget.id, deletedDocumentId)
-            void refresh()
+            void refreshAfterChange()
           }}
         />
       )}
       {viewTarget && <BankViewModal bank={viewTarget} onClose={() => setViewTarget(null)} onChanged={(deletedDocumentId) => {
         if (deletedDocumentId) invalidateDocument(viewTarget.id, deletedDocumentId)
-        void refresh()
+        void refreshAfterChange()
       }} />}
-      {canCreate && createOpen && <BankCreateModal onClose={() => setCreateOpen(false)} onChanged={() => void refresh()} />}
+      {canCreate && createOpen && <BankCreateModal onClose={() => setCreateOpen(false)} onChanged={() => void refreshAfterChange()} />}
       {deleteTarget && (
         <ConfirmDialog
-          title="删除题库"
+          title={deleteTarget.status === 'deleting' ? '继续清理题库' : '删除题库'}
           message={`确定删除题库「${deleteTarget.name}」吗？题库内的文档与索引将一并移除，操作不可恢复。`}
-          confirmText="确认删除"
+          confirmText={deleteTarget.status === 'deleting' ? '继续清理' : '确认删除'}
           onConfirm={async () => {
-            await bankApi.deleteBank(deleteTarget.id)
+            try {
+              await bankApi.deleteBank(deleteTarget.id)
+            } catch (err) {
+              await refreshAfterChange('删除未完成，刷新题库失败')
+              throw err
+            }
+            setOwned((prev) => prev.filter((bank) => bank.id !== deleteTarget.id))
             showToast(`题库「${deleteTarget.name}」已删除`)
-            await refresh()
+            await refreshAfterChange('题库已删除，但刷新列表失败')
           }}
           onClose={() => setDeleteTarget(null)}
         />
@@ -247,8 +278,9 @@ export default function BankTab() {
           confirmText="确认退出"
           onConfirm={async () => {
             await bankApi.quitBankById(quitTarget.id)
+            setJoined((prev) => prev.filter((bank) => bank.id !== quitTarget.id))
             showToast(`已退出题库「${quitTarget.name}」`)
-            await refresh()
+            await refreshAfterChange('已退出题库，但刷新列表失败')
           }}
           onClose={() => setQuitTarget(null)}
         />

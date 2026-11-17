@@ -4,7 +4,9 @@
 文件丢失即密文不可解——轮换凭据重新保存即可恢复服务。
 设计取向：密钥永远不以明文进入代码仓库或 .env 文件。
 """
+import os
 import secrets
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,18 +21,25 @@ _SECRET_FILE = Path(settings.upload_path()).parent / "secret.key"
 def _fernet() -> Fernet:
     """加载（或首次生成）Fernet 主密钥。"""
     path = Path(_SECRET_FILE)
-    if path.exists():
-        key = path.read_text(encoding="utf-8").strip()
-        if key:
-            return Fernet(key.encode("utf-8"))
-    key = Fernet.generate_key()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(key.decode("utf-8"), encoding="utf-8")
     try:
-        path.chmod(0o600)  # Windows 下尽力而为，失败不影响功能
-    except OSError:
+        return Fernet(path.read_bytes().strip())
+    except FileNotFoundError:
         pass
-    return Fernet(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".secret-", dir=path.parent)
+    candidate = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(Fernet.generate_key())
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(candidate, path)
+        except FileExistsError:
+            pass
+        return Fernet(path.read_bytes().strip())
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def encrypt_secret(plain: str) -> str:

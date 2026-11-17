@@ -925,6 +925,608 @@
         }
       }
     },
+    "/api/admin/ops/overview": {
+      "get": {
+        "tags": [
+          "admin-ops"
+        ],
+        "summary": "查询运行概览",
+        "description": "按 accepted_at 聚合已记录运行；最近运行最多 10 条，未知单独计数。",
+        "operationId": "overview_api_admin_ops_overview_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
+              "title": "From"
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
+              "title": "To"
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
+          },
+          {
+            "name": "owner_user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner User Id"
+            }
+          },
+          {
+            "name": "entrypoint",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "parameterized",
+                    "conversation"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entrypoint"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "accepted",
+                    "running",
+                    "completed",
+                    "failed",
+                    "canceled",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录、会话失效或账号不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "需要管理员权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_ERROR；不回显输入",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "OPS_DATA_UNAVAILABLE；台账尚未接入或暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/ops/runs": {
+      "get": {
+        "tags": [
+          "admin-ops"
+        ],
+        "summary": "查询运行列表",
+        "description": "按 accepted_at、run_id 倒序排列，支持 limit/offset；不推断状态或补写记录。",
+        "operationId": "runs_api_admin_ops_runs_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
+              "title": "From"
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳",
+              "title": "To"
+            },
+            "description": "带时区的 ISO 8601 日期时间字符串；不接受数字或 Unix 时间戳"
+          },
+          {
+            "name": "owner_user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner User Id"
+            }
+          },
+          {
+            "name": "entrypoint",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "parameterized",
+                    "conversation"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entrypoint"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "accepted",
+                    "running",
+                    "completed",
+                    "failed",
+                    "canceled",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_.:-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2147483647,
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsRuns"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录、会话失效或账号不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "需要管理员权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_ERROR；不回显输入",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "OPS_DATA_UNAVAILABLE；台账尚未接入或暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/ops/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "admin-ops"
+        ],
+        "summary": "查询运行基本详情",
+        "description": "只返回运行摘要及业务标识，不返回题目、对话、追踪正文或模型配置。",
+        "operationId": "run_detail_api_admin_ops_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsRunDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录、会话失效或账号不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "需要管理员权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_ERROR；不回显输入",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "OPS_DATA_UNAVAILABLE；台账尚未接入或暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "OPS_RUN_NOT_FOUND；运行记录不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/rag-settings": {
       "get": {
         "tags": [
@@ -1906,7 +2508,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BankResponse"
+                  },
+                  "title": "Response List Banks Api Banks Get"
+                }
               }
             }
           },
@@ -2213,7 +2821,7 @@
             "description": "Successful Response"
           },
           "503": {
-            "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
+            "description": "删除未完成；资源保持不可用并保留恢复记录与待清理原件，可重试删除",
             "content": {
               "application/json": {
                 "schema": {
@@ -2636,7 +3244,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentResponse"
+                  },
+                  "title": "Response List Documents Api Banks  Bank Id  Documents Get"
+                }
               }
             }
           },
@@ -2829,7 +3443,7 @@
             "description": "Successful Response"
           },
           "503": {
-            "description": "向量存储不可用或数据库写锁重试耗尽（DATABASE_BUSY）；SQL 与原件保留，可稍后重试",
+            "description": "删除未完成；资源保持不可用并保留恢复记录与待清理原件，可重试删除",
             "content": {
               "application/json": {
                 "schema": {
@@ -3185,7 +3799,138 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generate/requests/{request_id}": {
+      "get": {
+        "tags": [
+          "generate"
+        ],
+        "summary": "Find Generation Request",
+        "description": "在当前账号内找回启动响应丢失的原任务。",
+        "operationId": "find_generation_request_api_generate_requests__request_id__get",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generate/cancel/{task_id}": {
+      "post": {
+        "tags": [
+          "generate"
+        ],
+        "summary": "Cancel Generation Task",
+        "description": "幂等取消指定任务；正在执行时保留忙碌门禁直到全部工作退出。",
+        "operationId": "cancel_generation_task_api_generate_cancel__task_id__post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateCancellationResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "取消已受理，等待后台执行退出",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateCancellationResponse"
+                }
               }
             }
           },
@@ -3242,7 +3987,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateProgressResponse"
+                }
               }
             }
           },
@@ -3333,7 +4080,7 @@
           "generate"
         ],
         "summary": "Latest Batch",
-        "description": "当前用户最近一次生成批次及题目（刷新后恢复）。",
+        "description": "恢复最近批次前重检当前资源权限；失效资料不再恢复题目。",
         "operationId": "latest_batch_api_generate_batches_latest_get",
         "parameters": [
           {
@@ -3401,7 +4148,7 @@
           "questions"
         ],
         "summary": "List Questions",
-        "description": "当前用户的题目列表（分页），带收藏状态。",
+        "description": "本人题目分页及收藏状态；过滤删除中、已删除或归属不符的源资料。",
         "operationId": "list_questions_api_questions_get",
         "parameters": [
           {
@@ -4243,7 +4990,7 @@
           "chat"
         ],
         "summary": "List Sessions",
-        "description": "当前账号的历史会话列表：按最近消息倒序，标题取首条用户消息，按账号隔离。",
+        "description": "仅列出当前账号仍有资料访问权的最近会话。",
         "operationId": "list_sessions_api_chat_sessions_get",
         "parameters": [
           {
@@ -4268,7 +5015,17 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "title": "Response List Sessions Api Chat Sessions Get"
+                }
               }
             }
           },
@@ -4379,7 +5136,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionDetailResponse"
+                }
               }
             }
           },
@@ -4451,7 +5210,7 @@
           "chat"
         ],
         "summary": "Send Message",
-        "description": "发送消息：槽位状态机驱动，齐备后生成题目（含 HyDE + 混合检索）。",
+        "description": "运行状态先提交，题目、两条消息与完整会话状态最后一次提交。",
         "operationId": "send_message_api_chat_sessions__session_id__messages_post",
         "parameters": [
           {
@@ -4496,6 +5255,16 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "当前会话正在处理消息，请稍后再试",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -4585,7 +5354,7 @@
           "chat"
         ],
         "summary": "Read Generation Progress",
-        "description": "对话生成的实时阶段，供前端在等待时轮询。",
+        "description": "SQL 进度在 Redis 丢失、过期或不可用时仍可完整读取。",
         "operationId": "read_generation_progress_api_chat_sessions__session_id__progress_get",
         "parameters": [
           {
@@ -4642,7 +5411,7 @@
           "chat"
         ],
         "summary": "Cancel Generation",
-        "description": "请求暂停：后台在下一个检查点停下，并且不写入题目预览。",
+        "description": "原子绑定当前运行的取消事实；与开始和最终提交使用同一 SQL 行锁。",
         "operationId": "cancel_generation_api_chat_sessions__session_id__cancel_post",
         "parameters": [
           {
@@ -5227,7 +5996,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SpacePaperRead"
+                  },
+                  "title": "Response List Space Papers Api Spaces  Space Id  Papers Get"
+                }
               }
             }
           },
@@ -5283,6 +6058,16 @@
             }
           },
           {
+            "name": "include_history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include History"
+            }
+          },
+          {
             "name": "Authorization",
             "in": "header",
             "required": false,
@@ -5304,7 +6089,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PaperRead"
+                  },
+                  "title": "Response List Papers Api Papers Get"
+                }
               }
             }
           },
@@ -5359,7 +6150,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
               }
             }
           },
@@ -5446,6 +6239,16 @@
             }
           },
           {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
+          },
+          {
             "name": "Authorization",
             "in": "header",
             "required": false,
@@ -5467,7 +6270,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
               }
             }
           },
@@ -5531,7 +6336,19 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "PAPER_HAS_ATTEMPTS / PAPER_PUBLICATION_OPEN；目标空间有作答时保留发布历史，无作答也须先停止才能移除发布",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -5552,7 +6369,7 @@
           "papers"
         ],
         "summary": "Delete Paper",
-        "description": "删除组卷记录。\n\nmode=record（默认）：仅从组卷记录移除；若试卷已发布到学习空间，\n只标记 saved_to_records=False，空间内已发布试卷保持不动。\nmode=paper：整卷删除（学习空间侧删除试卷时使用，组卷记录一并消失）。",
+        "description": "移除记录；整卷删除要求 closed 且所有空间 stopped，保留历史作答。",
         "operationId": "delete_paper_api_papers__paper_id__delete",
         "parameters": [
           {
@@ -5569,6 +6386,10 @@
             "in": "query",
             "required": false,
             "schema": {
+              "enum": [
+                "record",
+                "paper"
+              ],
               "type": "string",
               "default": "record",
               "title": "Mode"
@@ -5594,6 +6415,134 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "409": {
+            "description": "PAPER_NOT_CLOSED / PAPER_PUBLICATION_OPEN / GRADING_BUSY；未满足删除条件",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/papers/{paper_id}/close": {
+      "post": {
+        "tags": [
+          "papers"
+        ],
+        "summary": "Close Paper",
+        "description": "关闭整卷，禁止开始作答与交卷；不更改各空间的停止状态。",
+        "operationId": "close_paper_api_papers__paper_id__close_post",
+        "parameters": [
+          {
+            "name": "paper_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Paper Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/papers/{paper_id}/reopen": {
+      "post": {
+        "tags": [
+          "papers"
+        ],
+        "summary": "Reopen Paper",
+        "description": "恢复未删除试卷；各空间仍遵循自身 stopped 与时间窗。",
+        "operationId": "reopen_paper_api_papers__paper_id__reopen_post",
+        "parameters": [
+          {
+            "name": "paper_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Paper Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -5657,7 +6606,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
               }
             }
           },
@@ -5723,7 +6674,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PaperRead"
+                }
               }
             }
           },
@@ -5866,6 +6819,7 @@
           "papers"
         ],
         "summary": "Remove Publication",
+        "description": "该空间无该试卷的作答且已停止时才移除发布，其他空间作答不阻止移除。",
         "operationId": "remove_publication_api_papers__paper_id__publications__space_id__delete",
         "parameters": [
           {
@@ -5907,6 +6861,16 @@
           "204": {
             "description": "Successful Response"
           },
+          "409": {
+            "description": "PAPER_HAS_ATTEMPTS / PAPER_PUBLICATION_OPEN；目标空间有作答时保留发布历史，无作答也须先停止才能移除发布",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5926,7 +6890,7 @@
           "papers"
         ],
         "summary": "Urge Paper",
-        "description": "催交：仅空间创建者可催，同一（试卷, 空间）24 小时内一次。",
+        "description": "催交：仅空间创建者可催；删除、关闭或该空间停止后禁止，24 小时内一次。",
         "operationId": "urge_paper_api_papers__paper_id__publications__space_id__urge_post",
         "parameters": [
           {
@@ -5970,6 +6934,36 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "PAPER_CLOSED / PAPER_STOPPED / FORBIDDEN；关闭或停止后不可催交",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "PAPER_NOT_FOUND / PAPER_NOT_PUBLISHED / SPACE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "URGE_COOLDOWN；同一发布 24 小时内只能催交一次",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -6451,7 +7445,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptPayloadRead"
+                }
               }
             }
           },
@@ -6517,7 +7513,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptPayloadRead"
+                }
               }
             }
           },
@@ -6583,7 +7581,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptSubmitRead"
+                }
               }
             }
           },
@@ -6639,7 +7639,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptPayloadRead"
+                }
               }
             }
           },
@@ -6902,6 +7904,55 @@
         ],
         "title": "AttemptAnswerBody"
       },
+      "AttemptAnswerRead": {
+        "properties": {
+          "paper_question_id": {
+            "type": "string",
+            "title": "Paper Question Id"
+          },
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Choices"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "is_correct": {
+            "type": "boolean",
+            "title": "Is Correct"
+          },
+          "grading_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grading Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "paper_question_id",
+          "choices",
+          "text",
+          "score",
+          "is_correct",
+          "grading_note"
+        ],
+        "title": "AttemptAnswerRead",
+        "description": "已保存的学生答案及逐题批卷结果。"
+      },
       "AttemptCreateBody": {
         "properties": {
           "space_id": {
@@ -6919,6 +7970,271 @@
         "type": "object",
         "title": "AttemptCreateBody"
       },
+      "AttemptPaperRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "total_score": {
+            "type": "integer",
+            "title": "Total Score"
+          },
+          "allow_review": {
+            "type": "boolean",
+            "title": "Allow Review"
+          },
+          "allow_retake": {
+            "type": "boolean",
+            "title": "Allow Retake"
+          },
+          "exam_window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PaperExamWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          },
+          "stopped": {
+            "type": "boolean",
+            "title": "Stopped"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "total_score",
+          "allow_review",
+          "allow_retake",
+          "exam_window",
+          "closed",
+          "deleted",
+          "stopped"
+        ],
+        "title": "AttemptPaperRead",
+        "description": "作答页试卷信息；总分取本次作答快照。"
+      },
+      "AttemptPayloadRead": {
+        "properties": {
+          "paper": {
+            "$ref": "#/components/schemas/AttemptPaperRead"
+          },
+          "space": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AttemptSpaceRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptQuestionRead"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "attempt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AttemptRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptAnswerRead"
+            },
+            "type": "array",
+            "title": "Answers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "paper",
+          "space",
+          "questions",
+          "attempt",
+          "answers"
+        ],
+        "title": "AttemptPayloadRead",
+        "description": "预览、开始作答、读取进度和复盘共用的完整载荷。"
+      },
+      "AttemptQuestionRead": {
+        "properties": {
+          "paper_question_id": {
+            "type": "string",
+            "title": "Paper Question Id"
+          },
+          "no": {
+            "type": "integer",
+            "title": "No",
+            "description": "作答快照中的原始题号，允许不连续"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "difficulty": {
+            "type": "string",
+            "title": "Difficulty"
+          },
+          "stem": {
+            "type": "string",
+            "title": "Stem"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionItem"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "knowledge_point": {
+            "type": "string",
+            "title": "Knowledge Point"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "analysis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "paper_question_id",
+          "no",
+          "type",
+          "score",
+          "difficulty",
+          "stem",
+          "options",
+          "knowledge_point"
+        ],
+        "title": "AttemptQuestionRead",
+        "description": "本次作答的题目；答案和解析仅在已交卷且允许复盘时出现。"
+      },
+      "AttemptRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "answering",
+              "grading",
+              "submitted"
+            ],
+            "title": "Status"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "total_score": {
+            "type": "integer",
+            "title": "Total Score"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "score",
+          "total_score",
+          "started_at",
+          "submitted_at"
+        ],
+        "title": "AttemptRead",
+        "description": "作答进度与成绩，包含事务外批卷期间的 grading 状态。"
+      },
+      "AttemptSpaceRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "AttemptSpaceRead",
+        "description": "空间作答的来源；个人练习不包含空间。"
+      },
       "AttemptSubmitBody": {
         "properties": {
           "answers": {
@@ -6932,6 +8248,84 @@
         },
         "type": "object",
         "title": "AttemptSubmitBody"
+      },
+      "AttemptSubmitDetailRead": {
+        "properties": {
+          "paper_question_id": {
+            "type": "string",
+            "title": "Paper Question Id"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "is_correct": {
+            "type": "boolean",
+            "title": "Is Correct"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "analysis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "paper_question_id",
+          "score",
+          "is_correct"
+        ],
+        "title": "AttemptSubmitDetailRead",
+        "description": "交卷后的逐题结果；禁止复盘时省略答案和解析。"
+      },
+      "AttemptSubmitRead": {
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "title": "Attempt Id"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "total_score": {
+            "type": "integer",
+            "title": "Total Score"
+          },
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptSubmitDetailRead"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "score",
+          "total_score",
+          "detail"
+        ],
+        "title": "AttemptSubmitRead",
+        "description": "交卷返回的成绩和逐题结果。"
       },
       "AuthConfig": {
         "properties": {
@@ -6998,6 +8392,164 @@
           "name"
         ],
         "title": "BankCreateBody"
+      },
+      "BankCreatorResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "BankCreatorResponse",
+        "description": "题库创建者的列表展示信息。"
+      },
+      "BankResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "creator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BankCreatorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "member_count": {
+            "type": "integer",
+            "title": "Member Count"
+          },
+          "capacity": {
+            "type": "integer",
+            "title": "Capacity"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "deleting"
+            ],
+            "title": "Status"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "owned",
+              "joined"
+            ],
+            "title": "Source"
+          },
+          "quitted": {
+            "type": "boolean",
+            "title": "Quitted"
+          },
+          "my_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "My Role"
+          },
+          "can_upload_document": {
+            "type": "boolean",
+            "title": "Can Upload Document"
+          },
+          "can_download_document": {
+            "type": "boolean",
+            "title": "Can Download Document"
+          },
+          "can_delete_document": {
+            "type": "boolean",
+            "title": "Can Delete Document"
+          },
+          "can_manage_members": {
+            "type": "boolean",
+            "title": "Can Manage Members"
+          },
+          "can_edit_bank": {
+            "type": "boolean",
+            "title": "Can Edit Bank"
+          },
+          "can_transfer_bank": {
+            "type": "boolean",
+            "title": "Can Transfer Bank"
+          },
+          "can_delete_bank": {
+            "type": "boolean",
+            "title": "Can Delete Bank"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "code",
+          "creator",
+          "member_count",
+          "capacity",
+          "status",
+          "stage",
+          "error_message",
+          "source",
+          "quitted",
+          "my_role",
+          "can_upload_document",
+          "can_download_document",
+          "can_delete_document",
+          "can_manage_members",
+          "can_edit_bank",
+          "can_transfer_bank",
+          "can_delete_bank"
+        ],
+        "title": "BankResponse",
+        "description": "现有题库列表契约；删除中仅所有者可见并允许继续 DELETE。"
       },
       "BankUpdateBody": {
         "properties": {
@@ -7104,6 +8656,52 @@
         "title": "ChatConfirmBody",
         "description": "数据管理高危操作的确认：接受执行 / 拒绝取消。"
       },
+      "ChatHistoryMessageResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "text",
+          "batch_id",
+          "created_at"
+        ],
+        "title": "ChatHistoryMessageResponse",
+        "description": "历史消息的持久化展示字段。"
+      },
       "ChatMessageBody": {
         "properties": {
           "message": {
@@ -7167,6 +8765,49 @@
         ],
         "title": "ChatSessionCreateBody"
       },
+      "ChatSessionDetailResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "bank_id": {
+            "type": "string",
+            "title": "Bank Id"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "generate",
+              "creative",
+              "qa",
+              "data"
+            ],
+            "title": "Mode"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryMessageResponse"
+            },
+            "type": "array",
+            "title": "Messages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "bank_id",
+          "document_id",
+          "mode",
+          "messages"
+        ],
+        "title": "ChatSessionDetailResponse",
+        "description": "恢复会话时同时恢复服务端模式，避免发送时隐式切换。"
+      },
       "CurrentPasswordBody": {
         "properties": {
           "current_password": {
@@ -7206,6 +8847,124 @@
           "地狱"
         ],
         "title": "Difficulty"
+      },
+      "DocumentResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "bank_id": {
+            "type": "string",
+            "title": "Bank Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "is_scanned": {
+            "type": "boolean",
+            "title": "Is Scanned"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "parsing",
+              "ocr",
+              "chunking",
+              "embedding",
+              "ready",
+              "failed",
+              "deleting"
+            ],
+            "title": "Status"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "ocr_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ocr Status"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "bank_id",
+          "name",
+          "format",
+          "size_bytes",
+          "page_count",
+          "is_scanned",
+          "status",
+          "stage",
+          "progress",
+          "chunk_count",
+          "ocr_status",
+          "error_message",
+          "created_at"
+        ],
+        "title": "DocumentResponse",
+        "description": "文档列表及删除恢复占位记录；不向客户端暴露本地文件路径。"
       },
       "EmailBindingBody": {
         "properties": {
@@ -7550,8 +9309,206 @@
         ],
         "title": "FavoriteMoveBody"
       },
+      "GenerateCancellationResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "canceling",
+              "canceled",
+              "done",
+              "failed",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "execution_finished": {
+            "type": "boolean",
+            "title": "Execution Finished"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationReviewStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationConfirmationError"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "question_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Question Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "execution_finished",
+          "progress",
+          "stage",
+          "done",
+          "batch_id",
+          "questions",
+          "review",
+          "error",
+          "question_ids"
+        ],
+        "title": "GenerateCancellationResponse",
+        "description": "取消后仍存在的本任务题目 ID，供清空覆盖部分删除批次。"
+      },
+      "GenerateProgressResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "canceling",
+              "canceled",
+              "done",
+              "failed",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "execution_finished": {
+            "type": "boolean",
+            "title": "Execution Finished"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationReviewStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationConfirmationError"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "execution_finished",
+          "progress",
+          "stage",
+          "done",
+          "batch_id",
+          "questions",
+          "review",
+          "error"
+        ],
+        "title": "GenerateProgressResponse",
+        "description": "业务状态和执行退出分别报告，done 代表两者均已结束。"
+      },
       "GenerateStartBody": {
         "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
           "bank_id": {
             "type": "string",
             "maxLength": 40,
@@ -7633,6 +9590,92 @@
           "types"
         ],
         "title": "GenerateStartBody"
+      },
+      "GenerateTaskResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "GenerateTaskResponse",
+        "description": "可恢复的参数化任务标识。"
+      },
+      "GenerationConfirmationError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "available": {
+            "type": "integer",
+            "title": "Available"
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "kind",
+          "available",
+          "requested"
+        ],
+        "title": "GenerationConfirmationError",
+        "description": "原题数量不足时的结构化确认信息。"
+      },
+      "GenerationError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "GenerationError",
+        "description": "脱敏任务错误及原题不足提示。"
+      },
+      "GenerationReviewStats": {
+        "properties": {
+          "duplicates": {
+            "type": "integer",
+            "title": "Duplicates"
+          },
+          "repaired": {
+            "type": "integer",
+            "title": "Repaired"
+          },
+          "regenerated": {
+            "type": "integer",
+            "title": "Regenerated"
+          },
+          "solved": {
+            "type": "integer",
+            "title": "Solved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "duplicates",
+          "repaired",
+          "regenerated",
+          "solved"
+        ],
+        "title": "GenerationReviewStats",
+        "description": "生成审核的计数摘要。"
       },
       "HTTPValidationError": {
         "properties": {
@@ -7836,6 +9879,418 @@
         "type": "object",
         "title": "NotificationReadBody"
       },
+      "OpsOverview": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v2",
+            "title": "Schema Version",
+            "default": "v2"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "window": {
+            "$ref": "#/components/schemas/OpsWindow"
+          },
+          "total_runs": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Runs"
+          },
+          "status_counts": {
+            "$ref": "#/components/schemas/OpsStatusCounts"
+          },
+          "recent_runs": {
+            "items": {
+              "$ref": "#/components/schemas/OpsRun"
+            },
+            "type": "array",
+            "title": "Recent Runs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "generated_at",
+          "window",
+          "total_runs",
+          "status_counts",
+          "recent_runs"
+        ],
+        "title": "OpsOverview",
+        "description": "概览只聚合当前 SQL 台账，最近记录最多 10 条。"
+      },
+      "OpsPage": {
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "OpsPage",
+        "description": "分页不承诺不同请求之间的历史快照。"
+      },
+      "OpsRun": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "title": "Run Id"
+          },
+          "entrypoint": {
+            "type": "string",
+            "enum": [
+              "parameterized",
+              "conversation"
+            ],
+            "title": "Entrypoint"
+          },
+          "owner_user_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "title": "Owner User Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "bank_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Id"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_.:-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "running",
+              "completed",
+              "failed",
+              "canceled",
+              "unknown"
+            ],
+            "title": "Status"
+          },
+          "requested_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested Count"
+          },
+          "delivered_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered Count"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code",
+            "description": "已确认的 RunErrorCode 安全分类；未知值为 UNKNOWN，无错误为 null，不返回原始异常"
+          },
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Accepted At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "last_observed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "entrypoint",
+          "owner_user_id",
+          "session_id",
+          "task_id",
+          "bank_id",
+          "document_id",
+          "batch_id",
+          "status",
+          "requested_count",
+          "delivered_count",
+          "error_code",
+          "accepted_at",
+          "started_at",
+          "finished_at",
+          "last_observed_at"
+        ],
+        "title": "OpsRun",
+        "description": "最小运行事实投影；不包含正文、凭据、心跳推断或质量结论。"
+      },
+      "OpsRunDetail": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v2",
+            "title": "Schema Version",
+            "default": "v2"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "run": {
+            "$ref": "#/components/schemas/OpsRun"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "generated_at",
+          "run"
+        ],
+        "title": "OpsRunDetail",
+        "description": "基本详情与列表共用最小运行事实，不查询业务正文。"
+      },
+      "OpsRuns": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v2",
+            "title": "Schema Version",
+            "default": "v2"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "window": {
+            "$ref": "#/components/schemas/OpsWindow"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OpsRun"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "$ref": "#/components/schemas/OpsPage"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "generated_at",
+          "window",
+          "items",
+          "page"
+        ],
+        "title": "OpsRuns",
+        "description": "管理员运行列表。"
+      },
+      "OpsStatusCounts": {
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Accepted",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Running",
+            "default": 0
+          },
+          "completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completed",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Failed",
+            "default": 0
+          },
+          "canceled": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Canceled",
+            "default": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unknown",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "OpsStatusCounts",
+        "description": "六个状态的已记录行数；unknown 独立计数，不推断成功或失败。"
+      },
+      "OpsWindow": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "To"
+          },
+          "time_basis": {
+            "type": "string",
+            "const": "accepted_at",
+            "title": "Time Basis",
+            "default": "accepted_at"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "OpsWindow",
+        "description": "按受理时间筛选的左闭右开区间。"
+      },
       "OptionItem": {
         "properties": {
           "label": {
@@ -7961,6 +10416,41 @@
         ],
         "title": "PaperCreateBody"
       },
+      "PaperExamWindow": {
+        "properties": {
+          "start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "PaperExamWindow",
+        "description": "试卷可选作答时间窗。"
+      },
       "PaperModuleBody": {
         "properties": {
           "type": {
@@ -7986,6 +10476,36 @@
           "total_score"
         ],
         "title": "PaperModuleBody"
+      },
+      "PaperPublicationRead": {
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "title": "Space Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "stopped": {
+            "type": "boolean",
+            "title": "Stopped"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "space_id",
+          "name",
+          "stopped",
+          "published_at"
+        ],
+        "title": "PaperPublicationRead",
+        "description": "单个发布空间的独立停止状态。"
       },
       "PaperPublishBody": {
         "properties": {
@@ -8028,6 +10548,98 @@
         ],
         "title": "PaperPublishBody"
       },
+      "PaperQuestionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "paper_question_id": {
+            "type": "string",
+            "title": "Paper Question Id"
+          },
+          "source_question_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Question Id"
+          },
+          "no": {
+            "type": "integer",
+            "title": "No",
+            "description": "普通载荷连续编号；history=true 时保留原始题号，允许不连续"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "difficulty": {
+            "type": "string",
+            "title": "Difficulty"
+          },
+          "stem": {
+            "type": "string",
+            "title": "Stem"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionItem"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "knowledge_point": {
+            "type": "string",
+            "title": "Knowledge Point"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "analysis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "paper_question_id",
+          "source_question_id",
+          "no",
+          "type",
+          "score",
+          "difficulty",
+          "stem",
+          "options",
+          "knowledge_point"
+        ],
+        "title": "PaperQuestionRead",
+        "description": "试卷题目快照；答案和解析仅在调用方获准时出现。"
+      },
       "PaperQuestionRemoveBody": {
         "properties": {
           "paper_question_ids": {
@@ -8044,6 +10656,138 @@
           "paper_question_ids"
         ],
         "title": "PaperQuestionRemoveBody"
+      },
+      "PaperRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "question_count": {
+            "type": "integer",
+            "title": "Question Count"
+          },
+          "total_score": {
+            "type": "integer",
+            "title": "Total Score"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          },
+          "saved_to_records": {
+            "type": "boolean",
+            "title": "Saved To Records"
+          },
+          "allow_review": {
+            "type": "boolean",
+            "title": "Allow Review"
+          },
+          "allow_retake": {
+            "type": "boolean",
+            "title": "Allow Retake"
+          },
+          "exam_window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PaperExamWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "spaces": {
+            "items": {
+              "$ref": "#/components/schemas/PaperPublicationRead"
+            },
+            "type": "array",
+            "title": "Spaces"
+          },
+          "submitted_count": {
+            "type": "integer",
+            "title": "Submitted Count"
+          },
+          "student_count": {
+            "type": "integer",
+            "title": "Student Count"
+          },
+          "answered": {
+            "type": "boolean",
+            "title": "Answered"
+          },
+          "modules_order": {
+            "items": {
+              "$ref": "#/components/schemas/PaperModuleBody"
+            },
+            "type": "array",
+            "title": "Modules Order"
+          },
+          "questions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PaperQuestionRead"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Questions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "created_at",
+          "updated_at",
+          "question_count",
+          "total_score",
+          "status",
+          "closed",
+          "deleted",
+          "saved_to_records",
+          "allow_review",
+          "allow_retake",
+          "exam_window",
+          "spaces",
+          "submitted_count",
+          "student_count",
+          "answered",
+          "modules_order"
+        ],
+        "title": "PaperRead",
+        "description": "组卷响应；closed 独立于发布状态，deleted 表示历史保留的删除。"
       },
       "PaperUpdateBody": {
         "properties": {
@@ -8879,6 +11623,110 @@
           "code"
         ],
         "title": "SpaceJoinBody"
+      },
+      "SpacePaperRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "question_count": {
+            "type": "integer",
+            "title": "Question Count"
+          },
+          "total_score": {
+            "type": "integer",
+            "title": "Total Score"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          },
+          "allow_review": {
+            "type": "boolean",
+            "title": "Allow Review"
+          },
+          "allow_retake": {
+            "type": "boolean",
+            "title": "Allow Retake"
+          },
+          "exam_window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PaperExamWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stopped": {
+            "type": "boolean",
+            "title": "Stopped"
+          },
+          "submitted_count": {
+            "type": "integer",
+            "title": "Submitted Count"
+          },
+          "student_count": {
+            "type": "integer",
+            "title": "Student Count"
+          },
+          "answered": {
+            "type": "boolean",
+            "title": "Answered"
+          },
+          "last_urge_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Urge At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "question_count",
+          "total_score",
+          "status",
+          "closed",
+          "deleted",
+          "allow_review",
+          "allow_retake",
+          "exam_window",
+          "stopped",
+          "submitted_count",
+          "student_count",
+          "answered",
+          "last_urge_at"
+        ],
+        "title": "SpacePaperRead",
+        "description": "学习空间试卷列表，保留独立停止状态、作答统计和催交时间。"
       },
       "SpaceUpdateBody": {
         "properties": {

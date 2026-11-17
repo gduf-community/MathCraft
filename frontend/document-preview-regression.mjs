@@ -2,14 +2,10 @@
 /** 离线预览回归：打包真实组件、会话与 API；浏览器 HTTP 全部由内存夹具响应。 */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { build } from 'esbuild'
 
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
 // 可由浏览器原生 PDF 阅读器解析的一页 PDF，避免用损坏文件掩盖 Blob 显示路径。
 function pdfFixture() {
   const content = 'BT /F1 18 Tf 40 100 Td (Offline PDF preview) Tj ET\n'
@@ -53,9 +49,8 @@ const bundle = await build({
   bundle: true, write: false, format: 'iife', jsx: 'automatic',
   define: { 'import.meta.env': '{}', 'process.env.NODE_ENV': '"development"' },
 })
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(
-  homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe',
-), headless: true })
+await withResources(async use => {
+const browser = use(await launchBrowser())
 const failures = []
 let passed = 0
 const filter = process.argv.slice(2).join(' ')
@@ -147,7 +142,7 @@ async function test(name, action) {
   } finally { await context.close() }
 }
 
-try {
+{
   await test('TXT 保留 Markdown 和公式源码，不调用 KaTeX', async ({ page, fixture }) => {
     fixture.body = '# 纯文本\n\n**不是粗体** $x$ <script>危险</script>'
     await page.evaluate(() => window.previewHarness.show({ docFormat: 'TXT' }))
@@ -384,6 +379,8 @@ try {
     assert.equal(await page.evaluate(() => window.previewHarness.textReads), 0)
     assert.equal(new URL(fixture.calls.at(-1).url).search, '')
   })
-} finally { await browser.close() }
+}
 console.log(`预览回归：${passed} 通过，${failures.length} 失败`)
 if (failures.length) process.exitCode = 1
+
+})

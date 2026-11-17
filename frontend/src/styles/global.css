@@ -130,7 +130,7 @@ input[type="number"] {
   vertical-align: baseline;
 }
 
-/* 工作台窄屏：改排版而非裁切，让导航、对话和参数控件均可滚动到达。 */
+/* 工作台窄屏：导航、对话和历史侧栏纵向排列。 */
 @media (max-width: 767px) {
   .workspace-shell {
     height: auto;
@@ -182,11 +182,7 @@ input[type="number"] {
     padding-inline: 12px;
   }
   .workspace-body > aside {
-    /* 覆盖桌面拖拽宽度；仍保留桌面 220–300px 调宽行为。 */
     width: auto !important;
     margin: 8px;
-  }
-  .workspace-body > aside > [title="拖动调整面板宽度"] {
-    display: none;
   }
 }

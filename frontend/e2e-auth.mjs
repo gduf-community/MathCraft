@@ -1,16 +1,21 @@
-/* global process, localStorage, URL, console, window, document, navigator, setTimeout */
+/* global localStorage, URL, console, window, document, navigator, setTimeout */
 /** 真实前端浏览器回归：仅使用内存 API 与假 Turnstile，不连接后端。 */
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { homedir, tmpdir } from 'node:os'
+import { createServer } from 'vite'
+import { launchBrowser, withResources } from './regression-resources.mjs'
 import { fileURLToPath } from 'node:url'
-const require = createRequire(join(tmpdir(), 'mathcraft-auth-browser', 'package.json'))
-const { chromium } = require('playwright-core')
-const browser = await chromium.launch({ executablePath: process.env.AUTH_BROWSER ?? join(homedir(), 'AppData/Local/ms-playwright/chromium-1217/chrome-win64/chrome.exe'), headless: true })
-const origin = process.env.AUTH_TEST_URL ?? 'http://127.0.0.1:5178'
-const artifacts = fileURLToPath(new URL('../output/playwright/auth-account/', import.meta.url))
+await withResources(async use => {
+const browser = use(await launchBrowser())
+const root = fileURLToPath(new URL('.', import.meta.url))
+const server = use(await createServer({ root, configFile: join(root, 'vite.auth-test.config.mjs'),
+  server: { port: 5178, strictPort: true, hmr: false }, logLevel: 'error' }))
+await server.listen()
+const address = server.httpServer.address()
+assert.ok(address && typeof address !== 'string')
+const origin = 'http://127.0.0.1:' + address.port
+const artifacts = fileURLToPath(new URL('./.test-results/auth-account/', import.meta.url))
 await mkdir(artifacts, { recursive: true })
 const fixture = (role = 'student', verified = false) => ({ id: 'test-' + role, account: 'fake-' + role, role,
   identity: role === 'admin' ? '管理员' : role === 'teacher' ? '教师' : '学生',
@@ -120,6 +125,7 @@ await context.route('**/*', async route => {
   else if (path.startsWith('/api/admin/ops/')) { status = 503; body = { detail: { code: 'NOT_INTEGRATED', message: '合成运维服务未接入' } } }
   else if (path.includes('model-settings')) body = { mineru_limits: {}, embedding_model: 'test', rerank_model: 'test' }
   else if (path === '/api/generate/batches/latest') body = null
+  else if (path === '/api/chat/sessions') { authenticated(); assert.equal(method, 'GET'); body = { items: [] } }
   else if (path === '/api/urges' || path === '/api/notifications') body = { unread_count: 0, items: [] }
   else if (['/api/banks', '/api/spaces', '/api/papers', '/api/favorites', '/api/favorite-groups'].includes(path)) body = []
   else { unexpected.push(method + ' ' + path); status = 404; body = { detail: 'unexpected fake route' } }
@@ -202,11 +208,19 @@ async function noBusinessSession() {
   assert.equal(await page.getByRole('heading', { name: '运维后台', exact: true }).count(), 0)
 }
 async function noHorizontalOverflow(scope = page) {
+  await page.waitForFunction(() => {
+    const stage = document.querySelector('.auth-stage')
+    if (!stage) return true
+    const bounds = stage.getBoundingClientRect()
+    return Math.abs(bounds.width - window.innerWidth) <= 1 &&
+      Math.abs(bounds.height - window.innerHeight) <= 1
+  })
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '页面不得横向溢出')
   for (const element of await scope.locator('input, button').all()) {
     if (!await element.isVisible()) continue
     const bounds = await element.boundingBox()
-    assert.ok(bounds && bounds.x >= -1 && bounds.x + bounds.width <= page.viewportSize().width + 1, '可见输入框和按钮须完整落在视口宽度内')
+    assert.ok(bounds && bounds.x >= -1 && bounds.x + bounds.width <= page.viewportSize().width + 1,
+      `可见输入框和按钮须完整落在视口宽度内：${JSON.stringify({bounds, viewport:page.viewportSize()})}`)
   }
 }
 async function scrollReachable(control) {
@@ -836,4 +850,6 @@ try {
   console.error('Recent fake API calls:', calls.slice(-18).map(call => call.method + ' ' + call.path))
   console.error('Web Locks:', await page.evaluate(() => navigator.locks.query()))
   throw error
-} finally { await browser.close() }
+}
+
+})

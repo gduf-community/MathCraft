@@ -36,6 +36,7 @@ def test_full_teacher_student_flow(client, teacher, student):
     assert progress["done"] is True
     assert len(progress["questions"]) == 2
     question_ids = [q["id"] for q in progress["questions"]]
+    generated_answers = {q["id"]: q["answer"] for q in progress["questions"]}
 
     # 3. 建空间，学生加入
     space_resp = client.post("/api/spaces", json={"name": "全流程班级", "capacity": 50}, headers=teacher)
@@ -59,6 +60,12 @@ def test_full_teacher_student_flow(client, teacher, student):
     paper = paper_resp.json()
     assert paper["status"] == "published"
     assert paper["question_count"] == 2
+    paper_answers = {
+        q["paper_question_id"]: generated_answers[q["source_question_id"]]
+        for q in paper["questions"]
+    }
+    assert all(q["answer"] == paper_answers[q["paper_question_id"]]
+               for q in paper["questions"])
 
     # 5. 学生看到试卷并作答
     space_papers = client.get(f"/api/spaces/{space['id']}/papers", headers=student).json()
@@ -73,8 +80,10 @@ def test_full_teacher_student_flow(client, teacher, student):
     assert attempt_resp.status_code == 201, attempt_resp.text
     attempt = attempt_resp.json()
     attempt_id = attempt["attempt"]["id"]
+    assert all(q.get("answer") is None for q in attempt["questions"])
     answers = [
-        {"paper_question_id": q["paper_question_id"], "choices": ["A"], "text": ""}
+        {"paper_question_id": q["paper_question_id"],
+         "choices": [paper_answers[q["paper_question_id"]]], "text": ""}
         for q in attempt["questions"]
     ]
     submit = client.post(
@@ -100,14 +109,23 @@ def test_full_teacher_student_flow(client, teacher, student):
     assert data["submitted_count"] == 1
     assert data["student_count"] == 1
     assert len(data["questions"]) == 2
-    assert data["questions"][0]["option_counts"][0] == {"label": "A", "count": 1}
+    for question in data["questions"]:
+        correct_label = paper_answers[question["paper_question_id"]]
+        assert {item["label"]: item["count"] for item in question["option_counts"]} == {
+            label: int(label == correct_label) for label in "ABCD"
+        }
 
-    # 8. 教师停止作答，学生不能再作答
+    # 8. 教师停止作答，已交卷学生仍可复盘，但不能开始新作答
     assert client.post(
         f"/api/papers/{paper['id']}/publications/{space['id']}/stop", headers=teacher
     ).status_code == 204
-    blocked = client.get(
+    historical = client.get(
         f"/api/papers/{paper['id']}/attempt?space_id={space['id']}", headers=student
+    )
+    assert historical.status_code == 200, historical.text
+    assert historical.json()["attempt"]["status"] == "submitted"
+    blocked = client.post(
+        f"/api/papers/{paper['id']}/attempts", headers=student, json={"space_id": space["id"]},
     )
     assert blocked.status_code == 403
     assert blocked.json()["detail"]["code"] == "PAPER_STOPPED"

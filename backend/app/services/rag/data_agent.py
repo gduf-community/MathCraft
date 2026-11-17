@@ -30,6 +30,9 @@ from app.models import (
     User,
 )
 from app.models.base import new_id, utcnow
+from app.services import papers
+from app.services.generation_cancellation import GenerationCanceled
+from app.services.paper_state import lock_paper
 from app.services.rag.llm import chat_json
 from app.services.rag.prompts import DATA_SYSTEM
 
@@ -122,7 +125,7 @@ def _collect_rows(
         field_map = {"type": "type", "difficulty": "difficulty", "knowledge_point": "knowledge_point",
                      "difficulty_score": "difficulty_score"}
     elif entity == "papers":
-        q = (db.query(Paper).filter(Paper.owner_id == user.id)
+        q = (db.query(Paper).filter(Paper.owner_id == user.id, Paper.deleted.is_(False))
              .order_by(Paper.created_at.desc()))
         for paper in q:
             rows.append({
@@ -241,6 +244,8 @@ def run_data_request(
             api_key=api_key,
             thinking_off=True,
         )
+    except GenerationCanceled:
+        raise
     except Exception as exc:  # noqa: BLE001
         from app.services.rag.llm import LLMError, friendly_error
 
@@ -278,6 +283,7 @@ def run_data_request(
     entity = str(dsl.get("entity"))
     action = str(dsl.get("action") or "select")
     explanation = str(dsl.get("explanation") or "")
+    delete_mode = "paper" if dsl.get("mode") == "paper" else "record"
 
     if action == "select":
         aggregate = str(dsl.get("aggregate") or "none")
@@ -311,23 +317,33 @@ def run_data_request(
     if affected == 0:
         return {"reply": "没有找到符合条件的数据，无需执行该操作。", "questions": [], "done": True}
 
+    if action == "delete" and entity == "papers":
+        impact = (
+            "整卷删除：须先关闭试卷、停止所有发布空间的作答，且无正在批卷的作答。"
+            "删除后保留历史题目、作答、答案与成绩。"
+            if delete_mode == "paper" else
+            "移除组卷记录：已发布且仍有发布关系的试卷仅从组卷记录隐藏，"
+            "空间发布与历史作答继续保留；草稿等无有效发布的试卷按整卷删除处理，"
+            "须先关闭、停止所有发布空间的作答，且无正在批卷的作答，历史数据保留。"
+        )
+        explanation = f"{impact} {explanation}".strip()
+
     confirm_id = new_id("cfm")
-    # 历史封印快照（sealed snapshot）：审批执行所引用的全部结构体都来自这里。
-    # 快照一经封存不可变更；审批后的状态复苏只读取这份快照，严禁重新执行 DSL
-    # 或从当下内存、slot_state 抓取数据。
     payload = {
         "confirm_id": confirm_id,
-        "thread_id": session_id,           # 要素一：Thread ID，发起该操作的对话
-        "session_id": session_id,          # 旧字段名，兼容既有校验逻辑
+        "thread_id": session_id,
+        "session_id": session_id,
         "user_id": user.id,
-        "sealed_at": utcnow().isoformat(), # 封印时间，用于溯源与排障
+        "sealed_at": utcnow().isoformat(),
         "action": action,
         "entity": entity,
-        "target_ids": target_ids,          # 要素三：State 封印（受影响记录的 ID 快照）
+        "target_ids": target_ids,
         "set_name": new_name,
-        "samples": samples,                # 封存的影响样本，复苏时直接复用
+        "mode": delete_mode,
+        "samples": samples,
         "explanation": explanation,
     }
+
     cache.get_redis().set(_confirm_key(confirm_id),
                           json.dumps(payload, ensure_ascii=False), ex=CONFIRM_TTL_SECONDS)
     verb = "删除" if action == "delete" else "改名"
@@ -342,9 +358,12 @@ def run_data_request(
 
 def execute_confirmed(
     db: Session, user: User, confirm_id: str, accepted: bool,
-    *, session_id: str | None = None,
+    *, session_id: str | None = None, commit: bool = True,
 ) -> str:
     """按状态复苏三要素执行审批结果。
+
+    commit=False 时业务改动加入调用者事务，与审批消息一同提交。
+    快照一旦消费，失败后也必须重新预览，避免重放结果不明的审批。
 
     复苏流程（全部只读封印快照，严禁抓取当下内存数据）：
     1. 读取封印快照；缺失即过期，要求重新发起（不存在无快照的复苏路径）。
@@ -387,19 +406,44 @@ def execute_confirmed(
             n = db.query(Favorite).filter(
                 Favorite.id.in_(target_ids), Favorite.user_id == user.id,
             ).delete(synchronize_session=False)
-            db.commit()
+            if commit:
+                db.commit()
             return f"已删除 {n} 条收藏记录。"
         if entity == "papers":
-            n = db.query(Paper).filter(
-                Paper.id.in_(target_ids), Paper.owner_id == user.id,
-            ).delete(synchronize_session=False)
-            db.commit()
-            return f"已删除 {n} 份试卷及其关联记录。"
+            rows = db.query(Paper).filter(
+                Paper.id.in_(target_ids), Paper.owner_id == user.id, Paper.deleted.is_(False),
+            ).order_by(Paper.id).all()
+            mode = "paper" if payload.get("mode") == "paper" else "record"
+            try:
+                for paper in rows:
+                    papers.delete_paper(db, paper, mode, commit=False)
+                    db.flush()
+                if commit:
+                    db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            if mode == "paper":
+                return f"已整卷删除 {len(rows)} 份试卷，历史题目、作答、答案与成绩已保留。"
+            return f"已移除 {len(rows)} 份试卷的组卷记录；无有效发布的试卷按整卷删除，历史数据已保留。"
     if action == "update" and entity == "papers":
         new_name = payload["set_name"]
-        n = db.query(Paper).filter(
-            Paper.id.in_(target_ids), Paper.owner_id == user.id,
-        ).update({"name": new_name}, synchronize_session=False)
-        db.commit()
-        return f"已把 {n} 份试卷改名为「{new_name}」。"
+        try:
+            rows = db.query(Paper.id).filter(
+                Paper.id.in_(target_ids), Paper.owner_id == user.id,
+            ).order_by(Paper.id).all()
+            locked_papers: list[Paper] = []
+            for (paper_id,) in rows:
+                # 不过滤 deleted：过期预览必须经过写门禁拒绝，不能静默部分改名。
+                paper = lock_paper(db, paper_id)
+                if paper.owner_id == user.id:
+                    locked_papers.append(paper)
+            for paper in locked_papers:
+                paper.name = new_name
+            if commit:
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return f"已把 {len(locked_papers)} 份试卷改名为「{new_name}」。"
     raise AppError("CONFIRM_ACTION", "不支持的操作类型", status_code=400)

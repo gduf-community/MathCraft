@@ -80,13 +80,13 @@ function preprocessLatex(input: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&') // 放最后，避免 &amp;lt; 被提前拆开
-  text = text.replace(/\\\\\[/g, '\\[').replace(/\\\\\(/g, '\\(')
+  text = text.replace(/\\\\([[\]()])/g, '\\$1')
   for (const [broken, fixed] of CONTROL_REPAIRS) {
-    text = text.split(broken).join(fixed)
+    text = text.replace(new RegExp(broken + '(?![a-zA-Z])', 'g'), () => fixed)
   }
-  // 过度转义折叠：\\neq → \neq。矩阵换行 \\ 后面不是命令名，不会被误折叠
-  text = text.replace(/\\\\([a-zA-Z]{2,})/g, (match, name: string) =>
-    LATEX_COMMANDS.has(name) ? '\\' + name : match,
+  // 奇数个反斜杠可能是矩阵换行后紧接命令，保留其行分隔。
+  text = text.replace(/(\\{2,})([a-zA-Z]{2,})/g, (match, slashes: string, name: string) =>
+    LATEX_COMMANDS.has(name) && slashes.length % 2 === 0 ? '\\' + name : match,
   )
   return text
 }

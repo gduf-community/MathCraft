@@ -10,12 +10,18 @@ import httpx
 from openai import APITimeoutError, OpenAI
 from pydantic import SecretStr
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 pytest.importorskip("opentelemetry.sdk")
 pytest.importorskip("opentelemetry.exporter.otlp.proto.common.trace_encoder")
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
 from app.config import Settings, settings
+from app.db import Base
+from app.models import Bank, Document, OpsRun, User
+from app.models.ops_run import RunEntrypoint
+from app.services.ops_runs import RunLedger
 from app.services import phoenix_tracing as tracing
 
 
@@ -126,6 +132,124 @@ def test_parallel_runs_nested_workers_never_cross_link(capture):
         root = roots[attrs(item)["mathcraft.run_id"]]
         assert root.trace_id == item.trace_id
         assert not item.parent_span_id or item.parent_span_id == root.span_id
+
+
+def test_new_business_entrypoint_does_not_reuse_nested_trace(capture):
+    @tracing.trace_run("parameterized", force_new=True)
+    def inner():
+        return tracing.current_run_id()
+
+    @tracing.trace_run("conversation", force_new=True)
+    def outer():
+        before = tracing.current_run_id()
+        nested = inner()
+        return before, nested, tracing.current_run_id()
+
+    before, nested, after = outer()
+    assert before == after and before != nested
+    roots = spans(capture)
+    assert len(roots) == 2
+    assert {attrs(root)["mathcraft.run_id"] for root in roots} == {before, nested}
+    assert all(not root.parent_span_id for root in roots)
+    assert tracing.current_run_id() is None
+
+
+def _fail_parameterized_root(monkeypatch):
+    """Fail the nested root while leaving model span creation available."""
+    runtime = tracing._runtime
+    assert runtime is not None
+    tracer = runtime.provider.get_tracer("mathcraft.phoenix")
+    start_span = tracer.start_span
+
+    def fail_root(name, *args, **kwargs):
+        if name == "mathcraft.parameterized":
+            raise RuntimeError("synthetic root span failure")
+        return start_span(name, *args, **kwargs)
+
+    monkeypatch.setattr(tracer, "start_span", fail_root)
+    monkeypatch.setattr(runtime.provider, "get_tracer", lambda *args, **kwargs: tracer)
+
+
+def test_failed_nested_root_does_not_reuse_parent_ledger_or_model_span(capture, monkeypatch):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with sessions.begin() as db:
+        db.add(User(id="trace_owner", account="trace_owner", password_hash="synthetic-hash",
+                    role="teacher", identity="教师", display_name="合成账号"))
+        db.add(Bank(id="trace_bank", name="合成题库", code="trace-bank",
+                    creator_id="trace_owner"))
+        db.add(Document(id="trace_doc", bank_id="trace_bank", name="synthetic.md", format="MD",
+                        size_bytes=1, storage_path="synthetic/unused.md", status="ready",
+                        uploader_id="trace_owner"))
+    ledger = RunLedger(sessions)
+    fields = dict(entrypoint=RunEntrypoint.PARAMETERIZED, owner_user_id="trace_owner",
+                  bank_id="trace_bank", document_id="trace_doc", requested_count=2)
+
+    try:
+        with client(response) as cli:
+            @tracing.trace_run("parameterized", force_new=True)
+            def inner():
+                identifier = tracing.current_run_id()
+                assert invoke(cli) == "private-output"
+                return identifier, ledger.accept(**fields)
+
+            @tracing.trace_run("parameterized", force_new=True)
+            def outer():
+                identifier = ledger.accept(**fields)
+                with monkeypatch.context() as patch:
+                    _fail_parameterized_root(patch)
+                    nested = inner()
+                restored = tracing.current_run_id()
+                assert invoke(cli) == "private-output"
+                return identifier, nested, restored
+
+            outer_id, (nested_context, nested_id), restored = outer()
+
+        assert nested_context is None
+        assert outer_id == restored and nested_id != outer_id
+        with sessions() as db:
+            assert set(db.scalars(select(OpsRun.run_id))) == {outer_id, nested_id}
+        recorded = spans(capture)
+        assert len(recorded) == 2
+        child, root = recorded
+        assert child.parent_span_id == root.span_id
+        assert attrs(child)["mathcraft.run_id"] == attrs(root)["mathcraft.run_id"] == outer_id
+        assert tracing.current_run_id() is None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("failure", ["root_span", "runtime_unavailable"])
+def test_failed_nested_run_restores_parent_after_business_exception(capture, monkeypatch, failure):
+    class BusinessAbort(BaseException):
+        pass
+
+    error = BusinessAbort()
+    nested_contexts = []
+
+    @tracing.trace_run("parameterized", force_new=True)
+    def inner():
+        nested_contexts.append(tracing.current_run_id())
+        raise error
+
+    @tracing.trace_run("conversation", force_new=True)
+    def outer():
+        identifier = tracing.current_run_id()
+        with monkeypatch.context() as patch:
+            if failure == "root_span":
+                _fail_parameterized_root(patch)
+            else:
+                patch.setattr(tracing, "_runtime", None)
+            with pytest.raises(BusinessAbort) as caught:
+                inner()
+            assert caught.value is error
+            assert tracing.current_run_id() == identifier
+        return identifier
+
+    assert outer() is not None
+    assert nested_contexts == [None]
+    assert tracing.current_run_id() is None
 
 
 class FailingStream(httpx.SyncByteStream):

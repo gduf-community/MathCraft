@@ -2,10 +2,10 @@
 from sqlalchemy.orm import Session
 
 from app import local_secrets
-from app.config import settings
 from app.errors import AppError
 from app.models import User, UserModelSetting
 from app.services.auth import has_verified_email
+from app.services.rag.llm import LlmRuntime, ResolvedApiKey, resolve_llm_runtime
 
 
 def get_setting(db: Session, user_id: str) -> UserModelSetting:
@@ -18,12 +18,15 @@ def get_setting(db: Session, user_id: str) -> UserModelSetting:
     return row
 
 
-def get_effective_deepseek_key(db: Session, user_id: str) -> str:
-    """用户配置优先；环境变量仅作脚本与调试兜底。"""
+def get_effective_llm_runtime(db: Session, user_id: str) -> LlmRuntime:
+    """读取个人配置并一次解析完整运行快照，不提交或释放调用者事务。"""
     row = db.get(UserModelSetting, user_id)
-    if row and row.deepseek_api_key:
-        return row.deepseek_api_key
-    return settings.deepseek_api_key
+    return resolve_llm_runtime(row.deepseek_api_key if row else None)
+
+
+def get_effective_deepseek_key(db: Session, user_id: str) -> str:
+    """兼容旧调用链的字符串参数，完整凭据及来源仅附于内存对象。"""
+    return ResolvedApiKey(get_effective_llm_runtime(db, user_id))
 
 
 def get_effective_mineru_token(db: Session, user_id: str) -> str:

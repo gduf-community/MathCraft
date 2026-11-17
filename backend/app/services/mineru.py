@@ -3,10 +3,14 @@
 限制：文件 ≤ 200 MB，页数 ≤ 200 页（上传前由调用方校验）。
 Token 优先取用户配置，默认用 local_secrets 中的系统 Token。
 """
+import hashlib
 import io
+import json
 import logging
 import math
+import os
 import re
+import tempfile
 import time
 import zipfile
 from contextlib import contextmanager
@@ -111,7 +115,7 @@ def _at_stage(operation: str, part_index: int | None = None) -> Iterator[None]:
 def detect_scanned_pdf(file_path: Path) -> tuple[bool, int]:
     """判定 PDF 是否为扫描件（无可提取文本层）。返回 (is_scanned, page_count)。"""
     with fitz.open(file_path) as doc:
-        pages = [page.get_text("text").strip() for page in doc]
+        pages = [page.get_textpage(flags=fitz.TEXTFLAGS_TEXT).extractText().strip() for page in doc]
     page_count = len(pages)
     if page_count == 0:
         return False, 0
@@ -230,6 +234,86 @@ def _record_batch(result_dir: Path, batch_id: str) -> None:
                            "code=OCR_BATCH_RECORD_UNAVAILABLE", type(exc).__name__)
 
 
+def _cache_identity(file_path: Path, page_count: int) -> dict[str, object]:
+    """绑定源文件内容、OCR 参数和整本页范围，不保存路径或凭据。"""
+    digest = hashlib.sha256()
+    size = 0
+    with file_path.open("rb") as source:
+        while data := source.read(1024 * 1024):
+            digest.update(data)
+            size += len(data)
+    return {
+        "version": 1, "source_sha256": digest.hexdigest(), "source_bytes": size,
+        "page_start": 0, "page_end": page_count, "part_index": None,
+        "model_version": MODEL_VERSION, "language": "ch", "is_ocr": True,
+        "enable_formula": True, "enable_table": True,
+    }
+
+
+def _read_cached_markdown(
+    result_dir: Path, identity: dict[str, object],
+    *, manifest_name: str = "full.manifest.json",
+) -> tuple[str, Path] | None:
+    """只信任已发布且内容及来源均匹配的完成清单；中断产物作为缓存未命中。"""
+    try:
+        manifest = json.loads((result_dir / manifest_name).read_bytes())
+        if not isinstance(manifest, dict) or manifest.get("identity") != identity:
+            return None
+        relative = manifest.get("markdown_path")
+        if not isinstance(relative, str):
+            return None
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts:
+            return None
+        md_path = result_dir / path
+        content = md_path.read_bytes()
+        if (manifest.get("content_bytes") != len(content)
+                or manifest.get("content_sha256") != hashlib.sha256(content).hexdigest()):
+            return None
+        return content.decode("utf-8"), md_path.parent
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def read_cached_markdown(file_path: Path, result_dir: Path) -> str | None:
+    """校验整本 OCR 缓存的完成清单及源 PDF，供入库流程安全复用。"""
+    with fitz.open(file_path) as pdf:
+        identity = _cache_identity(file_path, pdf.page_count)
+    cached = _read_cached_markdown(result_dir, identity)
+    return cached[0] if cached is not None else None
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """先将同目录临时文件刷盘，再替换最终文件；失败时清理本次临时文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _publish_markdown(
+    result_dir: Path, markdown: str, identity: dict[str, object],
+    relative: Path = Path("full.md"),
+    *, manifest_name: str = "full.manifest.json",
+) -> None:
+    """先原子发布正文，最后发布完成清单；两次替换间中断会被哈希校验拒绝。"""
+    content = markdown.encode("utf-8")
+    manifest = {
+        "identity": identity, "markdown_path": relative.as_posix(),
+        "content_bytes": len(content), "content_sha256": hashlib.sha256(content).hexdigest(),
+    }
+    _atomic_write(result_dir / relative, content)
+    _atomic_write(result_dir / manifest_name, json.dumps(manifest).encode("utf-8"))
+
+
 def extract_pdf(token: str, file_path: Path, result_dir: Path,
                 on_progress: Callable[[int, int], None] | None = None) -> tuple[str, Path]:
     """完整 OCR 流程：申请上传 URL → PUT 文件 → 轮询 → 下载解压 → 读 full.md。
@@ -240,8 +324,14 @@ def extract_pdf(token: str, file_path: Path, result_dir: Path,
     if file_path.stat().st_size > MAX_FILE_MB * 1024 * 1024:
         raise MinerUError(f"文件超过 {MAX_FILE_MB} MB 上限")
     with fitz.open(file_path) as doc:
-        if doc.page_count > MAX_PAGES:
+        page_count = doc.page_count
+        if page_count > MAX_PAGES:
             return _extract_pdf_in_parts(token, file_path, result_dir, on_progress)
+
+    identity = _cache_identity(file_path, page_count)
+    cached = _read_cached_markdown(result_dir, identity)
+    if cached is not None:
+        return cached
 
     headers = _authorization(token)
     with httpx.Client(timeout=120.0) as client:
@@ -279,16 +369,7 @@ def extract_pdf(token: str, file_path: Path, result_dir: Path,
             raise MinerUError("MinerU 未返回结果链接", operation="download", reason="protocol")
 
         # 4. 下载 zip 并解压
-        markdown = _download_part_md(client, zip_url, result_dir)
-
-    md_path = result_dir / "full.md"
-    if not md_path.exists():
-        # 兼容压缩包内带子目录的情况
-        candidates = list(result_dir.rglob("full.md"))
-        if not candidates:
-            raise MinerUError("OCR 结果中未找到 full.md")
-        md_path = candidates[0]
-    return markdown, md_path.parent
+        return _download_part_md(client, zip_url, result_dir, identity)
 
 
 def _plan_parts(page_count: int) -> list[tuple[int, int]]:
@@ -327,7 +408,8 @@ def _split_pdf(file_path: Path, result_dir: Path,
 
 
 def _download_part_md(client: httpx.Client, zip_url: str, target_dir: Path,
-                      part_index: int | None = None) -> str:
+                      identity: dict[str, object],
+                      part_index: int | None = None) -> tuple[str, Path]:
     """下载单个分片的结果压缩包，解压后返回其 full.md 文本（网络抖动重试三次）。"""
     resp = None
     for attempt in range(3):
@@ -342,20 +424,29 @@ def _download_part_md(client: httpx.Client, zip_url: str, target_dir: Path,
             time.sleep(5 * (attempt + 1))
     target_dir.mkdir(parents=True, exist_ok=True)
     assert resp is not None  # 三次均失败时已在上方抛出；成功分支一定持有响应。
-    try:
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            zf.extractall(target_dir)
-    except zipfile.BadZipFile as exc:
-        raise MinerUError("MinerU 结果不是 ZIP", operation="download",
-                          part_index=part_index, reason="protocol") from exc
-    md_path = target_dir / "full.md"
-    if not md_path.exists():
-        candidates = list(target_dir.rglob("full.md"))
-        if not candidates:
-            raise MinerUError("MinerU 结果缺少 full.md", operation="result",
-                              part_index=part_index, reason="missing")
-        md_path = candidates[0]
-    return md_path.read_text(encoding="utf-8", errors="ignore")
+    with tempfile.TemporaryDirectory(dir=target_dir) as staging:
+        staging_dir = Path(staging)
+        try:
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                zf.extractall(staging_dir)
+        except zipfile.BadZipFile as exc:
+            raise MinerUError("MinerU 结果不是 ZIP", operation="download",
+                              part_index=part_index, reason="protocol") from exc
+        md_path = staging_dir / "full.md"
+        if not md_path.exists():
+            candidates = sorted(staging_dir.rglob("full.md"))
+            if not candidates:
+                raise MinerUError("MinerU 结果缺少 full.md", operation="result",
+                                  part_index=part_index, reason="missing")
+            md_path = candidates[0]
+        markdown = md_path.read_text(encoding="utf-8")
+        relative = md_path.relative_to(staging_dir)
+        # 保留图片等附件及嵌套目录行为，任何 full.md 都不能由 extractall 直接发布。
+        for asset in staging_dir.rglob("*"):
+            if asset.is_file() and asset.name not in {"full.md", "full.manifest.json"}:
+                _atomic_write(target_dir / asset.relative_to(staging_dir), asset.read_bytes())
+        _publish_markdown(target_dir, markdown, identity, relative)
+        return markdown, (target_dir / relative).parent
 
 
 def _upload_part(client: httpx.Client, url: str, part: Path,
@@ -386,15 +477,19 @@ def _extract_pdf_in_parts(token: str, file_path: Path, result_dir: Path,
     with fitz.open(file_path) as doc:
         page_count = doc.page_count
     plan = _plan_parts(page_count)
+    identity = _cache_identity(file_path, page_count)
     parts = _split_pdf(file_path, result_dir, plan)
     total = len(parts)
 
     # 断点复用：已完成分片的结果直接读盘，重试不重复消耗 MinerU 额度
     merged: dict[int, str] = {}
     for idx in range(total):
-        cached = result_dir / f"part_{idx:02d}" / "full.md"
-        if cached.exists():
-            merged[idx] = cached.read_text(encoding="utf-8", errors="ignore")
+        part_identity = identity | {
+            "page_start": plan[idx][0], "page_end": plan[idx][1], "part_index": idx,
+        }
+        cached = _read_cached_markdown(result_dir / f"part_{idx:02d}", part_identity)
+        if cached is not None:
+            merged[idx] = cached[0]
     if on_progress:
         on_progress(len(merged), total)
 
@@ -426,8 +521,12 @@ def _extract_pdf_in_parts(token: str, file_path: Path, result_dir: Path,
                         if not isinstance(zip_url, str) or not zip_url:
                             raise MinerUError("MinerU 缺少结果链接", operation="download",
                                               part_index=idx, reason="protocol")
-                        merged[idx] = _download_part_md(
-                            client, zip_url, result_dir / f"part_{idx:02d}", idx
+                        part_identity = identity | {
+                            "page_start": plan[idx][0], "page_end": plan[idx][1],
+                            "part_index": idx,
+                        }
+                        merged[idx], _ = _download_part_md(
+                            client, zip_url, result_dir / f"part_{idx:02d}", part_identity, idx
                         )
                         if on_progress:
                             on_progress(len(merged), total)
@@ -438,6 +537,5 @@ def _extract_pdf_in_parts(token: str, file_path: Path, result_dir: Path,
                 raise MinerUError("MinerU 分片识别超时", operation="poll", reason="timeout")
 
     merged_md = "\n\n".join(merged[i] for i in range(total))
-    md_path = result_dir / "full.md"
-    md_path.write_text(merged_md, encoding="utf-8")
+    _publish_markdown(result_dir, merged_md, identity)
     return merged_md, result_dir

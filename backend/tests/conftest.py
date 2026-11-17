@@ -217,6 +217,8 @@ def fake_llm_chat_json(messages, api_key=None, retries=1, max_tokens=None,
 
 @pytest.fixture(autouse=True)
 def fake_models(monkeypatch):
+    monkeypatch.setattr(llm, "_platform_cache", None)
+    monkeypatch.setattr(llm, "_platform_cached_at", 0.0)
     monkeypatch.setattr(embeddings, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(embeddings, "embed_one", lambda t: fake_embed_texts([t])[0])
     monkeypatch.setattr(rerank, "rerank", fake_rerank)
@@ -224,11 +226,19 @@ def fake_models(monkeypatch):
     monkeypatch.setattr(llm, "chat_json", fake_llm_chat_json)
     monkeypatch.setattr(llm, "chat_stream", fake_question_chat_stream)
     monkeypatch.setattr(slots, "chat_json", fake_slot_chat_json)
-    # 出题中间件默认直通：接口用例只验证编排，中间件逻辑由 test_question_review 单独覆盖
-    monkeypatch.setattr(
-        question_review, "review_questions",
-        lambda db, user_id, questions, *a, **k: (questions, question_review.ReviewStats()),
-    )
+    def review_with_fake_solver(
+        db, user_id, questions, params, doc_name, api_key=None,
+        hyde_text=None, progress=None, cancel_check=None,
+    ):
+        """接口用例跳过质量评审，新命题仍由既有假 solver 补齐答案。"""
+        stats = question_review.ReviewStats()
+        question_review._solve_all(
+            [question for question in questions if not question.answer],
+            api_key, stats, cancel_check=cancel_check,
+        )
+        return questions, stats
+
+    monkeypatch.setattr(question_review, "review_questions", review_with_fake_solver)
     yield
 
 

@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.services.latex_utils import fix_delimiters
+
 # 选项文本里常见的「A. xxx」前缀
 _OPTION_PREFIX = re.compile(r"^([A-Ha-h])[.、．:：]\s*(.+)$")
 
@@ -35,9 +37,6 @@ _DISPLAY_MATH = re.compile(r"\\\[(.+?)\\\]", re.S)
 _CODE_FENCE = re.compile(r"```(?:latex|tex|math)?\s*|\s*```")
 
 
-from app.services.latex_utils import fix_delimiters
-
-
 def normalize_latex(text: str) -> str:
     """把其他 LaTeX 定界符统一成 $...$ / $$...$$，并剥掉 markdown 代码栅栏。"""
     if not text:
@@ -46,7 +45,7 @@ def normalize_latex(text: str) -> str:
         text = _CODE_FENCE.sub("", text)
     text = _DISPLAY_MATH.sub(lambda m: "$$" + m.group(1) + "$$", text)
     text = _INLINE_MATH.sub(lambda m: "$" + m.group(1) + "$", text)
-    return text
+    return fix_delimiters(text)
 
 
 class QuestionType(str, Enum):
@@ -102,20 +101,14 @@ class Question(BaseModel):
         out = dict(data)
         for key in ("stem", "answer", "analysis"):
             if isinstance(out.get(key), str):
-                out[key] = normalize_latex(fix_delimiters(out[key]))
-        if isinstance(out.get("options"), list):
-            out["options"] = [
-                {**item, "text": normalize_latex(fix_delimiters(item["text"]))}
-                for item in out["options"]
-                if isinstance(item, dict) and isinstance(item.get("text"), str)
-            ] if all(isinstance(item, dict) for item in out["options"]) else out["options"]
+                out[key] = normalize_latex(out[key])
         for key in ("blueprint", "selfCheck", "difficultyReview"):
             if key in out:
                 out[key] = _as_dict(out[key])
         if "scoringPoints" in out:
             out["scoringPoints"] = _as_str_list(out["scoringPoints"])
         options = out.get("options")
-        if isinstance(options, list) and any(isinstance(item, str) for item in options):
+        if isinstance(options, list):
             fixed = []
             for index, item in enumerate(options):
                 if isinstance(item, str):
@@ -125,6 +118,10 @@ class Question(BaseModel):
                     if matched:
                         label, text = matched.group(1).upper(), matched.group(2).strip()
                     fixed.append({"label": label, "text": text})
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    fixed.append({**item, "text": normalize_latex(item["text"])})
+                elif isinstance(item, OptionItem):
+                    fixed.append({"label": item.label, "text": normalize_latex(item.text)})
                 else:
                     fixed.append(item)
             out["options"] = fixed

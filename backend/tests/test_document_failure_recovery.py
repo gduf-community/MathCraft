@@ -25,6 +25,7 @@ from app.deps import resolve_bank_access
 from app.errors import AppError
 from app.main import app as fastapi_app
 from app.models import Bank, BankMember, Document, DocumentChunk, RagSetting, User
+from app.models.deletion import DeletionOperation
 from app.services import banks, cache, documents, knowledge_simplify, mineru, rag_settings
 from app.services.rag import embeddings, vectorstore
 from app.services.rag.chunking import Chunk
@@ -574,7 +575,7 @@ def test_vector_health_failure_retains_safe_classification(
 def test_delete_vector_failure_rolls_back_sql_preserves_file_and_allows_retry(
     client, teacher, db, monkeypatch, document_store, scope,
 ):
-    """真实删除服务在向量故障时保留 SQL、FTS 与文件，同一会话可直接重试。"""
+    """向量故障持久保留删除意图、SQL 和原件，资源隔离后可直接重试。"""
     from pathlib import Path
 
     from app.config import BASE_DIR
@@ -604,11 +605,16 @@ def test_delete_vector_failure_rolls_back_sql_preserves_file_and_allows_retry(
             banks.purge_bank(db, db.get(Bank, bank_id))
     db.expire_all()
     assert db.get(Document, doc_id) is not None
-    assert db.get(Bank, bank_id).status == "active"
+    assert db.get(Bank, bank_id).status == ("deleting" if scope == "bank" else "active")
+    assert db.get(Document, doc_id).status == "deleting"
+    assert db.query(DeletionOperation).one().status == "pending"
     assert db.query(BankMember).filter_by(bank_id=bank_id).count() == 1
     assert db.query(DocumentChunk).filter_by(document_id=doc_id).count() == chunks
-    assert db.get(RagSetting, 1).mutation_epoch == epoch
-    assert fts.search(bank_id, "导数", 3, document_id=doc_id, db=db)
+    assert db.get(RagSetting, 1).mutation_epoch > epoch
+    assert fts.search(bank_id, "导数", 3, document_id=doc_id, db=db) == []
+    assert db.execute(text(
+        "SELECT count(*) FROM document_chunks_fts WHERE document_id=:doc_id"
+    ), {"doc_id": doc_id}).scalar_one() == chunks
     assert path.read_bytes() == original
     monkeypatch.setattr(target, method, lambda **kwargs: None)
     if scope == "document":
@@ -628,7 +634,7 @@ def test_delete_vector_failure_rolls_back_sql_preserves_file_and_allows_retry(
 
 @pytest.mark.parametrize("native_code", [None, 14])
 def test_bank_delete_global_handler_returns_safe_503_and_can_retry(
-    client, teacher, monkeypatch, document_store, caplog, native_code,
+    client, teacher, db, monkeypatch, document_store, caplog, native_code,
 ):
     bank_id = create_bank(client, teacher)["id"]
     doc_id = upload_markdown(client, teacher, bank_id)["document_id"]
@@ -648,7 +654,9 @@ def test_bank_delete_global_handler_returns_safe_503_and_can_retry(
         assert "存储路径与临时目录权限（code 14）" in response.json()["detail"]["message"]
     for private in (_FAKE_PRIVATE, _FAKE_SECRET, "fake-private-body"):
         assert private not in response.text + caplog.text
-    assert client.get(f"/api/banks/{bank_id}/documents/{doc_id}", headers=teacher).status_code == 200
+    assert client.get(f"/api/banks/{bank_id}/documents/{doc_id}", headers=teacher).status_code == 404
+    assert db.get(Document, doc_id).status == "deleting"
+    assert db.query(DeletionOperation).one().status == "pending"
     monkeypatch.setattr(vectorstore._client, "delete_collection", lambda **kwargs: None)
     assert client.delete(f"/api/banks/{bank_id}", headers=teacher).status_code == 204
 
@@ -657,7 +665,7 @@ def test_bank_delete_global_handler_returns_safe_503_and_can_retry(
 def test_delete_sql_commit_failure_preserves_file_and_can_retry(
     client, teacher, db, monkeypatch, document_store, scope,
 ):
-    """向量先完成但 SQL 提交失败时，保留文档及原件并允许再次删除。"""
+    """向量已完成后提交失败，文档保持 deleting，原件与删除意图可恢复。"""
     from pathlib import Path
 
     from sqlalchemy import event
@@ -678,6 +686,8 @@ def test_delete_sql_commit_failure_preserves_file_and_can_retry(
         deleted.append(scope)
 
     def fail_commit(session):
+        if not deleted:
+            return
         assert deleted == [scope]
         assert path.read_bytes() == original
         raise SQLAlchemyError("fake SQL commit failure")
@@ -685,9 +695,9 @@ def test_delete_sql_commit_failure_preserves_file_and_can_retry(
     target = document_store if scope == "document" else vectorstore._client
     method = "delete" if scope == "document" else "delete_collection"
     monkeypatch.setattr(target, method, delete_vector, raising=False)
-    event.listen(db, "before_commit", fail_commit, once=True)
+    event.listen(db, "before_commit", fail_commit)
     try:
-        with pytest.raises(SQLAlchemyError):
+        with pytest.raises(AppError) as error:
             if scope == "document":
                 banks.purge_document(db, db.get(Document, doc_id))
             else:
@@ -695,8 +705,12 @@ def test_delete_sql_commit_failure_preserves_file_and_can_retry(
     finally:
         event.remove(db, "before_commit", fail_commit)
     db.expire_all()
-    assert db.get(Document, doc_id) is not None
-    assert db.get(Bank, bank_id).status == "active"
+    assert error.value.status_code == 503
+    assert error.value.code == "DELETION_PENDING"
+    assert deleted == [scope]
+    assert db.get(Document, doc_id).status == "deleting"
+    assert db.get(Bank, bank_id).status == ("deleting" if scope == "bank" else "active")
+    assert db.query(DeletionOperation).one().status == "pending"
     assert path.read_bytes() == original
     if scope == "document":
         banks.purge_document(db, db.get(Document, doc_id))
@@ -953,7 +967,9 @@ def test_wal_delete_vector_failure_never_retries_sqlite_like_errors(
     assert calls == [scope]
     _assert_wal_materials(sessions, path, deleted=False)
     with sessions() as db:
-        assert db.get(RagSetting, 1).mutation_epoch == 0
+        assert db.get(RagSetting, 1).mutation_epoch > 0
+        assert db.get(Document, "wal_doc").status == "deleting"
+        assert db.query(DeletionOperation).one().status == "pending"
 
 
 @pytest.mark.parametrize("scope", ["document", "bank"])
@@ -978,19 +994,27 @@ def test_wal_delete_nonbusy_commit_failure_does_not_retry(
                         lambda **kwargs: calls.append(scope))
     with sessions() as db:
         def fail(session):
+            if not calls:
+                return
             original = sqlite3.OperationalError("database is locked fake-private-sql")
             if native_code is not None:
                 original.sqlite_errorcode = native_code
             raise OperationalError("fake SQL", {"private": "fake-parameter"}, original)
 
         event.listen(db, "before_commit", fail)
-        with pytest.raises(OperationalError):
+        with pytest.raises(AppError) as error:
             if scope == "document":
                 banks.purge_document(db, db.get(Document, "wal_doc"))
             else:
                 banks.purge_bank(db, db.get(Bank, "wal_bank"))
+    assert error.value.status_code == 503
+    assert error.value.code == "DELETION_PENDING"
+    assert isinstance(error.value.__cause__, OperationalError)
     assert calls == [scope]
     _assert_wal_materials(sessions, path, deleted=False)
+    with sessions() as db:
+        assert db.get(Document, "wal_doc").status == "deleting"
+        assert db.query(DeletionOperation).one().status == "pending"
 
 
 @pytest.mark.parametrize("scope", ["document", "bank"])

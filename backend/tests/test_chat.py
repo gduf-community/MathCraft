@@ -1,4 +1,6 @@
 """对话出题会话测试。"""
+import pytest
+
 from conftest import create_bank, upload_markdown
 
 
@@ -29,6 +31,29 @@ def test_create_and_delete_chat_session(client, teacher):
 
     assert client.delete(f"/api/chat/sessions/{session_id}", headers=teacher).status_code == 204
     assert client.get(f"/api/chat/sessions/{session_id}", headers=teacher).status_code == 404
+
+
+@pytest.mark.parametrize("mode", ["generate", "creative", "qa", "data"])
+def test_history_detail_restores_mode_without_changing_slots(client, teacher, db, mode):
+    from app.models import ChatSession
+
+    bank, doc = _setup(client, teacher)
+    session = client.post(
+        "/api/chat/sessions",
+        json={"bank_id": bank["id"], "document_id": doc["document_id"]},
+        headers=teacher,
+    ).json()
+    row = db.get(ChatSession, session["session_id"])
+    row.mode = mode
+    row.slot_state_json = '{"scope":"导数","difficulty":"高"}'
+    db.commit()
+
+    response = client.get(f"/api/chat/sessions/{row.id}", headers=teacher)
+    assert response.status_code == 200, response.text
+    assert response.json()["mode"] == mode
+    db.refresh(row)
+    assert row.mode == mode
+    assert row.slot_state_json == '{"scope":"导数","difficulty":"高"}'
 
 
 def test_chat_message_generates_questions(client, teacher):
@@ -142,7 +167,7 @@ def test_unknown_intent_gets_conversational_reply(client, teacher, monkeypatch):
 
     captured: dict = {}
 
-    def fake_casually(mode, doc_name, history, message, api_key=None):
+    def fake_casually(mode, doc_name, history, message, api_key=None, **kwargs):
         captured["history_texts"] = [h.get("text") for h in history]
         captured["message"] = message
         captured["mode"] = mode
