@@ -59,7 +59,8 @@ async function requireLongTermBranchChecks({ github, context, core, sha,
   for (const branch of ['main', 'agent']) {
     try {
       await verify({ github, core,
-        context: { ...context, sha, ref: `refs/heads/${branch}`, eventName: 'workflow_dispatch' } })
+        context: { ...context, repo: context.repo, sha,
+          ref: `refs/heads/${branch}`, eventName: 'workflow_dispatch' } })
       core.info(`发布提交已通过长期分支门禁：${branch}@${sha}`)
       return branch
     } catch (error) {

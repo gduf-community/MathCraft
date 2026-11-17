@@ -200,6 +200,25 @@ test('main 通过时使用固定 SHA 合成门禁上下文，不修改原 contex
   assert.deepEqual(state.warnings, [])
 })
 
+test('门禁保留 Actions Context 原型 getter 提供的仓库身份', async () => {
+  const state = fixture()
+  const repository = state.args.context.repo
+  const prototype = { get repo() { return repository } }
+  const actionContext = Object.create(prototype)
+  for (const [name, value] of Object.entries(state.args.context)) {
+    if (name !== 'repo') actionContext[name] = value
+  }
+  assert.equal(Object.hasOwn(actionContext, 'repo'), false)
+  const branch = await requireLongTermBranchChecks({ ...state.args, context: actionContext,
+    sha: COMMIT, verify: async ({ context }) => {
+      const { owner, repo } = context.repo
+      assert.deepEqual({ owner, repo }, repository)
+      assert.equal(context.sha, COMMIT)
+    } })
+  assert.equal(branch, 'main')
+  assert.equal(actionContext.repo, repository)
+})
+
 test('main 候选失败必须报告原因，并允许同 SHA 的 agent 成功', async () => {
   const state = fixture()
   const calls = []
