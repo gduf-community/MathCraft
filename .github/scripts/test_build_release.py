@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -21,7 +22,7 @@ SPEC = importlib.util.spec_from_file_location("build_release", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 BUILDER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILDER)
-SECRETS_EXAMPLE = 'SILICONFLOW_API_KEY = "sk-xxxx"\nMINERU_DEFAULT_TOKEN = "sk-xxxx"\n'
+EMPTY_CONFIG_TEMPLATE = 'SILICONFLOW_API_KEY = ""\nMINERU_DEFAULT_TOKEN = ""\n'
 
 
 class ReleaseTests(unittest.TestCase):
@@ -40,7 +41,7 @@ class ReleaseTests(unittest.TestCase):
         self.write("backend/scripts/create_admin.py", '"""Fake admin entrypoint."""\n')
         self.write("backend/scripts/init_auth_secrets.py", "# fake development helper\n")
         self.write("backend/alembic/versions/initial.py", "# migration fixture\n")
-        self.write("backend/app/local_secrets.example.py", SECRETS_EXAMPLE)
+        self.write("backend/app/local_secrets.example.py", EMPTY_CONFIG_TEMPLATE)
         self.write("backend/app/services/prompts.json", '{"prompt": "测试"}\n')
         self.write("compose.yaml", "services: {}\n")
         self.write("compose.phoenix.yaml", "services: {}\n")
@@ -118,7 +119,18 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn("backend/scripts/create_admin.py", BUILDER.REQUIRED)
             self.assertIn("backend/app/local_secrets.example.py", BUILDER.REQUIRED)
             self.assertEqual(bundle.read(prefix + "backend/app/local_secrets.example.py"),
-                             SECRETS_EXAMPLE.encode("utf-8"))
+                             EMPTY_CONFIG_TEMPLATE.encode("utf-8"))
+            template_module = ast.parse(
+                bundle.read(prefix + "backend/app/local_secrets.example.py").decode("utf-8"),
+            )
+            self.assertEqual(len(template_module.body), 2)
+            template_values = {
+                target.id: ast.literal_eval(statement.value)
+                for statement in template_module.body if isinstance(statement, ast.Assign)
+                for target in statement.targets if isinstance(target, ast.Name)
+            }
+            self.assertEqual(template_values,
+                             {"SILICONFLOW_API_KEY": "", "MINERU_DEFAULT_TOKEN": ""})
             self.assertNotIn("backend/app/local_secrets.py", paths)
             self.assertEqual({name for name in paths if name.startswith("backend/scripts/")},
                              {"backend/scripts/create_admin.py"})
@@ -187,7 +199,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(bundle.read(prefix + "backend/scripts/create_admin.py"),
                              b'"""Fake admin entrypoint."""\n')
             self.assertEqual(bundle.read(prefix + "backend/app/local_secrets.example.py"),
-                             SECRETS_EXAMPLE.encode("utf-8"))
+                             EMPTY_CONFIG_TEMPLATE.encode("utf-8"))
             self.assertIn(prefix + "backend/uv.lock", bundle.namelist())
             self.assertNotIn(prefix + "backend/app/untracked.py", bundle.namelist())
 
