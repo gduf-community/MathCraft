@@ -1,27 +1,49 @@
 name: Deploy to GitHub Pages
 
-# 前端 Pages 部署默认手动触发；仓库在 Settings → Pages 启用 GitHub Pages
-# （Source 选 GitHub Actions）后，可按需恢复 push 自动触发。
+# 手动发布固定提交，构建前和部署前均校验该分支提交的 CI 与 CodeQL。
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
+  actions: read
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  verify:
+    name: Verify release checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require successful CI and CodeQL
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const verify = require('./.github/scripts/verify-release.cjs');
+            await verify({github, context, core});
+
+  build:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
@@ -36,11 +58,27 @@ jobs:
           path: frontend/dist
 
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      - name: Recheck CI before deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const verify = require('./.github/scripts/verify-release.cjs');
+            await verify({github, context, core});
       - id: deployment
         uses: actions/deploy-pages@v4

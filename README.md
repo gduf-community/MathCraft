@@ -22,6 +22,7 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 ```text
 MathCraft/
+├── .github/                  # CI、发布工作流及发布门禁脚本
 ├── backend/                  # FastAPI 后端
 │   ├── app/                  # 接口、数据模型与业务服务
 │   ├── alembic/              # 数据库迁移

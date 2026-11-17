@@ -40,6 +40,8 @@ jobs:
       - name: Install locked type checker
         run: npm ci
         working-directory: frontend
+      - name: Release gate regression
+        run: node --test .github/scripts/verify-release.test.cjs
       - name: Create placeholder local configuration
         run: cp backend/app/local_secrets.example.py backend/app/local_secrets.py
       - name: Ruff
