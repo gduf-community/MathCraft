@@ -1,0 +1,83 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main, agent]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+          wait-for-processing: true
+
+  verify:
+    name: CodeQL required
+    needs: analyze
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require successful analyses and uploaded results
+        uses: actions/github-script@v7
+        env:
+          ANALYZE_RESULT: ${{ needs.analyze.result }}
+        with:
+          script: |
+            if (process.env.ANALYZE_RESULT !== 'success') {
+              throw new Error('CodeQL analysis did not succeed');
+            }
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo, run_id: context.runId, filter: 'all', per_page: 100,
+            });
+            for (const language of ['actions', 'javascript-typescript', 'python']) {
+              const candidates = jobs.filter(job => job.name === `Analyze (${language})`);
+              const attempt = Math.max(...candidates.map(job => job.run_attempt));
+              const latest = candidates.filter(job => job.run_attempt === attempt);
+              if (latest.length !== 1 || latest[0].status !== 'completed'
+                  || latest[0].conclusion !== 'success') {
+                throw new Error(`CodeQL ${language} must complete successfully`);
+              }
+            }
+            const requireAnalyses = require('./.github/scripts/verify-codeql.cjs');
+            await requireAnalyses({github, ...context.repo, sha: context.sha, ref: context.ref});

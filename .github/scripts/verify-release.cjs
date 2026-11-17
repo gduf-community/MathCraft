@@ -1,3 +1,5 @@
+const requireCodeQLAnalyses = require('./verify-codeql.cjs')
+
 const REQUIREMENTS = [
   {
     path: '.github/workflows/checks.yml',
@@ -6,10 +8,11 @@ const REQUIREMENTS = [
     jobs: ['Backend lint, types and tests', 'Frontend lint, types, build and regressions'],
   },
   {
-    path: 'dynamic/github-code-scanning/codeql',
+    path: '.github/workflows/codeql.yml',
     name: 'CodeQL',
-    events: ['dynamic'],
-    jobs: ['Analyze (actions)', 'Analyze (javascript-typescript)', 'Analyze (python)'],
+    events: ['push', 'workflow_dispatch'],
+    jobs: ['Analyze (actions)', 'Analyze (javascript-typescript)', 'Analyze (python)',
+      'CodeQL required'],
   },
 ]
 
@@ -74,6 +77,8 @@ async function verifyRelease({ github, context, core }) {
     assertUnchanged(required, run, current)
     selected.push({ required, run })
   }
+
+  await requireCodeQLAnalyses({ github, owner, repo, sha, ref: context.ref })
 
   const latestRuns = await listRuns()
   for (const { required, run } of selected) {
