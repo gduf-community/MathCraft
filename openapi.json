@@ -11835,6 +11835,18 @@
             "maximum": 100.0,
             "minimum": 1.0,
             "title": "Count"
+          },
+          "difficulty": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(低|中|高|地狱)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Difficulty"
           }
         },
         "type": "object",

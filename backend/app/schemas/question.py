@@ -132,6 +132,8 @@ class TypeCount(BaseModel):
     type: QuestionType
     # 高压长任务：单题型上限放宽到 100，由规划层拆批执行
     count: int = Field(ge=1, le=100)
+    # 题型级难度；None 时回退全局 params.difficulty
+    difficulty: Difficulty | None = None
 
 
 class GenerateParams(BaseModel):

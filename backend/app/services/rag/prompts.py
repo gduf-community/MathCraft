@@ -197,27 +197,49 @@ DRAFT_TRACES = (
     "等等，", "稍等", "修正一下", "这里错了", "我重算", "hmm", "wait,",
 )
 
-SLOT_EXTRACT_SYSTEM = """你是出题助手的信息抽取模块。从用户消息（及图片）中抽取本次出题意图的槽位，
-只输出 JSON，格式固定为：
+SLOT_EXTRACT_SYSTEM = """你是出题助手的信息抽取模块。把用户消息（及图片）里的出题需求填入下面的模板，
+只输出 JSON，字段固定为：
 {
-  "types": [{"type": "single|multiple|judge|blank|compute|essay", "count": 正整数或 null}],
-  "count": 正整数或 null,
-  "scope": "知识点或章节范围（原文字符串）或 null",
-  "difficulty": "低|中|高|地狱 或 null",
+  "scope": "知识点或章节范围（保留用户原文，如「线性代数知识点总结」）或 null",
+  "types": [{"type": "single|multiple|judge|blank|compute|essay",
+             "count": 正整数或 null,
+             "difficulty": "该题型的难度（同义词先归一，见下）或 null"}],
+  "count": 总题量（仅在用户给了总数、未按题型分别说明时填写，否则 null）,
+  "difficulty": "整体难度：用户未按题型区分难度时填写（低|中|高|地狱），否则 null",
   "mixed_difficulty": true/false,
+  "source_mode": "original|variant_data|variant_context|new 或 null",
   "image_note": "若用户上传了图片，一句话描述图片中的题型结构与设问方式，否则 null"
 }
-用户未提及的字段一律填 null 或空数组，禁止猜测，禁止填默认值。
-短期记忆是最近几轮对话原文：结合它理解指代（如"再来一批""换成难的""按刚才的数量"）；
-记忆中已确认的题型数量难度，除非本次明确更改，否则继续沿用；记忆中没有的信息不要编造。
-"count" 只在用户给了总题量、但没有按题型分别说明时填写；已经按题型说清数量时，
-各 types 项填自己的 count，"count" 填 null。
-题型对应：说"选择题"→single，"多选"→multiple，"判断"→judge，"填空"→blank，
-"计算"→compute，"简答/解答"→essay。
-多题型分别计数：如"5道选择题和3道判断题"→
-"types": [{"type":"single","count":5},{"type":"judge","count":3}]，"count": null。
-只说了题型没说数量时，该题型 count 必须是 null，不要自己补 5 或任何数字。
+填写规则：
+1 题型映射：选择题→single，多选→multiple，判断→judge，填空→blank，计算→compute，简答/解答→essay。
+2 难度归一：简单/容易/基础/偏低→低，中等/常规→中，难/很难/高难/较难/困难/偏难→高，地狱→地狱。
+3 用户按题型分别说明难度时（如 5 道低难度选择题、2 道高难度填空题、4 道中难度计算题），
+  把每项写进 types 对应条目的 difficulty，此时整体 difficulty 填 null、mixed_difficulty 填 true。
+4 用户只给一个难度档时写入整体 difficulty，types 各条目 difficulty 填 null，mixed_difficulty 填 false。
+5 用户对同一题型给了多个难度档（如 3 道选择题、难度分别是简单中等高难）时，
+  types 该条目的 count 照填、difficulty 填 null，整体 difficulty 原样保留该多档描述，
+  mixed_difficulty 填 true。
+6 只说了题型没说数量时该题型 count 填 null，禁止猜测；用户未提及的字段一律 null，禁止编造。
+7 短期记忆是最近几轮对话原文：结合它理解指代（如"再来一批""换成难的""按刚才的数量"）；
+  记忆中已确认的题型、数量、难度，除非本次明确更改，否则原样沿用；记忆中没有的信息不要编造。
+  记忆中的难度是多档描述（如「低、中、高」）时必须原样保留到 difficulty 并继续标记
+  mixed_difficulty=true，禁止压缩成其中某一档（如只取「高」）；
+  当前消息没有新的难度表述时不得自行挑选档位。
+8 多题型分别计数：如 5 道选择题和 3 道判断题 →
+  "types": [{"type":"single","count":5},{"type":"judge","count":3}]，"count" 填 null。
+9 source_mode 只在用户明确要求原题/改数据/换背景/全新时填写，未提及一律 null。
 只输出 JSON。"""
+
+FOLLOWUP_SYSTEM = """你是数学出题助手的追问模块。用户的出题要求还缺少一部分信息，
+你要用一到两句自然的中文把缺的信息问清楚。
+
+要求：
+1 只追问【还缺少的信息】里列出的内容；已确认的信息不要重复问，也不要让用户复述。
+2 语气自然友好，像助教在对话里随手一问，不要写编号列表，不要用「您好」这类客套开头。
+3 涉及可选值时顺手给提示：题型有选择题、多选题、判断题、填空题、计算题、简答题；
+  难度分为低、中、高、地狱；数量按每种题型分别说明。
+4 不要替用户决定缺的信息，也不要输出追问以外的内容。
+5 直接输出追问文本，不加引号、前缀或任何解释。"""
 
 HYDE_SYSTEM = """你是高等数学教材的编写助手。根据给定的知识点或章节范围，
 撰写一段 200 到 400 字的讲解性文字，内容要像教材中能覆盖该知识点的段落：

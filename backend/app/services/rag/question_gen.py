@@ -295,11 +295,13 @@ def _gen_batch(
     hits: list[dict],
     directive: str,
     hint: str = "",
+    difficulty_note: str = "",
     cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """一次生成 count 道题：流式输出 + 滚动校验，Schema 失败带错误信息重试一次。"""
     check_cancellation(cancel_check)
     type_label = TYPE_LABELS[tc.type]
+    difficulty = tc.difficulty or params.difficulty
     extra = f"- 知识点范围：{scope}" if scope else ""
     if scope and tc.count >= HIGH_PRESSURE_THRESHOLD:
         extra += (
@@ -317,7 +319,11 @@ def _gen_batch(
             "禁止同一模板换数字，避免被查重判为重复"
         )
     if mixed_difficulty:
-        extra += "\n- 难度分布：约三分之一达到高难度，其余为中等难度"
+        distribution = (
+            f"{difficulty_note}，各题难度按该描述的比例分配，不得全部同一档"
+            if difficulty_note else "约三分之一达到高难度，其余为中等难度"
+        )
+        extra += f"\n- 难度分布：{distribution}"
     if directive:
         extra += "\n" + directive
     if avoid_snapshot:
@@ -329,7 +335,7 @@ def _gen_batch(
         context=_build_context(hits),
         type_label=type_label,
         count=count,
-        difficulty=params.difficulty.value,
+        difficulty=difficulty.value,
         source_mode=SOURCE_LABELS.get(params.source_mode, params.source_mode),
         score=DEFAULT_SCORES.get(tc.type, 5),
         extra=extra,
@@ -382,7 +388,7 @@ def _gen_batch(
             continue  # 题型不符直接丢弃
         q.id = f"q-{uuid.uuid4().hex[:10]}"
         q.score = DEFAULT_SCORES.get(tc.type, 5)
-        q.difficulty = params.difficulty
+        q.difficulty = difficulty
         q.docName = doc_name
         q.answer = ""
         q.analysis = ""
@@ -484,6 +490,7 @@ def _gen_for_type(
     retrieve_fn: RetrieveFn | None = None,
     report: Callable[[float, str], None] | None = None,
     directive: str = "",
+    difficulty_note: str = "",
     cancel_check: Callable[[], None] | None = None,
 ) -> list[Question]:
     """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。
@@ -522,7 +529,7 @@ def _gen_for_type(
     if report:
         report(0.06, f"正在规划「{type_label}」的考点分布")
     points = _plan_points(
-        scope, type_label, params.difficulty.value, tc.count, hits, api_key,
+        scope, type_label, (tc.difficulty or params.difficulty).value, tc.count, hits, api_key,
         **cancellation_kwargs(cancel_check),
     )
 
@@ -548,9 +555,11 @@ def _gen_for_type(
                 pool.submit(
                     run_checked, cancel_check, _gen_batch,
                     tc, params, doc_name, scope, size, snapshot,
-                    mixed_difficulty, api_key, hits, directive,
+                    # 题型自带难度时按单档命题，混合难度分布只作用于未单独指定难度的题型
+                    mixed_difficulty and tc.difficulty is None, api_key, hits, directive,
                     # 按已完成题数取考点，补齐轮次接着往后排，避免重复同一考点
                     points[len(collected) + index] if len(collected) + index < len(points) else "",
+                    difficulty_note=difficulty_note,
                     **cancellation_kwargs(cancel_check),
                 )
                 for index, size in enumerate(batch_sizes)
@@ -594,6 +603,7 @@ def generate_questions(
     doc_name: str,
     scope: str | None = None,
     mixed_difficulty: bool = False,
+    difficulty_note: str = "",
     existing_stems: list[str] | None = None,
     progress_cb: ProgressCB | None = None,
     api_key: str | None = None,
@@ -653,6 +663,7 @@ def generate_questions(
             retrieve_fn=retrieve_fn,
             report=make_report(idx),
             directive=directive,
+            difficulty_note=difficulty_note,
             **cancellation_kwargs(cancel_check),
         )
         check_cancellation(cancel_check)
