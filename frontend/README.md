@@ -90,12 +90,12 @@ Ubuntu + Node 22 的 CI 在仓库根目录执行以下完整命令：
 ```bash
 cd frontend
 npm ci
-npx playwright-core install --with-deps chromium
+npx --no-install playwright-core install chromium
 npm run lint
 npm test
 ```
 
-Windows 本地安装浏览器使用 `npx playwright-core install chromium`，其余命令相同。首次安装 npm 依赖与 Chromium 需要网络；安装完成后回归使用内存 API 和假 Turnstile，无需后端、Redis、真实账号、模型或个人环境文件。
+CI 使用 Ubuntu 24.04 runner 预装的 Chromium 系统库。精简 Linux 环境可用 `npx --no-install playwright-core install --with-deps chromium` 补装系统依赖。Windows 本地安装使用上面的命令。首次安装 npm 依赖与 Chromium 需要网络；安装完成后回归使用内存 API 和假 Turnstile，无需后端、Redis、真实账号、模型或个人环境文件。
 
 `npm test` 与 `npm run test:regression` 都会先执行 TypeScript 检查和一次生产构建，再按以下固定顺序逐个运行脚本：
 
