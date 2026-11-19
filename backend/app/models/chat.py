@@ -1,6 +1,6 @@
 """对话会话与消息。"""
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -46,3 +46,22 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     batch_id: Mapped[Optional[str]] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+ChatRequestStatus = Literal["running", "canceled", "done", "failed", "interrupted"]
+
+
+class ChatRequest(Base):
+    """持久化客户端轮次的取消、发布与执行退出事实。"""
+
+    __tablename__ = "chat_requests"
+
+    session_id: Mapped[str] = mapped_column(
+        String(40), ForeignKey("chat_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str | None] = mapped_column(String(40), unique=True)
+    status: Mapped[ChatRequestStatus] = mapped_column(String(16), nullable=False)
+    execution_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    batch_id: Mapped[str | None] = mapped_column(String(40))
+    result_json: Mapped[str | None] = mapped_column(Text)

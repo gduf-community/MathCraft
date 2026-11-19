@@ -290,8 +290,8 @@ export function mapDocument(doc: ApiDocument): KbDocument & { api: ApiDocument }
     status: doc.status, stage: doc.stage, progress: doc.progress, api: doc }
 }
 
-export async function listDocuments(bankId: string): Promise<ApiDocument[]> {
-  return request<ApiDocument[]>(`/api/banks/${bankId}/documents`)
+export async function listDocuments(bankId: string, signal?: AbortSignal): Promise<ApiDocument[]> {
+  return request<ApiDocument[]>(`/api/banks/${bankId}/documents`, { signal })
 }
 
 export async function getDocument(bankId: string, docId: string): Promise<ApiDocument> {
@@ -479,11 +479,12 @@ export async function cancelGeneration(taskId: string): Promise<GenerateProgress
 export async function latestBatch(
   bankId?: string,
   documentId?: string,
+  signal?: AbortSignal,
 ): Promise<{ batch_id: string | null; questions: ApiQuestion[] }> {
   const params = new URLSearchParams()
   if (bankId) params.set('bank_id', bankId)
   if (documentId) params.set('document_id', documentId)
-  return request(`/api/generate/batches/latest?${params.toString()}`)
+  return request(`/api/generate/batches/latest?${params.toString()}`, { signal })
 }
 
 export async function listQuestions(params: {
@@ -492,12 +493,12 @@ export async function listQuestions(params: {
   document_id?: string
   page?: number
   page_size?: number
-}): Promise<{ items: ApiQuestion[]; total: number }> {
+}, signal?: AbortSignal): Promise<{ items: ApiQuestion[]; total: number }> {
   const search = new URLSearchParams()
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== '') search.set(k, String(v))
   })
-  return request(`/api/questions?${search.toString()}`)
+  return request(`/api/questions?${search.toString()}`, { signal })
 }
 
 export async function updateQuestionApi(q: Question): Promise<ApiQuestion> {
@@ -1072,8 +1073,8 @@ export interface BackendChatDetail {
   messages: ApiChatMessage[]
 }
 
-export async function getChatSession(sessionId: string): Promise<BackendChatDetail> {
-  return request(`/api/chat/sessions/${sessionId}`)
+export async function getChatSession(sessionId: string, signal?: AbortSignal): Promise<BackendChatDetail> {
+  return request(`/api/chat/sessions/${sessionId}`, { signal })
 }
 
 export async function createChatSession(bankId: string, documentId: string, signal?: AbortSignal): Promise<ChatSession> {
@@ -1084,6 +1085,15 @@ export async function createChatSession(bankId: string, documentId: string, sign
   })
 }
 
+export type ChatMessageResult = Omit<ChatReply, 'questions'> & { questions: ApiQuestion[] }
+
+export interface ChatTurnStatus {
+  status: 'running' | 'canceled' | 'done' | 'failed' | 'interrupted'
+  execution_finished: boolean
+  batch_id: string | null
+  result: ChatMessageResult | null
+}
+
 export async function sendChatMessage(
   sessionId: string,
   message: string,
@@ -1092,7 +1102,8 @@ export async function sendChatMessage(
   images: string[] = [],
   mode: ChatMode = 'generate',
   switchOnly = false,
-): Promise<Omit<ChatReply, 'questions'> & { questions: ApiQuestion[] }> {
+  requestId?: string,
+): Promise<ChatMessageResult> {
   return request(`/api/chat/sessions/${sessionId}/messages`, {
     method: 'POST',
     body: JSON.stringify({
@@ -1100,6 +1111,7 @@ export async function sendChatMessage(
       existing_stems: existingStems,
       mode,
       switch_only: switchOnly,
+      request_id: requestId,
       ...(images.length ? { images } : {}),
     }),
     signal,
@@ -1126,8 +1138,14 @@ export async function getChatProgress(
   return request(`/api/chat/sessions/${sessionId}/progress`, { signal })
 }
 
-export async function cancelChat(sessionId: string): Promise<void> {
-  await request<{ canceled: boolean }>(`/api/chat/sessions/${sessionId}/cancel`, { method: 'POST' })
+export async function cancelChat(sessionId: string, requestId: string, signal: AbortSignal): Promise<ChatTurnStatus> {
+  return request(`/api/chat/sessions/${sessionId}/cancel?request_id=${encodeURIComponent(requestId)}`, {
+    method: 'POST', signal,
+  })
+}
+
+export async function getChatTurn(sessionId: string, requestId: string, signal: AbortSignal): Promise<ChatTurnStatus> {
+  return request(`/api/chat/sessions/${sessionId}/requests/${encodeURIComponent(requestId)}`, { signal })
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {

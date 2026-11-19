@@ -1,20 +1,23 @@
 """对话出题：SQL 保存完整会话与运行状态，取消和最终提交按 run_id 隔离。"""
 import json
 from dataclasses import dataclass
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from redis.exceptions import RedisError
-from sqlalchemy import case, or_, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.orm import Query, Session
 
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user, resolve_bank_access
 from app.errors import AppError
-from app.models import ChatMessage, ChatSession, Document, OpsRun, User
+from app.models import Bank, ChatMessage, ChatRequest, ChatSession, Document, Favorite, OpsRun, User
 from app.models.base import new_id, utcnow
 from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
+from app.models.question import Question as SavedQuestion
 from app.schemas.api import (
-    ChatConfirmBody, ChatMessageBody, ChatSessionCreateBody, ChatSessionDetailResponse,
+    ChatConfirmBody, ChatMessageBody, ChatMessageResponse, ChatRequestResponse,
+    ChatSavedQuestion, ChatSessionCreateBody, ChatSessionDetailResponse,
 )
 from app.schemas.auth import ErrorResponse
 from app.schemas.question import GenerateParams, Question
@@ -133,7 +136,8 @@ def _write_progress(session_id: str, run_id: str, percent: int, stage: str) -> N
 
 def _begin_run(
     db: Session, session_id: str, user_id: str, *, auth_version: int | None = None,
-) -> ChatSession:
+    request_id: str | None = None,
+) -> ChatSession | ChatRequest:
     """短事务串行化开始/取消/最终提交；提交后才允许执行模型。"""
     if auth_version is None:
         user = db.get(User, user_id)
@@ -146,19 +150,34 @@ def _begin_run(
     s = db.get(ChatSession, session_id, populate_existing=True)
     if s is None or s.user_id != user_id:
         raise AppError("CHAT_SESSION_NOT_FOUND", "对话不存在", 404)
-    if s.run_status == "running":
+    if request_id is not None:
+        previous = db.get(ChatRequest, (session_id, request_id), populate_existing=True)
+        if previous is not None:
+            db.commit()
+            return previous
+    unfinished = db.scalar(select(ChatRequest.request_id).where(
+        ChatRequest.session_id == session_id, ChatRequest.execution_finished_at.is_(None),
+    ).limit(1))
+    if s.run_status == "running" or unfinished is not None:
         db.rollback()
         raise AppError("CHAT_BUSY", "本对话已有进行中的请求，请等待完成或暂停后重试", 409)
-    generation.validate_resources(db, user_id, s.bank_id, s.document_id)
+    if request_id is None:
+        generation.validate_resources(db, user_id, s.bank_id, s.document_id)
     trace_id = current_run_id()
     # 被嵌套请求继承的追踪上下文可能属于旧运行，不能复用其取消标识或台账主键。
-    if trace_id and (trace_id in {s.run_id, s.canceled_run_id} or db.get(OpsRun, trace_id)):
+    if trace_id and (trace_id in {s.run_id, s.canceled_run_id} or db.get(OpsRun, trace_id)
+                     or db.scalar(select(ChatRequest.request_id).where(
+                         ChatRequest.run_id == trace_id,
+                     ))):
         trace_id = None
     s.run_id = trace_id or new_id("run")
     s.run_status = "running"
     s.run_progress = 0
     s.run_stage = "正在准备"
-    # canceled_run_id 保留旧运行的取消事实，绝不在开始新运行时清空。
+    if request_id is not None:
+        db.add(ChatRequest(
+            session_id=session_id, request_id=request_id, run_id=s.run_id, status="running",
+        ))
     db.commit()
     return s
 
@@ -229,11 +248,16 @@ def _begin_generation(
 
 
 def _end_failed_run(session_id: str, run_id: str) -> None:
-    """异常收尾只影响自己的 run；已取消或已被后继替换的运行保持原样。"""
+    """工作事务和执行权释放后，记录该运行的退出及未发布结果的终态。"""
     with SessionLocal() as db:
-        _current_run(db, session_id, run_id).update({
+        changed = _current_run(db, session_id, run_id).update({
             "run_status": "failed", "run_stage": "请求未完成，请重试",
         }, synchronize_session=False)
+        request = db.scalar(select(ChatRequest).where(ChatRequest.run_id == run_id))
+        if request is not None:
+            if request.status == "running":
+                request.status = "failed" if changed else "canceled"
+            request.execution_finished_at = utcnow()
         db.commit()
 
 
@@ -246,6 +270,65 @@ def _paused_result(db: Session, session_id: str) -> dict:
         "kind": "reply", "mode": (s.mode or DEFAULT_MODE) if s else DEFAULT_MODE,
         "mode_changed": False, "suggested_template": None, "confirm": None,
     }
+
+
+def _saved_questions(
+    db: Session, s: ChatSession, batch_id: str,
+) -> list[ChatSavedQuestion]:
+    rows = db.execute(
+        select(SavedQuestion, Document.name, Favorite)
+        .select_from(SavedQuestion)
+        .join(Bank, Bank.id == SavedQuestion.bank_id)
+        .join(Document, (Document.id == SavedQuestion.document_id)
+              & (Document.bank_id == Bank.id))
+        .outerjoin(Favorite, (Favorite.question_id == SavedQuestion.id)
+                   & (Favorite.user_id == s.user_id))
+        .where(
+            SavedQuestion.batch_id == batch_id, SavedQuestion.created_by == s.user_id,
+            SavedQuestion.bank_id == s.bank_id, SavedQuestion.document_id == s.document_id,
+            Bank.status == "active", Document.status != "deleting",
+        )
+        .order_by(SavedQuestion.created_at, SavedQuestion.id)
+    )
+    return [
+        ChatSavedQuestion.model_validate(generation.question_to_api(
+            question, starred=favorite is not None,
+            favorite_group_id=favorite.group_id if favorite is not None else None,
+            doc_name=doc_name,
+        ))
+        for question, doc_name, favorite in rows
+    ]
+
+
+def _request_response(
+    db: Session, s: ChatSession, user: User, request: ChatRequest,
+) -> ChatRequestResponse:
+    result = (
+        ChatMessageResponse.model_validate_json(request.result_json)
+        if request.result_json is not None else None
+    )
+    if result is not None:
+        resolve_bank_access(db, user, s.bank_id)
+        if request.batch_id is not None:
+            result.questions = list(_saved_questions(db, s, request.batch_id))
+    return ChatRequestResponse(
+        status=request.status, execution_finished=request.execution_finished_at is not None,
+        batch_id=request.batch_id, result=result,
+    )
+
+
+def _replay_request(
+    db: Session, s: ChatSession, user: User, request: ChatRequest,
+) -> ChatMessageResponse:
+    if request.status == "canceled":
+        return ChatMessageResponse.model_validate(_paused_result(db, s.id))
+    if request.status == "done":
+        result = _request_response(db, s, user, request).result
+        assert result is not None
+        return result
+    if request.status == "running":
+        raise AppError("CHAT_BUSY", "本轮请求正在处理，请查询处理状态", 409)
+    raise AppError("CHAT_REQUEST_FINISHED", "本轮请求已结束，请使用新的请求标识重试", 409)
 
 
 @router.post("/sessions", status_code=201)
@@ -286,7 +369,7 @@ def get_session(
     }
 
 
-@router.post("/sessions/{session_id}/messages", responses={
+@router.post("/sessions/{session_id}/messages", response_model=ChatMessageResponse, responses={
     409: {"model": ErrorResponse, "description": "当前会话正在处理消息，请稍后再试"},
 })
 @trace_run("conversation", force_new=True)
@@ -295,55 +378,74 @@ def send_message(
     body: ChatMessageBody,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> ChatMessageResponse:
     """运行状态先提交，题目、两条消息与完整会话状态最后一次提交。"""
     user_id, auth_version = user.id, user.auth_version
     s = _get_session(session_id, user, db)
-    with conversation_turn(session_id):
-        return _send_message(session_id, body, user, db, s, user_id, auth_version)
+    request_id = str(body.request_id) if body.request_id is not None else None
+    if request_id is not None:
+        previous = db.get(ChatRequest, (session_id, request_id))
+        if previous is not None:
+            return _replay_request(db, s, user, previous)
+    run_id = None
+    try:
+        with conversation_turn(session_id):
+            api_key = _message_api_key(db, s, user_id) if request_id is None else None
+            interrupted_stage = s.run_stage if s.run_status == "interrupted" else ""
+            claim = _begin_run(
+                db, session_id, user_id, auth_version=auth_version, request_id=request_id,
+            )
+            if isinstance(claim, ChatRequest):
+                return _replay_request(db, s, user, claim)
+            run_id = claim.run_id
+            assert run_id is not None
+            return _send_message(
+                session_id, body, user, db, claim, user_id, run_id, interrupted_stage, api_key,
+            )
+    finally:
+        if run_id is not None:
+            db.rollback()
+            _end_failed_run(session_id, run_id)
+
+
+def _message_api_key(db: Session, s: ChatSession, user_id: str) -> str:
+    generation.validate_resources(db, user_id, s.bank_id, s.document_id)
+    api_key = get_effective_deepseek_key(db, user_id)
+    if not api_key:
+        raise AppError("DEEPSEEK_KEY_MISSING", "尚未配置 DeepSeek API Key，请到设置 → 模型与服务中填写", 400)
+    return api_key
 
 
 def _send_message(
     session_id: str, body: ChatMessageBody, user: User, db: Session, s: ChatSession,
-    user_id: str, auth_version: int,
-) -> dict:
+    user_id: str, run_id: str, interrupted_stage: str, api_key: str | None,
+) -> ChatMessageResponse:
     """持有会话执行权直至当前消息确认停止或完成。"""
-    generation.validate_resources(db, user.id, s.bank_id, s.document_id)
-    api_key = get_effective_deepseek_key(db, user.id)
-    if not api_key:
-        raise AppError("DEEPSEEK_KEY_MISSING", "尚未配置 DeepSeek API Key，请到设置 → 模型与服务中填写", 400)
-    # 升级前待续内容仅在 Redis 中；切换不能被静默当作已经接续。
-    interrupted_stage = s.run_stage if s.run_status == "interrupted" else ""
-    s = _begin_run(db, session_id, user_id, auth_version=auth_version)
-    run_id = s.run_id
-    assert run_id is not None
     run = GenerationRun(
         RunEntrypoint.CONVERSATION, user_id, s.bank_id, s.document_id, session_id=session_id,
     )
-    try:
-        with run.observe(db):
+    with run.observe(db):
+        try:
+            if _is_canceled(session_id, run_id):
+                raise ChatCanceled
+            if api_key is None:
+                api_key = _message_api_key(db, s, user_id)
+            return _run_message(db, user, s, body, api_key, run_id, run=run,
+                                interrupted_stage=interrupted_stage)
+        except ChatCanceled:
+            db.rollback()
             try:
-                return _run_message(db, user, s, body, api_key, run_id, run=run,
-                                    interrupted_stage=interrupted_stage)
-            except ChatCanceled:
-                # 取消事实只在执行器停止并回滚业务事务后写入台账。
-                db.rollback()
-                try:
-                    run.cancel()
-                except RunConflictError:
-                    # 删除会话可能刚将旧快照改为 unknown；重读后确认取消。
-                    run.cancel()
-                return _paused_result(db, session_id)
-    finally:
-        # 回滚工作 Session 的读快照/失败写事务，随后才用独立短事务收尾。
-        db.rollback()
-        _end_failed_run(session_id, run_id)
+                run.cancel()
+            except RunConflictError:
+                # 删除会话可能刚将旧快照改为 unknown；重读后确认取消。
+                run.cancel()
+            return ChatMessageResponse.model_validate(_paused_result(db, session_id))
 
 
 def _run_message(
     db: Session, user: User, s: ChatSession, body: ChatMessageBody, api_key: str, run_id: str,
     *, run: GenerationRun, interrupted_stage: str = "",
-) -> dict:
+) -> ChatMessageResponse:
     session_id, user_id, bank_id, document_id = s.id, user.id, s.bank_id, s.document_id
     doc = db.get(Document, document_id)
     if doc is None:
@@ -556,7 +658,7 @@ def _commit_turn(
     params: GenerateParams | None = None, hyde_text: str | None = None,
     questions: list[Question] | None = None, run: GenerationRun | None = None,
     failure_code: RunErrorCode | None = None,
-) -> dict:
+) -> ChatMessageResponse:
     """所有模型已完成后，锁内重新验证 run 和资源，单次提交整轮结果。"""
     db.rollback()
     auth.assert_version(db, user_id, state.auth_version)
@@ -585,6 +687,21 @@ def _commit_turn(
     s.pending_images_json = json.dumps(state.pending_images, ensure_ascii=False)
     s.last_message_at = utcnow()
     s.run_status, s.run_progress, s.run_stage = "done", 100, ""
+    response = ChatMessageResponse.model_validate({
+        "reply": result["reply"], "slot_state": result["slot_state"],
+        "questions": result["questions"], "done": result["done"], "batch_id": batch_id,
+        "kind": result.get("kind", "reply"), "mode": state.mode,
+        "mode_changed": result.get("mode_changed", False),
+        "suggested_template": result.get("suggested_template"), "confirm": result.get("confirm"),
+    })
+    if body.request_id is not None:
+        request = db.get(ChatRequest, (session_id, str(body.request_id)))
+        assert request is not None and request.run_id == run_id and request.status == "running"
+        request.status = "done"
+        request.batch_id = batch_id
+        request.result_json = response.model_copy(update={"questions": []}).model_dump_json()
+        if batch_id is not None:
+            response.questions = list(_saved_questions(db, s, batch_id))
     if batch_id is None and run is not None and run.run_id is not None:
         _transition_chat_ledger(
             db, session_id, user_id, run_id, RunStatus.FAILED,
@@ -610,13 +727,7 @@ def _commit_turn(
         raise
     if run is not None and run.run_id is not None:
         run.committed()
-    return {
-        "reply": result["reply"], "slot_state": result["slot_state"],
-        "questions": result["questions"], "done": result["done"], "batch_id": batch_id,
-        "kind": result.get("kind", "reply"), "mode": state.mode,
-        "mode_changed": result.get("mode_changed", False),
-        "suggested_template": result.get("suggested_template"), "confirm": result.get("confirm"),
-    }
+    return response
 
 
 @router.post("/sessions/{session_id}/confirm")
@@ -669,24 +780,68 @@ def read_generation_progress(
             "stage": s.run_stage if active or s.run_status == "interrupted" else ""}
 
 
+@router.get("/sessions/{session_id}/requests/{request_id}")
+def read_chat_request(
+    session_id: str,
+    request_id: UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ChatRequestResponse:
+    """读取属于本会话的指定轮次及其已提交回复。"""
+    s = _get_session(session_id, user, db)
+    request = db.get(ChatRequest, (session_id, str(request_id)))
+    if request is None:
+        raise AppError("CHAT_REQUEST_NOT_FOUND", "对话请求不存在", 404)
+    return _request_response(db, s, user, request)
+
+
+def _cancel_active_run(
+    db: Session, session_id: str, user_id: str, run_id: str | None,
+) -> None:
+    changed = db.execute(update(ChatSession).where(
+        ChatSession.id == session_id, ChatSession.user_id == user_id,
+        ChatSession.run_status == "running", ChatSession.run_id == run_id,
+    ).values(canceled_run_id=run_id, run_status="canceled",
+             run_progress=0, run_stage="已收到暂停请求").returning(ChatSession.id))
+    if changed.scalar_one_or_none() is not None and run_id is not None:
+        db.execute(update(ChatRequest).where(
+            ChatRequest.session_id == session_id, ChatRequest.run_id == run_id,
+            ChatRequest.status == "running",
+        ).values(status="canceled"))
+
+
 @router.post("/sessions/{session_id}/cancel", status_code=202)
 def cancel_generation(
     session_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+    request_id: UUID | None = None,
+) -> ChatRequestResponse | dict[str, bool]:
     """原子绑定当前运行的取消事实；与开始和最终提交使用同一 SQL 行锁。"""
     s = _get_session(session_id, user, db)
     target_run_id = s.run_id
-    user_id = user.id
+    user_id, auth_version = user.id, user.auth_version
     db.rollback()
+    if request_id is None:
+        _cancel_active_run(db, session_id, user_id, target_run_id)
+        db.commit()
+        return {"canceled": True}
+    auth.assert_version(db, user_id, auth_version)
     db.execute(update(ChatSession).where(
         ChatSession.id == session_id, ChatSession.user_id == user_id,
-        ChatSession.run_status == "running", ChatSession.run_id == target_run_id,
-    ).values(canceled_run_id=target_run_id, run_status="canceled",
-             run_progress=0, run_stage="已收到暂停请求"))
+    ).values(run_status=ChatSession.run_status))
+    s = _get_session(session_id, user, db)
+    request = db.get(ChatRequest, (session_id, str(request_id)), populate_existing=True)
+    if request is None:
+        request = ChatRequest(
+            session_id=session_id, request_id=str(request_id), status="canceled",
+            execution_finished_at=utcnow(),
+        )
+        db.add(request)
+    elif request.status == "running":
+        _cancel_active_run(db, session_id, user_id, request.run_id)
     db.commit()
-    return {"canceled": True}
+    return _request_response(db, s, user, request)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)

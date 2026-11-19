@@ -14,7 +14,7 @@
 
 单 worker 启动恢复将未完成的持久任务及运行中的会话标为 `interrupted`，同一事务将对应仍为 `accepted`/`running` 的台账标为 `unknown`，错误码为 `EXECUTION_INTERRUPTED`；无持久任务或会话关联的历史台账不被扫描。
 
-对话支持快速出题、创新命题、知识答疑和数据管理四种模式；参数化异步出题支持 request_id 幂等受理、按任务取消及执行退出确认；取消中仍占用生成门禁，一键清空的完整语义见[快速出题取消与清空](implementation/快速出题取消与清空.md)。图片与数据操作确认的契约和边界见[四模式对话与主线整合](design/对话四模式与主线整合.md)。
+对话支持快速出题、创新命题、知识答疑和数据管理四种模式。对话消息携带 request_id 时可按轮次暂停与查询结果；参数化异步出题支持 request_id 幂等受理、按任务取消及执行退出确认；取消中仍占用生成门禁，一键清空的完整语义见[快速出题取消与清空](implementation/快速出题取消与清空.md)。图片与数据操作确认的契约和边界见[四模式对话与主线整合](design/对话四模式与主线整合.md)。
 
 运维 V2 提供管理员只读概览、运行列表及基本详情，响应 `schema_version` 为 `v2`。查询仅投影正式 SQL 台账，支持受理时间、账号、入口、状态及会话／任务／批次筛选，列表使用 `limit`/`offset`；未知与空值保留，不返回正文或质量结论。`from`/`to` 只接受带时区的 ISO 8601 字符串；数字时间戳、无效日期及 UTC 范围溢出返回 `422 VALIDATION_ERROR`。SQLAlchemy Enum 结果解码失败返回 `503 OPS_DATA_UNAVAILABLE`，不回显内部值或 SQL。`error_code` 仅展示已确认的 RunErrorCode 安全分类；未知值显示 `UNKNOWN`，无错误保留 `null`，旧分类和自由文本不直接透传。正式模型、增量迁移和两类出题入口已在 V2 分支与查询层整合；部署须先核验并升级迁移，表缺失、契约不兼容或读取失败返回 `503 OPS_DATA_UNAVAILABLE`，不回退合成数据。前端 V2 适配及隔离页面联调已完成，合并后及部署仍需验收。完整字段、错误和交接边界见[运维查询 V2 接口与查询设计](design/运维查询V2接口与查询设计.md)，职责见[三人分工](implementation/运维后台三人实施分工方案.md)。依赖监测、告警、质量统计、复杂清理、自监控和正文审计不属于当前接口范围。
 
@@ -111,6 +111,7 @@
 | `POST` | `/api/chat/sessions/{session_id}/confirm` | Confirm Operation |
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send Message |
 | `GET` | `/api/chat/sessions/{session_id}/progress` | Read Generation Progress |
+| `GET` | `/api/chat/sessions/{session_id}/requests/{request_id}` | Read Chat Request |
 
 ## export
 
@@ -225,4 +226,4 @@
 | `POST` | `/api/users/me/model-settings/test-mineru` | 测试 MinerU 连接与鉴权（不验证文件解析） |
 | `PUT` | `/api/users/me/user-no` | Change User No |
 
-共 120 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。
+共 121 个 HTTP 操作。WebSocket 契约与启动配置见根目录 README。

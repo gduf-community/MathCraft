@@ -172,6 +172,74 @@ export async function runChatHistoryCases({ providerCase, selectBank, settleRend
     assert.equal(await page.evaluate(() => window.mergeHarness.calls.some(c => c.name === 'batchDeleteQuestions')), false)
   })
 
+  await providerCase('pause waits for server and restores a committed batch before clear', async page => {
+    await seed(page)
+    await page.evaluate(() => {
+      const h = window.mergeHarness
+      h.held.sendChatMessage = h.held.cancelChat = h.held.getChatTurn = true
+      void window.mergeApp.sendChat('等待生成结果')
+    })
+    await page.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
+    await page.getByRole('button', {name:'暂停', exact:true}).click()
+    assert.equal(await page.getByRole('button', {name:'正在暂停', exact:true}).isDisabled(), true)
+    assert.equal(await page.getByRole('button', {name:'正在暂停', exact:true}).locator('svg').count(), 1)
+    await page.evaluate(() => window.mergeApp.setActiveTab('preview'))
+    assert.equal(await page.getByRole('button', {name:'一键清空', exact:true}).isDisabled(), true)
+    await page.evaluate(() => {
+      const h = window.mergeHarness
+      h.finish('cancelChat', {status:'done', execution_finished:false, batch_id:'late', result:null})
+    })
+    await page.waitForFunction(() => window.mergeHarness.pending.getChatTurn?.length === 1)
+    assert.equal(await page.getByRole('button', {name:'一键清空', exact:true}).isDisabled(), true)
+    await page.evaluate(() => {
+      const h = window.mergeHarness
+      h.finish('getChatTurn', {status:'done', execution_finished:true, batch_id:'late',
+        result:h.chatReply({reply:'已完成该轮', batch_id:'late', questions:[{id:'late-question'}]})})
+    })
+    await page.waitForFunction(() => !window.mergeApp.botThinking
+      && window.mergeApp.questions.some(question => question.id === 'late-question'))
+    await page.getByRole('button', {name:'一键清空', exact:true}).click()
+    await page.getByRole('button', {name:'确认清空', exact:true}).click()
+    await page.waitForFunction(() => window.mergeApp.questions.length === 0)
+    assert.equal(await page.evaluate(() => window.mergeApp.messages.some(m => m.text === '已完成该轮')), true)
+    assert.equal(await page.evaluate(() => window.mergeHarness.calls
+      .some(call => call.name === 'batchDeleteQuestions' && call.args[0].includes('late-question'))), true)
+  })
+
+  await providerCase('failed pause stays locked and refresh continues the original request', async page => {
+    await seed(page)
+    await page.evaluate(() => {
+      const h = window.mergeHarness
+      h.held.sendChatMessage = h.held.cancelChat = true
+      void window.mergeApp.sendChat('等待暂停确认')
+    })
+    await page.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
+    await page.getByRole('button', {name:'暂停', exact:true}).click()
+    await page.waitForFunction(() => window.mergeHarness.pending.cancelChat?.length === 1)
+    await page.evaluate(() => window.mergeHarness.pending.cancelChat.shift().reject(new Error('断连')))
+    await page.getByRole('button', {name:'重试暂停', exact:true}).waitFor()
+    await page.evaluate(() => window.mergeApp.setActiveTab('preview'))
+    assert.equal(await page.getByRole('button', {name:'一键清空', exact:true}).isDisabled(), true)
+    await page.evaluate(() => {
+      const h = window.mergeHarness
+      h.backend.latestBatch = () => ({batch_id:'preview-batch', questions:[{id:'preview-result'}]})
+      h.generation += 1
+      window.remountMerge()
+    })
+    await page.waitForFunction(() => window.mergeHarness.pending.cancelChat?.length === 1)
+    const requestIds = await page.evaluate(() => ({
+      sent: window.mergeHarness.calls.filter(call => call.name === 'sendChatMessage').at(-1).args[7],
+      paused: window.mergeHarness.calls.filter(call => call.name === 'cancelChat').map(call => call.args[1]),
+    }))
+    assert.deepEqual(requestIds.paused, [requestIds.sent, requestIds.sent])
+    await page.evaluate(() => window.mergeHarness.finish('cancelChat', {
+      status:'canceled', execution_finished:true, batch_id:null, result:null,
+    }))
+    await page.waitForFunction(() => !window.mergeApp.botThinking && window.mergeApp.chatPauseStatus === null)
+    assert.equal(await page.evaluate(() => window.mergeApp.questions[0]?.id), 'preview-result')
+    assert.equal(await page.evaluate(() => window.mergeApp.docs.some(doc => doc.id === 'doc-bank-A')), true)
+  })
+
   await providerCase('preview clear batches at 200; partial failure keeps all local questions and favorites until retry succeeds', async page => {
     await page.evaluate(() => {
       const h = window.mergeHarness

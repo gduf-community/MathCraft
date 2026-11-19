@@ -5254,7 +5254,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageResponse"
+                }
               }
             }
           },
@@ -5405,6 +5407,75 @@
         }
       }
     },
+    "/api/chat/sessions/{session_id}/requests/{request_id}": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Read Chat Request",
+        "description": "读取属于本会话的指定轮次及其已提交回复。",
+        "operationId": "read_chat_request_api_chat_sessions__session_id__requests__request_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat/sessions/{session_id}/cancel": {
       "post": {
         "tags": [
@@ -5421,6 +5492,23 @@
             "schema": {
               "type": "string",
               "title": "Session Id"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Request Id"
             }
           },
           {
@@ -5445,7 +5533,20 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatRequestResponse"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "boolean"
+                      }
+                    }
+                  ],
+                  "title": "Response Cancel Generation Api Chat Sessions  Session Id  Cancel Post"
+                }
               }
             }
           },
@@ -8704,6 +8805,18 @@
       },
       "ChatMessageBody": {
         "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
           "message": {
             "type": "string",
             "maxLength": 2048,
@@ -8744,6 +8857,331 @@
           "message"
         ],
         "title": "ChatMessageBody"
+      },
+      "ChatMessageResponse": {
+        "properties": {
+          "reply": {
+            "type": "string",
+            "title": "Reply"
+          },
+          "questions": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ChatSavedQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/Question"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "done": {
+            "type": "boolean",
+            "title": "Done"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "slot_state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Slot State"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "reply",
+              "mode_mismatch",
+              "mode_confirm"
+            ],
+            "title": "Kind"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "generate",
+              "creative",
+              "qa",
+              "data"
+            ],
+            "title": "Mode"
+          },
+          "mode_changed": {
+            "type": "boolean",
+            "title": "Mode Changed"
+          },
+          "suggested_template": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "generate",
+                  "creative",
+                  "qa",
+                  "data",
+                  "none"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Template"
+          },
+          "confirm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatOperationPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "reply",
+          "questions",
+          "done",
+          "batch_id",
+          "slot_state",
+          "kind",
+          "mode",
+          "mode_changed",
+          "suggested_template",
+          "confirm"
+        ],
+        "title": "ChatMessageResponse",
+        "description": "消息接口与状态查询共用的已发布回复。"
+      },
+      "ChatOperationPreview": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "delete",
+              "update"
+            ],
+            "title": "Action"
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity"
+          },
+          "entity_label": {
+            "type": "string",
+            "title": "Entity Label"
+          },
+          "affected": {
+            "type": "integer",
+            "title": "Affected"
+          },
+          "samples": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Samples"
+          },
+          "explanation": {
+            "type": "string",
+            "title": "Explanation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "action",
+          "entity",
+          "entity_label",
+          "affected",
+          "samples",
+          "explanation"
+        ],
+        "title": "ChatOperationPreview",
+        "description": "已发布的操作确认预览。"
+      },
+      "ChatRequestResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "canceled",
+              "done",
+              "failed",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "execution_finished": {
+            "type": "boolean",
+            "title": "Execution Finished"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessageResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "execution_finished",
+          "batch_id",
+          "result"
+        ],
+        "title": "ChatRequestResponse",
+        "description": "指定轮次的业务状态及执行退出事实。"
+      },
+      "ChatSavedQuestion": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/QuestionType"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty"
+          },
+          "difficulty_score": {
+            "type": "number",
+            "title": "Difficulty Score"
+          },
+          "difficulty_review": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Difficulty Review"
+          },
+          "stem": {
+            "type": "string",
+            "title": "Stem"
+          },
+          "options": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "analysis": {
+            "type": "string",
+            "title": "Analysis"
+          },
+          "knowledge_point": {
+            "type": "string",
+            "title": "Knowledge Point"
+          },
+          "starred": {
+            "type": "boolean",
+            "title": "Starred"
+          },
+          "favorite_group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Favorite Group Id"
+          },
+          "doc_name": {
+            "type": "string",
+            "title": "Doc Name"
+          },
+          "bank_id": {
+            "type": "string",
+            "title": "Bank Id"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "score",
+          "difficulty",
+          "difficulty_score",
+          "difficulty_review",
+          "stem",
+          "options",
+          "answer",
+          "analysis",
+          "knowledge_point",
+          "starred",
+          "favorite_group_id",
+          "doc_name",
+          "bank_id",
+          "document_id",
+          "batch_id",
+          "created_at"
+        ],
+        "title": "ChatSavedQuestion",
+        "description": "题库中当前保存的对话题目。"
       },
       "ChatSessionCreateBody": {
         "properties": {

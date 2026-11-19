@@ -1,7 +1,7 @@
 """导入全部模型，供 Alembic autogenerate 与 create_all 使用。"""
 from app.models.auth import AuthProof, AuthSession, EmailChange, RefreshUse
 from app.models.bank import Bank, BankMember, Document, DocumentChunk
-from app.models.chat import ChatMessage, ChatSession
+from app.models.chat import ChatMessage, ChatRequest, ChatSession
 from app.models.deletion import DeletionOperation
 from app.models.favorite import Favorite, FavoriteGroup
 from app.models.generation_task import GenerationTask
@@ -25,7 +25,7 @@ from app.models.user import User, UserModelSetting
 __all__ = [
     "AuthProof", "AuthSession", "EmailChange", "RefreshUse",
     "Bank", "BankMember", "Document", "DocumentChunk",
-    "ChatMessage", "ChatSession",
+    "ChatMessage", "ChatRequest", "ChatSession",
     "DeletionOperation", "GenerationTask",
     "Favorite", "FavoriteGroup",
     "Notification",

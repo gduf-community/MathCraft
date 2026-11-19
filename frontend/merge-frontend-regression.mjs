@@ -191,7 +191,8 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
       sendChatMessage: (...args) => h.chatReply({mode:args[5]}),
       confirmChat: () => ({reply:'操作已确认', done:true}),
       deleteChatSession: () => {}, batchDeleteQuestions: () => {},
-      getChatProgress: () => ({active:true, percent:20, stage:'合成进度'}), cancelChat: () => {},
+      getChatProgress: () => ({active:true, percent:20, stage:'合成进度'}),
+      cancelChat: () => ({status:'canceled', execution_finished:true, batch_id:null, result:null}),
       startGeneration: () => ({task_id:'fake-task'}),
       findGenerationRequest: () => ({task_id:'fake-task'}),
       cancelGeneration: () => ({done:true, execution_finished:true, status:'canceled', progress:0,
@@ -1216,7 +1217,9 @@ async function prepareConfirmation(page, entity, action = 'delete') {
   await chat.waitForFunction(() => window.mergeApp.selectedDocId === 'doc-bank-A')
   await chat.evaluate(() => { window.mergeHarness.held.sendChatMessage = true; void window.mergeApp.sendChat('第一次') })
   await chat.waitForFunction(() => window.mergeHarness.pending.sendChatMessage?.length === 1)
-  await chat.evaluate(() => { window.mergeApp.pauseChat(); void window.mergeApp.sendChat('第二次') })
+  await chat.evaluate(() => window.mergeApp.pauseChat())
+  await chat.waitForFunction(() => !window.mergeApp.botThinking)
+  await chat.evaluate(() => { void window.mergeApp.sendChat('第二次') })
   await chat.waitForFunction(() => window.mergeHarness.pending.sendChatMessage.length === 2)
   await chat.evaluate(() => window.mergeHarness.finish('sendChatMessage', window.mergeHarness.chatReply({reply:'旧结果', mode:'data'})))
   await chat.waitForFunction(() => window.mergeHarness.pending.sendChatMessage.length === 1)

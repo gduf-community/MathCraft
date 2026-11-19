@@ -1,4 +1,4 @@
-import { CheckCircle2, ShieldAlert, SendHorizontal, Square, X, XCircle } from 'lucide-react'
+import { CheckCircle2, LoaderCircle, ShieldAlert, SendHorizontal, Square, X, XCircle } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 import { CHAT_MODE_LABELS } from '../../../types'
 import SegmentedControl from '../../ui/SegmentedControl'
@@ -65,11 +65,11 @@ function ConfirmOverlay() {
 export default function ChatInput() {
   const {
     inputDraft, setInputDraft, sendChat, botThinking, showToast,
-    selectedDocId, pauseChat, chatImages, removeChatImage,
+    selectedDocId, pauseChat, chatPauseStatus, chatImages, removeChatImage,
     mode, setMode, sessionMode, modeVisible, messages, confirmBusy, pendingConfirm,
     sessionLoading, questionsClearing, generating, generationRecoveryError,
   } = useApp()
-  const interactionBusy = botThinking || sessionLoading || questionsClearing || generating
+  const interactionBusy = botThinking || chatPauseStatus != null || sessionLoading || questionsClearing || generating
     || generationRecoveryError !== null || confirmBusy || pendingConfirm !== null
   const canSend = (inputDraft.trim().length > 0 || chatImages.length > 0) && !interactionBusy
 
@@ -139,9 +139,29 @@ export default function ChatInput() {
           className="block w-full resize-none bg-transparent px-1 text-sm leading-6 text-ink outline-none placeholder:text-ink-3"
         />
         <div className="mt-0.5 flex flex-wrap items-center justify-between gap-2">
+          {chatPauseStatus === 'failed' && (
+            <div className="flex items-center gap-2 text-xs text-ink-2">
+              <span role="status">暂停未确认</span>
+              <button type="button" onClick={pauseChat} className="font-medium text-primary underline">
+                重试暂停
+              </button>
+            </div>
+          )}
           <div className="ml-auto flex shrink-0 items-center gap-3">
             <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>
-            {botThinking ? (
+            {chatPauseStatus != null ? (
+              <button
+                type="button"
+                disabled
+                aria-busy={chatPauseStatus === 'pending'}
+                className="flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-line px-4 py-1.5 text-sm font-medium text-ink-2"
+              >
+                {chatPauseStatus === 'pending' && (
+                  <LoaderCircle size={14} aria-hidden="true" className="motion-safe:animate-spin" />
+                )}
+                {chatPauseStatus === 'pending' ? '正在暂停' : '暂停未确认'}
+              </button>
+            ) : botThinking ? (
               <button
                 type="button"
                 onClick={pauseChat}
