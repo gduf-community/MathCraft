@@ -11,10 +11,13 @@ from app.models.base import new_id
 from app.services.auth import assert_version
 
 
+CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
 def generate_space_code(db: Session) -> str:
-    """生成不可枚举的 96 位加入码，编号同时作为邀请凭据。"""
+    """生成 10 位随机编号（SP 前缀 + 8 位随机字符），编号同时作为邀请凭据。"""
     while True:
-        code = "SP" + secrets.token_hex(12).upper()
+        code = "SP" + "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
         if not db.query(StudySpace.id).filter(StudySpace.code == code).first():
             return code
 

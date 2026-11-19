@@ -14,7 +14,7 @@ class Bank(Base, TimestampMixin):
 
     id: Mapped[StrPK]
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)   # TK + 年份 + 序号
+    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)   # TK + 8 位随机字符，共 10 位
     creator_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), nullable=False)
     admin_level: Mapped[str] = mapped_column(String(16), default="super", nullable=False)  # 历史兼容字段，不参与成员权限判断
     capacity: Mapped[int] = mapped_column(default=200, nullable=False)

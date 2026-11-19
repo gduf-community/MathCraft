@@ -27,7 +27,7 @@ def test_transfer_keeps_previous_creator_edit_access(client, teacher, db):
 def test_removed_student_cannot_rejoin_space(client, teacher, student):
     space = client.post("/api/spaces", headers=teacher,
                         json={"name": "隔离班级", "capacity": 50}).json()
-    assert re.fullmatch(r"SP[0-9A-F]{24}", space["code"])
+    assert re.fullmatch(r"SP[0-9A-Z]{8}", space["code"])
     assert client.post("/api/spaces/join", headers=student,
                        json={"code": space["code"]}).status_code == 200
     student_id = client.get("/api/auth/me", headers=student).json()["user"]["id"]
