@@ -1,4 +1,4 @@
-/* global URL, console, process, window, Event, File, Response, AbortSignal */
+/* global URL, console, document, localStorage, process, window, File, Response, AbortSignal */
 /** 主线整合风险回归：真实 React/题库适配层，内存假服务，浏览器所有网络均阻断。 */
 import assert from 'node:assert/strict'
 import { runChatHistoryCases, runGenerationTaskCases } from './merge-session-cases.mjs'
