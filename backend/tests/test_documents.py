@@ -2,18 +2,19 @@
 import io
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from threading import Barrier, get_ident
+from threading import get_ident
 from types import SimpleNamespace
+from unittest.mock import Mock
 
-import httpx
-import openai
 import pymupdf as fitz
 import pytest
 
+from app import local_secrets
 from app.config import settings
+from app.models import Document, DocumentChunk
 from app.services import knowledge_simplify, mineru
+from app.services.parsing import ocr_textbook
 from app.services.rag import llm, vectorstore
 from conftest import create_bank, upload_markdown
 
@@ -35,14 +36,10 @@ def _make_pdf(with_text: bool) -> bytes:
 
 @dataclass
 class _SimplifyProbe:
-    """记录外部服务边界，保留 API、后台任务与简化管线的真实行为。"""
+    """记录简化管线对 LLM 的调用。"""
 
-    keys: list[str] = field(default_factory=list)
-    calls: list[tuple[str, str, tuple[str, ...], int]] = field(default_factory=list)
-    ocr_documents: list[str] = field(default_factory=list)
-    rejected_keys: set[str] = field(default_factory=set)
-    summary_barrier: Barrier | None = None
-    omit_second_section: bool = False
+    keys: list[str | None] = field(default_factory=list)
+    calls: list[tuple[str | None, str, tuple[str, ...], int]] = field(default_factory=list)
 
 
 def _ocr_markdown(marker: str) -> str:
@@ -54,32 +51,10 @@ def _ocr_markdown(marker: str) -> str:
 
 @pytest.fixture
 def simplify_probe(monkeypatch) -> _SimplifyProbe:
-    """只替换 OCR、LLM 客户端和向量存储，不替换简化辅助函数。"""
     probe = _SimplifyProbe()
-    monkeypatch.setattr(settings, "deepseek_api_key", "")
-    monkeypatch.setattr(vectorstore, "add_chunks", lambda *args, **kwargs: None)
-    monkeypatch.setattr(vectorstore, "delete_document_chunks", lambda *args, **kwargs: None)
-
-    def fake_extract(token, file_path, result_dir, on_progress=None):
-        probe.ocr_documents.append(file_path.stem)
-        result_dir.mkdir(parents=True, exist_ok=True)
-        markdown = _ocr_markdown(file_path.stem)
-        with fitz.open(file_path) as pdf:
-            identity = mineru._cache_identity(file_path, pdf.page_count)
-        mineru._publish_markdown(result_dir, markdown, identity)
-        return markdown, result_dir
 
     def fake_get_client(api_key=None):
-        key = api_key or settings.deepseek_api_key
-        probe.keys.append(key)
-        if not key or key in probe.rejected_keys:
-            raise openai.AuthenticationError(
-                "测试服务拒绝空值或指定假 Key",
-                response=httpx.Response(
-                    401, request=httpx.Request("POST", "https://llm.example.test/completions"),
-                ),
-                body={"error": "test-only-invalid-key"},
-            )
+        probe.keys.append(api_key)
 
         def fake_create(**kwargs):
             prompt = kwargs["messages"][-1]["content"]
@@ -87,7 +62,7 @@ def simplify_probe(monkeypatch) -> _SimplifyProbe:
                 match = re.search(r"^# (第一章 .+)$", prompt, re.M)
                 assert match is not None, "目录请求必须包含 OCR 结果"
                 chapter = match.group(1)
-                probe.calls.append((key, chapter, (), get_ident()))
+                probe.calls.append((api_key, chapter, (), get_ident()))
                 content = json.dumps({"chapters": [{
                     "title": chapter,
                     "sections": [
@@ -101,14 +76,11 @@ def simplify_probe(monkeypatch) -> _SimplifyProbe:
                 )
                 chapter = chapter_data["title"]
                 sections = tuple(section["title"] for section in chapter_data["sections"])
-                probe.calls.append((key, chapter, sections, get_ident()))
-                if probe.summary_barrier is not None:
-                    probe.summary_barrier.wait(timeout=10)
+                probe.calls.append((api_key, chapter, sections, get_ident()))
                 content = "\n\n".join(
                     f"### {title}\n\n#### 差商极限\n\n本节概括：导数描述瞬时变化率。"
                     for title in sections
-                    if not (probe.omit_second_section and len(sections) > 1
-                            and title == "第2节 定义")
+                    if len(sections) == 1 or title != "第2节 定义"
                 )
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=None,
@@ -116,152 +88,13 @@ def simplify_probe(monkeypatch) -> _SimplifyProbe:
 
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
 
-    monkeypatch.setattr(mineru, "extract_pdf", fake_extract)
     monkeypatch.setattr(llm, "get_client", fake_get_client)
     return probe
-
-
-def _save_deepseek_key(client, headers: dict[str, str], key: str) -> None:
-    response = client.put(
-        "/api/users/me/model-settings", json={"deepseek_api_key": key}, headers=headers,
-    )
-    assert response.status_code == 200, response.text
-
-
-def _upload_scan(client, headers: dict[str, str], *, new_bank: bool = False,
-                 bank_id: str | None = None) -> tuple[str, str]:
-    if not new_bank and bank_id is None:
-        bank_id = create_bank(client, headers)["id"]
-    response = client.post(
-        "/api/banks/with-document" if new_bank else f"/api/banks/{bank_id}/documents",
-        data={"name": "凭据回归题库"} if new_bank else {},
-        files={"file": ("scan.pdf", _make_pdf(False), "application/pdf")},
-        headers=headers,
-    )
-    assert response.status_code == (201 if new_bank else 202), response.text
-    data = response.json()
-    if new_bank:
-        return data["bank"]["id"], data["document"]["document_id"]
-    return bank_id, data["document_id"]
-
-
-def _assert_simplified_ready(client, headers: dict[str, str], bank_id: str,
-                             document_id: str) -> None:
-    url = f"/api/banks/{bank_id}/documents/{document_id}"
-    response = client.get(url, headers=headers)
-    assert response.status_code == 200, response.text
-    document = response.json()
-    assert document["status"] == "ready", document
-    assert document["format"] == "MD", document
-    assert document["ocr_status"] == "done", document
-    assert document["chunk_count"] > 0
-    downloaded = client.get(f"{url}/download", headers=headers)
-    assert downloaded.status_code == 200, downloaded.text
-    assert "知识点简化版" in downloaded.text
-    assert "本节概括：" in downloaded.text, "不能用 OCR 原文回退冒充简化成功"
-
-
-@pytest.mark.parametrize("new_bank", [False, True], ids=["existing-bank", "first-document"])
-def test_scanned_pdf_personal_deepseek_key_without_server_key(
-    client, teacher, simplify_probe, new_bank,
-):
-    """两种上传入口都能在服务端无 Key 时使用已保存的个人 Key。"""
-    key = "fake-personal-deepseek-key-for-tests-only"
-    _save_deepseek_key(client, teacher, key)
-    bank_id, document_id = _upload_scan(client, teacher, new_bank=new_bank)
-    assert simplify_probe.keys, "测试必须执行到真实 simplify 的 llm.get_client"
-    assert set(simplify_probe.keys) == {key}, "OCR 后简化必须使用操作者的个人 Key"
-    _assert_simplified_ready(client, teacher, bank_id, document_id)
-
-
-@pytest.mark.parametrize("new_bank", [False, True], ids=["existing-bank", "first-document"])
-@pytest.mark.parametrize("personal_key", ["fake-personal-priority-key", ""],
-                         ids=["personal-priority", "server-fallback"])
-def test_scanned_pdf_deepseek_key_priority(
-    client, teacher, monkeypatch, simplify_probe, new_bank, personal_key,
-):
-    """服务端非空时，上传与首文档入口仍遵守个人优先、服务端兜底。"""
-    server_key = "fake-server-fallback-key"
-    monkeypatch.setattr(settings, "deepseek_api_key", server_key)
-    _save_deepseek_key(client, teacher, personal_key)
-    bank_id, document_id = _upload_scan(client, teacher, new_bank=new_bank)
-    assert simplify_probe.keys
-    assert set(simplify_probe.keys) == {personal_key or server_key}
-    _assert_simplified_ready(client, teacher, bank_id, document_id)
-
-
-@pytest.mark.parametrize("editor_key", ["fake-editor-current-key", ""],
-                         ids=["editor-personal", "editor-server-fallback"])
-def test_scanned_pdf_cached_ocr_reprocess_uses_current_editor(
-    client, teacher, student, monkeypatch, simplify_probe, editor_key,
-):
-    """上传者简化鉴权失败后，另一 editor 复用 OCR 并使用自己的有效 Key 重试。"""
-    server_key = "fake-server-reprocess-key"
-    uploader_key = "fake-uploader-rejected-key"
-    monkeypatch.setattr(settings, "deepseek_api_key", server_key)
-    simplify_probe.rejected_keys.add(uploader_key)
-    _save_deepseek_key(client, teacher, uploader_key)
-    _save_deepseek_key(client, student, editor_key)
-    bank_id, document_id = _upload_scan(client, teacher)
-    url = f"/api/banks/{bank_id}/documents/{document_id}"
-    failed = client.get(url, headers=teacher).json()
-    assert failed["status"] == "failed", failed
-    assert failed["ocr_status"] == "done", failed
-    assert simplify_probe.keys == [uploader_key]
-    assert simplify_probe.ocr_documents == [document_id]
-    cached_ocr = settings.ocr_path() / document_id / "full.md"
-    assert cached_ocr.exists()
-    cached_content = cached_ocr.read_text(encoding="utf-8")
-    added = client.post(
-        f"/api/banks/{bank_id}/members",
-        json={"account": "student", "role": "editor"}, headers=teacher,
-    )
-    assert added.status_code == 201, added.text
-    simplify_probe.keys.clear()
-    response = client.post(f"{url}/reprocess", headers=student)
-    assert response.status_code == 202, response.text
-    assert simplify_probe.keys
-    assert set(simplify_probe.keys) == {editor_key or server_key}
-    assert simplify_probe.ocr_documents == [document_id], "已有 OCR 不应再次调用 MinerU"
-    assert cached_ocr.read_text(encoding="utf-8") == cached_content
-    _assert_simplified_ready(client, student, bank_id, document_id)
-
-
-def test_scanned_pdf_concurrent_users_keep_summary_keys_isolated(
-    client, teacher, student, simplify_probe,
-):
-    """两名操作者同时上传，四个真实概括线程交错执行也不能串 Key。"""
-    teacher_key, student_key = "fake-concurrent-teacher-key", "fake-concurrent-student-key"
-    _save_deepseek_key(client, teacher, teacher_key)
-    _save_deepseek_key(client, student, student_key)
-    bank_id = create_bank(client, teacher)["id"]
-    added = client.post(
-        f"/api/banks/{bank_id}/members",
-        json={"account": "student", "role": "editor"}, headers=teacher,
-    )
-    assert added.status_code == 201, added.text
-    # 五节正文自然拆为两批；四方屏障保证两个用户的概括真正同时在途。
-    simplify_probe.summary_barrier = Barrier(4)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        teacher_upload = pool.submit(_upload_scan, client, teacher, bank_id=bank_id)
-        student_upload = pool.submit(_upload_scan, client, student, bank_id=bank_id)
-        _, teacher_doc = teacher_upload.result(timeout=30)
-        _, student_doc = student_upload.result(timeout=30)
-    for headers, document_id, expected_key in [
-        (teacher, teacher_doc, teacher_key), (student, student_doc, student_key),
-    ]:
-        _assert_simplified_ready(client, headers, bank_id, document_id)
-        calls = [call for call in simplify_probe.calls if call[1] == f"第一章 {document_id}"]
-        assert calls, "每份文档均需执行真实目录提取与概括"
-        assert {call[0] for call in calls} == {expected_key}
-        assert any(not call[2] for call in calls), "需覆盖目录提取"
-        assert len({call[3] for call in calls if call[2]}) >= 2, "需覆盖多个概括线程"
 
 
 def test_simplify_missing_section_retry_keeps_personal_key(simplify_probe):
     """目录、并发概括及漏节补写全部使用同一次调用的个人 Key。"""
     key = "fake-missing-section-personal-key"
-    simplify_probe.omit_second_section = True
     markdown, _ = knowledge_simplify.build_simplified_markdown(
         _ocr_markdown("漏节补写"), api_key=key,
     )
@@ -409,37 +242,146 @@ def test_scanned_pdf_detection():
     text.unlink(missing_ok=True)
 
 
-def test_scanned_pdf_uses_mineru(client, teacher, monkeypatch):
-    """扫描件走 MinerU OCR：打桩 extract_pdf，验证状态机走 ocr 并最终 ready。"""
-    bank = create_bank(client, teacher)
+_RAW_OCR_TEXT = "青岚曲线在原点的切线斜率等于七。"
+_RAW_OCR_MARKDOWN = f"# OCR 结果\n\n{_RAW_OCR_TEXT}"
 
-    def fake_extract(token, file_path, result_dir, on_progress=None):
-        result_dir.mkdir(parents=True, exist_ok=True)
-        md = result_dir / "full.md"
+
+def test_ocr_textbook_preserves_source_locations_across_parts(tmp_path, monkeypatch):
+    monkeypatch.setattr(ocr_textbook, "_plan_parts", lambda page_count: [(0, 15), (15, 32)])
+    first = tmp_path / "part_00"
+    second = tmp_path / "part_01"
+    first.mkdir()
+    (second / "images").mkdir(parents=True)
+    (second / "images" / "curve.png").touch()
+    (first / "scan_content_list.json").write_text(json.dumps([
+        {"type": "text", "page_idx": 14, "text": "第一章 导数", "text_level": 1},
+    ]), encoding="utf-8")
+    (second / "scan_content_list.json").write_text(json.dumps([
+        {"type": "equation", "page_idx": 0, "text": "f'(x) = 2x", "bbox": [1, 2, 30, 40]},
+        {
+            "type": "image", "page_idx": 0, "img_path": "images/curve.png",
+            "image_caption": ["抛物线"], "bbox": [5, 45, 70, 90],
+        },
+        {"type": "text", "page_idx": 1, "text": "切线的斜率随横坐标变化。"},
+    ]), encoding="utf-8")
+
+    heading, illustrated, next_page = ocr_textbook.parse_ocr_textbook("备用正文", tmp_path, 32)
+
+    assert heading.text == "第一章 导数"
+    assert heading.meta["source_locations"] == [{"page": 15, "kind": "text"}]
+    assert illustrated.text == "f'(x) = 2x\n\n抛物线"
+    assert illustrated.meta["section"] == heading.text
+    equation, figure = illustrated.meta["source_locations"]
+    assert equation == {"page": 16, "kind": "equation", "bbox": [1, 2, 30, 40]}
+    asset_ref = figure["asset_ref"]
+    assert re.fullmatch(r"[0-9a-f]{24}", asset_ref)
+    assert figure == {
+        "page": 16, "kind": "image", "bbox": [5, 45, 70, 90], "asset_ref": asset_ref,
+    }
+    assert next_page.text == "切线的斜率随横坐标变化。"
+    assert next_page.meta["source_locations"] == [{"page": 17, "kind": "text"}]
+
+
+@pytest.fixture
+def scan_ingestion(monkeypatch):
+    def extract(token, file_path, result_dir, on_progress=None):
         with fitz.open(file_path) as pdf:
             identity = mineru._cache_identity(file_path, pdf.page_count)
-        mineru._publish_markdown(result_dir, "# OCR 结果\n\n导数的定义与求导法则。", identity)
-        return md.read_text(encoding="utf-8"), result_dir
+        mineru._publish_markdown(result_dir, _RAW_OCR_MARKDOWN, identity)
+        return _RAW_OCR_MARKDOWN, result_dir
 
-    def fake_simplify(markdown, source_name="教材", on_progress=None, *, api_key=None):
-        return ("# 《scan》知识点简化版\n\n## 第一章 函数与极限\n\n"
-                "### 第一节 映射与函数\n\n映射由定义域、目标集和对应法则确定。\n"), {}
+    ocr = Mock(side_effect=extract)
+    simplify = Mock(side_effect=AssertionError("扫描件入库不应调用知识点简化"))
+    monkeypatch.setattr(mineru, "extract_pdf", ocr)
+    monkeypatch.setattr(knowledge_simplify, "build_simplified_markdown", simplify)
+    monkeypatch.setattr(vectorstore, "add_chunks", Mock())
+    monkeypatch.setattr(vectorstore, "delete_document_chunks", Mock())
+    return ocr, simplify
 
-    monkeypatch.setattr(mineru, "extract_pdf", fake_extract)
-    monkeypatch.setattr(knowledge_simplify, "build_simplified_markdown", fake_simplify)
 
-    pdf = _make_pdf(False)
-    resp = client.post(
-        f"/api/banks/{bank['id']}/documents",
+def _upload_scan(client, headers, pdf, *, new_bank=False):
+    upload_url = "/api/banks/with-document"
+    if not new_bank:
+        bank_id = create_bank(client, headers)["id"]
+        upload_url = f"/api/banks/{bank_id}/documents"
+    response = client.post(
+        upload_url,
+        data={"name": "扫描件题库"} if new_bank else {},
         files={"file": ("scan.pdf", pdf, "application/pdf")},
-        headers=teacher,
+        headers=headers,
     )
-    assert resp.status_code == 202
-    doc_id = resp.json()["document_id"]
+    assert response.status_code == (201 if new_bank else 202), response.text
+    data = response.json()
+    if new_bank:
+        bank_id = data["bank"]["id"]
+        data = data["document"]
+    return bank_id, data["document_id"]
 
-    data = client.get(f"/api/banks/{bank['id']}/documents/{doc_id}", headers=teacher).json()
+
+def _assert_raw_ocr_indexed_as_pdf(client, headers, db, bank_id, document_id, pdf):
+    url = f"/api/banks/{bank_id}/documents/{document_id}"
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["status"] == "ready", data
     assert data["is_scanned"] is True
     assert data["ocr_status"] == "done"
-    assert data["status"] == "ready"
-    assert data["chunk_count"] > 0
     assert data["page_count"] == 1
+    assert data["format"] == "PDF"
+    assert data["name"] == "scan.pdf"
+    assert data["size_bytes"] == len(pdf)
+
+    chunks = db.query(DocumentChunk).filter_by(document_id=document_id).all()
+    assert data["chunk_count"] == len(chunks)
+    assert any(_RAW_OCR_TEXT in chunk.text for chunk in chunks)
+
+    downloaded = client.get(f"{url}/download", headers=headers)
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"] == "application/pdf"
+    assert downloaded.content == pdf
+
+
+@pytest.mark.parametrize("new_bank", [False, True], ids=["existing-bank", "first-document"])
+def test_scanned_pdf_indexes_raw_ocr(client, teacher, db, scan_ingestion, new_bank):
+    ocr, simplify = scan_ingestion
+    pdf = _make_pdf(False)
+    bank_id, document_id = _upload_scan(client, teacher, pdf, new_bank=new_bank)
+
+    ocr.assert_called_once()
+    simplify.assert_not_called()
+    _assert_raw_ocr_indexed_as_pdf(client, teacher, db, bank_id, document_id, pdf)
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["pdf", "legacy-simplified-markdown"])
+def test_scanned_pdf_reprocess_reuses_ocr_without_token(
+    client, teacher, db, monkeypatch, scan_ingestion, legacy,
+):
+    ocr, simplify = scan_ingestion
+    pdf = _make_pdf(False)
+    bank_id, document_id = _upload_scan(client, teacher, pdf)
+    ocr.assert_called_once()
+    cached_ocr = settings.ocr_path() / document_id / "full.md"
+    assert cached_ocr.read_text(encoding="utf-8") == _RAW_OCR_MARKDOWN
+
+    if legacy:
+        old_markdown = settings.upload_path() / bank_id / f"{document_id}_simplified.md"
+        old_markdown.write_text("# 旧知识点简化版", encoding="utf-8")
+        doc = db.get(Document, document_id)
+        doc.format = "MD"
+        doc.name = "scan_知识点简化版.md"
+        doc.storage_path = old_markdown.as_posix()
+        doc.size_bytes = old_markdown.stat().st_size
+        db.commit()
+
+    previous_ids = {chunk.id for chunk in db.query(DocumentChunk).filter_by(document_id=document_id)}
+    assert previous_ids
+    monkeypatch.setattr(local_secrets, "MINERU_DEFAULT_TOKEN", "")
+    url = f"/api/banks/{bank_id}/documents/{document_id}"
+    response = client.post(f"{url}/reprocess", headers=teacher)
+
+    assert response.status_code == 202, response.text
+    ocr.assert_called_once()
+    simplify.assert_not_called()
+    _assert_raw_ocr_indexed_as_pdf(client, teacher, db, bank_id, document_id, pdf)
+    rebuilt_ids = {chunk.id for chunk in db.query(DocumentChunk).filter_by(document_id=document_id)}
+    assert previous_ids.isdisjoint(rebuilt_ids)

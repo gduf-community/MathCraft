@@ -17,10 +17,10 @@ from app.deps import (
 from app.errors import AppError
 from app.models import Document
 from app.schemas.auth import ErrorResponse
-from app.schemas.bank import DocumentResponse, SearchBody
+from app.schemas.bank import DocumentResponse, SearchBody, SearchResponse
 from app.services import banks as bank_service
 from app.services import documents as doc_service
-from app.services.model_settings import get_effective_deepseek_key, get_effective_mineru_token
+from app.services.model_settings import get_effective_mineru_token
 from app.services.rag import embeddings, vectorstore
 from app.services.rag_runtime import with_snapshot
 
@@ -84,7 +84,6 @@ def upload_document(
         db, background, access.bank.id, access.member.user_id,
         file.filename or "", content,
         get_effective_mineru_token(db, access.member.user_id),
-        deepseek_api_key=get_effective_deepseek_key(db, access.member.user_id),
         actor=access.user,
     )
     return result
@@ -110,9 +109,8 @@ def reprocess_document(
     doc = _get_document(access.bank.id, document_id, db)
     doc_service.requeue_document(db, doc, actor=access.user)
     mineru_token = get_effective_mineru_token(db, access.member.user_id)
-    deepseek_api_key = get_effective_deepseek_key(db, access.member.user_id)
     background.add_task(
-        doc_service.run_ingestion, doc.id, mineru_token, deepseek_api_key=deepseek_api_key,
+        doc_service.run_ingestion, doc.id, mineru_token,
     )
     return {"document_id": doc.id, "status": doc.status, "stage": doc.stage, "progress": 0}
 
@@ -191,7 +189,7 @@ def delete_document(
     return None
 
 
-@router.post("/search", responses={
+@router.post("/search", response_model=SearchResponse, responses={
     503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
 })
 @with_snapshot
@@ -209,8 +207,7 @@ def search_bank(
 
 
 def _search_bank(body: SearchBody, access: BankAccess) -> dict:
-    from app.services.rag import fts, retrieval
-    from app.services.rag import embeddings
+    from app.services.rag import retrieval
 
     if body.mode in ("hybrid", "hybrid_rerank"):
         result = retrieval.hybrid_retrieve(
@@ -220,8 +217,8 @@ def _search_bank(body: SearchBody, access: BankAccess) -> dict:
             rerank_top_k=body.top_k if body.mode == "hybrid_rerank" else None,
             skip_rerank=body.mode == "hybrid",
         )
-        # 精简 dense 字段
-        result["dense"] = [{k: h[k] for k in ("chunk_id", "doc_name", "chunk_index", "distance")} | {"text": h["text"]} for h in result["dense"]]
+        dense_fields = ("chunk_id", "doc_name", "chunk_index", "distance", "text", "source_locations")
+        result["dense"] = [{key: hit[key] for key in dense_fields} for hit in result["dense"]]
         return result
 
     if body.mode == "dense":
@@ -231,6 +228,7 @@ def _search_bank(body: SearchBody, access: BankAccess) -> dict:
         )
         return {"mode": "dense", "results": hits}
 
-    # sparse
-    rows = fts.search(access.bank.id, body.query, top_k=body.top_k, document_id=body.document_id)
-    return {"mode": "sparse", "results": [{"chunk_id": c, "bm25": s} for c, s in rows]}
+    hits = retrieval.sparse_search(
+        access.bank.id, body.query, top_k=body.top_k, document_id=body.document_id,
+    )
+    return {"mode": "sparse", "results": hits}

@@ -26,7 +26,7 @@ from app.errors import AppError
 from app.main import app as fastapi_app
 from app.models import Bank, BankMember, Document, DocumentChunk, RagSetting, User
 from app.models.deletion import DeletionOperation
-from app.services import banks, cache, documents, knowledge_simplify, mineru, rag_settings
+from app.services import banks, cache, documents, mineru, rag_settings
 from app.services.rag import embeddings, vectorstore
 from app.services.rag.chunking import Chunk
 from app.services.rag_runtime import RuntimeConfig, RuntimeSnapshot, use_snapshot
@@ -257,14 +257,13 @@ def _upload_scan(client, teacher, bank_id):
 
 def _successful_ocr(monkeypatch):
     def extract(token, file_path, result_dir, on_progress=None):
-        result_dir.mkdir(parents=True, exist_ok=True)
-        (result_dir / "full.md").write_text("# 假 OCR\n\n导数的定义。", encoding="utf-8")
-        return "# 假 OCR\n\n导数的定义。", result_dir
+        markdown = "# 假 OCR\n\n导数的定义。"
+        with pymupdf.open(file_path) as pdf:
+            identity = mineru._cache_identity(file_path, pdf.page_count)
+        mineru._publish_markdown(result_dir, markdown, identity)
+        return markdown, result_dir
 
     monkeypatch.setattr(mineru, "extract_pdf", extract)
-    monkeypatch.setattr(knowledge_simplify, "build_simplified_markdown", lambda *a, **k: (
-        "# 《假教材》知识点简化版\n\n## 导数\n\n导数是差商的极限。", {},
-    ))
 
 
 @pytest.mark.parametrize("error_type", [mineru.MinerUError, RuntimeError])
@@ -350,27 +349,21 @@ def test_embedding_failure_keeps_completed_ocr(client, teacher, monkeypatch, doc
     assert "限流" in failed["error_message"]
 
 
-@pytest.mark.parametrize("failure", ["service", "content", "parser"])
 def test_post_ocr_failure_redacts_details_and_keeps_completed_ocr(
-    client, teacher, db, monkeypatch, document_store, isolated_redis, caplog, failure,
+    client, teacher, db, monkeypatch, document_store, isolated_redis, caplog,
 ):
-    """简化服务失败、内容回退及后续解析兜底不转存上游异常正文。"""
+    """OCR 完成后解析失败时，状态、缓存、日志和通知均隐藏异常正文。"""
     _successful_ocr(monkeypatch)
     private = f"Bearer {_FAKE_SECRET} {_FAKE_PRIVATE}?token=fake-token&signature=fake-signature"
 
-    def fail(*args, **kwargs):
-        if failure == "service":
-            raise knowledge_simplify.SimplifyServiceError(private)
+    def fail(*args):
         raise ValueError(private)
 
-    if failure == "parser":
-        monkeypatch.setattr(documents, "get_parser", lambda *args: SimpleNamespace(parse=fail))
-    else:
-        monkeypatch.setattr(knowledge_simplify, "build_simplified_markdown", fail)
+    monkeypatch.setattr(documents, "parse_ocr_textbook", fail)
     url = _upload_scan(client, teacher, create_bank(client, teacher)["id"])
     response = client.get(url, headers=teacher)
     result = response.json()
-    assert result["status"] == ("ready" if failure == "content" else "failed")
+    assert result["status"] == "failed"
     assert result["ocr_status"] == "done"
     doc = db.get(Document, result["id"])
     assert doc.ocr_error is None
@@ -381,13 +374,7 @@ def test_post_ocr_failure_redacts_details_and_keeps_completed_ocr(
     exposed = response.text + notices.text + json.dumps(cached) + caplog.text
     for secret in (_FAKE_SECRET, _FAKE_PRIVATE, "Bearer", "fake-token", "fake-signature"):
         assert secret not in exposed
-    if failure == "service":
-        assert "简化" in result["error_message"]
-        assert "重新解析" in result["error_message"]
-    elif failure == "parser":
-        assert "文件格式" in result["error_message"]
-    else:
-        assert result["error_message"] is None
+    assert "文件格式" in result["error_message"]
 
 
 def test_reprocess_clears_stale_database_and_cache_state(

@@ -26,7 +26,7 @@ from app.schemas.bank import (
 )
 from app.services import banks as bank_service
 from app.services import documents as doc_service
-from app.services.model_settings import get_effective_deepseek_key, get_effective_mineru_token
+from app.services.model_settings import get_effective_mineru_token
 from app.services.rag_settings import assert_mutations_allowed
 
 router = APIRouter(prefix="/api/banks", tags=["banks"])
@@ -92,7 +92,6 @@ def create_bank_with_document(
         db, background, bank.id, user.id,
         file.filename or "", content,
         get_effective_mineru_token(db, user.id),
-        deepseek_api_key=get_effective_deepseek_key(db, user.id),
     )
     return {"bank": bank_service.bank_payload(db, bank, user), "document": document}
 

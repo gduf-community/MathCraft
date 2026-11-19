@@ -12,31 +12,20 @@ from app.services.generation_cancellation import (
     run_checked,
 )
 from app.services.rag.llm import LLMError, chat_json, friendly_error
+from app.services.rag.material_budget import build_material
 from app.services.rag.memory import build_memory_system, build_short_term_history
-from app.services.rag.retrieval import retrieve_for_generation
 from app.services.rag.prompts import QA_SYSTEM
+from app.services.rag.retrieval import retrieve_for_generation
 
 ProgressCB = Callable[[int, str], None]
 
 _EMPTY_REPLY = "知识库里没有检索到与这个问题相关的内容。请确认文档已入库完成，或者换个说法再问一次。"
 
 
-def _context(chunks: list[dict]) -> str:
-    parts = []
-    for c in chunks:
-        section = c.get("section") or "未分节"
-        parts.append(f"【{c.get('doc_name') or '文档'} · {section}】\n{c.get('text', '')}")
-    return "\n\n".join(parts)
-
-
-def _coverage_hint(chunks: list[dict]) -> str:
-    """从召回 chunk 的章节信息汇总材料覆盖范围，供拒答降级提示使用。"""
-    seen: list[str] = []
-    for c in chunks:
-        label = f"{(c.get('doc_name') or '文档')} · {c.get('section') or '未分节'}"
-        if label not in seen:
-            seen.append(label)
-    return "、".join(seen[:5]) + ("等" if len(seen) > 5 else "")
+def _coverage_hint(labels: list[str]) -> str:
+    """从实际发送给模型的材料标签汇总拒答提示。"""
+    unique_labels = list(dict.fromkeys(labels))
+    return "、".join(unique_labels[:5]) + ("等" if len(unique_labels) > 5 else "")
 
 
 def answer_question(
@@ -61,7 +50,8 @@ def answer_question(
     chunks = run_checked(
         cancel_check, retrieve_for_generation, bank_id, message, document_id, hyde_text=None,
     )
-    if not chunks:
+    material, labels = build_material(chunks)
+    if not material:
         return _EMPTY_REPLY
     report(48, "正在组织答案")
     system = QA_SYSTEM + "\n\n" + build_memory_system(mode, doc_name)
@@ -70,7 +60,7 @@ def answer_question(
         role = h.get("role")
         if role in ("user", "assistant") and h.get("text"):
             messages.append({"role": role, "content": str(h["text"])})
-    messages.append({"role": "user", "content": f"【教学材料】\n{_context(chunks[:6])}\n\n【问题】{message}"})
+    messages.append({"role": "user", "content": f"【教学材料】\n{material}\n\n【问题】{message}"})
     try:
         data = run_checked(
             cancel_check, chat_json, messages, api_key=api_key, temperature=0.3,
@@ -84,7 +74,7 @@ def answer_question(
     coverage = str(data.get("coverage") or "").strip()
     if data.get("related") is not True or not answer:
         # 拒答降级：明确告知无法回答，并给出材料覆盖的知识范围
-        scope_hint = coverage or _coverage_hint(chunks)
+        scope_hint = coverage or _coverage_hint(labels)
         return (
             f"这个问题超出了文档「{doc_name}」材料的覆盖范围，我不能凭空作答。\n"
             f"当前材料主要涵盖：{scope_hint}。\n"

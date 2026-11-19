@@ -10,6 +10,8 @@
 
 个人 DeepSeek 连接测试与出题任务进度仅返回固定脱敏错误提示。个人模型设置的 `mineru_using_default` 仅在未配置个人 Token 且服务端默认 Token 存在时为真，不代表凭据已通过鉴权；两者均缺失时连接测试返回 `400 MINERU_TOKEN_MISSING`，不发起外部请求。检索仅发布 ready 文档；`hybrid` 只融合向量与稀疏结果，`hybrid_rerank` 另行调用重排。修复与验收记录见[设置设计](design/设置拆分与保存反馈设计.md#模型配置与检索审查修复2026-11-14)。
 
+`POST /api/banks/{bank_id}/search` 的各模式均在每条命中返回 `source_locations`。存在 OCR 来源时，字段包含位置数组，每项含从 1 开始的 `page` 和 `kind`，并可包含数字数组 `bbox` 和资产标识 `asset_ref`。没有来源时返回 `null`。
+
 删除资料或题库时，SQLite 写锁有限重试耗尽返回 `503 DATABASE_BUSY`；向量存储故障返回 `503 VECTOR_STORE_UNAVAILABLE`。登记持久删除意图后资源进入 `deleting`，登记意图后的向量故障仍可能返回 `503 VECTOR_STORE_UNAVAILABLE`；文件等后续清理未完成返回 `503 DELETION_PENDING`。两者均保留恢复记录，可重试并在启动时恢复；完整清理才返回 204。失败状态或零切片计数不能作为跳过向量清理的依据。试卷关闭、历史作答保留、任务持久化与删除边界见[数据一致性与故障恢复设计](design/数据一致性与故障恢复设计.md)。
 
 单 worker 启动恢复将未完成的持久任务及运行中的会话标为 `interrupted`，同一事务将对应仍为 `accepted`/`running` 的台账标为 `unknown`，错误码为 `EXECUTION_INTERRUPTED`；无持久任务或会话关联的历史台账不被扫描。

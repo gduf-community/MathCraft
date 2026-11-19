@@ -8,6 +8,7 @@ from sqlalchemy import text as sql_text
 
 from app.config import settings
 from app.db import SessionLocal
+from app.models import DocumentChunk
 from app.services.rag_runtime import with_snapshot
 from app.services.rag import embeddings, fts, rerank, vectorstore
 
@@ -51,12 +52,12 @@ def _fetch_chunks(
             rows = db.execute(
                 sql_text(
                     "SELECT c.id, c.text, c.chunk_type, c.section, c.document_id, "
-                    "d.name AS doc_name "
+                    "d.name AS doc_name, c.source_locations "
                     "FROM document_chunks c JOIN documents d ON d.id = c.document_id "
                     "AND d.bank_id = c.bank_id "
                     f"WHERE c.id IN ({placeholders}) AND c.bank_id = :bank_id "
                     "AND d.status = 'ready'" + scope
-                ),
+                ).columns(source_locations=DocumentChunk.__table__.c.source_locations.type),
                 params,
             ).fetchall()
             chunks.update({
@@ -67,6 +68,7 @@ def _fetch_chunks(
                     "section": r[3] or "",
                     "document_id": r[4],
                     "doc_name": r[5] or "",
+                    "source_locations": r.source_locations,
                 }
                 for r in rows
             })
@@ -88,10 +90,30 @@ def dense_search(
             bank_id, query_embedding, top_k=candidate_k, doc_id=document_id,
         )
         visible = _fetch_chunks([hit["chunk_id"] for hit in candidates], bank_id, document_id)
-        hits = [hit for hit in candidates if hit["chunk_id"] in visible]
+        hits = [
+            {**hit, "source_locations": visible[hit["chunk_id"]]["source_locations"]}
+            for hit in candidates
+            if hit["chunk_id"] in visible
+        ]
         if len(hits) >= top_k or len(candidates) < candidate_k:
             return hits[:top_k]
         candidate_k *= 2
+
+
+def sparse_search(
+    bank_id: str, query: str, top_k: int, document_id: str | None = None,
+) -> list[dict]:
+    """返回稀疏命中的得分和来源位置，并复核切片发布状态。"""
+    rows = fts.search(bank_id, query, top_k=top_k, document_id=document_id)
+    chunks = _fetch_chunks([chunk_id for chunk_id, _ in rows], bank_id, document_id)
+    return [
+        {
+            "chunk_id": chunk_id, "bm25": score,
+            "source_locations": chunks[chunk_id]["source_locations"],
+        }
+        for chunk_id, score in rows
+        if chunk_id in chunks
+    ]
 
 
 @with_snapshot
@@ -134,7 +156,11 @@ def hybrid_retrieve(
         [hit["chunk_id"] for hit in dense_hits] + [cid for cid, _ in sparse_hits],
         bank_id, document_id,
     )
-    dense_hits = [hit for hit in dense_hits if hit["chunk_id"] in chunk_map]
+    dense_hits = [
+        {**hit, "source_locations": chunk_map[hit["chunk_id"]]["source_locations"]}
+        for hit in dense_hits
+        if hit["chunk_id"] in chunk_map
+    ]
     sparse_hits = [(cid, score) for cid, score in sparse_hits if cid in chunk_map]
     fused = _rrf_fuse(dense_hits, sparse_hits)[:fused_k]
 

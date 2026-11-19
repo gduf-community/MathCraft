@@ -3731,7 +3731,20 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DenseSearchResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SparseSearchResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HybridSearchResponse"
+                    }
+                  ],
+                  "title": "Response Search Bank Api Banks  Bank Id  Search Post"
+                }
               }
             }
           },
@@ -8808,6 +8821,43 @@
         "title": "ChatSessionDetailResponse",
         "description": "恢复会话时同时恢复服务端模式，避免发送时隐式切换。"
       },
+      "ChunkSourceLocation": {
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "bbox": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Bbox"
+          },
+          "asset_ref": {
+            "type": "string",
+            "title": "Asset Ref"
+          }
+        },
+        "type": "object",
+        "required": [
+          "page",
+          "kind"
+        ],
+        "title": "ChunkSourceLocation",
+        "description": "OCR 切片在源文档中的位置。"
+      },
       "CurrentPasswordBody": {
         "properties": {
           "current_password": {
@@ -8837,6 +8887,100 @@
         ],
         "title": "CurrentUserResult",
         "description": "当前登录用户，保持既有 user 外层对象。"
+      },
+      "DenseSearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_locations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChunkSourceLocation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Locations"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "doc_name": {
+            "type": "string",
+            "title": "Doc Name"
+          },
+          "chunk_index": {
+            "type": "integer",
+            "title": "Chunk Index"
+          },
+          "distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "chunk_type": {
+            "type": "string",
+            "title": "Chunk Type"
+          },
+          "section": {
+            "type": "string",
+            "title": "Section"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_locations",
+          "text",
+          "doc_name",
+          "chunk_index",
+          "distance",
+          "doc_id",
+          "chunk_type",
+          "section"
+        ],
+        "title": "DenseSearchHit",
+        "description": "独立向量检索中的命中。"
+      },
+      "DenseSearchResponse": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "dense",
+            "title": "Mode"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/DenseSearchHit"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "results"
+        ],
+        "title": "DenseSearchResponse",
+        "description": "独立向量检索响应。"
       },
       "Difficulty": {
         "type": "string",
@@ -9309,6 +9453,65 @@
         ],
         "title": "FavoriteMoveBody"
       },
+      "FusedSearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_locations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChunkSourceLocation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Locations"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "chunk_type": {
+            "type": "string",
+            "title": "Chunk Type"
+          },
+          "section": {
+            "type": "string",
+            "title": "Section"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "doc_name": {
+            "type": "string",
+            "title": "Doc Name"
+          },
+          "rrf": {
+            "type": "number",
+            "title": "Rrf"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_locations",
+          "text",
+          "chunk_type",
+          "section",
+          "document_id",
+          "doc_name",
+          "rrf"
+        ],
+        "title": "FusedSearchHit",
+        "description": "融合后的切片命中。"
+      },
       "GenerateCancellationResponse": {
         "properties": {
           "status": {
@@ -9689,6 +9892,174 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HybridDenseSearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_locations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChunkSourceLocation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Locations"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "doc_name": {
+            "type": "string",
+            "title": "Doc Name"
+          },
+          "chunk_index": {
+            "type": "integer",
+            "title": "Chunk Index"
+          },
+          "distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_locations",
+          "text",
+          "doc_name",
+          "chunk_index",
+          "distance"
+        ],
+        "title": "HybridDenseSearchHit",
+        "description": "混合检索中的向量命中。"
+      },
+      "HybridSearchResponse": {
+        "properties": {
+          "hyde": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hyde"
+          },
+          "dense": {
+            "items": {
+              "$ref": "#/components/schemas/HybridDenseSearchHit"
+            },
+            "type": "array",
+            "title": "Dense"
+          },
+          "sparse": {
+            "items": {
+              "$ref": "#/components/schemas/HybridSparseSearchHit"
+            },
+            "type": "array",
+            "title": "Sparse"
+          },
+          "fused": {
+            "items": {
+              "$ref": "#/components/schemas/FusedSearchHit"
+            },
+            "type": "array",
+            "title": "Fused"
+          },
+          "reranked": {
+            "items": {
+              "$ref": "#/components/schemas/RerankedSearchHit"
+            },
+            "type": "array",
+            "title": "Reranked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hyde",
+          "dense",
+          "sparse",
+          "fused",
+          "reranked"
+        ],
+        "title": "HybridSearchResponse",
+        "description": "混合检索和混合重排响应。"
+      },
+      "HybridSparseSearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_locations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChunkSourceLocation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Locations"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "chunk_type": {
+            "type": "string",
+            "title": "Chunk Type"
+          },
+          "section": {
+            "type": "string",
+            "title": "Section"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "doc_name": {
+            "type": "string",
+            "title": "Doc Name"
+          },
+          "bm25": {
+            "type": "number",
+            "title": "Bm25"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_locations",
+          "text",
+          "chunk_type",
+          "section",
+          "document_id",
+          "doc_name",
+          "bm25"
+        ],
+        "title": "HybridSparseSearchHit",
+        "description": "混合检索中的稀疏命中。"
       },
       "LlmSettingsBody": {
         "properties": {
@@ -11443,6 +11814,64 @@
         ],
         "title": "RebuildStatus"
       },
+      "RerankedSearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_locations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChunkSourceLocation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Locations"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "chunk_type": {
+            "type": "string",
+            "title": "Chunk Type"
+          },
+          "section": {
+            "type": "string",
+            "title": "Section"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "doc_name": {
+            "type": "string",
+            "title": "Doc Name"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_locations",
+          "text",
+          "chunk_type",
+          "section",
+          "document_id",
+          "doc_name"
+        ],
+        "title": "RerankedSearchHit",
+        "description": "重排后的切片命中，重排降级时省略得分。"
+      },
       "ResetPasswordBody": {
         "properties": {
           "new_password": {
@@ -11742,6 +12171,63 @@
           "name"
         ],
         "title": "SpaceUpdateBody"
+      },
+      "SparseSearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_locations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChunkSourceLocation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Locations"
+          },
+          "bm25": {
+            "type": "number",
+            "title": "Bm25"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_locations",
+          "bm25"
+        ],
+        "title": "SparseSearchHit",
+        "description": "独立稀疏检索中的命中。"
+      },
+      "SparseSearchResponse": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "sparse",
+            "title": "Mode"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SparseSearchHit"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "results"
+        ],
+        "title": "SparseSearchResponse",
+        "description": "独立稀疏检索响应。"
       },
       "TransferBody": {
         "properties": {

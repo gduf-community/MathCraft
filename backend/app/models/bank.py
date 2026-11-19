@@ -2,8 +2,9 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
+from typing_extensions import NotRequired, TypedDict
 
 from app.db import Base
 from app.models.base import StrPK, TimestampMixin, new_id, utcnow
@@ -64,6 +65,15 @@ class Document(Base, TimestampMixin):
     uploader_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), nullable=False)
 
 
+class ChunkSourceLocation(TypedDict):
+    """OCR 切片在源文档中的位置。"""
+
+    page: int
+    kind: str
+    bbox: NotRequired[list[int | float]]
+    asset_ref: NotRequired[str]
+
+
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
     __table_args__ = (
@@ -80,6 +90,9 @@ class DocumentChunk(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     tokens: Mapped[str] = mapped_column(Text, nullable=False)          # jieba 分词结果，空格连接
     char_count: Mapped[int] = mapped_column(nullable=False)
+    source_locations: Mapped[list[ChunkSourceLocation] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

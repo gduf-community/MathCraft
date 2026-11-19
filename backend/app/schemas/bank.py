@@ -3,6 +3,9 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from typing_extensions import NotRequired, TypedDict
+
+from app.models.bank import ChunkSourceLocation
 
 
 class BankCreatorResponse(BaseModel):
@@ -91,6 +94,91 @@ class SearchBody(BaseModel):
         pattern="^(dense|sparse|hybrid|hybrid_rerank)$",
         description="仅检索 ready 文档；hybrid 融合向量与稀疏结果，hybrid_rerank 额外调用重排",
     )
+
+
+class SourceSearchHit(TypedDict):
+    """已发布切片的标识和 OCR 来源。"""
+
+    chunk_id: str
+    source_locations: list[ChunkSourceLocation] | None
+
+
+class HybridDenseSearchHit(SourceSearchHit):
+    """混合检索中的向量命中。"""
+
+    text: str
+    doc_name: str
+    chunk_index: int
+    distance: float | None
+
+
+class DenseSearchHit(HybridDenseSearchHit):
+    """独立向量检索中的命中。"""
+
+    doc_id: str
+    chunk_type: str
+    section: str
+
+
+class SparseSearchHit(SourceSearchHit):
+    """独立稀疏检索中的命中。"""
+
+    bm25: float
+
+
+class ChunkSearchHit(SourceSearchHit):
+    """含 SQL 切片正文和文档信息的混合检索命中。"""
+
+    text: str
+    chunk_type: str
+    section: str
+    document_id: str
+    doc_name: str
+
+
+class HybridSparseSearchHit(ChunkSearchHit):
+    """混合检索中的稀疏命中。"""
+
+    bm25: float
+
+
+class FusedSearchHit(ChunkSearchHit):
+    """融合后的切片命中。"""
+
+    rrf: float
+
+
+class RerankedSearchHit(ChunkSearchHit):
+    """重排后的切片命中，重排降级时省略得分。"""
+
+    score: NotRequired[float]
+
+
+class DenseSearchResponse(TypedDict):
+    """独立向量检索响应。"""
+
+    mode: Literal["dense"]
+    results: list[DenseSearchHit]
+
+
+class SparseSearchResponse(TypedDict):
+    """独立稀疏检索响应。"""
+
+    mode: Literal["sparse"]
+    results: list[SparseSearchHit]
+
+
+class HybridSearchResponse(TypedDict):
+    """混合检索和混合重排响应。"""
+
+    hyde: str | None
+    dense: list[HybridDenseSearchHit]
+    sparse: list[HybridSparseSearchHit]
+    fused: list[FusedSearchHit]
+    reranked: list[RerankedSearchHit]
+
+
+SearchResponse = DenseSearchResponse | SparseSearchResponse | HybridSearchResponse
 
 
 class DocumentRenameBody(BaseModel):

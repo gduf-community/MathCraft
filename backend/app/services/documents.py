@@ -3,7 +3,6 @@
 状态机：uploaded → parsing → ocr → chunking → embedding → ready / failed
 进度同时写 Redis（ingest:task:{document_id}）与 documents 行，前端轮询文档详情接口。
 """
-import hashlib
 import logging
 import math
 import time
@@ -22,13 +21,13 @@ from app.errors import AppError
 from app.models import Document, DocumentChunk, User
 from app.models.base import new_id
 from app.services import cache, mineru
-from app.services import knowledge_simplify
 from app.services.rag_settings import assert_mutations_allowed
 from app.services.rag_runtime import current_snapshot, with_snapshot
 from app.services.notifications import notify_bank_ingest_done
 from app.services.parsing.base import ParsedBlock, get_parser
 from app.services.rag import embeddings, fts, vectorstore
-from app.services.rag.chunking import chunk_blocks
+from app.services.parsing.ocr_textbook import parse_ocr_textbook
+from app.services.rag.chunking import Chunk, chunk_blocks
 from app.services.rag.tokenizer import tokenize
 
 logger = logging.getLogger("app.documents")
@@ -54,8 +53,7 @@ def estimate_eta_minutes(filename: str, content: bytes) -> int:
 
             with pymupdf.open(stream=content, filetype="pdf") as doc:
                 pages = doc.page_count
-            # 扫描件走 OCR 后还要按章做 LLM 概括：OCR 约 40 页/分钟，概括约 3 分钟起
-            return max(2, math.ceil(pages / 40) + 3)
+            return max(2, math.ceil(pages / 40))
         except Exception:
             return max(1, math.ceil(size_mb / 2))
     return max(1, math.ceil(size_mb / 4))
@@ -88,7 +86,6 @@ def queue_upload(
     content: bytes,
     mineru_token: str | None,
     *,
-    deepseek_api_key: str | None = None,
     actor: User | None = None,
 ) -> dict:
     """门禁内重新授权后保存文件与文档；失败回滚并移除未登记原件。"""
@@ -137,7 +134,7 @@ def queue_upload(
         store_path.unlink(missing_ok=True)
         raise
 
-    background.add_task(run_ingestion, doc_id, mineru_token, deepseek_api_key=deepseek_api_key)
+    background.add_task(run_ingestion, doc_id, mineru_token)
     return {
         "document_id": doc_id,
         "name": doc.name,
@@ -264,7 +261,7 @@ def requeue_document(db: Session, doc: Document, *, actor: User | None = None) -
 
 @with_snapshot
 def run_ingestion(
-    document_id: str, mineru_token: str | None = None, *, deepseek_api_key: str | None = None,
+    document_id: str, mineru_token: str | None = None,
 ) -> None:
     """使用操作者提交时的有效凭据入库；未提供个人凭据时使用服务端默认。"""
     t0 = time.monotonic()
@@ -298,32 +295,22 @@ def run_ingestion(
             if is_scanned:
                 # ---------- 2. 扫描件：MinerU OCR ----------
                 _set_stage(db, doc, "ocr", f"MinerU 正在识别（共 {page_count} 页）", 20, ocr_status="running")
-                token = mineru_token or local_secrets.MINERU_DEFAULT_TOKEN
-                if not token:
-                    _fail(db, doc, "未配置 MinerU Token，无法解析扫描版 PDF", ocr_error="token missing")
-                    return
-                # ---------- 2. OCR（已有缓存结果直接复用，避免重复消耗 MinerU 额度） ----------
                 result_dir = settings.ocr_path() / doc_id
-                cached = mineru.read_cached_markdown(file_path, result_dir)
-                if cached is not None:
-                    markdown = cached
-                    doc.ocr_result_path = str(result_dir)
-                    doc.ocr_task_id = "local"
-                    _set_stage(db, doc, "chunking", "复用已有 OCR 结果，正在生成简化知识点文档", 45, ocr_status="done", text_source="ocr")
-                else:
+                markdown = mineru.read_cached_markdown(file_path, result_dir)
+                if markdown is None:
+                    token = mineru_token or local_secrets.MINERU_DEFAULT_TOKEN
+                    if not token:
+                        _fail(db, doc, "未配置 MinerU Token，无法解析扫描版 PDF",
+                              ocr_error="token missing")
+                        return
+
                     def _ocr_progress(done: int, total: int) -> None:
-                        """分片识别进度：首片 15 页提目录，其余分片批量识别。"""
                         pct = 20 + int(25 * done / max(1, total))
                         _set_stage(db, doc, "ocr",
                                    f"MinerU 正在识别（{done}/{total} 片，共 {page_count} 页）", pct)
 
                     try:
                         markdown, _ = mineru.extract_pdf(token, file_path, result_dir, _ocr_progress)
-                        doc.ocr_result_path = str(result_dir)
-                        doc.ocr_task_id = "local"
-                        logger.info("[ingest:%s] OCR 完成 用时 %s，正文 %d 字",
-                                    doc.id, _elapsed(), len(markdown))
-                        _set_stage(db, doc, "chunking", "OCR 完成，正在生成简化知识点文档", 45, ocr_status="done", text_source="ocr")
                     except mineru.MinerUError as exc:
                         code, message = _ocr_failure(exc)
                         logger.warning("Ingestion failure document=%s type=%s code=%s detail=%s",
@@ -331,75 +318,10 @@ def run_ingestion(
                         _fail(db, doc, message, ocr_error=message)
                         return
 
-                # ---------- 2.5 简化层：OCR 全文 → 目录 → 按节定位 → 按章概括 → 简化 MD ----------
-                # 题库的入库、检索、向量化对象统一为简化版知识点文档，PDF 原件仅留作重新解析源
-                llm_usage: dict = {}
-                simplified_path = settings.upload_path() / doc.bank_id / f"{doc.id}_simplified.md"
-                manifest_name = simplified_path.with_suffix(".manifest.json").name
-                identity: dict[str, object] = {
-                    "version": 1, "kind": "knowledge_simplified",
-                    "ocr_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
-                }
-                simplified = ""
-                simplified_ok = True
-                # 重新解析时复用已生成的简化文档，避免重复消耗 LLM 额度（回退原文的产物不复用）
-                cached_simplified = mineru._read_cached_markdown(
-                    simplified_path.parent, identity, manifest_name=manifest_name,
-                )
-                if cached_simplified is not None:
-                    simplified = cached_simplified[0]
-                    _set_stage(db, doc, "chunking", "复用已生成的简化知识点文档，正在切片", 56)
-                    logger.info("[ingest:%s] 复用简化文档 %d 字", doc.id, len(simplified))
-                try:
-                    if simplified:
-                        pass
-                    else:
-                        def _simplify_progress(done: int, total: int) -> None:
-                            """按章概括进度：目录已解析，逐章生成知识点。"""
-                            _set_stage(db, doc, "chunking",
-                                       f"正在概括知识点（{done}/{total} 章）", 45 + int(10 * done / max(1, total)))
-
-                        simplified, llm_usage = knowledge_simplify.build_simplified_markdown(
-                            markdown, doc.name, _simplify_progress, api_key=deepseek_api_key,
-                        )
-                        logger.info("[ingest:%s] 简化层 token 用量: %s", doc.id, llm_usage)
-                except knowledge_simplify.SimplifyServiceError as exc:
-                    # LLM 服务不可用（余额不足/鉴权失败/超时）：明确失败并通知，处理后可重新解析
-                    logger.warning("Ingestion failure type=%s code=SIMPLIFY_SERVICE_UNAVAILABLE",
-                                   type(exc).__name__)
-                    _fail(db, doc, "简化知识点文档生成失败，请检查模型服务凭据、额度与连接后重新解析")
-                    return
-                except Exception as exc:
-                    # 内容类失败（如无法定位目录结构）：回退原文入库，保证文档可用
-                    logger.warning("Ingestion failure type=%s code=SIMPLIFY_CONTENT_FALLBACK",
-                                   type(exc).__name__)
-                    _set_stage(db, doc, "chunking", "简化生成失败，改用 OCR 原文入库", 46)
-                    simplified = markdown
-                    simplified_ok = False
-
-                logger.info("[ingest:%s] 简化文档生成完成 用时 %s", doc.id, _elapsed())
-                # 发布失败按入库失败处理；不能当成内容失败回退并覆盖旧的完整产物。
-                mineru._publish_markdown(
-                    simplified_path.parent, simplified,
-                    identity if simplified_ok else {**identity, "kind": "ocr_fallback"},
-                    relative=Path(simplified_path.name), manifest_name=manifest_name,
-                )
-                if simplified_ok:
-                    # 幂等：重复解析时避免后缀叠加
-                    base_name = Path(doc.name).stem.replace("_知识点简化版", "")
-                    doc.name = f"{base_name}_知识点简化版.md"
-                    doc.format = "MD"
-                    doc.size_bytes = simplified_path.stat().st_size
-                    try:
-                        doc.storage_path = simplified_path.relative_to(BASE_DIR).as_posix()
-                    except ValueError:
-                        doc.storage_path = simplified_path.as_posix()
-                    db.commit()
-                # 简化失败时保留原件条目（名称、格式、下载仍是 PDF），仅索引使用 OCR 文本
-                _set_stage(db, doc, "chunking", "简化知识点文档生成完成，正在切片", 56, ocr_status="done", text_source="ocr")
-
-                # OCR 结果是 Markdown，按标题切块
-                blocks = get_parser(simplified_path).parse(simplified_path)
+                _set_stage(db, doc, "chunking", "正在整理 OCR 原文", 45,
+                           ocr_status="done", text_source="ocr", ocr_task_id="local",
+                           ocr_result_path=str(result_dir))
+                blocks = parse_ocr_textbook(markdown, result_dir, page_count)
             else:
                 doc.ocr_status = "not_needed"
                 blocks = get_parser(file_path).parse(file_path)
@@ -414,7 +336,10 @@ def run_ingestion(
             return
 
         # ---------- 3. 切片 + 分词 + 写 SQLite/FTS5 ----------
-        chunks = chunk_blocks(blocks)
+        if doc.is_scanned and doc.format == "PDF":
+            chunks = [Chunk(block.text, block.meta) for block in blocks]
+        else:
+            chunks = chunk_blocks(blocks)
         if not chunks:
             _fail(db, doc, "切片结果为空")
             return
@@ -435,6 +360,7 @@ def run_ingestion(
                     text=c.text,
                     tokens=tokens,
                     char_count=len(c.text),
+                    source_locations=c.meta.get("source_locations"),
                 )
             )
             fts_rows.append({"chunk_id": chunk_id, "bank_id": bank_id, "document_id": doc_id, "tokens": tokens})

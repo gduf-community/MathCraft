@@ -1,11 +1,15 @@
 """资料删除、题目写入及派生 OCR 文件的真实故障恢复回归。"""
 import asyncio
+import os
 from pathlib import Path
 from threading import Event
 
 import httpx
+import pymupdf
 import pytest
 
+from app import local_secrets
+from app.config import settings
 from app.db import SessionLocal
 from app.models import DeletionOperation, Document, GenerationTask, Question, User
 from app.services import banks, documents, mineru
@@ -138,84 +142,73 @@ def test_question_update_rechecks_after_another_session_starts_delete(
     assert db.get(Question, question_id).stem == "测试题目 1"
 
 
-@pytest.fixture()
-def scanned_material(client, teacher, db, material, monkeypatch):
-    bank_id, doc_id, path = material
+def test_ocr_publish_failure_preserves_previous_complete_file(
+    db, material, monkeypatch,
+):
+    _, doc_id, path = material
     source = path.with_suffix(".pdf")
-    source.write_bytes(b"fake-pdf-no-parser-required")
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        pdf.save(source)
     doc = db.get(Document, doc_id)
-    doc.name, doc.format, doc.storage_path = "textbook.pdf", "PDF", source.as_posix()
+    doc.name = source.name
+    doc.format = "PDF"
+    doc.storage_path = source.as_posix()
     db.commit()
-    monkeypatch.setattr(mineru, "detect_scanned_pdf", lambda path: (True, 1))
-    monkeypatch.setattr(mineru, "read_cached_markdown", lambda *args: "# complete OCR input")
+
+    result_dir = settings.ocr_path() / doc_id
+    previous = "# 旧版 OCR\n\n旧版教材正文。"
+    replacement = "# 新版 OCR\n\n新版教材正文。"
+    original_pdf = source.read_bytes()
+    with pymupdf.open(source) as pdf:
+        identity = mineru._cache_identity(source, pdf.page_count)
+    mineru._publish_markdown(result_dir, previous, identity)
+    manifest = result_dir / "full.manifest.json"
+    previous_manifest = manifest.read_bytes()
+
+    # 源文件变化后，旧缓存对当前源失效，触发新的 OCR 发布。
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        pdf.new_page()
+        pdf.save(source)
+
+    def extract(token, file_path, target_dir, on_progress=None):
+        with pymupdf.open(file_path) as pdf:
+            identity = mineru._cache_identity(file_path, pdf.page_count)
+        mineru._publish_markdown(target_dir, replacement, identity)
+        return replacement, target_dir
+
+    monkeypatch.setattr(mineru, "extract_pdf", extract)
     monkeypatch.setattr(documents.vectorstore, "add_chunks", lambda *args, **kwargs: None)
-    monkeypatch.setattr(documents, "notify_bank_ingest_done", lambda *args, **kwargs: None)
-    return bank_id, doc_id, source
-
-
-@pytest.mark.parametrize("damage", ["unmarked", "truncated", "same-length", "source", "none"])
-def test_ingestion_does_not_reuse_incomplete_simplified_file(
-    db, scanned_material, monkeypatch, damage,
-):
-    bank_id, doc_id, source = scanned_material
-    from app.config import settings
-
-    destination = settings.upload_path() / bank_id / f"{doc_id}_simplified.md"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    complete = "# 《教材》知识点简化版\n\n## 完整章节\n\n完整数学讲解。\n"
-    calls = []
-
-    def build(*args, **kwargs):
-        calls.append(True)
-        return complete, {}
-
-    monkeypatch.setattr(documents.knowledge_simplify, "build_simplified_markdown", build)
-    documents.run_ingestion(doc_id)
-    if damage == "unmarked":
-        for manifest in destination.parent.glob("*.manifest.json"):
-            manifest.unlink()
-    elif damage == "truncated":
-        destination.write_text("# 《教材》知识点简化版\n", encoding="utf-8")
-    elif damage == "same-length":
-        data = destination.read_bytes()
-        destination.write_bytes(data[:-4] + b"xxxx")
-    elif damage == "source":
-        monkeypatch.setattr(mineru, "read_cached_markdown", lambda *args: "# changed OCR input")
-    with SessionLocal() as session:
-        doc = session.get(Document, doc_id)
-        doc.format, doc.name = "PDF", "textbook.pdf"
-        doc.storage_path = source.as_posix()
-        session.commit()
-    documents.run_ingestion(doc_id)
-    assert len(calls) == (1 if damage == "none" else 2)
-    assert destination.read_text(encoding="utf-8") == complete
-
-
-def test_simplified_publish_failure_preserves_previous_complete_file(
-    db, scanned_material, monkeypatch,
-):
-    import os
-    from app.config import settings
-
-    bank_id, doc_id, _ = scanned_material
-    destination = settings.upload_path() / bank_id / f"{doc_id}_simplified.md"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text("previous complete download", encoding="utf-8")
-    monkeypatch.setattr(documents.knowledge_simplify, "build_simplified_markdown",
-                        lambda *args, **kwargs: ("# 《教材》知识点简化版\n完整正文", {}))
-    original = os.replace
+    destination = result_dir / "full.md"
+    original_replace = os.replace
 
     def fail_replace(source, target):
         if Path(target) == destination:
             raise OSError("injected replacement failure")
-        original(source, target)
+        original_replace(source, target)
 
-    monkeypatch.setattr(os, "replace", fail_replace)
-    documents.run_ingestion(doc_id)
-    assert destination.read_text(encoding="utf-8") == "previous complete download"
-    assert not list(destination.parent.glob("*.tmp"))
-    db.expire_all()
-    assert db.get(Document, doc_id).status == "failed"
+    token = local_secrets.MINERU_DEFAULT_TOKEN
+    with monkeypatch.context() as fault:
+        fault.setattr(os, "replace", fail_replace)
+        documents.run_ingestion(doc_id, token)
+
+    db.refresh(doc)
+    assert doc.status == "failed"
+    assert doc.ocr_status == "failed"
+    assert destination.read_text(encoding="utf-8") == previous
+    assert manifest.read_bytes() == previous_manifest
+    assert not list(result_dir.glob("*.tmp"))
+    assert mineru.read_cached_markdown(source, result_dir) is None
+    original_source = source.with_name("previous.pdf")
+    original_source.write_bytes(original_pdf)
+    assert mineru.read_cached_markdown(original_source, result_dir) == previous
+
+    documents.run_ingestion(doc_id, token)
+    db.refresh(doc)
+    assert doc.status == "ready"
+    assert doc.ocr_status == "done"
+    assert mineru.read_cached_markdown(source, result_dir) == replacement
 
 
 @pytest.mark.asyncio

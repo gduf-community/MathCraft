@@ -27,6 +27,7 @@ from app.services.generation_cancellation import (
 )
 from app.services.rag import retrieval, vectorstore
 from app.services.rag import llm
+from app.services.rag.material_budget import PLANNING_MATERIAL_CHAR_LIMIT, build_material
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 ProgressCB = Callable[[int, str], None]
@@ -263,15 +264,6 @@ def _norm_stem(s: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
-def _build_context(hits: list[dict]) -> str:
-    parts = []
-    for i, h in enumerate(hits, 1):
-        label = h.get("section") or h.get("chunk_type") or ""
-        prefix = f" · {label}" if label else ""
-        parts.append(f"[片段{i}{prefix}]\n{h['text']}")
-    return "\n\n".join(parts)
-
-
 def _split_counts(total: int, size: int) -> list[int]:
     """把总题数拆成不超过 size 的小批。"""
     out: list[int] = []
@@ -325,8 +317,9 @@ def _gen_batch(
             "\n- 以下题目已经出过，新题不得与它们重复（考点组合与题干结构都要避开）：\n"
             + "\n".join(f"  {i}. {s[:100]}" for i, s in enumerate(avoid_snapshot, 1))
         )
+    context, _ = build_material(hits)
     user_prompt = QUESTION_USER_TEMPLATE.format(
-        context=_build_context(hits),
+        context=context,
         type_label=type_label,
         count=count,
         difficulty=params.difficulty.value,
@@ -434,7 +427,7 @@ def _plan_points(
     check_cancellation(cancel_check)
     if count < 2:
         return []
-    context = _build_context(hits)[:1500]
+    context, _ = build_material(hits, limit=PLANNING_MATERIAL_CHAR_LIMIT)
     prompt = PLAN_PROMPT.format(
         count=count, difficulty=difficulty, type_label=type_label,
         scope=scope or "未限定", context=context,

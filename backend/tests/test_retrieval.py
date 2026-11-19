@@ -31,9 +31,15 @@ def test_ingestion_only_publishes_ready_chunks(
     """SQL/FTS 已提交时仍隐藏 processing/failed 切片，ready 对照始终可见。"""
     bank_id = create_bank(client, teacher)["id"]
     ready_id = upload_markdown(client, teacher, bank_id, "ready.md")["document_id"]
-    ready_chunks = {
-        row.id for row in db.query(DocumentChunk).filter_by(document_id=ready_id).all()
-    }
+    ready_rows = db.query(DocumentChunk).filter_by(document_id=ready_id).all()
+    ready_chunks = {row.id for row in ready_rows}
+    source_locations = [
+        {"page": 3, "kind": "text"},
+        {"page": 3, "kind": "image", "bbox": [10, 20.5, 30, 40], "asset_ref": "test-image"},
+    ]
+    for row in ready_rows:
+        row.source_locations = source_locations
+    db.commit()
     observations = []
 
     def search(document_id=None):
@@ -46,6 +52,10 @@ def test_ingestion_only_publishes_ready_chunks(
         groups = ("results",) if mode in ("dense", "sparse") else (
             "dense", "sparse", "fused", "reranked",
         )
+        for name in groups:
+            for hit in payload[name]:
+                if hit["chunk_id"] in ready_chunks:
+                    assert hit["source_locations"] == source_locations
         return {name: {hit["chunk_id"] for hit in payload[name]} for name in groups}
 
     def fail_after_sql_commit(contents):
@@ -152,6 +162,7 @@ def test_search_backfills_ready_hits_past_unpublished_and_orphan_candidates(
             continue
         assert payload[name], f"{mode}/{name} 丢失 ready 结果"
         assert {hit["chunk_id"] for hit in payload[name]} <= ready_chunks
+        assert all(hit["source_locations"] is None for hit in payload[name])
 
 
 @pytest.mark.parametrize("mode", ["dense", "sparse", "hybrid", "hybrid_rerank"])
