@@ -14,6 +14,7 @@ import {
 import { useApp } from '../../../store/AppContext'
 
 import { ApiConfigCard } from './ApiConfigCard'
+import { SecuritySettings } from './SecuritySettings'
 import { changePasswordCurrent, validateNewPassword, getAuthConfig } from '../../../api/auth'
 import type { AuthConfig } from '../../../api/auth'
 import { useAuth } from '../../../store/AuthContext'
@@ -21,7 +22,7 @@ import { getSessionGeneration } from '../../../api/session'
 
 export default function ProfileTab() {
   const { profile, updateProfile, showToast } = useApp()
-  const { setAuthNotice } = useAuth()
+  const { user, setAuthNotice } = useAuth()
 
   const session = useRef(getSessionGeneration())
   const [pwdError, setPwdError] = useState('')
@@ -173,41 +174,50 @@ export default function ProfileTab() {
               身份：<span className="rounded bg-primary-light px-1.5 py-0.5 text-xs text-primary">{profile.identity}</span>
             </span>
           </div>
+          <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span className="shrink-0 whitespace-nowrap text-ink-3">登录账号</span>
+            <span className="shrink-0 text-ink">{profile.teacherId}</span>
+            <span className="h-3.5 w-px shrink-0 bg-line" />
+            <span className="shrink-0 whitespace-nowrap text-ink-3">邮箱（可选）</span>
+            <span className="min-w-0 break-all text-ink">
+              {user?.email
+                ? `${user.email}（${user.emailVerified ? '已验证' : '待验证'}，在下方账号安全管理）`
+                : '未绑定，可在下方账号安全中绑定'}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* 安全管理：按钮靠左 */}
-      <div className="mb-4 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
-        <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-ink">
-          <span className="h-3.5 w-1 rounded-full bg-primary" />
-          安全管理
-        </h3>
-        {pwdError && <p role="alert" className="mb-3 text-sm text-red-700">{pwdError}</p>}
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              setPwdError('')
-              setPwdOld('')
-              setPwdNew('')
-              setPwdConfirm('')
-              setPwdOpen(true)
-            }}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
-          >
-            <Lock size={14} />
-            修改密码
-          </button>
-          <button
-            type="button"
-            onClick={openContact}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-white px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary-light/60"
-          >
-            <Headset size={14} />
-            联系管理员
-          </button>
+      {/* 账号安全：学工号资料、邮箱绑定与修改密码入口，回归依赖 region 内顺序 */}
+      <SecuritySettings>
+        <div className="border-t border-line pt-6">
+          {pwdError && <p role="alert" className="mb-3 text-sm text-red-700">{pwdError}</p>}
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setPwdError('')
+                setPwdOld('')
+                setPwdNew('')
+                setPwdConfirm('')
+                setPwdOpen(true)
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
+            >
+              <Lock size={14} />
+              修改密码
+            </button>
+            <button
+              type="button"
+              onClick={openContact}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-white px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary-light/60"
+            >
+              <Headset size={14} />
+              联系管理员
+            </button>
+          </div>
         </div>
-      </div>
+      </SecuritySettings>
 
       {/* API 配置 */}
       <ApiConfigCard />

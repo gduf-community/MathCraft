@@ -38,7 +38,7 @@ const bundle = await build({
     import {ApiError} from './src/api/backend';
     import {ToastProvider} from './src/store/ToastContext';
     import Toast from './src/components/ui/Toast';
-    import {SettingsPage} from './src/components/settings/SettingsPage';
+    import {ApiConfigCard} from './src/components/tabs/ProfileTab/ApiConfigCard';
     import BankCreateModal from './src/components/tabs/BankTab/BankCreateModal';
     import BankEditModal from './src/components/tabs/BankTab/BankEditModal';
     import BankViewModal from './src/components/tabs/BankTab/BankViewModal';
@@ -77,11 +77,7 @@ const bundle = await build({
         <TopBar/>
         <TabBar/>
         {h.mode === 'history' && <HistorySidebar/>}
-        {h.mode === 'settings' && <>
-          <button onClick={() => app.setActiveTab('settings')}>打开个人设置</button>
-          <button onClick={() => app.setActiveTab('preview')}>离开个人设置</button>
-          {app.activeTab === 'settings' && <SettingsPage/>}
-        </>}
+        {h.mode === 'settings' && <ApiConfigCard/>}
         {h.mode === 'create' && <BankCreateModal {...callbacks}/>}
         {h.mode === 'edit' && <BankEditModal bank={h.bank} {...callbacks}/>}
         {h.mode === 'view' && <BankViewModal bank={h.bank} {...callbacks}/>}
@@ -165,10 +161,11 @@ async function mount(mode, role = 'teacher', memberRole = 'creator', format = 'T
       listChatSessions: () => h.sessions ?? [],
       getChatSession: id => ({session_id:id, mode:'generate', messages:[]}), listQuestions: () => ({items:[]}),
       listBanks: () => h.banks ?? [h.apiBank], latestBatch: () => ({batch_id:null, questions:[]}),
-      getModelSettings: () => ({deepseek_model:'fake-deepseek', deepseek_key_configured:false,
-        deepseek_key_masked:null, mineru_token_configured:false, mineru_token_masked:null,
+      getModelSettings: () => ({deepseek_model:'fake-deepseek', deepseek_key_configured:true,
+        deepseek_key_masked:'sk-****kOJl', mineru_token_configured:false, mineru_token_masked:null,
         mineru_limits:{max_file_mb:100, max_pages:200}, embedding_model:'fake-embedding', rerank_model:'fake-rerank'}),
       saveModelSettings: () => {},
+      testDeepSeek: () => {}, testMinerU: () => {},
       listFavoriteGroups: () => [], listFavorites: () => h.favoriteRows,
       listPapers: () => h.paperRows, listSpaces: () => [],
       getPaperApi: id => h.paperRows.find(paper => paper.id === id), mapPaper: paper => paper,
@@ -255,55 +252,64 @@ async function prepareConfirmation(page, entity, action = 'delete') {
 {
   if (!(process.argv.includes('--chat-only') || process.argv.includes('--generation-only'))) {
   const settings = await mount('settings')
-  await settings.getByRole('button', {name:'打开个人设置', exact:true}).click()
-  const key = settings.getByLabel('新的 DeepSeek API Key', {exact:true})
+  const key = settings.getByLabel('请输入您的校内 DeepSeek Key', {exact:true})
+  await settings.getByText('校内 DeepSeek Key', {exact:true}).waitFor()
+  // DeepSeek 已配置：browse 态展示服务端掩码；MinerU 未配置时测试与保存不可用
+  assert.equal(await key.inputValue(), 'sk-****kOJl')
+  assert.equal(await settings.getByRole('button', {name:'测试', exact:true}).last().isDisabled(), true)
+  assert.equal(await settings.getByRole('button', {name:'保存', exact:true}).last().isDisabled(), true)
+  // 本机没有保存过完整 Key 时，眼睛提示需要重新输入
+  await settings.getByRole('button', {name:'显示完整 Key', exact:true}).first().click()
+  await settings.getByText('完整 Key 仅保存在配置它的这台电脑上').first().waitFor()
+  // 测试当前输入的 Key 不落库
+  await key.click()
   await key.fill('synthetic-draft-key')
-  await settings.waitForFunction(() => window.mergeApp.hasUnsavedChanges)
-  const leaveSettings = settings.getByRole('button', {name:'离开个人设置', exact:true})
-  let dialog = settings.waitForEvent('dialog')
-  let click = leaveSettings.click()
-  await (await dialog).dismiss()
-  await click
-  assert.equal(await key.inputValue(), 'synthetic-draft-key')
-  assert.equal(await settings.evaluate(() => !window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), true)
-  dialog = settings.waitForEvent('dialog')
-  click = leaveSettings.click()
-  await (await dialog).accept()
-  await click
-  await settings.waitForFunction(() => window.mergeApp.activeTab === 'preview' && !window.mergeApp.hasUnsavedChanges)
-  await settings.getByRole('button', {name:'打开个人设置', exact:true}).click()
-  await key.waitFor()
-  assert.equal(await key.inputValue(), '')
-  await key.fill('synthetic-saved-key')
+  const testButton = settings.getByRole('button', {name:'测试', exact:true}).first()
+  assert.equal(await testButton.isDisabled(), false)
+  await settings.evaluate(() => { window.mergeHarness.held.testDeepSeek = true })
+  await testButton.click()
+  await settings.waitForFunction(() => window.mergeHarness.pending.testDeepSeek?.length === 1)
+  assert.equal(await settings.evaluate(() => window.mergeHarness.calls.some(call => call.name === 'saveModelSettings')), false)
+  await settings.evaluate(() => window.mergeHarness.finish('testDeepSeek'))
+  await settings.getByText('校内 DeepSeek 连接成功').first().waitFor()
+  // 保存携带草稿值并读回新掩码
   await settings.evaluate(() => { window.mergeHarness.held.saveModelSettings = true })
-  await settings.getByRole('button', {name:'保存配置', exact:true}).click()
+  await settings.getByRole('button', {name:'保存', exact:true}).first().click()
   await settings.waitForFunction(() => window.mergeHarness.pending.saveModelSettings?.length === 1)
-  await leaveSettings.click()
-  assert.equal(await settings.evaluate(() => window.mergeApp.activeTab), 'settings')
-  assert.equal(await settings.evaluate(() => window.mergeApp.isSettingsSaving), true)
-  await settings.getByRole('alert').filter({hasText:'配置正在保存，请等待完成后再离开'}).waitFor()
+  assert.deepEqual(await settings.evaluate(() => window.mergeHarness.pending.saveModelSettings[0].args[0]),
+    {deepseek_api_key:'synthetic-draft-key'})
   await settings.evaluate(() => {
-    const h = window.mergeHarness; h.held.getModelSettings = true; h.finish('saveModelSettings');
+    const h = window.mergeHarness
+    h.held.getModelSettings = true
+    h.finish('saveModelSettings')
   })
   await settings.waitForFunction(() => window.mergeHarness.pending.getModelSettings?.length === 1)
-  await settings.waitForFunction(input => input.value === '', await key.elementHandle())
-  assert.equal(await key.inputValue(), '')
-  assert.equal(await settings.evaluate(() => !window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), true)
-  await leaveSettings.click()
-  assert.equal(await settings.evaluate(() => window.mergeApp.activeTab), 'settings')
   await settings.evaluate(() => {
-    const h = window.mergeHarness; h.held.getModelSettings = false;
+    const h = window.mergeHarness
+    h.held.getModelSettings = false
     h.finish('getModelSettings', {deepseek_model:'fake-deepseek', deepseek_key_configured:true,
-      deepseek_key_masked:'***', mineru_token_configured:false, mineru_token_masked:null,
-      mineru_limits:{max_file_mb:100, max_pages:200}, embedding_model:'fake-embedding', rerank_model:'fake-rerank'});
+      deepseek_key_masked:'sk-****yZ8w', mineru_token_configured:false, mineru_token_masked:null,
+      mineru_limits:{max_file_mb:100, max_pages:200}, embedding_model:'fake-embedding', rerank_model:'fake-rerank'})
   })
-  await settings.getByRole('status').filter({hasText:'模型配置已保存。现在可以测试已保存的配置。'}).last().waitFor()
-  await settings.waitForFunction(() => !window.mergeApp.isSettingsSaving && !window.mergeApp.hasUnsavedChanges)
-  assert.equal(await settings.evaluate(() => !window.dispatchEvent(new Event('beforeunload', {cancelable:true}))), false)
-  await leaveSettings.click()
-  await settings.waitForFunction(() => window.mergeApp.activeTab === 'preview')
+  await settings.getByText('校内 DeepSeek Key 已保存').first().waitFor()
+  await settings.waitForFunction(() =>
+    document.querySelector('input[aria-label="请输入您的校内 DeepSeek Key"]').value === 'sk-****yZ8w')
+  // 完整 Key 只写入本机浏览器，供眼睛图标回显
+  assert.deepEqual(await settings.evaluate(() => JSON.parse(localStorage.getItem('mathcraft-personal-keys'))),
+    {A:{deepseek:'synthetic-draft-key'}})
+  await settings.getByRole('button', {name:'显示完整 Key', exact:true}).first().click()
+  await settings.waitForFunction(() =>
+    document.querySelector('input[aria-label="请输入您的校内 DeepSeek Key"]').value === 'synthetic-draft-key')
+  await settings.getByRole('button', {name:'显示掩码', exact:true}).first().click()
+  await settings.waitForFunction(() =>
+    document.querySelector('input[aria-label="请输入您的校内 DeepSeek Key"]').value === 'sk-****yZ8w')
+  // 清空草稿后保持编辑态，不回填掩码
+  await key.click()
+  await key.fill('new-draft')
+  await settings.getByRole('button', {name:'清空校内 DeepSeek Key输入', exact:true}).click()
+  assert.equal(await key.inputValue(), '')
   await settings.close()
-  pass('personal settings keep cancelled drafts, confirm discard, block navigation and refresh throughout save/readback, retain real Toast feedback')
+  pass('api config card tests unsaved key without persisting, saves and reads back masked value, eye reveals local full key, clear keeps edit mode')
 
   const student = await mount('create', 'student')
   assert.equal(await student.getByRole('heading', {name:'新建题库', exact:true}).count(), 0)
