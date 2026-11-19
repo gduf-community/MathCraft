@@ -370,6 +370,60 @@ def test_test_deepseek_with_key(client, teacher):
     assert resp.json()["ok"] is True
 
 
+def test_test_deepseek_prefers_provided_key(client, teacher, monkeypatch):
+    """body 提供输入值时连接测试优先使用该值，不落库。"""
+    captured: dict[str, str] = {}
+
+    def fake_chat_text(messages, *, api_key, temperature, max_tokens):
+        captured["api_key"] = api_key
+        return "Pong"
+
+    monkeypatch.setattr(llm, "chat_text", fake_chat_text)
+    client.put(
+        "/api/users/me/model-settings",
+        json={"deepseek_api_key": "sk-saved-key-0001"},
+        headers=teacher,
+    )
+    resp = client.post(
+        "/api/users/me/model-settings/test-deepseek",
+        headers=teacher,
+        json={"deepseek_api_key": "sk-input-key-0002"},
+    )
+    assert resp.status_code == 200
+    assert captured["api_key"] == "sk-input-key-0002"
+    data = client.get("/api/users/me/model-settings", headers=teacher).json()
+    assert data["deepseek_key_masked"] == "sk-****0001"
+
+
+def test_test_mineru_prefers_provided_token(
+    client, teacher, mineru_response: MineruResponseStub, monkeypatch: pytest.MonkeyPatch,
+):
+    """body 提供输入值时连接测试优先使用该值，不落库。"""
+    mineru_response(httpx.Response(200, json={"code": 0, "data": {}}))
+    captured: dict[str, str] = {}
+    original_ping = mineru.ping_token
+
+    def fake_ping(token):
+        captured["token"] = token
+        return original_ping(token)
+
+    monkeypatch.setattr(mineru, "ping_token", fake_ping)
+    client.put(
+        "/api/users/me/model-settings",
+        json={"mineru_token": "sk-saved-mineru-0001"},
+        headers=teacher,
+    )
+    resp = client.post(
+        "/api/users/me/model-settings/test-mineru",
+        headers=teacher,
+        json={"mineru_token": FAKE_MINERU_TOKEN},
+    )
+    assert resp.status_code == 200
+    assert captured["token"] == FAKE_MINERU_TOKEN
+    data = client.get("/api/users/me/model-settings", headers=teacher).json()
+    assert data["mineru_token_masked"] == "sk-****0001"
+
+
 @pytest.mark.parametrize("error_type", [RuntimeError, llm.LLMError])
 def test_deepseek_rejects_untrusted_exception_messages(
     client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,

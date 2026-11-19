@@ -160,3 +160,78 @@ def test_source_mode_defaults_without_becoming_required(complete_state, mocked_s
 
 def test_followup_remains_callable_without_state():
     assert "多少" in slots.build_followup(["count"])
+
+
+def test_multi_level_difficulty_phrase_becomes_mixed_without_followup(complete_state, mocked_services):
+    """用户一次给出多个难度档（含同义词）时按混合难度出题，不再追问难度。"""
+    extract, generate = mocked_services
+    extract.return_value = {**complete_state,
+                            "difficulty": "简单，中等，高难", "mixed_difficulty": True}
+    result = _chat({})
+    assert result["done"] is True
+    generate.assert_called_once()
+    assert generate.call_args.kwargs.get("mixed_difficulty") is True
+    assert generate.call_args.kwargs.get("difficulty_note") == "简单，中等，高难"
+    assert result["slot_state"]["difficulty"] == "中"
+    assert result["slot_state"]["mixed_difficulty"] is True
+
+
+@pytest.mark.parametrize("phrase,expected", [
+    ("简单", "低"), ("容易", "低"), ("基础", "低"), ("中等", "中"), ("常规", "中"),
+    ("偏难", "高"), ("高难", "高"), ("困难", "高"), ("地狱", "地狱"), ("难度偏低", "低"),
+])
+def test_single_difficulty_synonyms_normalize(phrase, expected):
+    assert slots._norm_difficulty(phrase) == expected
+
+
+def test_mixed_phrase_falls_back_to_first_level_without_mid(complete_state, mocked_services):
+    extract, generate = mocked_services
+    extract.return_value = {**complete_state,
+                            "difficulty": "简单和高难", "mixed_difficulty": True}
+    assert _chat({})["done"] is True
+    assert generate.call_args.kwargs.get("difficulty_note") == "简单和高难"
+    assert generate.call_args.kwargs.get("mixed_difficulty") is True
+
+
+def test_per_type_difficulty_satisfies_requirement_without_followup(complete_state, mocked_services):
+    """按题型分别说明难度时不追问难度；缺知识点仍追问 scope。"""
+    extract, generate = mocked_services
+    extract.return_value = {
+        "types": [
+            {"type": "single", "count": 5, "difficulty": "低"},
+            {"type": "blank", "count": 2, "difficulty": "高"},
+            {"type": "compute", "count": 4, "difficulty": "中"},
+        ],
+        "mixed_difficulty": True,
+    }
+    result = _chat({})
+    _assert_followup(result, generate)
+    assert slots.missing_keys(result["slot_state"]) == ["scope"]
+
+
+def test_build_params_carries_per_type_difficulty(complete_state):
+    complete_state.pop("difficulty")
+    complete_state["types"] = [
+        {"type": "single", "count": 5, "difficulty": "低"},
+        {"type": "blank", "count": 2, "difficulty": "高"},
+    ]
+    params, _ = slots.build_params(complete_state, "bank-test", "doc-test")
+    assert params.types[0].difficulty == Difficulty.low
+    assert params.types[1].difficulty == Difficulty.high
+    assert params.difficulty == Difficulty.low
+
+
+def test_build_params_global_difficulty_overrides_missing_type_level(complete_state):
+    """整体难度存在、题型未单独说明时，题型难度留空由整体档兜底。"""
+    complete_state["types"] = [{"type": "single", "count": 3, "difficulty": None}]
+    params, _ = slots.build_params(complete_state, "bank-test", "doc-test")
+    assert params.difficulty == Difficulty.mid
+    assert params.types[0].difficulty is None
+
+
+def test_merge_slots_updates_type_difficulty_across_turns():
+    state = slots.merge_slots({}, {"types": [{"type": "single", "count": 5}]})
+    state = slots.merge_slots(state, {"types": [{"type": "single", "count": None,
+                                                 "difficulty": "简单"}]})
+    assert state["types"] == [{"type": "single", "count": 5, "difficulty": "低"}]
+    assert "difficulty" not in slots.missing_keys(state)

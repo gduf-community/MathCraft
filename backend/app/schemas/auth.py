@@ -110,6 +110,13 @@ class ModelSettingsBody(BaseModel):
     mineru_token: str | None = Field(default=None, max_length=128)
 
 
+class ModelTestBody(BaseModel):
+    """连接测试的可选输入值；提供时优先测试该值，不落库。"""
+
+    deepseek_api_key: str | None = Field(default=None, max_length=128)
+    mineru_token: str | None = Field(default=None, max_length=128)
+
+
 class AuthConfig(BaseModel):
     """公开认证能力与双提交 CSRF 令牌，不包含服务端密钥。"""
 

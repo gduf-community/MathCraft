@@ -68,12 +68,19 @@ export default function ChatInput() {
     selectedDocId, pauseChat, chatPauseStatus, chatImages, removeChatImage,
     mode, setMode, sessionMode, modeVisible, messages, confirmBusy, pendingConfirm,
     sessionLoading, questionsClearing, generating, generationRecoveryError,
+    modelSettings,
   } = useApp()
+  // 未配置 DeepSeek API Key 时禁止发送；配置读取中不拦截
+  const deepseekReady = modelSettings ? modelSettings.deepseek_key_configured : true
   const interactionBusy = botThinking || chatPauseStatus != null || sessionLoading || questionsClearing || generating
     || generationRecoveryError !== null || confirmBusy || pendingConfirm !== null
-  const canSend = (inputDraft.trim().length > 0 || chatImages.length > 0) && !interactionBusy
+  const canSend = (inputDraft.trim().length > 0 || chatImages.length > 0) && !interactionBusy && deepseekReady
 
   const submit = () => {
+    if (!deepseekReady) {
+      showToast('请先在「个人中心 → API 配置」保存 DeepSeek API Key，再发送出题请求')
+      return
+    }
     if (!canSend) return
     if (!selectedDocId) {
       showToast('请先在右侧选择知识库文档，才能基于知识库出题')
@@ -146,6 +153,9 @@ export default function ChatInput() {
                 重试暂停
               </button>
             </div>
+          )}
+          {!deepseekReady && (
+            <span className="text-xs text-red-600">未配置 DeepSeek API Key，无法发送；请前往「个人中心 → API 配置」保存</span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-3">
             <span className="text-xs text-ink-3">{inputDraft.length}/2000</span>

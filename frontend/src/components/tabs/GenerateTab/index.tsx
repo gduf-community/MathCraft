@@ -38,8 +38,9 @@ export default function GenerateTab() {
     if (docs.length) void uploadDocument(docs[0])
   }
 
-  // 用户消息沿用历史编辑、回退重发入口；最新 AI 回复保留重新生成。
+  // 用户消息：最新一条有复制、编辑后重发；历史消息只保留复制。AI 回复最新一条保留重新生成。
   const lastAssistantIndex = messages.reduce((acc, m, i) => (m.role === 'assistant' ? i : acc), -1)
+  const lastUserIndex = messages.reduce((acc, m, i) => (m.role === 'user' ? i : acc), -1)
   const regenerateFrom = (assistantIndex: number) => {
     if (interactionBusy) return
     for (let j = assistantIndex - 1; j >= 0; j--) {
@@ -129,30 +130,20 @@ export default function GenerateTab() {
                           >
                             <Copy size={13} />
                           </button>
-                          <button
-                            type="button"
-                            title="回退并重新发送"
-                            aria-label="回退并重新发送"
-                            disabled={interactionBusy}
-                            onClick={() => {
-                              if (!interactionBusy) retryChat(m.id)
-                            }}
-                            className="rounded p-1.5 text-ink-3 transition-colors hover:bg-page hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
-                          >
-                            <RotateCcw size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            title="编辑后重发"
-                            aria-label="编辑后重发"
-                            disabled={interactionBusy}
-                            onClick={() => {
-                              if (!interactionBusy) editChat(m.id)
-                            }}
-                            className="rounded p-1.5 text-ink-3 transition-colors hover:bg-page hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
-                          >
-                            <Pencil size={13} />
-                          </button>
+                          {i === lastUserIndex && (
+                            <button
+                              type="button"
+                              title="编辑后重发"
+                              aria-label="编辑后重发"
+                              disabled={interactionBusy}
+                              onClick={() => {
+                                if (!interactionBusy) editChat(m.id)
+                              }}
+                              className="rounded p-1.5 text-ink-3 transition-colors hover:bg-page hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                          )}
                         </div>
                       )}
                       {m.role === 'assistant' && (

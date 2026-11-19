@@ -1,14 +1,17 @@
 """对话出题的槽位状态机：抽取 → 合并 → 缺啥问啥。
 
-追问文案用固定模板，保证换行、按点、带序号；
-抽取交给模型（JSON 输出），只做结构化信息提取不做回复生成。
-缺槽一律追问，不用默认值补齐。
+抽取交给模型（JSON 输出），只做结构化信息提取；缺槽时先让模型生成自然追问，
+失败再回退固定模板。缺槽一律追问，不用默认值补齐。
 """
+import logging
 import math
+import re
 
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
-from app.services.rag.llm import chat_json
-from app.services.rag.prompts import SLOT_EXTRACT_SYSTEM
+from app.services.rag.llm import chat_json, chat_text
+from app.services.rag.prompts import FOLLOWUP_SYSTEM, SLOT_EXTRACT_SYSTEM
+
+logger = logging.getLogger("app.rag.slots")
 
 # 槽位检查顺序即追问顺序。题目来源已不再追问：知识库只存知识点，没有原题可还原。
 SLOT_ORDER = ["types", "count", "difficulty", "scope"]
@@ -20,6 +23,13 @@ SOURCE_ALIASES = {
     "全新": "new", "新题": "new", "全新的": "new",
 }
 DIFFICULTY_ALIASES = {"简单": "低", "容易": "低", "基础": "低", "中等": "中", "常规": "中", "难": "高", "很难": "高", "地狱": "地狱"}
+# 子串扫描用：按长度降序匹配并消耗原文，避免「中等」里的「中」、「高难」里的「难」被重复命中
+DIFFICULTY_TOKENS = (
+    ("地狱", "地狱"), ("简单", "低"), ("容易", "低"), ("偏易", "低"), ("较易", "低"),
+    ("基础", "低"), ("中等", "中"), ("中档", "中"), ("常规", "中"), ("高难", "高"),
+    ("较难", "高"), ("很难", "高"), ("困难", "高"), ("偏难", "高"), ("难题", "高"),
+    ("难", "高"), ("高", "高"), ("中", "中"), ("低", "低"),
+)
 TYPE_ALIASES = {"选择": "single", "单选": "single", "多选": "multiple", "判断": "judge", "填空": "blank", "计算": "compute", "简答": "essay", "解答": "essay"}
 TYPE_LABELS = {"single": "选择题", "multiple": "多选题", "judge": "判断题",
                "blank": "填空题", "compute": "计算题", "essay": "简答题"}
@@ -68,21 +78,21 @@ def _norm_count(raw: object) -> int | None:
 
 
 def _norm_types(raw) -> list[dict] | None:
-    """把抽取结果归一化为 [{type, count}]，非法项丢弃。兼容顶层 type/count 旧写法。"""
+    """把抽取结果归一化为 [{type, count, difficulty}]，非法项丢弃。兼容顶层 type/count 旧写法。"""
     items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
     out: list[dict] = []
     for item in items:
         if not isinstance(item, dict):
-            t_raw, c_raw = item, None
+            t_raw, c_raw, d_raw = item, None, None
         else:
-            t_raw, c_raw = item.get("type"), item.get("count")
+            t_raw, c_raw, d_raw = item.get("type"), item.get("count"), item.get("difficulty")
         t = TYPE_ALIASES.get(str(t_raw).strip(), str(t_raw).strip() if t_raw else None)
         try:
             QuestionType(t)
         except ValueError:
             continue
         count = _norm_count(c_raw)
-        out.append({"type": t, "count": count})
+        out.append({"type": t, "count": count, "difficulty": _norm_difficulty(d_raw)})
     return out or None
 
 
@@ -105,11 +115,33 @@ def _norm_source(raw) -> str | None:
     return SOURCE_ALIASES.get(s, s if s in ("original", "variant_data", "variant_context", "new") else None)
 
 
+def _norm_single(raw: str) -> str | None:
+    """归一化单个难度描述段；先查精确别名，再剥修饰词后按长度降序扫同义词。"""
+    s = raw.strip()
+    direct = DIFFICULTY_ALIASES.get(s, s if s in ("低", "中", "高", "地狱") else None)
+    if direct:
+        return direct
+    cleaned = s.removeprefix("难度").strip("的度请帮我要想出题生成一点些")
+    for token, level in sorted(DIFFICULTY_TOKENS, key=lambda pair: -len(pair[0])):
+        if token in cleaned:
+            return level
+    return None
+
+
 def _norm_difficulty(raw) -> str | None:
     if not raw:
         return None
-    s = str(raw).strip()
-    return DIFFICULTY_ALIASES.get(s, s if s in ("低", "中", "高", "地狱") else None)
+    return _norm_single(str(raw).strip())
+
+
+def _levels_in(text: str) -> list[str]:
+    """按分隔符切段逐段归一化，返回去重后的难度档序列，顺序即出现顺序。"""
+    segments = [seg for seg in re.split(r"[，、,;；\s]+|[和与]", str(text)) if seg.strip()]
+    levels = []
+    for segment in segments:
+        if level := _norm_single(segment):
+            levels.append(level)
+    return list(dict.fromkeys(levels))
 
 
 def merge_slots(state: dict, extracted: dict) -> dict:
@@ -125,14 +157,26 @@ def merge_slots(state: dict, extracted: dict) -> dict:
             if old:
                 if t["count"]:
                     old["count"] = t["count"]
+                if t["difficulty"]:
+                    old["difficulty"] = t["difficulty"]
             else:
-                existing[t["type"]] = {"type": t["type"], "count": t["count"]}
+                existing[t["type"]] = {"type": t["type"], "count": t["count"],
+                                       "difficulty": t["difficulty"]}
         new["types"] = list(existing.values())
     if v := _norm_source(extracted.get("source_mode")):
         new["source_mode"] = v
-    if v := _norm_difficulty(extracted.get("difficulty")):
-        new["difficulty"] = v
-        new.pop("mixed_difficulty", None)
+    raw_diff = str(extracted.get("difficulty") or "").strip()
+    if raw_diff:
+        levels = _levels_in(raw_diff)
+        if len(set(levels)) >= 2:
+            # 用户一次说了多个难度档：按混合难度处理，保留原始描述供生成指令使用，不再追问
+            new["mixed_difficulty"] = True
+            new["difficulty_note"] = raw_diff[:120]
+            new["difficulty"] = "中" if "中" in levels else levels[-1]
+        elif v := _norm_difficulty(raw_diff):
+            new["difficulty"] = v
+            new.pop("mixed_difficulty", None)
+            new.pop("difficulty_note", None)
     if extracted.get("mixed_difficulty") and not new.get("difficulty"):
         new["mixed_difficulty"] = True
     if v := extracted.get("scope"):
@@ -173,6 +217,16 @@ def _counts_complete(state: dict) -> bool:
     )
 
 
+def _difficulty_complete(state: dict) -> bool:
+    """整体难度与题型级难度任一存在即视为已给；混合难度场景整体难度档必被写入。"""
+    if _norm_difficulty(state.get("difficulty")):
+        return True
+    return any(
+        isinstance(t, dict) and _norm_difficulty(t.get("difficulty"))
+        for t in state.get("types") or []
+    )
+
+
 def missing_keys(state: dict) -> list[str]:
     missing: list[str] = []
     for key in SLOT_ORDER:
@@ -184,7 +238,7 @@ def missing_keys(state: dict) -> list[str]:
                 missing.append(key)
         elif key == "scope" and not str(state.get(key) or "").strip():
             missing.append(key)
-        elif key == "difficulty" and _norm_difficulty(state.get(key)) is None:
+        elif key == "difficulty" and not _difficulty_complete(state):
             missing.append(key)
     return missing
 
@@ -223,25 +277,96 @@ def build_followup(missing: list[str], state: dict | None = None) -> str:
     return "\n".join([FOLLOWUP_HEAD, *numbered, FOLLOWUP_TAIL])
 
 
+def _describe_state(state: dict) -> str:
+    types = []
+    for t in state.get("types") or []:
+        if not isinstance(t, dict) or t.get("type") not in TYPE_LABELS:
+            continue
+        label = TYPE_LABELS[t["type"]]
+        count = _norm_count(t.get("count"))
+        if count is not None:
+            label += f" {count} 道"
+        diff = _norm_difficulty(t.get("difficulty"))
+        if diff:
+            label += f"（难度{diff}）"
+        types.append(label)
+    known = []
+    if types:
+        known.append("题型：" + "、".join(types))
+    total = _norm_count(state.get("total_count"))
+    if total is not None:
+        known.append(f"总题量 {total} 道")
+    diff = _norm_difficulty(state.get("difficulty"))
+    if diff and not state.get("mixed_difficulty"):
+        known.append(f"难度：{diff}")
+    if state.get("mixed_difficulty") and state.get("difficulty_note"):
+        known.append(f"难度分布：{state['difficulty_note']}")
+    if str(state.get("scope") or "").strip():
+        known.append(f"知识点范围：{state['scope']}")
+    return "；".join(known) if known else "暂无"
+
+
+def build_natural_followup(
+    message: str, state: dict, missing: list[str], api_key: str | None = None,
+) -> str | None:
+    """让模型结合上下文生成自然追问；未配 key、失败或输出为空时返回 None，
+    由调用方回退固定模板。"""
+    if not api_key:
+        return None
+    need = "；".join(
+        _count_line(state) if key == "count" else FOLLOWUP_LINES[key]
+        for key in SLOT_ORDER if key in missing
+    )
+    prompt = (
+        f"【当前用户消息】\n{message}\n\n【已确认的出题要求】\n{_describe_state(state)}"
+        f"\n\n【还缺少的信息】\n{need}"
+    )
+    try:
+        text = chat_text(
+            [
+                {"role": "system", "content": FOLLOWUP_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            api_key=api_key, temperature=0.4, max_tokens=200, thinking_off=True,
+        )
+    except Exception as exc:  # 追问是辅助路径，失败回退模板并记日志
+        logger.warning("自然追问生成失败，回退模板：%s", exc)
+        return None
+    return (text or "").strip() or None
+
+
 def build_params(
     state: dict, bank_id: str, document_id: str,
 ) -> tuple[GenerateParams, str]:
-    """从完整槽位构造 GenerateParams 与 scope。数量必须由用户给出。"""
+    """从完整槽位构造 GenerateParams 与 scope。数量必须由用户给出。
+
+    题型级难度优先：types 条目自带难度时写入 TypeCount.difficulty，
+    整体难度缺省时取第一个题型难度，再缺省回退中档。
+    """
     missing = missing_keys(state)
     if missing:
         raise ValueError("出题信息不完整：" + "、".join(missing))
     types = []
+    type_diffs: list[str | None] = []
     for item in state["types"]:
         count = _norm_count(item.get("count"))
         if count is None:
-            raise ValueError("每个题型的数量必须是 1–20 的整数")
-        types.append(TypeCount(type=QuestionType(item["type"]), count=count))
+            raise ValueError("每个题型的数量必须是 1–100 的整数")
+        tc_diff = _norm_difficulty(item.get("difficulty"))
+        type_diffs.append(tc_diff)
+        types.append(TypeCount(
+            type=QuestionType(item["type"]), count=count,
+            difficulty=Difficulty(tc_diff) if tc_diff else None,
+        ))
 
+    global_diff = _norm_difficulty(state.get("difficulty")) or next(
+        (d for d in type_diffs if d), None,
+    )
     params = GenerateParams(
         kb_id=bank_id,
         doc_id=document_id,
         types=types,
-        difficulty=Difficulty(_norm_difficulty(state.get("difficulty"))),
+        difficulty=Difficulty(global_diff or "中"),
         source_mode=state.get("source_mode", "variant_data"),
     )
     return params, str(state["scope"]).strip()

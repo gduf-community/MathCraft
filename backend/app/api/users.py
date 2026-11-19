@@ -12,7 +12,7 @@ from app.errors import AppError
 from app.models import User
 from app.schemas.auth import (
     CurrentPasswordBody, EmailBindingBody, EmailChangeBody, EmailCommitBody,
-    ModelSettingsBody, UserNoBody,
+    ModelSettingsBody, ModelTestBody, UserNoBody,
 )
 from app.api.auth_http import clear_refresh, refresh_belongs_to_user
 from app.models import EmailChange
@@ -127,11 +127,16 @@ def save_model_settings(
 
 
 @router.post("/model-settings/test-deepseek")
-def test_deepseek(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """测试 DeepSeek 连接，失败仅返回固定脱敏提示。"""
+def test_deepseek(
+    body: ModelTestBody | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """测试 DeepSeek 连接；body 提供输入值时优先测试该值，不落库。失败仅返回固定脱敏提示。"""
     from app.services.rag import llm
 
-    key = require_deepseek_key(db, user.id)
+    provided = (body.deepseek_api_key or "").strip() if body else ""
+    key = provided or require_deepseek_key(db, user.id)
     db.rollback()
     try:
         reply = llm.chat_text(
@@ -146,14 +151,19 @@ def test_deepseek(user: User = Depends(get_current_user), db: Session = Depends(
 
 
 @router.post("/model-settings/test-mineru", summary="测试 MinerU 连接与鉴权（不验证文件解析）")
-def test_mineru(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """只读验证已保存 MinerU 配置的连接与鉴权，不验证额度或实际文件解析。
+def test_mineru(
+    body: ModelTestBody | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """只读验证 MinerU 配置的连接与鉴权；body 提供输入值时优先测试该值，不落库。
 
     严格校验 HTTP、JSON 与业务状态，仅将明确成功或官方找不到探测任务视为通过。
     """
     from app.services import mineru
 
-    token = get_effective_mineru_token(db, user.id)
+    provided = (body.mineru_token or "").strip() if body else ""
+    token = provided or get_effective_mineru_token(db, user.id)
     if not token:
         raise AppError("MINERU_TOKEN_MISSING", "请先填写 MinerU Token", status_code=400)
     ok, detail = mineru.ping_token(token)

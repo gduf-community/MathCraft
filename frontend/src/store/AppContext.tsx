@@ -38,7 +38,7 @@ interface ChatTurn {
   docId: string
 }
 
-export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
+export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me'
 
 /** 历史会话侧边栏列表项（来自后端，按账号隔离） */
 export interface ChatSessionSummary {
@@ -57,7 +57,7 @@ function buildProfile(user: AuthUser | null): TeacherProfile {
     gender: user?.gender === '男' || user?.gender === '女' ? user.gender : '',
     phone: user?.phone ?? '',
     email: user?.email ?? '',
-    teacherId: user?.userNo ?? '',
+    teacherId: user?.username ?? '',
     school: user?.school ?? '',
     identity: user?.identity ?? '',
   }
@@ -93,11 +93,12 @@ interface AppState {
   /** 删除受理后立即清理选中项与缓存，阻止旧请求重新写入。 */
   invalidateDocument: (bankId: string, documentId: string) => void
 
-  /** 个人模型设置页的未保存提醒 */
-  hasUnsavedChanges: boolean
-  setHasUnsavedChanges: (v: boolean) => void
-  isSettingsSaving: boolean
-  setIsSettingsSaving: (saving: boolean) => void
+  /** 个人 API 配置（脱敏）；未配置 DeepSeek Key 时出题被拦截 */
+  modelSettings: api.ModelSettings | null
+  refreshModelSettings: () => Promise<void>
+  /** 未配置 API 时的引导弹窗 */
+  apiConfigOpen: boolean
+  closeApiConfigModal: () => void
 
   generationRecoveryError: string | null
   resetGenerationRecovery: () => void
@@ -287,19 +288,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [bankNotifUnread, setBankNotifUnread] = useState(0)
   const [bankNotifItems, setBankNotifItems] = useState<api.ApiNotification[]>([])
   const [pendingSpacePaper, setPendingSpacePaper] = useState<{ spaceId: string; paperId: string } | null>(null)
-  // 个人模型设置页的未保存提醒
-  const [hasUnsavedChanges, setHasUnsavedChangesState] = useState(false)
-  const [isSettingsSaving, setIsSettingsSavingState] = useState(false)
-  const settingsDirtyRef = useRef(false)
-  const settingsSavingRef = useRef(false)
-  const setHasUnsavedChanges = useCallback((dirty: boolean) => {
-    settingsDirtyRef.current = dirty
-    setHasUnsavedChangesState(dirty)
-  }, [])
-  const setIsSettingsSaving = useCallback((saving: boolean) => {
-    settingsSavingRef.current = saving
-    setIsSettingsSavingState(saving)
-  }, [])
+  // 个人 API 配置：登录后读取一次；未配置 DeepSeek Key 时弹出引导并拦截出题
+  const [modelSettings, setModelSettings] = useState<api.ModelSettings | null>(null)
+  const [apiConfigOpen, setApiConfigOpen] = useState(false)
+  const apiConfigPromptedRef = useRef(false)
+
   const activeBatchRef = useRef<string | null>(null)
   const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
   const chatAbortRef = useRef<AbortController | null>(null)
@@ -336,6 +329,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const refreshModelSettings = useCallback(async () => {
+    const fresh = await api.getModelSettings()
+    if (!sessionIsCurrent()) return
+    setModelSettings(fresh)
+    const missing = !fresh.deepseek_key_configured || !fresh.mineru_token_configured
+    if (missing && !apiConfigPromptedRef.current) {
+      apiConfigPromptedRef.current = true
+      setApiConfigOpen(true)
+    }
+  }, [sessionIsCurrent])
+  const closeApiConfigModal = useCallback(() => setApiConfigOpen(false), [])
+
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -368,15 +373,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setActiveTab = useCallback((tab: TabKey): boolean => {
     if (tab === activeTabRef.current) return true
-    if (settingsSavingRef.current) {
-      showToast('配置正在保存，请等待完成后再离开', 'error')
-      return false
-    }
-    if (settingsDirtyRef.current && !window.confirm('有未保存的模型配置，离开将丢弃修改。确定离开吗？')) return false
     activeTabRef.current = tab
     setActiveTabState(tab)
     return true
-  }, [showToast])
+  }, [])
 
   // 同步失效会话回调，防止清空、切库或切文档后的旧结果回填。
   const resetChat = useCallback(() => {
@@ -683,6 +683,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })()
   }, [user, loadFavorites, loadRecords, loadSessions, refreshSpaces, sessionIsCurrent, showToast, isClearing])
 
+  useEffect(() => {
+    if (!user) return
+    void refreshModelSettings().catch(() => undefined)
+  }, [user, refreshModelSettings])
+
   const selectKb = useCallback(
     (id: string) => {
       if (!sessionIsCurrent() || pendingChatPause.current) return
@@ -772,6 +777,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
         return
       }
+      if (modelSettings && !modelSettings.deepseek_key_configured) {
+        apiConfigPromptedRef.current = true
+        setApiConfigOpen(true)
+        return
+      }
       const effectiveMode = opts?.mode ?? mode
       const version = chatVersionRef.current
       const previewVersion = ++previewVersionRef.current
@@ -847,7 +857,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     },
     [mode, loadSessions, selectedDocId, selectedKbId, questions, generating, generationRecoveryError,
-      applyChatResult, sessionIsCurrent, showToast],
+      applyChatResult, sessionIsCurrent, showToast, modelSettings],
   )
 
   const addChatImages = useCallback((files: File[]) => {
@@ -1700,10 +1710,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectDoc,
     refreshKbs,
     invalidateDocument,
-    hasUnsavedChanges,
-    setHasUnsavedChanges,
-    isSettingsSaving,
-    setIsSettingsSaving,
+    modelSettings,
+    refreshModelSettings,
+    apiConfigOpen,
+    closeApiConfigModal,
     generating,
     generationClearing,
     generationRecoveryError,

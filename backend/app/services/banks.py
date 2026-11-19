@@ -1,9 +1,9 @@
 """题库业务：编号生成、列表载荷、成员操作、删除清理。"""
 from collections.abc import Callable
-from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import secrets
 import sqlite3
 from time import sleep
 from typing import TypeVar
@@ -87,17 +87,15 @@ def _delete_transaction(db: Session, action: Callable[[RuntimeSnapshot], T]) -> 
     raise AppError("DATABASE_BUSY", "数据库繁忙，请稍后重试删除", 503)
 
 
+CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
 def generate_bank_code(db: Session) -> str:
-    """TK + 年份 + 4 位序号；序号按当年已有题库数递增，冲突时步进重试。"""
-    year = datetime.now(timezone.utc).year
-    prefix = f"TK{year}"
-    base = db.query(func.count(Bank.id)).filter(Bank.code.like(f"{prefix}%")).scalar() or 0
-    seq = base + 1
+    """10 位随机编号（TK 前缀 + 8 位随机字符），冲突时重试。"""
     while True:
-        code = f"{prefix}{seq:04d}"
+        code = "TK" + "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
         if not db.query(Bank.id).filter(Bank.code == code).first():
             return code
-        seq += 1
 
 
 def member_count(db: Session, bank_id: str) -> int:

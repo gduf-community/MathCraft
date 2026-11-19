@@ -14,6 +14,8 @@ class TypeCountBody(BaseModel):
     type: str = Field(pattern="^(single|multiple|judge|blank|compute|essay)$")
     # 高压长任务：单题型上限放宽到 100，与 TypeCount 一致
     count: int = Field(ge=1, le=100)
+    # 题型级难度；缺省回退整体 difficulty
+    difficulty: str | None = Field(default=None, pattern="^(低|中|高|地狱)$")
 
 
 class GenerateStartBody(BaseModel):

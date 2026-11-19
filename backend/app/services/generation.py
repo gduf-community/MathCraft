@@ -416,7 +416,13 @@ def build_params(body: GenerateStartBody) -> GenerateParams:
     return GenerateParams(
         kb_id=bank_id,
         doc_id=document_id,
-        types=[TypeCount(type=QuestionType(t.type), count=t.count) for t in body.types],
+        types=[
+            TypeCount(
+                type=QuestionType(t.type), count=t.count,
+                difficulty=Difficulty(t.difficulty) if t.difficulty else None,
+            )
+            for t in body.types
+        ],
         difficulty=Difficulty(body.difficulty),
         source_mode=body.source_mode,
         scope=body.scope,

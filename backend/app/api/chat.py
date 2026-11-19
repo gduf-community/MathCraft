@@ -412,7 +412,9 @@ def _message_api_key(db: Session, s: ChatSession, user_id: str) -> str:
     generation.validate_resources(db, user_id, s.bank_id, s.document_id)
     api_key = get_effective_deepseek_key(db, user_id)
     if not api_key:
-        raise AppError("DEEPSEEK_KEY_MISSING", "尚未配置 DeepSeek API Key，请到设置 → 模型与服务中填写", 400)
+        raise AppError(
+            "DEEPSEEK_KEY_MISSING", "尚未配置 DeepSeek API Key，请到个人中心 → API 配置中填写", 400,
+        )
     return api_key
 
 
