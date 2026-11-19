@@ -311,7 +311,7 @@ def _send_message(
     generation.validate_resources(db, user.id, s.bank_id, s.document_id)
     api_key = get_effective_deepseek_key(db, user.id)
     if not api_key:
-        raise AppError("DEEPSEEK_KEY_MISSING", "尚未配置 DeepSeek API Key，请到设置 → 模型与服务中填写", 400)
+        raise AppError("DEEPSEEK_KEY_MISSING", "尚未配置 DeepSeek API Key，请到个人中心 → API 配置中填写", 400)
     # 升级前待续内容仅在 Redis 中；切换不能被静默当作已经接续。
     interrupted_stage = s.run_stage if s.run_status == "interrupted" else ""
     s = _begin_run(db, session_id, user_id, auth_version=auth_version)

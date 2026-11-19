@@ -12,7 +12,7 @@ import RecordsTab from './components/tabs/RecordsTab'
 import FavoritesTab from './components/tabs/FavoritesTab'
 import SpaceTab from './components/tabs/SpaceTab'
 import ProfileTab from './components/tabs/ProfileTab'
-import { SettingsPage } from './components/settings/SettingsPage'
+import ApiConfigModal from './components/tabs/ProfileTab/ApiConfigModal'
 import Toast from './components/ui/Toast'
 import LoginPage from './components/auth/LoginPage'
 import AdminPanel from './components/admin/AdminPanel'
@@ -25,11 +25,7 @@ function Shell() {
       <div className="workspace-body relative flex min-h-0 flex-1">
         <SideNav />
         <main className="z-10 mx-4 my-4 flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-line/70 bg-white shadow-[0_6px_24px_rgba(30,90,180,0.06)]">
-          {activeTab === 'settings' ? (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <SettingsPage />
-            </div>
-          ) : activeTab === 'bank' ? (
+          {activeTab === 'bank' ? (
             <div className="flex min-h-0 flex-1 flex-col">
               <BankTab />
             </div>
@@ -58,6 +54,7 @@ function Shell() {
         </main>
         {activeTab === 'generate' && <HistorySidebar />}
       </div>
+      <ApiConfigModal />
     </div>
   )
 }

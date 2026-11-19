@@ -986,15 +986,12 @@ export async function reviewAttempt(attemptId: string): Promise<ApiAttemptPayloa
 /* ---------------- 个人资料与模型配置 ---------------- */
 
 export async function updateProfile(patch: Partial<TeacherProfile> & { school?: string }): Promise<ApiUser> {
-  return request<ApiUser>('/api/users/me', {
-    method: 'PUT',
-    body: JSON.stringify({
-      display_name: patch.name,
-      gender: patch.gender === '' ? null : patch.gender,
-      phone: patch.phone === '' ? null : patch.phone,
-      school: patch.school,
-    }),
-  })
+  const body: Record<string, unknown> = {}
+  if (patch.name !== undefined) body.display_name = patch.name
+  if (patch.gender !== undefined) body.gender = patch.gender === '' ? null : patch.gender
+  if (patch.phone !== undefined) body.phone = patch.phone === '' ? null : patch.phone
+  if (patch.school !== undefined) body.school = patch.school
+  return request<ApiUser>('/api/users/me', { method: 'PUT', body: JSON.stringify(body) })
 }
 
 export interface ModelSettings {
@@ -1026,12 +1023,18 @@ export async function saveModelSettings(payload: {
   })
 }
 
-export async function testDeepSeek(): Promise<void> {
-  await request<void>('/api/users/me/model-settings/test-deepseek', { method: 'POST' })
+export async function testDeepSeek(key?: string): Promise<void> {
+  await request<void>('/api/users/me/model-settings/test-deepseek', {
+    method: 'POST',
+    body: JSON.stringify(key ? { deepseek_api_key: key } : {}),
+  })
 }
 
-export async function testMinerU(): Promise<void> {
-  await request<void>('/api/users/me/model-settings/test-mineru', { method: 'POST' })
+export async function testMinerU(token?: string): Promise<void> {
+  await request<void>('/api/users/me/model-settings/test-mineru', {
+    method: 'POST',
+    body: JSON.stringify(token ? { mineru_token: token } : {}),
+  })
 }
 
 /* ---------------- 对话出题 ---------------- */
