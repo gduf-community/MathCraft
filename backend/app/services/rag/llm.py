@@ -30,11 +30,11 @@ class LLMError(RuntimeError):
     """模型调用失败；只有白名单中的固定提示可直接公开。"""
 
 
-_MISSING_KEY = "DeepSeek API Key 未配置：请到设置 → 模型与服务中填写"
+_MISSING_KEY = "DeepSeek API Key 未配置：请到个人中心 → API 配置中填写"
 _INVALID_JSON = "模型返回的 JSON 无法解析，请重试"
 _GENERIC_ERROR = "模型调用失败，请稍后重试"
-_BALANCE_ERROR = "DeepSeek 账户余额不足，请到设置 → 模型与服务更换密钥或充值后重试"
-_AUTH_ERROR = "DeepSeek API Key 无效，请到设置 → 模型与服务检查密钥"
+_BALANCE_ERROR = "DeepSeek 账户余额不足，请到个人中心 → API 配置更换密钥或充值后重试"
+_AUTH_ERROR = "DeepSeek API Key 无效，请到个人中心 → API 配置检查密钥"
 _RATE_ERROR = "模型接口请求过于频繁，请等一两分钟再试"
 _TIMEOUT_ERROR = "模型响应超时，请稍后重试"
 _STATUS_ERRORS = {401: _AUTH_ERROR, 402: _BALANCE_ERROR, 429: _RATE_ERROR}

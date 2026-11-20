@@ -92,7 +92,7 @@ OpenAI SDK 使用 `openai<3`：当前追踪客户端基于 `httpx`，不兼容 S
 
 配置以 [app/config.py](app/config.py) 为准，环境变量优先于固定位置的 `backend/.env`。SQLite 相对路径按启动工作目录解析，其他存储目录相对路径以 `backend/` 为基准。修改配置后重启服务。
 
-DeepSeek 与 MinerU 个人凭据在应用“设置 → 模型与服务”保存；嵌入、重排模型与凭据由管理员在“模型与检索”维护。部署默认值及优先级见 [模型配置说明](../docs/design/模型配置来源与普通知识库流程.md)。
+DeepSeek 与 MinerU 个人凭据在应用“个人中心 → API 配置”保存；嵌入、重排模型与凭据由管理员在“模型与检索”维护。部署默认值及优先级见 [模型配置说明](../docs/design/模型配置来源与普通知识库流程.md)。
 
 后端环境模板只有本目录的 [.env.example](.env.example)，仓库根模板仅作配置入口指引。MinerU Token 不从 `.env` 读取：个人 Token 优先，没有时使用 `app/local_secrets.py` 中的 `MINERU_DEFAULT_TOKEN`，格式见 [占位样例](app/local_secrets.example.py)。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不属于当前后端配置；已有 `.env` 中这些字段不会自动迁移或覆盖个人设置。OCR 地址和解析模型仍由 `app/services/mineru.py` 固定。
 

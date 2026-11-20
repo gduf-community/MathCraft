@@ -31,7 +31,7 @@ def test_upgrade_from_each_branch_preserves_history(tmp_path, monkeypatch, previ
                         "encrypted_key='synthetic-ciphertext-not-a-real-credential' WHERE id=1"
                     ))
         command.upgrade(config, "head")
-        assert ScriptDirectory.from_config(config).get_heads() == ["p1c2d3e45678"]
+        assert ScriptDirectory.from_config(config).get_heads() == ["q2d3e4f56789"]
         tables = inspect(engine).get_table_names()
         assert {"platform_llm_settings", "generation_tasks", "ops_runs"} <= set(tables)
         assert {"request_id", "execution_finished_at"} <= {
@@ -40,7 +40,7 @@ def test_upgrade_from_each_branch_preserves_history(tmp_path, monkeypatch, previ
         with engine.connect() as connection:
             assert connection.execute(text(
                 "SELECT version_num FROM alembic_version"
-            )).scalars().all() == ["p1c2d3e45678"]
+            )).scalars().all() == ["q2d3e4f56789"]
             assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
             if previous != "base":
                 assert connection.execute(text(

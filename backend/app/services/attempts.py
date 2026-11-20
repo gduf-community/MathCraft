@@ -320,7 +320,7 @@ def submit_attempt(
         for row in rows
     )
     if needs_llm and not api_key:
-        raise AppError("DEEPSEEK_KEY_MISSING", "主观题批卷需要 DeepSeek API Key，请到设置 → 模型与服务中填写", 400)
+        raise AppError("DEEPSEEK_KEY_MISSING", "主观题批卷需要 DeepSeek API Key，请到个人中心 → API 配置中填写", 400)
     attempt.status = "grading"
     attempt.grading_run_id = run_id
     db.commit()

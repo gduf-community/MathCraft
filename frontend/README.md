@@ -90,12 +90,12 @@ Ubuntu + Node 22 的 CI 在仓库根目录执行以下完整命令：
 ```bash
 cd frontend
 npm ci
-npx playwright-core install --with-deps chromium
+npx --no-install playwright-core install chromium
 npm run lint
 npm test
 ```
 
-Windows 本地安装浏览器使用 `npx playwright-core install chromium`，其余命令相同。首次安装 npm 依赖与 Chromium 需要网络；安装完成后回归使用内存 API 和假 Turnstile，无需后端、Redis、真实账号、模型或个人环境文件。
+CI 使用 Ubuntu 24.04 runner 预装的 Chromium 系统库。精简 Linux 环境可用 `npx --no-install playwright-core install --with-deps chromium` 补装系统依赖。Windows 本地安装使用上面的命令。首次安装 npm 依赖与 Chromium 需要网络；安装完成后回归使用内存 API 和假 Turnstile，无需后端、Redis、真实账号、模型或个人环境文件。
 
 `npm test` 与 `npm run test:regression` 都会先执行 TypeScript 检查和一次生产构建，再按以下固定顺序逐个运行脚本：
 
@@ -130,7 +130,7 @@ CI 无需额外执行 `npm run typecheck` 或 `npm run build`。若同一 job �
 
 ## 功能要点
 
-- 个人凭据在“模型与服务”保存：留空保留，明确勾选后清除；连接测试使用已保存配置。管理员在“模型与检索”维护平台模型与索引重建，嵌入模型变更需重建后生效。
+- 个人凭据在“个人中心 → API 配置”保存：留空保留，保存后仅显示掩码，眼睛图标可回显本机浏览器保存的完整 Key（在其他电脑配置的 Key 只显示掩码）；连接测试使用已保存配置，未配置 DeepSeek Key 时智能出题禁止发送。管理员在“模型与检索”维护平台模型与索引重建，嵌入模型变更需重建后生效。
 - 题库支持 PDF、DOCX、XLSX、MD／markdown、TXT 批量上传；校验格式、空文件及名称／大小／修改时间重复项，部分失败可只重试未受理文件。上传受理后仍需等待后台处理完成，列表可查看失败详情。
 - MD／TXT 提供分页文本预览，文本读取上限为 2 MiB；PDF 通过认证请求获取 Blob 后打开窗口，DOCX／XLSX 提供下载。关闭或切换文档时取消预览请求。
 - 当前出题界面采用 agent 布局：右侧保留可折叠历史侧栏，选择题库与文档、打开或删除历史会话；“新建对话”保留历史记录，快速面板和快捷提问已移除。保留创新命题、知识答疑、数据管理、图片和操作确认。历史加载期间禁止发送、重试及编辑，Context 入口也同步校验；详情接口必传当前 `mode`，续聊与重试沿用服务端模式，避免误切到快速出题并重置已有上下文。恢复有消息的会话时收起模式控制器，空会话仍显示并选中服务端模式。会话删除等待服务端成功后移出列表，失败保留列表与确认框。消息编辑或回退重发、模式切换与数据操作沿用忙碌保护。

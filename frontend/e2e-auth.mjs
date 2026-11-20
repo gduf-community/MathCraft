@@ -123,7 +123,7 @@ await context.route('**/*', async route => {
   else if (path === '/api/admin/overview') body = { accounts: { admin_active: 1 }, resources: {}, task_status_counts: {}, tasks: [], task_total: 0, recent_task_limit: 50, admin_contact: '测试管理员' }
   else if (path === '/api/admin/accounts') body = []
   else if (path.startsWith('/api/admin/ops/')) { status = 503; body = { detail: { code: 'NOT_INTEGRATED', message: '合成运维服务未接入' } } }
-  else if (path.includes('model-settings')) body = { mineru_limits: {}, embedding_model: 'test', rerank_model: 'test' }
+  else if (path.includes('model-settings')) body = { deepseek_key_configured: true, mineru_token_configured: true, mineru_limits: {}, embedding_model: 'test', rerank_model: 'test' }
   else if (path === '/api/generate/batches/latest') body = null
   else if (path === '/api/chat/sessions') { authenticated(); assert.equal(method, 'GET'); body = { items: [] } }
   else if (path === '/api/urges' || path === '/api/notifications') body = { unread_count: 0, items: [] }

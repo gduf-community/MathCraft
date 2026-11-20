@@ -7,13 +7,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.question import Question
+from app.schemas.question import Difficulty, Question, QuestionType
 
 
 class TypeCountBody(BaseModel):
     type: str = Field(pattern="^(single|multiple|judge|blank|compute|essay)$")
     # 高压长任务：单题型上限放宽到 100，与 TypeCount 一致
     count: int = Field(ge=1, le=100)
+    # 题型级难度；缺省回退整体 difficulty
+    difficulty: str | None = Field(default=None, pattern="^(低|中|高|地狱)$")
 
 
 class GenerateStartBody(BaseModel):
@@ -139,6 +141,7 @@ class ChatSessionDetailResponse(BaseModel):
 
 
 class ChatMessageBody(BaseModel):
+    request_id: UUID | None = None
     message: str = Field(
         max_length=2048, description="消息文本；仅发送图片时可为空，文本与图片不可同时为空",
     )
@@ -183,6 +186,65 @@ class ChatMessageBody(BaseModel):
         if not self.message.strip() and not self.images:
             raise ValueError("请提供消息文本或图片")
         return self
+
+
+class ChatOperationPreview(BaseModel):
+    """已发布的操作确认预览。"""
+
+    id: str
+    action: Literal["delete", "update"]
+    entity: str
+    entity_label: str
+    affected: int
+    samples: list[str]
+    explanation: str
+
+
+class ChatSavedQuestion(BaseModel):
+    """题库中当前保存的对话题目。"""
+
+    id: str
+    type: QuestionType
+    score: int
+    difficulty: Difficulty
+    difficulty_score: float
+    difficulty_review: dict[str, object] | None
+    stem: str
+    options: list[dict[str, object]]
+    answer: str
+    analysis: str
+    knowledge_point: str
+    starred: bool
+    favorite_group_id: str | None
+    doc_name: str
+    bank_id: str
+    document_id: str
+    batch_id: str
+    created_at: datetime
+
+
+class ChatMessageResponse(BaseModel):
+    """消息接口与状态查询共用的已发布回复。"""
+
+    reply: str
+    questions: list[ChatSavedQuestion | Question]
+    done: bool
+    batch_id: str | None
+    slot_state: dict[str, object]
+    kind: Literal["reply", "mode_mismatch", "mode_confirm"]
+    mode: Literal["generate", "creative", "qa", "data"]
+    mode_changed: bool
+    suggested_template: Literal["generate", "creative", "qa", "data", "none"] | None
+    confirm: ChatOperationPreview | None
+
+
+class ChatRequestResponse(BaseModel):
+    """指定轮次的业务状态及执行退出事实。"""
+
+    status: Literal["running", "canceled", "done", "failed", "interrupted"]
+    execution_finished: bool
+    batch_id: str | None
+    result: ChatMessageResponse | None
 
 
 class ChatConfirmBody(BaseModel):

@@ -10,7 +10,7 @@ MathCraft 面向教师与学生，提供题库协作、文档解析与检索、�
 
 对话提供快速出题、创新命题、知识答疑和数据管理四模式，右侧历史会话支持继续已有对话。出题先命制题干，再独立解题生成答案、选项和解析，审核后按题型缺口尝试补齐；界面通过进度轮询等待结果。题目预览中勾选题目后可导出 Word，设置题型顺序、答案和解析的位置。
 
-试卷支持关闭和恢复作答，删除保留已有作答及成绩；出题任务状态存入 SQL，服务重启后未完成的任务标为中断，用户可重新发起。预览页一键清空只删除题目，保留对话；运行期间暂不可清空，后台取消和最终提交继续校验运行身份。
+试卷支持关闭和恢复作答，删除保留已有作答及成绩；出题任务状态存入 SQL，服务重启后未完成的任务标为中断，用户可重新发起。一键清空删除当前预览的题目并保留对话。生成期间和暂停待确认期间，清空按钮禁用。若暂停前本轮已保存，先恢复结果供用户查看和清空。
 
 学习空间可在停止作答后移除尚无作答记录的发布；已有作答保留历史入口。删除未完成的题库与资料在管理页提供继续清理入口。
 
@@ -111,14 +111,14 @@ OpenAI 兼容客户端使用 `openai<3`：当前追踪适配基于 `httpx`，不
 | `DATABASE_URL` | 默认 `sqlite:///./data/mathcraft.db` |
 | `REDIS_URL` | 默认 `redis://127.0.0.1:6379/0`，与上一步的服务一致 |
 | `AUTH_JWT_SECRET`、`AUTH_CODE_SECRET` | 由初始化脚本生成，保留生成值 |
-| `DEEPSEEK_API_KEY` | 可填部署默认 Key，也可登录后在“设置 → 模型与服务”保存个人 Key |
+| `DEEPSEEK_API_KEY` | 可填部署默认 Key，也可登录后在“个人中心 → API 配置”保存个人 Key |
 | `SMTP_*` | 使用邮箱验证码登录、找回密码或绑定邮箱时配置 |
 
 上述复制命令仅在缺少 `app/local_secrets.py` 时创建占位配置，已有文件保留。首次账号密码登录无需真实模型凭据，使用模型功能前再配置对应服务。
 
 已有 `.env` 不会被模板覆盖，需手动核对开发开关。后端环境配置以 [backend/app/config.py](backend/app/config.py) 为准，进程环境变量优先于固定位置的 `backend/.env`；修改后需重启后端。唯一可复制的后端环境模板为 [backend/.env.example](backend/.env.example)，根 [.env.example](.env.example) 仅作配置入口指引，当前前后端均不读取根 `.env`。
 
-MinerU Token 在“设置 → 模型与服务”保存，个人配置优先；部署默认 Token 使用 `app/local_secrets.py` 的 `MINERU_DEFAULT_TOKEN`。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不生效，已有本机文件不会自动迁移。嵌入和重排模型仍由管理员“模型与检索”维护。
+MinerU Token 在“个人中心 → API 配置”保存，个人配置优先；部署默认 Token 使用 `app/local_secrets.py` 的 `MINERU_DEFAULT_TOKEN`。旧 `MINERU_MODE`、`MINERU_API_BASE_URL`、`MINERU_API_TOKEN` 不生效，已有本机文件不会自动迁移。嵌入和重排模型仍由管理员“模型与检索”维护。
 
 平台生成模型凭据支持管理员接口 `/api/admin/llm-settings`，使用 `cryptography` 加密保存。调用优先使用个人 Key，其次为平台凭据，最后为部署默认；个人 Key 被模型服务拒绝时可回退平台配置。加密主密钥位于上传目录父级的 `secret.key`（默认 `backend/data/secret.key`），备份数据库时一并备份该文件。
 
@@ -170,7 +170,7 @@ node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort
 
 前端隔离项目环境文件，根 `.env` 和 `frontend/.env` 均不会被 Vite 加载；自定义公开 API 地址需在开发启动或构建前通过进程环境变量 `VITE_API_BASE_URL` 注入。监听地址与端口使用上述命令行参数，开发代理目标由 `frontend/vite.config.ts` 定义；`VITE_*` 会进入浏览器代码，不得放入凭据。详见[前端配置说明](frontend/README.md#构建与检查)。
 
-教师、学生账号由管理员开通。个人 DeepSeek Key 和 MinerU Token 在“设置 → 模型与服务”配置；平台嵌入、重排模型由管理员在“模型与检索”配置。嵌入模型或服务地址变更后，需重建索引才能应用。
+教师、学生账号由管理员开通。个人 DeepSeek Key 和 MinerU Token 在“个人中心 → API 配置”配置，未配置 DeepSeek Key 时智能出题不可发送；平台嵌入、重排模型由管理员在“模型与检索”配置。嵌入模型或服务地址变更后，需重建索引才能应用。
 
 部署默认的硅基流动与 MinerU 凭据配置方式见 [模型配置说明](docs/design/模型配置来源与普通知识库流程.md)，占位格式见 [local_secrets.example.py](backend/app/local_secrets.example.py)。
 

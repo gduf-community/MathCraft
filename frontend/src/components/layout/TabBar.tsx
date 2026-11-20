@@ -12,11 +12,11 @@ const TABS: { key: TabKey; label: string; icon: LucideIcon }[] = [
 
 export default function TabBar() {
   const {
-    activeTab, setActiveTab, startNewChat, clearQuestions, botThinking, sessionLoading,
+    activeTab, setActiveTab, startNewChat, clearQuestions, botThinking, chatPauseStatus, sessionLoading,
     confirmBusy, pendingConfirm, generating, generationClearing, questionsClearing,
     generationRecoveryError, resetGenerationRecovery, retryGenerationCleanup,
   } = useApp()
-  const clearDisabled = botThinking || sessionLoading || confirmBusy || pendingConfirm !== null
+  const clearDisabled = botThinking || chatPauseStatus != null || sessionLoading || confirmBusy || pendingConfirm !== null
     || generating || generationClearing || questionsClearing || generationRecoveryError !== null
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)

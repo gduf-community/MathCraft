@@ -31,7 +31,14 @@ import type { AuthRole, AuthUser } from '../api/auth'
 const isChatMode = (value: string): value is ChatMode => value in CHAT_MODE_LABELS
 const QUESTION_DELETE_BATCH_SIZE = 200
 
-export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me' | 'settings'
+interface ChatTurn {
+  requestId: string
+  sessionId: string
+  bankId: string
+  docId: string
+}
+
+export type TabKey = 'generate' | 'preview' | 'bank' | 'records' | 'fav' | 'space' | 'me'
 
 /** 历史会话侧边栏列表项（来自后端，按账号隔离） */
 export interface ChatSessionSummary {
@@ -50,7 +57,7 @@ function buildProfile(user: AuthUser | null): TeacherProfile {
     gender: user?.gender === '男' || user?.gender === '女' ? user.gender : '',
     phone: user?.phone ?? '',
     email: user?.email ?? '',
-    teacherId: user?.userNo ?? '',
+    teacherId: user?.username ?? '',
     school: user?.school ?? '',
     identity: user?.identity ?? '',
   }
@@ -86,11 +93,12 @@ interface AppState {
   /** 删除受理后立即清理选中项与缓存，阻止旧请求重新写入。 */
   invalidateDocument: (bankId: string, documentId: string) => void
 
-  /** 个人模型设置页的未保存提醒 */
-  hasUnsavedChanges: boolean
-  setHasUnsavedChanges: (v: boolean) => void
-  isSettingsSaving: boolean
-  setIsSettingsSaving: (saving: boolean) => void
+  /** 个人 API 配置（脱敏）；未配置 DeepSeek Key 时出题被拦截 */
+  modelSettings: api.ModelSettings | null
+  refreshModelSettings: () => Promise<void>
+  /** 未配置 API 时的引导弹窗 */
+  apiConfigOpen: boolean
+  closeApiConfigModal: () => void
 
   generationRecoveryError: string | null
   resetGenerationRecovery: () => void
@@ -213,6 +221,7 @@ interface AppState {
   sendChat: (text: string, images?: string[], opts?: { switchOnly?: boolean; mode?: ChatMode }) => Promise<void>
   /** 中止当前对话请求（服务端仍会跑完，前端不再等结果） */
   pauseChat: () => void
+  chatPauseStatus: 'pending' | 'failed' | null
   /** 回退到这条消息重新发送 */
   retryChat: (messageId: string) => void
   /** 把这条消息放回输入框继续编辑 */
@@ -264,6 +273,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatProgress, setChatProgress] = useState<{ percent: number; stage: string } | null>(null)
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
+  const [chatPauseStatus, setChatPauseStatus] = useState<'pending' | 'failed' | null>(null)
   const [inputDraft, setInputDraft] = useState('')
   const [chatImages, setChatImages] = useState<string[]>([])
   const [mode, setModeState] = useState<ChatMode>('generate')
@@ -278,23 +288,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [bankNotifUnread, setBankNotifUnread] = useState(0)
   const [bankNotifItems, setBankNotifItems] = useState<api.ApiNotification[]>([])
   const [pendingSpacePaper, setPendingSpacePaper] = useState<{ spaceId: string; paperId: string } | null>(null)
-  // 个人模型设置页的未保存提醒
-  const [hasUnsavedChanges, setHasUnsavedChangesState] = useState(false)
-  const [isSettingsSaving, setIsSettingsSavingState] = useState(false)
-  const settingsDirtyRef = useRef(false)
-  const settingsSavingRef = useRef(false)
-  const setHasUnsavedChanges = useCallback((dirty: boolean) => {
-    settingsDirtyRef.current = dirty
-    setHasUnsavedChangesState(dirty)
-  }, [])
-  const setIsSettingsSaving = useCallback((saving: boolean) => {
-    settingsSavingRef.current = saving
-    setIsSettingsSavingState(saving)
-  }, [])
+  // 个人 API 配置：登录后读取一次；未配置 DeepSeek Key 时弹出引导并拦截出题
+  const [modelSettings, setModelSettings] = useState<api.ModelSettings | null>(null)
+  const [apiConfigOpen, setApiConfigOpen] = useState(false)
+  const apiConfigPromptedRef = useRef(false)
+
   const activeBatchRef = useRef<string | null>(null)
   const chatSessionRef = useRef<{ id: string; bankId: string; docId: string } | null>(null)
   const chatAbortRef = useRef<AbortController | null>(null)
   const chatBusyRef = useRef(false)
+  const activeChatTurn = useRef<ChatTurn | null>(null)
+  const pendingChatPause = useRef<ChatTurn | null>(null)
+  const chatPauseController = useRef<AbortController | null>(null)
+  const chatPauseKey = user ? `mathcraft:chat-pause:${user.userId}` : null
   const chatVersionRef = useRef(0)
   const messageIdRef = useRef(0)
   const imageVersionRef = useRef(0)
@@ -323,12 +329,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const refreshModelSettings = useCallback(async () => {
+    const fresh = await api.getModelSettings()
+    if (!sessionIsCurrent()) return
+    setModelSettings(fresh)
+    const missing = !fresh.deepseek_key_configured || !fresh.mineru_token_configured
+    if (missing && !apiConfigPromptedRef.current) {
+      apiConfigPromptedRef.current = true
+      setApiConfigOpen(true)
+    }
+  }, [sessionIsCurrent])
+  const closeApiConfigModal = useCallback(() => setApiConfigOpen(false), [])
+
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
       if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
       chatAbortRef.current?.abort()
+      chatPauseController.current?.abort()
+      chatPauseController.current = null
       confirmRequestRef.current?.abort()
     }
   }, [])
@@ -353,18 +373,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setActiveTab = useCallback((tab: TabKey): boolean => {
     if (tab === activeTabRef.current) return true
-    if (settingsSavingRef.current) {
-      showToast('配置正在保存，请等待完成后再离开', 'error')
-      return false
-    }
-    if (settingsDirtyRef.current && !window.confirm('有未保存的模型配置，离开将丢弃修改。确定离开吗？')) return false
     activeTabRef.current = tab
     setActiveTabState(tab)
     return true
-  }, [showToast])
+  }, [])
 
   // 同步失效会话回调，防止清空、切库或切文档后的旧结果回填。
   const resetChat = useCallback(() => {
+    if (pendingChatPause.current) return
     chatVersionRef.current += 1
     previewVersionRef.current += 1
     sessionLoadingRef.current = false
@@ -373,6 +389,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     chatAbortRef.current?.abort()
     confirmRequestRef.current?.abort()
     chatAbortRef.current = null
+    activeChatTurn.current = null
     confirmRequestRef.current = null
     chatSessionRef.current = null
     chatBusyRef.current = false
@@ -655,7 +672,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setKbs(bankRows.filter(bank => bank.status === 'active').map(api.mapBankToKnowledgeBase))
         await Promise.all([loadFavorites(), loadRecords(), refreshSpaces(), loadSessions()])
         if (!sessionIsCurrent()) return
-        if (restoreHistory && latest.batch_id && version === previewVersionRef.current && !isClearing()) {
+        if (restoreHistory && latest.batch_id && version === previewVersionRef.current
+          && !isClearing() && !pendingChatPause.current) {
           activeBatchRef.current = latest.batch_id
           setQuestions(latest.questions.map(api.mapQuestion))
         }
@@ -665,9 +683,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })()
   }, [user, loadFavorites, loadRecords, loadSessions, refreshSpaces, sessionIsCurrent, showToast, isClearing])
 
+  useEffect(() => {
+    if (!user) return
+    void refreshModelSettings().catch(() => undefined)
+  }, [user, refreshModelSettings])
+
   const selectKb = useCallback(
     (id: string) => {
-      if (!sessionIsCurrent()) return
+      if (!sessionIsCurrent() || pendingChatPause.current) return
       if (selectedKbRef.current !== id || selectedDocRef.current) resetChat()
       selectedDocRef.current = ''
       const version = ++documentRequestVersion.current
@@ -690,7 +713,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const selectDoc = useCallback(
     (id: string) => {
-      if (!sessionIsCurrent()) return
+      if (!sessionIsCurrent() || pendingChatPause.current) return
       if (selectedDocRef.current !== id) resetChat()
       selectedDocRef.current = id
       pendingDocumentSelection.current = null
@@ -718,22 +741,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const setMode = useCallback((next: ChatMode) => {
-    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+    if (!sessionIsCurrent() || sessionLoadingRef.current || pendingChatPause.current || clearQuestionsFlight.current
       || chatBusyRef.current || confirmRequestRef.current || pendingConfirmRef.current) return
     setModeState(next)
     setModeVisible(true)
     setModeSuggested(null)
   }, [sessionIsCurrent])
 
+  const applyChatResult = useCallback((res: api.ChatMessageResult, previewVersion: number, appendReply = true) => {
+    setSessionMode(res.mode)
+    setModeVisible(res.kind !== 'reply')
+    setModeSuggested(
+      res.kind === 'mode_mismatch' && res.suggested_template
+      && isChatMode(res.suggested_template) ? res.suggested_template : null,
+    )
+    setPendingConfirm(res.confirm ?? null)
+    if (appendReply) setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
+    if (res.questions.length && previewVersion === previewVersionRef.current) {
+      const incoming = res.questions.map(api.mapQuestion)
+      setQuestions((prev) => dedupeQuestions(prev, incoming))
+      activeBatchRef.current = res.batch_id
+      setSelectedIds([])
+      showToast(`已生成 ${incoming.length} 道题目，已合并到「题目预览」`)
+    }
+  }, [setPendingConfirm, showToast])
+
   const sendChat = useCallback(
     async (text: string, images: string[] = [], opts?: { switchOnly?: boolean; mode?: ChatMode }) => {
       const trimmed = text.trim()
-      if ((!trimmed && !images.length) || sessionLoadingRef.current || clearQuestionsFlight.current
+      if ((!trimmed && !images.length) || sessionLoadingRef.current || pendingChatPause.current || clearQuestionsFlight.current
         || generating || generationRecoveryError || chatBusyRef.current || confirmRequestRef.current
         || pendingConfirmRef.current || !sessionIsCurrent()) return
       if (selectedKbRef.current !== selectedKbId || selectedDocRef.current !== selectedDocId) return
       if (!selectedDocId || !selectedKbId) {
         showToast('请先在右侧选择知识库文档，才能基于知识库出题')
+        return
+      }
+      if (modelSettings && !modelSettings.deepseek_key_configured) {
+        apiConfigPromptedRef.current = true
+        setApiConfigOpen(true)
         return
       }
       const effectiveMode = opts?.mode ?? mode
@@ -770,6 +816,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         const sessionId = session.id
         if (!isActive()) return
+        const requestId = crypto.randomUUID()
+        activeChatTurn.current = { requestId, sessionId, bankId: session.bankId, docId: session.docId }
         poll = window.setInterval(() => {
           if (!isActive()) return
           void api.getChatProgress(sessionId, controller.signal).then((progress) => {
@@ -783,27 +831,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chatPollRef.current = poll
         const res = await api.sendChatMessage(
           sessionId, trimmed, questions.map((q) => q.stem), controller.signal,
-          images, effectiveMode, opts?.switchOnly ?? false,
+          images, effectiveMode, opts?.switchOnly ?? false, requestId,
         )
         if (!isActive()) return
-        setSessionMode(res.mode)
-        setModeVisible(res.kind !== 'reply')
-        // 只接受合法业务模式：后端异常或历史版本传来的非法值直接忽略，避免卡死输入区
-        setModeSuggested(
-          res.kind === 'mode_mismatch' && res.suggested_template
-          && isChatMode(res.suggested_template) ? res.suggested_template : null,
-        )
-        // nullish 兜底：后端历史响应缺 confirm 字段时不能让 undefined 混进状态，
-        // 禁用判断都是「!== null」，undefined 会把发送、重生成与历史切换永久锁死
-        setPendingConfirm(res.confirm ?? null)
-        setMessages((prev) => [...prev, { id: `m-${++messageIdRef.current}`, role: 'assistant', text: res.reply }])
-        if (res.questions.length && previewVersion === previewVersionRef.current) {
-          const incoming = res.questions.map(api.mapQuestion)
-          setQuestions((prev) => dedupeQuestions(prev, incoming))
-          activeBatchRef.current = res.batch_id
-          setSelectedIds([])
-          showToast(`已生成 ${incoming.length} 道题目，已合并到「题目预览」`)
-        }
+        applyChatResult(res, previewVersion)
       } catch (error: unknown) {
         if (!isActive()) return
         setMessages((prev) => [...prev, {
@@ -815,6 +846,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (isActive()) {
           chatPollRef.current = null
           chatAbortRef.current = null
+          activeChatTurn.current = null
           chatBusyRef.current = false
           setChatProgress(null)
           setChatStartedAt(null)
@@ -825,7 +857,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     },
     [mode, loadSessions, selectedDocId, selectedKbId, questions, generating, generationRecoveryError,
-      sessionIsCurrent, setPendingConfirm, showToast],
+      applyChatResult, sessionIsCurrent, showToast, modelSettings],
   )
 
   const addChatImages = useCallback((files: File[]) => {
@@ -868,7 +900,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const confirmOperation = useCallback(async (accepted: boolean) => {
     const target = pendingConfirmRef.current
     const sessionId = chatSessionRef.current?.id
-    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+    if (!sessionIsCurrent() || sessionLoadingRef.current || pendingChatPause.current || clearQuestionsFlight.current
       || !target || !sessionId || confirmRequestRef.current
       || chatBusyRef.current) return
     const version = chatVersionRef.current
@@ -907,30 +939,130 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [loadFavorites, loadRecords, sessionIsCurrent, setPendingConfirm, showToast])
 
-  const pauseChat = useCallback(() => {
-    if (!sessionIsCurrent() || !chatBusyRef.current) return
-    const sessionId = chatSessionRef.current?.id
+  const settleChatPause = useCallback(async (turn: ChatTurn) => {
+    if (!sessionIsCurrent() || chatPauseController.current) return
+    const controller = new AbortController()
+    chatPauseController.current = controller
+    pendingChatPause.current = turn
+    chatBusyRef.current = true
     const version = chatVersionRef.current
+    const previewVersion = ++previewVersionRef.current
+    const isActive = () => sessionIsCurrent() && !controller.signal.aborted
+      && chatPauseController.current === controller
+    setBotThinking(true)
+    setChatPauseStatus('pending')
+    try {
+      if (chatPauseKey) sessionStorage.setItem(chatPauseKey, JSON.stringify(turn))
+      const requestSignal = () => AbortSignal.any([controller.signal, AbortSignal.timeout(15000)])
+      let state = await api.cancelChat(turn.sessionId, turn.requestId, requestSignal())
+      while (isActive() && (state.status === 'running' || !state.execution_finished)) {
+        await new Promise<void>(resolve => window.setTimeout(resolve, 750))
+        if (!isActive()) return
+        state = await api.getChatTurn(turn.sessionId, turn.requestId, requestSignal())
+      }
+      if (!isActive()) return
+      if (state.status === 'done' && !state.result) throw new Error('未能恢复本轮已保存的结果')
+      const restoring = chatSessionRef.current === null && version === chatVersionRef.current
+      if (restoring) {
+        const signal = requestSignal()
+        const [detail, documents] = await Promise.all([
+          api.getChatSession(turn.sessionId, signal),
+          api.listDocuments(turn.bankId, signal),
+        ])
+        let previous: { batch_id: string | null; questions: api.ApiQuestion[] } | null = null
+        if (!state.batch_id) {
+          const previousBatch = [...detail.messages].reverse().find(message => message.batch_id)?.batch_id
+          if (previousBatch) {
+            const page = await api.listQuestions({ batch_id: previousBatch, page_size: 100 }, requestSignal())
+            previous = { batch_id: previousBatch, questions: page.items }
+          } else {
+            previous = await api.latestBatch(undefined, undefined, requestSignal())
+          }
+        }
+        if (!isActive()) return
+        if (version === chatVersionRef.current) {
+          chatSessionRef.current = { id: turn.sessionId, bankId: turn.bankId, docId: turn.docId }
+          selectedKbRef.current = turn.bankId
+          selectedDocRef.current = turn.docId
+          setActiveSessionId(turn.sessionId)
+          setSelectedKbId(turn.bankId)
+          setSelectedDocId(turn.docId)
+          applyDocumentRows(turn.bankId, documents)
+          setModeState(detail.mode)
+          setSessionMode(detail.mode)
+          setModeVisible(detail.messages.length === 0)
+          if (previous && previewVersion === previewVersionRef.current) {
+            setQuestions(previous.questions.map(api.mapQuestion))
+            activeBatchRef.current = previous.batch_id
+          }
+          setMessages(detail.messages.map(message => ({
+            id: message.id, role: message.role, text: message.text,
+          })))
+        }
+      }
+      if (state.result && chatSessionRef.current?.id === turn.sessionId
+        && version === chatVersionRef.current) {
+        applyChatResult(state.result, previewVersion, !restoring)
+        showToast('本轮已完成，已恢复结果')
+      } else if (chatSessionRef.current?.id === turn.sessionId && version === chatVersionRef.current) {
+        const message = state.status === 'canceled' ? '已暂停本次生成。' : '本轮处理已结束，请重新发送。'
+        setMessages(prev => [...prev, {
+          id: `m-${++messageIdRef.current}`, role: 'assistant', text: message,
+        }])
+      }
+      if (chatPauseKey) sessionStorage.removeItem(chatPauseKey)
+      pendingChatPause.current = null
+      chatBusyRef.current = false
+      setChatPauseStatus(null)
+      setBotThinking(false)
+      void loadSessions()
+    } catch (error: unknown) {
+      if (!isActive()) return
+      setChatPauseStatus('failed')
+      showToast(error instanceof Error ? error.message : '服务端暂停未确认', 'error')
+    } finally {
+      if (chatPauseController.current === controller) chatPauseController.current = null
+    }
+  }, [applyChatResult, applyDocumentRows, chatPauseKey, loadSessions, sessionIsCurrent, showToast])
+
+  const pauseChat = useCallback(() => {
+    if (!sessionIsCurrent() || chatPauseController.current
+      || (!chatBusyRef.current && !pendingChatPause.current)) return
+    const turn = pendingChatPause.current ?? activeChatTurn.current
     chatAbortRef.current?.abort()
     if (chatPollRef.current !== null) window.clearInterval(chatPollRef.current)
     chatPollRef.current = null
     chatAbortRef.current = null
-    chatBusyRef.current = false
-    setBotThinking(false)
+    activeChatTurn.current = null
     setChatProgress(null)
     setChatStartedAt(null)
-    setMessages((prev) => [...prev, {
-      id: `m-${++messageIdRef.current}`, role: 'assistant', text: '已暂停本次生成。',
-    }])
-    if (sessionId) void api.cancelChat(sessionId).then(() => loadSessions()).catch((error: unknown) => {
-      if (sessionIsCurrent() && version === chatVersionRef.current && !chatBusyRef.current) {
-        showToast(error instanceof Error ? error.message : '服务端暂停未确认')
+    if (turn) {
+      void settleChatPause(turn)
+    } else {
+      chatBusyRef.current = false
+      setBotThinking(false)
+    }
+  }, [sessionIsCurrent, settleChatPause])
+
+  useEffect(() => {
+    if (!chatPauseKey) return
+    try {
+      const saved = sessionStorage.getItem(chatPauseKey)
+      if (!saved) return
+      const turn: Partial<ChatTurn> | null = JSON.parse(saved)
+      if (turn && typeof turn.requestId === 'string' && typeof turn.sessionId === 'string'
+        && typeof turn.bankId === 'string' && typeof turn.docId === 'string') {
+        void settleChatPause({
+          requestId: turn.requestId, sessionId: turn.sessionId, bankId: turn.bankId, docId: turn.docId,
+        })
       }
-    })
-  }, [loadSessions, sessionIsCurrent, showToast])
+    } catch (error: unknown) {
+      showToast(error instanceof Error ? error.message : '读取暂停记录失败', 'error')
+    }
+  }, [chatPauseKey, settleChatPause, showToast])
 
   const retryChat = useCallback((messageId: string) => {
-    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+    if (!sessionIsCurrent() || sessionLoadingRef.current || pendingChatPause.current || clearQuestionsFlight.current
       || generating || generationRecoveryError || chatBusyRef.current || confirmRequestRef.current
       || pendingConfirmRef.current || !selectedDocId || !selectedKbId
       || selectedKbRef.current !== selectedKbId || selectedDocRef.current !== selectedDocId) return
@@ -942,7 +1074,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [messages, selectedDocId, selectedKbId, sendChat, sessionIsCurrent, generating, generationRecoveryError])
 
   const editChat = useCallback((messageId: string) => {
-    if (!sessionIsCurrent() || sessionLoadingRef.current || clearQuestionsFlight.current
+    if (!sessionIsCurrent() || sessionLoadingRef.current || pendingChatPause.current || clearQuestionsFlight.current
       || chatBusyRef.current || confirmRequestRef.current || pendingConfirmRef.current) return
     const index = messages.findIndex((message) => message.id === messageId && message.role === 'user')
     if (index < 0) return
@@ -957,7 +1089,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const openSession = useCallback(
     async (target: ChatSessionSummary) => {
       const confirmInFlight = confirmRequestRef.current !== null
-      if (!sessionIsCurrent() || chatBusyRef.current || confirmInFlight
+      if (!sessionIsCurrent() || chatBusyRef.current || pendingChatPause.current || confirmInFlight
         || pendingConfirmRef.current !== null) return
       const version = ++chatVersionRef.current
       const previewVersion = ++previewVersionRef.current
@@ -1052,7 +1184,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   /** 新建对话：回到欢迎态；当前会话保留在历史列表中 */
   const startNewChat = useCallback(() => {
-    if (!sessionIsCurrent()) return
+    if (!sessionIsCurrent() || pendingChatPause.current) return
     if (!setActiveTab('generate')) return
     resetChat()
   }, [resetChat, sessionIsCurrent, setActiveTab])
@@ -1578,10 +1710,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectDoc,
     refreshKbs,
     invalidateDocument,
-    hasUnsavedChanges,
-    setHasUnsavedChanges,
-    isSettingsSaving,
-    setIsSettingsSaving,
+    modelSettings,
+    refreshModelSettings,
+    apiConfigOpen,
+    closeApiConfigModal,
     generating,
     generationClearing,
     generationRecoveryError,
@@ -1668,6 +1800,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     removeChatImage,
     sendChat,
     pauseChat,
+    chatPauseStatus,
     chatProgress,
     chatStartedAt,
     retryChat,

@@ -533,7 +533,10 @@ def _regen(
 ) -> list[Question]:
     """按题型补出 count 道，避免与已保留题目重复。"""
     check_cancellation(cancel_check)
-    sub = params.model_copy(update={"types": [TypeCount(type=qtype, count=count)]})
+    sub_diff = next(
+        (tc.difficulty for tc in params.types if tc.type == qtype and tc.difficulty), None,
+    )
+    sub = params.model_copy(update={"types": [TypeCount(type=qtype, count=count, difficulty=sub_diff)]})
     return question_gen.generate_questions(
         sub,
         doc_name,
@@ -925,8 +928,9 @@ def review_questions(
             progress(percent, stage)
         check_cancellation(cancel_check)
 
-    target = params.difficulty
     scope = params.scope or ""
+    # 题型级难度优先于整体难度档：同批不同题型可要求不同目标档
+    type_difficulty = {tc.type: tc.difficulty for tc in params.types if tc.difficulty}
     if db.in_transaction() or db.new or db.dirty or db.deleted:
         # 连已 flush 的变更也通过活动事务拒绝，不能只检查 new/dirty/deleted 后 rollback。
         raise InvalidRequestError(
@@ -959,6 +963,7 @@ def review_questions(
         if not items:
             continue
         target_count = requested.get(qtype, len(items))
+        target = type_difficulty.get(qtype, params.difficulty)
 
         report(78, f"正在排查重复题目（{done + 1}/{total}）")
         kept, dropped = run_checked(

@@ -14,7 +14,7 @@ from app.db import SessionLocal
 from app.deps import resolve_bank_access
 from app.errors import AppError
 from app.models import Document, GenerationBatch, OpsRun, Question, User
-from app.models.chat import ChatSession
+from app.models.chat import ChatRequest, ChatSession
 from app.models.base import new_id, utcnow
 from app.models.generation_task import GenerationTask
 from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
@@ -416,7 +416,13 @@ def build_params(body: GenerateStartBody) -> GenerateParams:
     return GenerateParams(
         kb_id=bank_id,
         doc_id=document_id,
-        types=[TypeCount(type=QuestionType(t.type), count=t.count) for t in body.types],
+        types=[
+            TypeCount(
+                type=QuestionType(t.type), count=t.count,
+                difficulty=Difficulty(t.difficulty) if t.difficulty else None,
+            )
+            for t in body.types
+        ],
         difficulty=Difficulty(body.difficulty),
         source_mode=body.source_mode,
         scope=body.scope,
@@ -742,6 +748,12 @@ def recover_interrupted_generation() -> None:
             logger.warning("运维台账结构不可用，已跳过台账中断状态恢复")
         db.query(ChatSession).filter(ChatSession.run_status == "running").update({
             "run_status": "interrupted", "run_stage": "服务重启，请重新发送消息",
+        }, synchronize_session=False)
+        db.query(ChatRequest).filter(ChatRequest.execution_finished_at.is_(None)).update({
+            "status": case(
+                (ChatRequest.status == "running", "interrupted"), else_=ChatRequest.status,
+            ),
+            "execution_finished_at": utcnow(),
         }, synchronize_session=False)
         db.commit()
         for task in tasks:

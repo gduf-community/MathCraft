@@ -2,13 +2,14 @@
 from typing import Callable
 
 from app.models.ops_run import RunErrorCode
-from app.schemas.question import GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
 from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
 from app.services.rag.llm import friendly_error
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
 from app.services.rag.question_gen import NeedConfirmError, generate_questions
 from app.services.rag.slots import (
-    build_followup, build_params, extract_slots, merge_slots, missing_keys,
+    build_followup, build_natural_followup, build_params, extract_slots, merge_slots,
+    missing_keys,
 )
 
 DONE_REPLY = "题目已生成完成，共 {n} 道，已同步到「题目预览」标签页。还需要生成其他题型吗？"
@@ -93,7 +94,9 @@ def handle_chat(
     ))
     missing = missing_keys(state)
     if missing:
-        return {"reply": build_followup(missing, state), "slot_state": state,
+        reply = (build_natural_followup(message, state, missing, api_key=api_key)
+                 or build_followup(missing, state))
+        return {"reply": reply, "slot_state": state,
                 "questions": [], "done": False}
 
     _guard(cancel_check)
@@ -115,6 +118,7 @@ def handle_chat(
             doc_name,
             scope=scope,
             mixed_difficulty=bool(state.get("mixed_difficulty")),
+            difficulty_note=str(state.get("difficulty_note") or ""),
             existing_stems=existing_stems,
             api_key=api_key,
             hyde_text=hyde_text,
@@ -246,8 +250,11 @@ def review_with_refill(
     from app.services.question_review import ReviewStats, _norm as normalize
 
     quota: dict[QuestionType, int] = {}
+    type_difficulty: dict[QuestionType, Difficulty] = {}
     for item in params.types:
         quota[item.type] = quota.get(item.type, 0) + item.count
+        if item.difficulty:
+            type_difficulty[item.type] = item.difficulty
     counts = dict.fromkeys(quota, 0)
     accepted: list[Question] = []
     avoid = list(dict[str, None].fromkeys((existing_stems or []) + params.existing_stems))
@@ -269,7 +276,8 @@ def review_with_refill(
         report(78 + round_no * 8, "正在审核题目" if not round_no else "正在审核补齐题目")
         review_params = params.model_copy(update={
             "existing_stems": list(avoid),
-            "types": [TypeCount(type=kind, count=target - counts[kind])
+            "types": [TypeCount(type=kind, count=target - counts[kind],
+                                difficulty=type_difficulty.get(kind))
                       for kind, target in quota.items() if counts[kind] < target],
         })
         passed, current_stats = review_fn(pool, review_params, list(avoid))
@@ -291,7 +299,8 @@ def review_with_refill(
             if normalize(question.stem) not in seen:
                 seen.add(normalize(question.stem))
                 avoid.append(question.stem)
-        deficits = [TypeCount(type=kind, count=target - counts[kind])
+        deficits = [TypeCount(type=kind, count=target - counts[kind],
+                              difficulty=type_difficulty.get(kind))
                     for kind, target in quota.items() if counts[kind] < target]
         if not deficits or len(accepted) >= requested or round_no == MAX_REFILL_ROUNDS:
             break

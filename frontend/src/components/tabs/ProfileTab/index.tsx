@@ -1,20 +1,22 @@
-/** 个人中心页：个人资料与账号安全。头像为系统默认，不可修改。 */
+/** 个人中心页：资料头部、安全管理与 API 配置。头像为系统默认，不可修改。 */
 import { useRef, useState } from 'react'
 import {
   BadgeCheck,
-  Building2,
+  Check,
+  Headset,
+  KeyRound,
   Loader2,
+  Lock,
   Pencil,
-  Save,
-  ShieldCheck,
   User,
-  UserRound,
   X,
 } from 'lucide-react'
 import { useApp } from '../../../store/AppContext'
 
+import { ApiConfigCard } from './ApiConfigCard'
 import { SecuritySettings } from './SecuritySettings'
-import { changePasswordCurrent, validateNewPassword } from '../../../api/auth'
+import { changePasswordCurrent, validateNewPassword, getAuthConfig } from '../../../api/auth'
+import type { AuthConfig } from '../../../api/auth'
 import { useAuth } from '../../../store/AuthContext'
 import { getSessionGeneration } from '../../../api/session'
 
@@ -23,41 +25,38 @@ export default function ProfileTab() {
   const { user, setAuthNotice } = useAuth()
 
   const session = useRef(getSessionGeneration())
-  const [profileError, setProfileError] = useState('')
   const [pwdError, setPwdError] = useState('')
-  const reportProfileError = (message: string) => { setProfileError(message); showToast(message, 'error') }
   const reportPasswordError = (message: string) => { setPwdError(message); showToast(message, 'error') }
 
+  // 昵称编辑：与右上角昵称（profile.name）自动同步
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
+  const [draftName, setDraftName] = useState('')
   const [savingProfile, setSavingProfile] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdOld, setPwdOld] = useState('')
   const [pwdNew, setPwdNew] = useState('')
   const [pwdConfirm, setPwdConfirm] = useState('')
   const [savingPwd, setSavingPwd] = useState(false)
+  const [contactOpen, setContactOpen] = useState(false)
+  const [contact, setContact] = useState<AuthConfig | null>(null)
 
   const startEdit = () => {
-    setProfileError('')
-    setDraft({ name: profile.name, gender: profile.gender, phone: profile.phone, email: profile.email })
+    setDraftName(profile.name)
     setEditing(true)
   }
 
   const saveEdit = async () => {
     if (savingProfile) return
-    if (!draft.name.trim()) { reportProfileError('昵称不能为空'); return }
-    if (draft.phone.trim() && !/^1[0-9]{10}$/.test(draft.phone.trim())) { reportProfileError('请输入正确的 11 位手机号码'); return }
-    setProfileError('')
+    if (!draftName.trim()) { showToast('昵称不能为空', 'error'); return }
     setSavingProfile(true)
     try {
-      await updateProfile({ name: draft.name.trim(), gender: draft.gender, phone: draft.phone.trim() })
+      await updateProfile({ name: draftName.trim() })
       setEditing(false)
-      showToast('个人信息已保存', 'success')
-    } catch (error) { reportProfileError(error instanceof Error ? error.message : '保存失败') }
-    finally { setSavingProfile(false) }
+      showToast('昵称已保存', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '保存失败', 'error')
+    } finally { setSavingProfile(false) }
   }
-
-  const patchDraft = (patch: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...patch }))
 
   const submitPassword = async () => {
     if (savingPwd) return
@@ -82,12 +81,19 @@ export default function ProfileTab() {
     }
   }
 
+  const openContact = () => {
+    setContactOpen(true)
+    if (!contact) {
+      void getAuthConfig().then(setContact).catch(() => setContact(null))
+    }
+  }
+
   const fieldCls =
     'block w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-primary'
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5">
-      {/* 页面小标题 */}
+      {/* 页面小标题（复用原标签容器样式） */}
       <div className="mb-4 flex items-center gap-1.5 border-b border-line pb-3">
         <User size={15} className="text-primary" />
         <span className="relative text-sm font-semibold text-primary">
@@ -97,8 +103,7 @@ export default function ProfileTab() {
       </div>
 
       {/* 头部信息卡 */}
-      <div className="mb-4 flex flex-wrap items-center gap-6 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
-        {/* 头像：系统默认（昵称首字），不可修改 */}
+      <div className="mb-4 flex flex-wrap items-center gap-6 rounded-xl border border-line/70 bg-[linear-gradient(90deg,#ffffff_40%,#e9f2ff_100%)] p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
         <div className="relative h-[104px] w-[104px] shrink-0">
           <span className="flex h-[96px] w-[96px] items-center justify-center rounded-full border border-line/60 bg-primary-light text-3xl font-semibold text-primary">
             {profile.name.charAt(0)}
@@ -111,116 +116,83 @@ export default function ProfileTab() {
         </div>
 
         <div className="min-w-[180px]">
-          <div className="flex items-center gap-2">
-            <span className="text-lg font-bold text-ink">{profile.name}</span>
-            <span className="rounded bg-primary-light px-1.5 py-0.5 text-xs text-primary">{profile.identity}</span>
-          </div>
-          <p className="mt-1.5 text-sm text-ink-2">账号 ID：{profile.teacherId}</p>
-        </div>
-
-        <div className="space-y-2 border-l border-line/70 pl-6">
-          <p className="flex items-center gap-2 text-sm text-ink-2">
-            <ShieldCheck size={15} className="text-primary" />
-            身份信息：
-            <span className="text-ink">{profile.identity}</span>
-          </p>
-          <p className="flex items-center gap-2 text-sm text-ink-2">
-            <Building2 size={15} className="text-primary" />
-            学校认证：
-            <span className="text-ink">{profile.school}</span>
-          </p>
-        </div>
-      </div>
-
-      {/* 基本信息 */}
-      <div className="mb-4 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-ink">
-            <span className="h-3.5 w-1 rounded-full bg-primary" />
-            基本信息
-          </h3>
           {editing ? (
-            <button
-              type="button"
-              onClick={() => void saveEdit()}
-              disabled={savingProfile}
-              className="inline-flex items-center gap-1 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1a5fe6]"
-            >
-              <Save size={13} />
-              {savingProfile ? '保存中…' : '保存'}
-            </button>
+            <div className="flex items-center gap-2">
+              <input
+                aria-label="昵称"
+                autoFocus
+                disabled={savingProfile}
+                type="text"
+                value={draftName}
+                maxLength={20}
+                onChange={(e) => setDraftName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) void saveEdit()
+                  if (e.key === 'Escape') setEditing(false)
+                }}
+                className="w-44 rounded-lg border border-line bg-white px-3 py-1.5 text-lg font-bold text-ink outline-none focus:border-primary"
+              />
+              <button
+                type="button"
+                title="保存昵称"
+                aria-label="保存昵称"
+                disabled={savingProfile}
+                onClick={() => void saveEdit()}
+                className="rounded-lg bg-primary p-1.5 text-white transition-colors hover:bg-[#1a5fe6] disabled:opacity-60"
+              >
+                {savingProfile ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+              </button>
+              <button
+                type="button"
+                title="取消"
+                aria-label="取消编辑昵称"
+                disabled={savingProfile}
+                onClick={() => setEditing(false)}
+                className="rounded-lg border border-line p-1.5 text-ink-3 transition-colors hover:bg-page"
+              >
+                <X size={15} />
+              </button>
+            </div>
           ) : (
-            <button
-              type="button"
-              onClick={startEdit}
-              className="inline-flex items-center gap-1 rounded-lg border border-primary/30 bg-primary-light/50 px-3.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary-light"
-            >
-              <Pencil size={13} />
-              编辑
-            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-2xl font-bold text-ink">{profile.name}</span>
+              <button
+                type="button"
+                title="修改昵称"
+                aria-label="修改昵称"
+                onClick={startEdit}
+                className="rounded p-1 text-ink-3 transition-colors hover:bg-primary-light hover:text-primary"
+              >
+                <Pencil size={15} />
+              </button>
+            </div>
           )}
-        </div>
-
-        {profileError && <p role="alert" className="mb-3 text-sm text-red-700">{profileError}</p>}
-        <div className="grid grid-cols-1 gap-x-10 gap-y-5 px-2 md:grid-cols-2">
-          <div className="flex items-center gap-6">
-            <span className="w-16 shrink-0 text-sm text-ink-3">登录账号</span>
-            <span className="break-all text-sm text-ink">{user?.username}</span>
+          <div className="mt-2.5 flex items-center gap-2.5 text-sm text-ink-2">
+            <span>ID：{profile.teacherId}</span>
+            <span className="h-3.5 w-px bg-line" />
+            <span className="flex items-center gap-1.5">
+              身份：<span className="rounded bg-primary-light px-1.5 py-0.5 text-xs text-primary">{profile.identity}</span>
+            </span>
           </div>
-          <div className="flex items-center gap-6">
-            <span className="w-16 shrink-0 text-sm text-ink-3">昵称</span>
-            {editing ? (
-              <input aria-label="昵称" disabled={savingProfile} type="text" value={draft.name} maxLength={20} onChange={(e) => patchDraft({ name: e.target.value })} className={fieldCls} />
-            ) : (
-              <span className="text-sm text-ink">{profile.name}</span>
-            )}
-          </div>
-          <div className="flex items-center gap-6">
-            <span className="w-16 shrink-0 text-sm text-ink-3">性别</span>
-            {editing ? (
-              <select aria-label="性别" disabled={savingProfile} value={draft.gender} onChange={(e) => {
-                const gender = e.target.value
-                if (gender === '' || gender === '男' || gender === '女') patchDraft({ gender })
-              }} className={fieldCls}>
-                <option value="">未填写</option>
-                <option value="男">男</option>
-                <option value="女">女</option>
-              </select>
-            ) : (
-              <span className="flex items-center gap-1.5 text-sm text-ink">
-                <UserRound size={14} className="text-primary" />
-                {profile.gender || '未填写'}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-6">
-            <span className="w-16 shrink-0 text-sm text-ink-3">手机号码</span>
-            {editing ? (
-              <input aria-label="手机号码（可选，留空清除）" disabled={savingProfile} type="tel" value={draft.phone} maxLength={11} onChange={(e) => patchDraft({ phone: e.target.value })} className={fieldCls} />
-            ) : (
-              <span className="text-sm text-ink">{profile.phone || '未填写'}</span>
-            )}
-          </div>
-          <div className="flex min-w-0 items-start gap-6">
-            <span className="w-16 shrink-0 whitespace-nowrap text-sm text-ink-3">邮箱（可选）</span>
-            <span className="min-w-0 break-all text-sm text-ink">{user?.email ? `${user.email}（${user.emailVerified ? '已验证' : '待验证'}，通过账号安全管理）` : '未绑定，可在下方账号安全中绑定'}</span>
+          <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span className="shrink-0 whitespace-nowrap text-ink-3">登录账号</span>
+            <span className="shrink-0 text-ink">{profile.teacherId}</span>
+            <span className="h-3.5 w-px shrink-0 bg-line" />
+            <span className="shrink-0 whitespace-nowrap text-ink-3">邮箱（可选）</span>
+            <span className="min-w-0 break-all text-ink">
+              {user?.email
+                ? `${user.email}（${user.emailVerified ? '已验证' : '待验证'}，在下方账号安全管理）`
+                : '未绑定，可在下方账号安全中绑定'}
+            </span>
           </div>
         </div>
       </div>
 
-      <p className="mb-4 text-xs text-ink-3">性别和手机号码为可选资料；选择“未填写”或清空号码后保存可移除对应资料。</p>
-
+      {/* 账号安全：学工号资料、邮箱绑定与修改密码入口，回归依赖 region 内顺序 */}
       <SecuritySettings>
         <div className="border-t border-line pt-6">
-          <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-ink">
-            <span className="h-3.5 w-1 rounded-full bg-primary" />
-            修改密码
-          </h3>
-          <div className="flex flex-wrap items-center justify-between gap-3 px-2">
-            <div>
-              <p className="text-sm text-ink">修改密码</p>
-              <p className="mt-0.5 text-xs text-ink-3">修改后需要重新登录</p>
-            </div>
+          {pwdError && <p role="alert" className="mb-3 text-sm text-red-700">{pwdError}</p>}
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => {
@@ -232,18 +204,33 @@ export default function ProfileTab() {
               }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_4px_12px_rgba(30,111,255,0.30)] transition-all hover:bg-[#1a5fe6] active:scale-[0.97]"
             >
+              <Lock size={14} />
               修改密码
+            </button>
+            <button
+              type="button"
+              onClick={openContact}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-white px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary-light/60"
+            >
+              <Headset size={14} />
+              联系管理员
             </button>
           </div>
         </div>
       </SecuritySettings>
+
+      {/* API 配置 */}
+      <ApiConfigCard />
 
       {/* 修改密码弹窗 */}
       {pwdOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={() => setPwdOpen(false)}>
           <div className="w-[420px] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-line px-5 py-4">
-              <h3 className="text-base font-bold text-ink">修改密码</h3>
+              <h3 className="flex items-center gap-2 text-base font-bold text-ink">
+                <Lock size={16} className="text-primary" />
+                修改密码
+              </h3>
               <button type="button" onClick={() => setPwdOpen(false)} className="rounded p-1 text-ink-3 hover:bg-page">
                 <X size={18} />
               </button>
@@ -288,6 +275,38 @@ export default function ProfileTab() {
               >
                 {savingPwd && <Loader2 size={13} className="animate-spin" />}
                 确认修改
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 联系管理员弹窗 */}
+      {contactOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1b33]/45 p-4" onClick={() => setContactOpen(false)}>
+          <div className="w-[420px] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-line px-5 py-4">
+              <h3 className="flex items-center gap-2 text-base font-bold text-ink">
+                <Headset size={16} className="text-primary" />
+                联系管理员
+              </h3>
+              <button type="button" onClick={() => setContactOpen(false)} className="rounded p-1 text-ink-3 hover:bg-page">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              <p className="flex items-start gap-2 text-sm leading-6 text-ink-2">
+                <KeyRound size={15} className="mt-1 shrink-0 text-primary" />
+                {contact?.admin_contact?.trim() || '请联系本校或平台管理员获取账号、重置密码或处理账号问题。'}
+              </p>
+            </div>
+            <div className="flex justify-end border-t border-line px-5 py-3.5">
+              <button
+                type="button"
+                onClick={() => setContactOpen(false)}
+                className="rounded-lg border border-line px-4 py-2 text-sm text-ink-2 hover:bg-page"
+              >
+                我知道了
               </button>
             </div>
           </div>
