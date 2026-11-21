@@ -2,6 +2,8 @@ import { BookOpen, Check, ChevronUp, FileText, Search } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useApp } from '../../../store/AppContext'
 
+const MAX_SELECTION_LENGTH = 34
+
 const DOC_STATUS_LABELS: Record<string, string> = {
   uploaded: '排队等待解析',
   parsing: '正在解析',
@@ -23,6 +25,10 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
   const selectedBank = kbs.find((bank) => bank.id === selectedKbId)
   const selectedDoc = docs.find((doc) => doc.id === selectedDocId)
   const selection = [selectedBank?.name, selectedDoc?.name].filter(Boolean).join(' / ')
+  const selectionCharacters = Array.from(selection)
+  const selectionLabel = selectionCharacters.length > MAX_SELECTION_LENGTH
+    ? `${selectionCharacters.slice(0, MAX_SELECTION_LENGTH - 1).join('')}…`
+    : selection
   const filteredBanks = kbs.filter((bank) => bank.name.includes(keyword.trim()))
 
   function close() {
@@ -67,7 +73,7 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
         题库选择
         <ChevronUp size={13} aria-hidden="true" />
       </button>
-      {selection && <span className="min-w-0 flex-1 truncate text-xs text-ink-2" title={selection}>{selection}</span>}
+      {selection && <span className="min-w-0 flex-1 truncate text-xs text-ink-2" title={selection}>{selectionLabel}</span>}
       <div
         id={panelId}
         role="region"

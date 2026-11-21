@@ -112,7 +112,7 @@ export default function ChatInput() {
             <SegmentedControl value={mode} onChange={onModeChange} disabled={interactionBusy} />
           </div>
         )}
-        <div className="rounded-xl border border-line bg-white p-2.5 shadow-[0_-2px_16px_rgba(30,90,180,0.05)] has-[textarea:focus-visible]:border-ink-3">
+        <div className="rounded-xl bg-white p-2.5 shadow-[0_-2px_16px_rgba(30,90,180,0.05)]">
         {chatImages.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {chatImages.map((src, i) => (
