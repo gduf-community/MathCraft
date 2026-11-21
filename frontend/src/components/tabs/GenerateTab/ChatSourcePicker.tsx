@@ -42,7 +42,7 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
   return (
     <div
       ref={pickerRef}
-      className="flex min-w-0 flex-[1_1_9rem] items-center gap-2"
+      className="flex min-w-0 flex-[1_1_7rem] items-center gap-2"
       onBlur={(event) => {
         if (expanded && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) close()
       }}
@@ -67,17 +67,18 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
         题库选择
         <ChevronUp size={13} aria-hidden="true" />
       </button>
-      {selection && <span className="truncate text-xs text-ink-2" title={selection}>{selection}</span>}
+      {selection && <span className="min-w-0 flex-1 truncate text-xs text-ink-2" title={selection}>{selection}</span>}
       <div
         id={panelId}
-        hidden={!expanded}
         role="region"
         aria-label="选择题库文档"
-        className="absolute bottom-full left-0 z-20 mb-2 max-h-[min(22rem,45dvh)] w-80 max-w-full overflow-y-auto overscroll-contain rounded-xl border border-line bg-white p-2.5 shadow-lg"
+        className={expanded
+          ? "absolute bottom-full left-0 z-20 mb-2 flex max-h-[min(22rem,45dvh)] w-96 max-w-full flex-col rounded-xl border border-line bg-white p-2.5 shadow-lg"
+          : "hidden"}
       >
         {expanded && (
           <>
-            <label className="relative block">
+            <label className="relative block shrink-0">
               <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
               <input
                 autoFocus
@@ -89,7 +90,7 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
                 className="w-full rounded-md border border-line bg-page py-1.5 pl-8 pr-2 text-sm text-ink outline-none focus:border-primary"
               />
             </label>
-            <ul aria-label="题库" className="mt-1 max-h-28 space-y-0.5 overflow-y-auto">
+            <ul aria-label="题库" className="mt-1 max-h-[min(7rem,14dvh)] shrink-0 space-y-0.5 overflow-y-auto overscroll-contain">
               {filteredBanks.map((bank) => (
                 <li key={bank.id}>
                   <button
@@ -98,14 +99,14 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
                     onClick={() => { if (bank.id !== selectedKbId) selectKb(bank.id) }}
                     className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-ink-2 hover:bg-primary-weak focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary aria-pressed:bg-primary-weak aria-pressed:text-primary"
                   >
-                    <span className="truncate">{bank.name}</span>
+                    <span className="min-w-0 truncate" title={bank.name}>{bank.name}</span>
                     {bank.id === selectedKbId && <Check size={14} aria-hidden="true" className="shrink-0" />}
                   </button>
                 </li>
               ))}
               {filteredBanks.length === 0 && <li className="py-2 text-center text-xs text-ink-3">没有匹配的题库</li>}
             </ul>
-            <ul aria-label="文档" className="mt-2 space-y-1 border-t border-line pt-2">
+            <ul key={selectedKbId} aria-label="文档" className="mt-2 min-h-0 space-y-1 overflow-y-auto overscroll-contain border-t border-line pt-2">
               {docs.map((doc) => {
                 const selected = doc.id === selectedDocId
                 const status = doc.status ?? 'ready'
@@ -125,7 +126,7 @@ export function ChatSourcePicker({ disabled }: { disabled: boolean }) {
                       className="flex w-full items-center gap-2 rounded-lg border border-line px-2.5 py-2 text-left text-[13px] text-ink-2 hover:border-primary/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:bg-page/70 aria-pressed:border-primary/50 aria-pressed:bg-primary-weak"
                     >
                       <FileText size={14} aria-hidden="true" className="shrink-0 text-ink-3" />
-                      <span className="min-w-0 flex-1 truncate" title={doc.name}>{doc.name}</span>
+                      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]" title={doc.name}>{doc.name}</span>
                       {selected && <Check size={14} aria-hidden="true" className="shrink-0 text-primary" />}
                       {!ready && (
                         <span className={`shrink-0 text-xs ${failed ? 'text-red-600' : 'text-ink-2'}`}>

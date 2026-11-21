@@ -112,7 +112,7 @@ export default function ChatInput() {
             <SegmentedControl value={mode} onChange={onModeChange} disabled={interactionBusy} />
           </div>
         )}
-        <div className="rounded-xl border border-line bg-white p-2.5 shadow-[0_-2px_16px_rgba(30,90,180,0.05)]">
+        <div className="rounded-xl border border-line bg-white p-2.5 shadow-[0_-2px_16px_rgba(30,90,180,0.05)] has-[textarea:focus-visible]:border-ink-3">
         {chatImages.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {chatImages.map((src, i) => (
@@ -134,12 +134,12 @@ export default function ChatInput() {
         <div className="relative">
           <div
             aria-hidden="true"
-            className="invisible max-h-[4.5rem] min-h-6 overflow-hidden whitespace-pre-wrap px-1 text-sm leading-6 [overflow-wrap:break-word] [scrollbar-gutter:stable]"
+            className="invisible max-h-[4.5rem] min-h-12 overflow-hidden whitespace-pre-wrap px-1 text-sm leading-6 [overflow-wrap:break-word] [scrollbar-gutter:stable]"
           >
             {inputDraft}{inputDraft.endsWith('\n') && '\u200b'}
           </div>
           <textarea
-            rows={1}
+            rows={2}
             aria-label="出题消息"
             maxLength={2000}
             value={inputDraft}
@@ -151,7 +151,7 @@ export default function ChatInput() {
               }
             }}
             placeholder={chatImages.length > 0 ? '补充对图片的说明，或直接发送…' : '请输入你的问题，或粘贴相关文档内容...'}
-          className="absolute inset-0 block h-full w-full resize-none overflow-y-auto bg-transparent px-1 text-sm leading-6 text-ink outline-none [scrollbar-gutter:stable] placeholder:text-ink-3 focus-visible:ring-1 focus-visible:ring-primary/60"
+            className="absolute inset-0 block h-full w-full resize-none overflow-y-auto bg-transparent px-1 text-sm leading-6 text-ink outline-none [scrollbar-gutter:stable] placeholder:text-ink-3"
           />
         </div>
         <div className="relative mt-0.5 flex flex-wrap items-center gap-2">
