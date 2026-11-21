@@ -19,6 +19,28 @@ export async function runChatHistoryCases({ providerCase, selectBank, settleRend
   }
   const target = {id:'history-A', title:'历史 A', bankId:'bank-A', docId:'doc-bank-A'}
 
+  await providerCase('switching histories and document selection restores the corresponding text draft', async page => {
+    await prepare(page)
+    const textbox = page.getByRole('textbox', {name:'出题消息'})
+    await textbox.fill('尚未发送的新对话草稿')
+    const open = id => page.evaluate(({target, id}) => {
+      const h = window.mergeHarness
+      h.backend.getChatSession = () => ({mode:'qa', messages:[]})
+      return window.mergeApp.openSession({...target, id})
+    }, {target, id})
+    await open('history-A')
+    await textbox.fill('会话 A 的草稿')
+    await open('history-B')
+    assert.equal(await textbox.inputValue(), '')
+    await textbox.fill('会话 B 的草稿')
+    await open('history-A')
+    assert.equal(await textbox.inputValue(), '会话 A 的草稿')
+    await prepare(page)
+    assert.equal(await textbox.inputValue(), '尚未发送的新对话草稿')
+    await open('history-B')
+    assert.equal(await textbox.inputValue(), '会话 B 的草稿')
+  })
+
   for (const mode of ['generate', 'creative', 'qa', 'data']) {
     await providerCase(`history restores server mode ${mode} and continuation/retry never requests an implicit switch`, async page => {
       await prepare(page)

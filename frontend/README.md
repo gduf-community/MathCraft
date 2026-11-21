@@ -26,7 +26,8 @@ React 19 + TypeScript strict + Vite + Tailwind CSS，提供教师与学生共用
 | `src/components/auth/LoginEmailBindingDialog.tsx` | 从邮箱登录切换到临时账号认证与邮箱绑定；可返回邮箱登录，撤销失败可重试 |
 | `src/components/auth/EmailCodeFields.tsx` | 邮箱发码、验证码和 Turnstile；通过 `onBusyChange` 防止弹窗在发码期间关闭 |
 | `src/components/layout/`、`src/components/tabs/` | 工作台布局与出题、预览、题库、收藏等页面 |
-| `src/components/layout/HistorySidebar.tsx` | 可折叠历史侧栏，选择题库文档、打开与删除会话 |
+| `src/components/layout/HistorySidebar.tsx` | 可折叠历史侧栏，打开与删除会话，显示最近保存的模式 |
+| `src/components/tabs/GenerateTab/ChatSourcePicker.tsx` | 对话输入区内向上展开的题库与文档选择 |
 | `src/components/tabs/GenerateTab/` | agent 对话布局、模式选择、图片附件、输入框审批、消息操作和生成进度 |
 | `src/components/tabs/PreviewTab/ExportModal.tsx` | 已选题目的 Word 导出设置、题型顺序与请求反馈 |
 | `src/components/settings/`、`src/components/admin/` | 个人模型设置与管理员面板 |
@@ -133,7 +134,8 @@ CI 无需额外执行 `npm run typecheck` 或 `npm run build`。若同一 job �
 - 个人凭据在“个人中心 → API 配置”保存：留空保留，保存后仅显示掩码，眼睛图标可回显本机浏览器保存的完整 Key（在其他电脑配置的 Key 只显示掩码）；连接测试使用已保存配置，未配置 DeepSeek Key 时智能出题禁止发送。管理员在“模型与检索”维护平台模型与索引重建，嵌入模型变更需重建后生效。
 - 题库支持 PDF、DOCX、XLSX、MD／markdown、TXT 批量上传；校验格式、空文件及名称／大小／修改时间重复项，部分失败可只重试未受理文件。上传受理后仍需等待后台处理完成，列表可查看失败详情。
 - MD／TXT 提供分页文本预览，文本读取上限为 2 MiB；PDF 通过认证请求获取 Blob 后打开窗口，DOCX／XLSX 提供下载。关闭或切换文档时取消预览请求。
-- 当前出题界面采用 agent 布局：右侧保留可折叠历史侧栏，选择题库与文档、打开或删除历史会话；“新建对话”保留历史记录，快速面板和快捷提问已移除。保留创新命题、知识答疑、数据管理、图片和操作确认。历史加载期间禁止发送、重试及编辑，Context 入口也同步校验；详情接口必传当前 `mode`，续聊与重试沿用服务端模式，避免误切到快速出题并重置已有上下文。恢复有消息的会话时收起模式控制器，空会话仍显示并选中服务端模式。会话删除等待服务端成功后移出列表，失败保留列表与确认框。消息编辑或回退重发、模式切换与数据操作沿用忙碌保护。
+- Agent 出题页从输入框左下角的「题库选择」打开题库和文档列表。正文最多完整显示三行，第四行起在输入框内滚动。对话草稿按会话暂存，首次发送前按所选文档暂存。
+- 右侧历史栏用图标显示各会话最近保存的模式，支持打开与删除历史会话。“新建对话”保留历史记录，快速面板和快捷提问已移除。保留创新命题、知识答疑、数据管理、图片和操作确认。历史加载期间禁止发送、重试及编辑，Context 入口也同步校验。续聊与重试沿用详情接口的 `mode`。恢复有消息的会话时收起模式控制器，空会话仍显示并选中服务端模式。会话删除等待服务端成功后移出列表，失败保留列表与确认框。消息编辑或回退重发、模式切换与数据操作沿用忙碌保护。
 
 历史视觉记录：此前以 `5155f8a22ac75d2d67a9647e907dc18fedf5162b`（`bca8fb9^1`）为基准恢复旧欢迎区、四个快捷提问与快速面板的阶段已由当前 agent 布局替代。该阶段记录仍见[四模式说明](../docs/design/对话四模式与主线整合.md)与[恢复设计](../docs/implementation/登录视觉恢复与历史前端对照.md)，仅用于追溯。
 

@@ -2,6 +2,7 @@ import { CheckCircle2, LoaderCircle, ShieldAlert, SendHorizontal, Square, X, XCi
 import { useApp } from '../../../store/AppContext'
 import { CHAT_MODE_LABELS } from '../../../types'
 import SegmentedControl from '../../ui/SegmentedControl'
+import { ChatSourcePicker } from './ChatSourcePicker'
 
 /** 数据管理高危操作的输入框附着审批弹窗：简洁说明操作内容，同意执行 / 拒绝取消 */
 function ConfirmOverlay() {
@@ -83,7 +84,7 @@ export default function ChatInput() {
     }
     if (!canSend) return
     if (!selectedDocId) {
-      showToast('请先在右侧选择知识库文档，才能基于知识库出题')
+      showToast('请先通过「题库选择」选定文档，才能基于知识库出题')
       return
     }
     const text = inputDraft
@@ -107,7 +108,7 @@ export default function ChatInput() {
         {pendingConfirm && <ConfirmOverlay />}
         {/* 分段控制器嵌在输入框左上边缘，底边压住卡片顶边框 */}
         {modeVisible && !pendingConfirm && (
-          <div className="absolute bottom-full left-1 z-10">
+          <div className="absolute bottom-full left-1 z-10 max-w-[calc(100%_-_0.5rem)]">
             <SegmentedControl value={mode} onChange={onModeChange} disabled={interactionBusy} />
           </div>
         )}
@@ -130,22 +131,31 @@ export default function ChatInput() {
             ))}
           </div>
         )}
-        <textarea
-          rows={Math.min(6, Math.max(1, inputDraft.split('\n').length))}
-          aria-label="出题消息"
-          maxLength={2000}
-          value={inputDraft}
-          onChange={(e) => setInputDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          placeholder={chatImages.length > 0 ? '补充对图片的说明，或直接发送…' : '请输入你的问题，或粘贴相关文档内容...'}
-          className="block w-full resize-none bg-transparent px-1 text-sm leading-6 text-ink outline-none placeholder:text-ink-3"
-        />
-        <div className="mt-0.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="relative">
+          <div
+            aria-hidden="true"
+            className="invisible max-h-[4.5rem] min-h-6 overflow-hidden whitespace-pre-wrap px-1 text-sm leading-6 [overflow-wrap:break-word] [scrollbar-gutter:stable]"
+          >
+            {inputDraft}{inputDraft.endsWith('\n') && '\u200b'}
+          </div>
+          <textarea
+            rows={1}
+            aria-label="出题消息"
+            maxLength={2000}
+            value={inputDraft}
+            onChange={(e) => setInputDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+            placeholder={chatImages.length > 0 ? '补充对图片的说明，或直接发送…' : '请输入你的问题，或粘贴相关文档内容...'}
+          className="absolute inset-0 block h-full w-full resize-none overflow-y-auto bg-transparent px-1 text-sm leading-6 text-ink outline-none [scrollbar-gutter:stable] placeholder:text-ink-3 focus-visible:ring-1 focus-visible:ring-primary/60"
+          />
+        </div>
+        <div className="relative mt-0.5 flex flex-wrap items-center gap-2">
+          <ChatSourcePicker key={interactionBusy ? 'busy' : 'ready'} disabled={interactionBusy} />
           {chatPauseStatus === 'failed' && (
             <div className="flex items-center gap-2 text-xs text-ink-2">
               <span role="status">暂停未确认</span>

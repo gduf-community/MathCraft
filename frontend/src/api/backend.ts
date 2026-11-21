@@ -1053,6 +1053,7 @@ export interface ApiChatSessionSummary {
   title: string
   bank_id: string
   document_id: string
+  mode: ChatMode
   document_name?: string | null
   last_message_at?: string | null
   created_at?: string | null

@@ -60,6 +60,8 @@ def main() -> int:
         "同一事务将对应仍为 `accepted`/`running` 的台账标为 `unknown`，",
         "错误码为 `EXECUTION_INTERRUPTED`；无持久任务或会话关联的历史台账不被扫描。\n\n",
         "对话支持快速出题、创新命题、知识答疑和数据管理四种模式。",
+        "`GET /api/chat/sessions` 的 `items[].mode` 返回最近保存的会话模式，取值与会话详情一致。",
+        "历史会话未保存模式时返回 `generate`。",
         "对话消息携带 request_id 时可按轮次暂停与查询结果；",
         "参数化异步出题支持 request_id 幂等受理、按任务取消及执行退出确认；",
         "取消中仍占用生成门禁，一键清空的完整语义见",

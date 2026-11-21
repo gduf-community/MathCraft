@@ -28,8 +28,16 @@ import { useToast } from './ToastContext'
 import type { ToastMessage, ToastVariant } from './ToastContext'
 import type { AuthRole, AuthUser } from '../api/auth'
 
-const isChatMode = (value: string): value is ChatMode => value in CHAT_MODE_LABELS
+const isChatMode = (value: unknown): value is ChatMode =>
+  typeof value === 'string' && Object.prototype.hasOwnProperty.call(CHAT_MODE_LABELS, value)
 const QUESTION_DELETE_BATCH_SIZE = 200
+function documentDraftKey(bankId: string, documentId: string) {
+  return JSON.stringify([bankId, documentId])
+}
+
+function sessionDraftKey(sessionId: string) {
+  return `session:${sessionId}`
+}
 
 interface ChatTurn {
   requestId: string
@@ -46,6 +54,7 @@ export interface ChatSessionSummary {
   title: string
   bankId: string
   docId: string
+  mode: ChatMode
   documentName?: string | null
   lastMessageAt: string | null
 }
@@ -86,6 +95,8 @@ interface AppState {
   spaces: StudySpace[]
   selectedKbId: string
   selectedDocId: string
+  sourceDocumentsStatus: 'loading' | 'error' | null
+  retrySourceDocuments: () => void
   selectKb: (id: string) => void
   selectDoc: (id: string) => void
   /** 重新拉取题库列表（题库新建/加入/退出后侧边栏实时同步） */
@@ -251,6 +262,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [spaces, setSpaces] = useState<StudySpace[]>([])
   const [selectedKbId, setSelectedKbId] = useState('')
   const [selectedDocId, setSelectedDocId] = useState('')
+  const [sourceDocumentsLoad, setSourceDocumentsLoad] = useState<{
+    bankId: string
+    status: 'loading' | 'error'
+  } | null>(null)
 
   const [questions, setQuestions] = useState<Question[]>([])
   const [favorites, setFavorites] = useState<Question[]>([])
@@ -274,7 +289,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null)
   const [botThinking, setBotThinking] = useState(false)
   const [chatPauseStatus, setChatPauseStatus] = useState<'pending' | 'failed' | null>(null)
-  const [inputDraft, setInputDraft] = useState('')
+  const [chatDrafts, setChatDrafts] = useState(() => new Map<string, string>())
+  const draftKey = activeSessionId
+    ? sessionDraftKey(activeSessionId)
+    : documentDraftKey(selectedKbId, selectedDocId)
+  const inputDraft = chatDrafts.get(draftKey) ?? ''
+  const setInputDraft = useCallback((value: string) => {
+    setChatDrafts((current) => {
+      const drafts = new Map(current)
+      if (value) drafts.set(draftKey, value)
+      else drafts.delete(draftKey)
+      return drafts
+    })
+  }, [draftKey])
+  const moveDraft = useCallback((from: string, to: string) => {
+    setChatDrafts((current) => {
+      const value = current.get(from)
+      if (!value || from === to || current.has(to)) return current
+      const drafts = new Map(current)
+      drafts.delete(from)
+      drafts.set(to, value)
+      return drafts
+    })
+  }, [])
   const [chatImages, setChatImages] = useState<string[]>([])
   const [mode, setModeState] = useState<ChatMode>('generate')
   const [sessionMode, setSessionMode] = useState<ChatMode>('generate')
@@ -401,7 +438,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setChatProgress(null)
     setChatStartedAt(null)
     setMessages([])
-    setInputDraft('')
     chatImagesRef.current = []
     setChatImages([])
     setModeState('generate')
@@ -424,11 +460,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: row.title,
         bankId: row.bank_id,
         docId: row.document_id,
+        mode: isChatMode(row.mode) ? row.mode : 'generate',
         documentName: row.document_name,
         lastMessageAt: row.last_message_at ?? null,
       })))
-      // 列表刷新后校验当前激活会话是否仍存在（可能已被其他入口删除）
-      setActiveSessionId((current) => current && rows.some((row) => row.session_id === current) ? current : null)
     } catch (error: unknown) {
       if (sessionIsCurrent() && version === sessionsRequestVersion.current) {
         showToast(error instanceof Error ? error.message : '历史会话列表加载失败，请重试', 'error')
@@ -483,10 +518,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const nextId = uploadedId
       || (rows.some(document => document.id === selectedDocRef.current) ? selectedDocRef.current : '')
     if (selectedDocRef.current !== nextId) resetChat()
+    if (nextId && !selectedDocRef.current) {
+      moveDraft(documentDraftKey(bankId, ''), documentDraftKey(bankId, nextId))
+    }
     selectedDocRef.current = nextId
     setDocs(rows.map(api.mapDocument))
+    setSourceDocumentsLoad((current) => current?.bankId === bankId ? null : current)
     setSelectedDocId(nextId)
-  }, [resetChat])
+  }, [moveDraft, resetChat])
 
   // 全局题库与当前文档分别计数，切库不会丢弃仍有效的题库列表。
   const refreshKbs = useCallback(async () => {
@@ -519,6 +558,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (sessionIsCurrent() && bankVersion === bankRequestVersion.current
         && (version === undefined || version === documentRequestVersion.current)
         && (target === undefined || selectedKbRef.current === target)) {
+        if (target) {
+          const failedBank = target
+          setSourceDocumentsLoad((current) => current?.bankId === failedBank && current.status === 'loading'
+            ? { bankId: failedBank, status: 'error' } : current)
+        }
         showToast(error instanceof Error ? error.message : '刷新题库或文档失败，请重试', 'error')
       }
     }
@@ -688,32 +732,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void refreshModelSettings().catch(() => undefined)
   }, [user, refreshModelSettings])
 
+  const loadSourceDocuments = useCallback(async (bankId: string) => {
+    const version = ++documentRequestVersion.current
+    setSourceDocumentsLoad(bankId ? { bankId, status: 'loading' } : null)
+    if (!bankId) return
+    const isCurrent = () => sessionIsCurrent() && selectedKbRef.current === bankId
+      && version === documentRequestVersion.current
+    try {
+      const rows = await api.listDocuments(bankId)
+      if (isCurrent()) applyDocumentRows(bankId, rows)
+    } catch (error: unknown) {
+      if (!isCurrent()) return
+      setSourceDocumentsLoad({ bankId, status: 'error' })
+      showToast(error instanceof Error ? error.message : '加载文档失败')
+    }
+  }, [applyDocumentRows, sessionIsCurrent, showToast])
+
+  const retrySourceDocuments = useCallback(() => {
+    if (sessionIsCurrent()) void loadSourceDocuments(selectedKbRef.current)
+  }, [loadSourceDocuments, sessionIsCurrent])
+
   const selectKb = useCallback(
     (id: string) => {
       if (!sessionIsCurrent() || pendingChatPause.current) return
-      if (selectedKbRef.current !== id || selectedDocRef.current) resetChat()
+      const previousBank = selectedKbRef.current
+      if (previousBank !== id || selectedDocRef.current) resetChat()
+      if (id && !previousBank) moveDraft(documentDraftKey('', ''), documentDraftKey(id, ''))
       selectedDocRef.current = ''
-      const version = ++documentRequestVersion.current
       pendingDocumentSelection.current = null
       selectedKbRef.current = id
       setSelectedKbId(id)
       setSelectedDocId('')
       setDocs([])
-      if (!id) return
-      void api
-        .listDocuments(id)
-        .then((rows) => {
-          if (sessionIsCurrent() && selectedKbRef.current === id
-            && version === documentRequestVersion.current) applyDocumentRows(id, rows)
-        })
-        .catch((err) => showToast(err instanceof Error ? err.message : '加载文档失败'))
+      void loadSourceDocuments(id)
     },
-    [applyDocumentRows, resetChat, sessionIsCurrent, showToast],
+    [loadSourceDocuments, moveDraft, resetChat, sessionIsCurrent],
   )
 
   const selectDoc = useCallback(
     (id: string) => {
       if (!sessionIsCurrent() || pendingChatPause.current) return
+      if (id && !selectedDocRef.current) {
+        const bankId = selectedKbRef.current
+        moveDraft(documentDraftKey(bankId, ''), documentDraftKey(bankId, id))
+      }
       if (selectedDocRef.current !== id) resetChat()
       selectedDocRef.current = id
       pendingDocumentSelection.current = null
@@ -737,7 +799,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       })
     },
-    [isClearing, resetChat, sessionIsCurrent, showToast],
+    [isClearing, moveDraft, resetChat, sessionIsCurrent, showToast],
   )
 
   const setMode = useCallback((next: ChatMode) => {
@@ -774,7 +836,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         || pendingConfirmRef.current || !sessionIsCurrent()) return
       if (selectedKbRef.current !== selectedKbId || selectedDocRef.current !== selectedDocId) return
       if (!selectedDocId || !selectedKbId) {
-        showToast('请先在右侧选择知识库文档，才能基于知识库出题')
+        showToast('请先通过「题库选择」选定文档，才能基于知识库出题')
         return
       }
       if (modelSettings && !modelSettings.deepseek_key_configured) {
@@ -811,6 +873,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!isActive()) return
           session = { id: created.session_id, bankId: selectedKbId, docId: selectedDocId }
           chatSessionRef.current = session
+          moveDraft(draftKey, sessionDraftKey(created.session_id))
           setActiveSessionId(created.session_id)
           void loadSessions()
         }
@@ -857,7 +920,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     },
     [mode, loadSessions, selectedDocId, selectedKbId, questions, generating, generationRecoveryError,
-      applyChatResult, sessionIsCurrent, showToast, modelSettings],
+      applyChatResult, draftKey, modelSettings, moveDraft, sessionIsCurrent, setInputDraft, showToast],
   )
 
   const addChatImages = useCallback((files: File[]) => {
@@ -1083,7 +1146,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     chatImagesRef.current = [...(messages[index].images ?? [])]
     setChatImages(chatImagesRef.current)
     setMessages((prev) => prev.slice(0, index))
-  }, [messages, sessionIsCurrent])
+  }, [messages, sessionIsCurrent, setInputDraft])
 
   /** 打开历史会话：恢复题库文档选择、消息与最近产出题目，可继续对话 */
   const openSession = useCallback(
@@ -1094,7 +1157,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const version = ++chatVersionRef.current
       const previewVersion = ++previewVersionRef.current
       sessionLoadingRef.current = true
-      const documentVersion = ++documentRequestVersion.current
       const isActive = () => sessionIsCurrent() && version === chatVersionRef.current
       chatAbortRef.current?.abort()
       chatAbortRef.current = null
@@ -1113,7 +1175,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setChatStartedAt(null)
       setPendingConfirm(null)
       setChatImages([])
-      setInputDraft('')
       setModeVisible(false)
       setModeSuggested(null)
       // 直接恢复选中态，绕过 selectKb/selectDoc 的 resetChat 副作用
@@ -1122,12 +1183,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSelectedKbId(target.bankId)
       setSelectedDocId(target.docId)
       setDocs([])
-      void api.listDocuments(target.bankId).then((rows) => {
-        if (isActive() && selectedKbRef.current === target.bankId
-          && documentVersion === documentRequestVersion.current) applyDocumentRows(target.bankId, rows)
-      }).catch((error: unknown) => {
-        if (isActive()) showToast(error instanceof Error ? error.message : '加载文档列表失败', 'error')
-      })
+      void loadSourceDocuments(target.bankId)
       chatSessionRef.current = { id: target.id, bankId: target.bankId, docId: target.docId }
       setActiveSessionId(target.id)
       setQuestions([])
@@ -1140,6 +1196,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!isActive() || chatSessionRef.current?.id !== target.id) return
         setModeState(detail.mode)
         setSessionMode(detail.mode)
+        setSessions((current) => current.map((session) => session.id === target.id
+          ? { ...session, mode: detail.mode } : session))
         setModeVisible(detail.messages.length === 0)
         setMessages(detail.messages.map((m, index) => ({
           id: m.id || `m-his-${index}`,
@@ -1179,7 +1237,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [applyDocumentRows, sessionIsCurrent, setPendingConfirm, showToast],
+    [loadSourceDocuments, sessionIsCurrent, setPendingConfirm, showToast],
   )
 
   /** 新建对话：回到欢迎态；当前会话保留在历史列表中 */
@@ -1201,6 +1259,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!sessionIsCurrent()) return
       sessionsRequestVersion.current += 1
       setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      setChatDrafts((current) => {
+        const drafts = new Map(current)
+        drafts.delete(sessionDraftKey(sessionId))
+        return drafts
+      })
       if (chatSessionRef.current?.id === sessionId) resetChat()
       showToast('已删除该对话')
     },
@@ -1577,7 +1640,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (file: File) => {
       if (!sessionIsCurrent()) return
       if (!selectedKbId) {
-        showToast('请先在右侧选择知识库')
+        showToast('请先通过「题库选择」选定题库')
         return
       }
       showToast(`正在上传「${file.name}」…`)
@@ -1706,6 +1769,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     spaces,
     selectedKbId,
     selectedDocId,
+    sourceDocumentsStatus: sourceDocumentsLoad?.bankId === selectedKbId
+      ? sourceDocumentsLoad.status : null,
+    retrySourceDocuments,
     selectKb,
     selectDoc,
     refreshKbs,

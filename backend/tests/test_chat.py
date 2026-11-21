@@ -2,6 +2,7 @@
 import pytest
 
 from conftest import create_bank, upload_markdown
+from test_generation_runs import resources as resources
 
 
 def _setup(client, teacher):
@@ -33,24 +34,37 @@ def test_create_and_delete_chat_session(client, teacher):
     assert client.get(f"/api/chat/sessions/{session_id}", headers=teacher).status_code == 404
 
 
-@pytest.mark.parametrize("mode", ["generate", "creative", "qa", "data"])
-def test_history_detail_restores_mode_without_changing_slots(client, teacher, db, mode):
+@pytest.mark.parametrize(
+    ("mode", "expected_mode"),
+    [
+        (None, "generate"),
+        ("invalid", "generate"),
+        ("generate", "generate"),
+        ("creative", "creative"),
+        ("qa", "qa"),
+        ("data", "data"),
+    ],
+)
+def test_history_returns_mode_without_changing_slots(
+    client, teacher, db, resources, mode: str | None, expected_mode: str,
+) -> None:
+    """列表和详情返回相同的模式，读取操作保留持久化会话状态。"""
     from app.models import ChatSession
 
-    bank, doc = _setup(client, teacher)
-    session = client.post(
-        "/api/chat/sessions",
-        json={"bank_id": bank["id"], "document_id": doc["document_id"]},
-        headers=teacher,
-    ).json()
-    row = db.get(ChatSession, session["session_id"])
+    row = db.get(ChatSession, resources["session_id"])
+    assert row is not None
     row.mode = mode
     row.slot_state_json = '{"scope":"导数","difficulty":"高"}'
     db.commit()
 
+    response = client.get("/api/chat/sessions", headers=teacher)
+    assert response.status_code == 200, response.text
+    by_id = {item["session_id"]: item for item in response.json()["items"]}
+    assert by_id[row.id]["mode"] == expected_mode
+
     response = client.get(f"/api/chat/sessions/{row.id}", headers=teacher)
     assert response.status_code == 200, response.text
-    assert response.json()["mode"] == mode
+    assert response.json()["mode"] == expected_mode
     db.refresh(row)
     assert row.mode == mode
     assert row.slot_state_json == '{"scope":"导数","difficulty":"高"}'

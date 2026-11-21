@@ -5050,15 +5050,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": true
-                    }
-                  },
-                  "title": "Response List Sessions Api Chat Sessions Get"
+                  "$ref": "#/components/schemas/ChatSessionListResponse"
                 }
               }
             }
@@ -9279,6 +9271,95 @@
         ],
         "title": "ChatSessionDetailResponse",
         "description": "恢复会话时同时恢复服务端模式，避免发送时隐式切换。"
+      },
+      "ChatSessionListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChatSessionSummaryResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ChatSessionListResponse",
+        "description": "当前账号可访问的历史会话列表。"
+      },
+      "ChatSessionSummaryResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "bank_id": {
+            "type": "string",
+            "title": "Bank Id"
+          },
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "document_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Name"
+          },
+          "last_message_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Message At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "generate",
+              "creative",
+              "qa",
+              "data"
+            ],
+            "title": "Mode",
+            "description": "最近保存的会话模式。历史会话未保存模式时返回 generate。"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "title",
+          "bank_id",
+          "document_id",
+          "document_name",
+          "last_message_at",
+          "created_at",
+          "mode"
+        ],
+        "title": "ChatSessionSummaryResponse",
+        "description": "侧栏历史会话的展示字段。"
       },
       "CurrentPasswordBody": {
         "properties": {

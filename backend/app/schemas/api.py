@@ -120,6 +120,27 @@ class ChatSessionCreateBody(BaseModel):
     document_id: str = Field(min_length=1)
 
 
+class ChatSessionSummaryResponse(BaseModel):
+    """侧栏历史会话的展示字段。"""
+
+    session_id: str
+    title: str
+    bank_id: str
+    document_id: str
+    document_name: str | None
+    last_message_at: datetime | None
+    created_at: datetime
+    mode: Literal["generate", "creative", "qa", "data"] = Field(
+        description="最近保存的会话模式。历史会话未保存模式时返回 generate。",
+    )
+
+
+class ChatSessionListResponse(BaseModel):
+    """当前账号可访问的历史会话列表。"""
+
+    items: list[ChatSessionSummaryResponse]
+
+
 class ChatHistoryMessageResponse(BaseModel):
     """历史消息的持久化展示字段。"""
 

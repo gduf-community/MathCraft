@@ -1,19 +1,10 @@
-import { useState } from 'react'
-import { ChevronsLeft, ChevronsRight, Clock, FileText, MessageCircle } from 'lucide-react'
+import { useId, useState } from 'react'
+import { ChevronsLeft, ChevronsRight, Clock, MessageCircle } from 'lucide-react'
 import { useApp } from '../../store/AppContext'
 import type { ChatSessionSummary } from '../../store/AppContext'
-import Dropdown from '../ui/Dropdown'
+import { CHAT_MODE_LABELS } from '../../types'
 import ConfirmDialog from '../ui/ConfirmDialog'
-
-/** 非可用文档的下拉提示文案 */
-const DOC_STATUS_LABELS: Record<string, string> = {
-  uploaded: '排队等待解析',
-  parsing: '正在解析',
-  ocr: 'OCR 识别中',
-  chunking: '正在切片',
-  embedding: '正在向量化',
-  failed: '入库失败',
-}
+import { ChatModeIcon } from '../ui/SegmentedControl'
 
 /** 会话列表日期：MM/DD，无效时间显示占位 */
 function formatDay(iso: string | null): string {
@@ -25,17 +16,11 @@ function formatDay(iso: string | null): string {
   return `${month}/${day}`
 }
 
-/** 右侧「历史对话」面板：选择题库文档 + 按账号隔离的历史会话，可折叠 */
+/** 右侧可折叠的历史对话面板 */
 export default function HistorySidebar() {
   const {
     historyCollapsed,
     toggleHistory,
-    kbs,
-    docs,
-    selectedKbId,
-    selectedDocId,
-    selectKb,
-    selectDoc,
     sessions,
     activeSessionId,
     openSession,
@@ -43,6 +28,7 @@ export default function HistorySidebar() {
     botThinking,
   } = useApp()
   const [pendingDelete, setPendingDelete] = useState<ChatSessionSummary | null>(null)
+  const modeDescriptionId = useId()
 
   // 折叠态：右侧细条，点击展开
   if (historyCollapsed) {
@@ -88,63 +74,8 @@ export default function HistorySidebar() {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col px-3.5 pb-3.5 pt-3">
-        {/* 选择题库文档：先选题库，再选其中一份文档 */}
-        <section className="shrink-0">
-          <h3 className="mb-2 flex items-center gap-1.5 text-[13px] font-bold text-ink">
-            <FileText size={14} className="text-primary" />
-            选择题库文档
-          </h3>
-          <Dropdown
-            value={selectedKbId}
-            options={kbs.map((k) => ({ value: k.id, label: k.name }))}
-            onChange={(v) => selectKb(v)}
-            placeholder="未选择"
-            searchable
-            emptyText="没有匹配的题库"
-          />
-          <ul className="mt-2 max-h-[168px] space-y-1 overflow-y-auto">
-            {docs.map((d) => {
-              const selected = d.id === selectedDocId
-              const status = d.status
-              const ready = status === 'ready' || !status
-              const failed = status === 'failed'
-              return (
-                <li key={d.id}>
-                  <button
-                    type="button"
-                    disabled={!ready}
-                    onClick={() => ready && selectDoc(d.id)}
-                    className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[13px] transition-colors ${
-                      selected
-                        ? 'border-primary/50 bg-primary-weak'
-                        : ready
-                          ? 'border-line bg-white hover:border-primary/40'
-                          : 'cursor-not-allowed border-line/60 bg-page/70'
-                    }`}
-                  >
-                    <FileText size={14} className={selected ? 'shrink-0 text-primary' : ready ? 'shrink-0 text-ink-3' : 'shrink-0 text-ink-3/60'} />
-                    <span
-                      className={`flex-1 truncate ${
-                        selected ? 'font-medium text-ink' : ready ? 'text-ink-2' : 'text-ink-3/70'
-                      }`}
-                    >
-                      {d.name}
-                    </span>
-                    {!ready && (
-                      <span className={`shrink-0 text-[11px] ${failed ? 'text-red-400' : 'text-primary/70'}`}>
-                        {failed ? '入库失败' : `${DOC_STATUS_LABELS[status] ?? '处理中'} ${d.progress ?? 0}%`}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              )
-            })}
-            {!docs.length && <li className="py-2 text-center text-[11px] text-ink-3">该题库暂无文档，可在题库管理中上传</li>}
-          </ul>
-        </section>
-
         {/* 历史会话列表：按账号隔离，点击继续对话，右键删除单条 */}
-        <section className="mt-3 flex min-h-0 flex-1 flex-col">
+        <section className="flex min-h-0 flex-1 flex-col">
           <h3 className="mb-2 flex shrink-0 items-center gap-1.5 text-[13px] font-bold text-ink">
             <MessageCircle size={14} className="text-primary" />
             会话记录
@@ -152,11 +83,15 @@ export default function HistorySidebar() {
           <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5" aria-label="历史会话列表">
             {sessions.map((session) => {
               const active = session.id === activeSessionId
+              const mode = session.mode ?? 'generate'
+              const descriptionId = `${modeDescriptionId}-${session.id}`
               return (
                 <li key={session.id}>
                   <button
                     type="button"
                     disabled={botThinking}
+                    aria-current={active ? 'true' : undefined}
+                    aria-describedby={descriptionId}
                     onClick={() => void openSession(session)}
                     onContextMenu={(e) => {
                       e.preventDefault()
@@ -169,7 +104,7 @@ export default function HistorySidebar() {
                         : 'text-ink-2 hover:bg-page hover:text-ink'
                     } disabled:cursor-not-allowed disabled:opacity-50`}
                   >
-                    <MessageCircle size={14} className={`shrink-0 ${active ? 'text-primary' : 'text-ink-3'}`} />
+                    <ChatModeIcon mode={mode} className={`shrink-0 ${active ? 'text-primary' : 'text-ink-3'}`} />
                     <span className={`min-w-0 flex-1 truncate ${active ? 'font-medium' : ''}`}>
                       {session.title}
                     </span>
@@ -177,6 +112,7 @@ export default function HistorySidebar() {
                       {formatDay(session.lastMessageAt)}
                     </span>
                   </button>
+                  <span id={descriptionId} hidden>{CHAT_MODE_LABELS[mode]}</span>
                 </li>
               )
             })}

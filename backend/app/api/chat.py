@@ -17,7 +17,7 @@ from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
 from app.models.question import Question as SavedQuestion
 from app.schemas.api import (
     ChatConfirmBody, ChatMessageBody, ChatMessageResponse, ChatRequestResponse,
-    ChatSavedQuestion, ChatSessionCreateBody, ChatSessionDetailResponse,
+    ChatSavedQuestion, ChatSessionCreateBody, ChatSessionDetailResponse, ChatSessionListResponse,
 )
 from app.schemas.auth import ErrorResponse
 from app.schemas.question import GenerateParams, Question
@@ -56,10 +56,14 @@ class _TurnState:
     auth_version: int
 
 
-@router.get("/sessions")
+def _normalize_stored_mode(mode: str | None) -> str:
+    return mode if mode is not None and mode in MODES else DEFAULT_MODE
+
+
+@router.get("/sessions", response_model=ChatSessionListResponse)
 def list_sessions(
     user: User = Depends(get_current_user), db: Session = Depends(get_db),
-) -> dict[str, list[dict]]:
+) -> ChatSessionListResponse:
     """仅列出当前账号仍有资料访问权的最近会话。"""
     rows = db.query(ChatSession).filter(ChatSession.user_id == user.id).order_by(
         ChatSession.last_message_at.desc(), ChatSession.id,
@@ -82,8 +86,9 @@ def list_sessions(
             "bank_id": session.bank_id, "document_id": session.document_id,
             "document_name": doc.name if doc else None,
             "last_message_at": session.last_message_at, "created_at": session.created_at,
+            "mode": _normalize_stored_mode(session.mode),
         })
-    return {"items": items}
+    return ChatSessionListResponse.model_validate({"items": items})
 
 
 def _slot_key(session_id: str) -> str:
@@ -361,7 +366,7 @@ def get_session(
     ).all()
     return {
         "session_id": s.id, "bank_id": s.bank_id, "document_id": s.document_id,
-        "mode": s.mode or DEFAULT_MODE,
+        "mode": _normalize_stored_mode(s.mode),
         "messages": [
             {"id": m.id, "role": m.role, "text": m.content, "batch_id": m.batch_id,
              "created_at": m.created_at} for m in messages
