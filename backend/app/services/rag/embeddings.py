@@ -1,6 +1,7 @@
 """OpenAI 兼容向量服务；平台配置优先，未覆盖时沿用既有部署凭据。"""
 import logging
 import math
+from collections.abc import Iterator
 from typing import Literal
 
 import httpx
@@ -57,6 +58,12 @@ def _headers(api_key: str | None = None) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
+def text_batches(texts: list[str]) -> Iterator[list[str]]:
+    """按向量服务单次请求的上限切分文本。"""
+    for start in range(0, len(texts), _BATCH):
+        yield texts[start : start + _BATCH]
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """批量生成有限数值向量，验证数量、顺序与维度一致性。"""
     if not texts:
@@ -64,12 +71,12 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     config = current_snapshot().config
     out: list[list[float]] = []
     with httpx.Client(timeout=60.0) as client:
-        for i in range(0, len(texts), _BATCH):
+        for batch in text_batches(texts):
             try:
                 resp = client.post(
                     f"{config.embedding_base_url}/embeddings",
                     headers=_headers(config.embedding_api_key),
-                    json={"model": config.embedding_model, "input": texts[i : i + _BATCH]},
+                    json={"model": config.embedding_model, "input": batch},
                 )
                 resp.raise_for_status()
                 payload = resp.json()
@@ -80,7 +87,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
                        for item in data):
                     raise ValueError("invalid response index")
                 data = sorted(data, key=lambda d: d["index"])
-                if [d["index"] for d in data] != list(range(len(texts[i:i + _BATCH]))):
+                if [d["index"] for d in data] != list(range(len(batch))):
                     raise ValueError("向量响应数量或顺序错误")
                 for item in data:
                     if not isinstance(item.get("embedding"), list) or any(

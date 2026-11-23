@@ -35,6 +35,7 @@ def test_unknown_fallback_still_current_mode(monkeypatch):
 def test_review_with_refill_trims_to_requested_quota():
     """补齐轮次用尽后按题型配额截断：总量与分布都不超过请求。"""
     from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+    from app.services.question_review import ReviewStats
 
     params = GenerateParams(
         kb_id="kb", doc_id="doc",
@@ -45,7 +46,10 @@ def test_review_with_refill_trims_to_requested_quota():
     )
 
     def q(stem, qtype):
-        return Question(id=stem[:6], type=qtype, stem=stem, answer="A", analysis="解析")
+        return Question(
+            id=stem[:6], type=qtype, difficulty=Difficulty.low,
+            stem=stem, answer="A", analysis="解析",
+        )
 
     # 模拟三轮审核累计 61+19+28 = 108（超出请求 60）
     first_pool = ([q(f"单选{i}", QuestionType.single) for i in range(61)]
@@ -55,12 +59,12 @@ def test_review_with_refill_trims_to_requested_quota():
 
     def review_fn(candidates, refill_params, stems):
         calls.append(list(candidates))
-        return list(candidates), object()
+        return list(candidates), ReviewStats()
 
-    accepted, stats, canceled = chat_flow.review_with_refill(
+    accepted, _, groups = chat_flow.review_with_refill(
         first_pool, params, 60, [], review_fn, lambda *a, **kw: [],
     )
-    assert canceled is False
+    assert all(group.missing == 0 for group in groups)
     assert len(accepted) == 60
     dist = {}
     for item in accepted:

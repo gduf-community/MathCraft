@@ -284,10 +284,15 @@ def _drop_duplicates(
         return [], dropped
     if not corpus and len(pending) == 1:
         return pending, dropped
+    stems = [q.stem for q in pending]
     try:
-        vectors = run_checked(
-            cancel_check, embeddings.embed_texts, corpus + [q.stem for q in pending],
-        )
+        if cancel_check is None:
+            vectors = embeddings.embed_texts(corpus + stems)
+        else:
+            vectors = []
+            for texts in (corpus, stems):
+                for batch in embeddings.text_batches(texts):
+                    vectors.extend(run_checked(cancel_check, embeddings.embed_texts, batch))
     except GenerationCanceled:
         raise
     except Exception as exc:
@@ -494,11 +499,11 @@ def evaluate(
         first = [f.result() for f in futures]
     check_cancellation(cancel_check)
     valid = [r for r in first if r]
-    if len(valid) != judges:
-        return _merge_reviews([])
     for review in valid:
         if review.get("finding") is not None:
             return review
+    if len(valid) != judges:
+        return _merge_reviews([])
     if (len(valid) == 2 and all(r["qualityPassed"] for r in valid)
             and abs(valid[0]["total"] - valid[1]["total"]) > 0.7):
         logger.info("两次盲评差 %.2f，启动仲裁", abs(valid[0]["total"] - valid[1]["total"]))
@@ -985,6 +990,18 @@ def _check_candidate(
                 or (question.type == QuestionType.judge and labels != {"A", "B"})
                 or len(labels) < 2):
             return _Finding("选项不合格", "成品选项或正确项标签、内容、数量不符合题型")
+        prepared = _prepare_answer(question, independent.answer)
+        if prepared is None:
+            return _Finding("无法验证")
+        correct_texts, answer_text = prepared
+        expected = correct_texts if question.type != QuestionType.judge else [answer_text]
+        selected = [item.text for item in question.options if item.label in answer]
+        if {_option_key(text) for text in selected} != {_option_key(text) for text in expected}:
+            return _Finding(
+                "答案不成立",
+                f"成品答案 {question.answer} 对应「{'；'.join(selected)}」，"
+                f"独立求解得到「{'；'.join(expected)}」。{independent.evidence}",
+            )
     elif question.options:
         return _Finding("选项不合格", "该题型不应附带选项")
     review = evaluate(

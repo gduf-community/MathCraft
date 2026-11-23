@@ -318,15 +318,22 @@ export function useGenerationTask(
         if (!operation) return
         if (operation.finished && !operation.clearing) {
           if (!operation.taskId || operation.rejected) return
-          try {
-            const state = await api.getGenerationProgress(operation.taskId)
-            if (sessionIsCurrent() && pending.current === operation && !operation.clearing
-              && state.done && state.execution_finished && state.status !== 'canceled') {
-              setGenerationSummary(state.review?.groups ?? [])
-            }
-          } catch (error) {
-            if (sessionIsCurrent() && pending.current === operation) {
-              console.error('读取上次出题摘要失败', error)
+          const taskId = operation.taskId
+          const canRestore = () => sessionIsCurrent() && pending.current === operation && !operation.clearing
+          while (canRestore()) {
+            try {
+              const state = await api.getGenerationProgress(taskId)
+              if (canRestore() && state.done && state.execution_finished && state.status !== 'canceled') {
+                setGenerationSummary(state.review?.groups ?? [])
+              }
+              return
+            } catch (error) {
+              if (!canRestore()) return
+              if (!retryable(error)) {
+                console.error('读取上次出题摘要失败', error)
+                return
+              }
+              await delay()
             }
           }
           return

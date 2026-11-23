@@ -1,6 +1,6 @@
 """Shared delivery quotas, refill rounds and teacher-facing review summaries."""
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from app.schemas.api import GenerationReviewGroup
@@ -8,7 +8,11 @@ from app.schemas.question import Difficulty, GenerateParams, Question, QuestionT
 from app.services.generation_cancellation import check_cancellation
 from app.services.question_review import ReviewStats, _norm
 from app.services.rag import llm
-from app.services.rag.question_gen import NeedConfirmError, QuestionOutputError
+from app.services.rag.question_gen import (
+    NO_USABLE_CANDIDATES,
+    NeedConfirmError,
+    QuestionOutputError,
+)
 
 MAX_REFILL_ROUNDS = 3
 Progress = Callable[[int, str], None]
@@ -32,13 +36,15 @@ def review_with_refill(
     gen_fn: Callable[[GenerateParams, list[str], Progress], list[Question]],
     progress_cb: Progress | None = None,
     cancel_check: Callable[[], None] | None = None,
+    *,
+    initial_events: Mapping[GroupKey, Counter[str]] | None = None,
 ) -> tuple[list[Question], ReviewStats, list[GenerationReviewGroup]]:
     """Review the initial pool and at most three rounds of replacement candidates."""
     quota: Counter[GroupKey] = Counter()
     for item in params.types:
         quota[item.type, item.difficulty or params.difficulty] += item.count
     delivered: Counter[GroupKey] = Counter()
-    events: dict[GroupKey, Counter[str]] = {key: Counter() for key in quota}
+    events = {key: Counter((initial_events or {}).get(key, {})) for key in quota}
     accepted: list[Question] = []
     avoid = list(dict.fromkeys((existing_stems or []) + params.existing_stems))
     seen = {_norm(stem) for stem in avoid}
@@ -124,7 +130,7 @@ def review_with_refill(
                     events[key][llm.friendly_error(exc)] += 1
                     continue
                 except (ValueError, QuestionOutputError):
-                    events[key]["生成未返回可用候选题"] += 1
+                    events[key][NO_USABLE_CANDIDATES] += 1
                     continue
                 check_cancellation(cancel_check)
                 if len(fresh) < item.count:

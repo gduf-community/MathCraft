@@ -140,6 +140,7 @@ def generate_sync(
     with run.observe(db):
         run.begin(params)
         hyde_text = generation.get_hyde(params, body, api_key)
+        initial_events = generation.GenerationEvents()
         try:
             questions = question_gen.generate_questions(
                 params,
@@ -149,6 +150,7 @@ def generate_sync(
                 api_key=api_key,
                 hyde_text=hyde_text,
                 allow_partial=True,
+                on_failure=initial_events.record,
             )
         except question_gen.NeedConfirmError as exc:
             run.fail(RunErrorCode.NEED_CONFIRM)
@@ -161,7 +163,8 @@ def generate_sync(
                 requested=exc.requested,
             ) from exc
         questions, review = generation.review_generated_questions(
-            db, user_id, questions, params, doc_name, api_key, hyde_text
+            db, user_id, questions, params, doc_name, api_key, hyde_text,
+            initial_events=initial_events,
         )
         db.rollback()
         auth.assert_version(db, user_id, auth_version)

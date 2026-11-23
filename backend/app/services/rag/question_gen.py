@@ -12,12 +12,20 @@
 import json
 import re
 import uuid
-from typing import Callable
+from collections import Counter
+from collections.abc import Callable
 
 import json_repair
 from pydantic import ValidationError
 
-from app.schemas.question import GenerateParams, Question, QuestionType
+from app.schemas.question import (
+    Difficulty,
+    GenerateParams,
+    OptionItem,
+    Question,
+    QuestionType,
+    TypeCount,
+)
 from app.services import latex_utils
 from app.services.generation_cancellation import (
     GenerationCanceled,
@@ -30,7 +38,27 @@ from app.services.rag import llm
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 ProgressCB = Callable[[int, str], None]
+FailureCB = Callable[[QuestionType, Difficulty, str], None]
 RetrieveFn = Callable[[str], list[dict]]
+NO_USABLE_CANDIDATES = "生成未返回可用候选题"
+
+_ORIGINAL_CHOICE_SYSTEM = (
+    QUESTION_SYSTEM.replace(
+        "正确答案、选项与解析由独立的解题模型生成。",
+        "请保留材料中的选项，正确答案与解析由独立的解题模型生成。",
+    ).replace(
+        "options 一律输出空数组；",
+        "材料含选项时，将选项按原有标签、内容和顺序填入 options，"
+        "每项为 {\"label\": 标签, \"text\": 内容}。材料未提供选项时输出空数组；",
+    ).replace(
+        '  "options": [],\n  "answer": "",',
+        '  "options": [{"label": 字符串, "text": 字符串}, ...],\n  "answer": "",',
+        1,
+    ).replace(
+        "正例一（选择题：只出题干，选项与答案留空）：",
+        "正例一（材料未提供选项的选择题）：",
+    )
+)
 
 # 单次模型调用只出 1 道题：十道题一次生成在慢通道上会拖到十分钟以上，
 # 拆成单题并发后单次响应可控，也不会因输出被截断而少给题
@@ -284,7 +312,7 @@ def _split_counts(total: int, size: int) -> list[int]:
 
 
 def _gen_batch(
-    tc,
+    tc: TypeCount,
     params: GenerateParams,
     doc_name: str,
     scope: str | None,
@@ -340,8 +368,12 @@ def _gen_batch(
         score=DEFAULT_SCORES.get(tc.type, 5),
         extra=extra,
     )
+    preserve_options = params.source_mode == "original" and tc.type in (
+        QuestionType.single, QuestionType.multiple,
+    )
+    system_prompt = _ORIGINAL_CHOICE_SYSTEM if preserve_options else QUESTION_SYSTEM
     base_messages = [
-        {"role": "system", "content": QUESTION_SYSTEM},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": user_prompt
@@ -392,11 +424,10 @@ def _gen_batch(
         q.docName = doc_name
         q.answer = ""
         q.analysis = ""
-        q.options = []
         if tc.type == QuestionType.judge:
-            from app.schemas.question import OptionItem
-
             q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
+        elif not preserve_options:
+            q.options = []
         out.append(q)
     if out:
         return out
@@ -479,7 +510,7 @@ def _plan_points(
 
 
 def _gen_for_type(
-    tc,
+    tc: TypeCount,
     params: GenerateParams,
     doc_name: str,
     scope: str | None,
@@ -493,7 +524,8 @@ def _gen_for_type(
     difficulty_note: str = "",
     cancel_check: Callable[[], None] | None = None,
     allow_partial: bool = False,
-) -> list[Question]:
+    capture_failures: bool = False,
+) -> tuple[list[Question], str | None]:
     """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。
 
     单次模型调用只生成 GEN_BATCH_SIZE 道，多批并发。一次要十道题的输出量会超过模型
@@ -503,14 +535,6 @@ def _gen_for_type(
 
     check_cancellation(cancel_check)
     type_label = TYPE_LABELS[tc.type]
-
-    # original 模式：先确认材料原题数量是否足够
-    if params.source_mode == "original":
-        available = run_checked(
-            cancel_check, count_available_originals, params.kb_id, params.doc_id, tc.type,
-        )
-        if available is not None and available < tc.count:
-            raise NeedConfirmError(type_label, available, tc.count)
 
     # 检索 query：文档主题 + 题型 + 可选知识点范围，参考片段数量随题数放大
     query_parts = [doc_name.rsplit(".", 1)[0]]
@@ -524,6 +548,8 @@ def _gen_for_type(
     )
     hits = run_checked(cancel_check, retrieve, " ".join(query_parts))
     if not hits:
+        if capture_failures:
+            return [], NO_USABLE_CANDIDATES
         raise ValueError(f"知识库中没有可参考的内容，请先上传文档（检索「{type_label}」无结果）")
 
     # 先分摊考点，再并发命题：十道题各自撞同一个考点是去重与重出的主要来源
@@ -591,11 +617,18 @@ def _gen_for_type(
     if len(collected) >= tc.count:
         if report:
             report(1.0, f"「{type_label}」已完成（{tc.count} 题）")
-        return collected[: tc.count]
-    if not collected and errors:
-        raise errors[0]  # 一道都没出：把超时、限流、密钥失效的真实原因带出去
+        return collected[: tc.count], None
+    if errors and (capture_failures or not collected):
+        error = errors[0]
+        if capture_failures:
+            if isinstance(error, llm.LLMError):
+                return collected, llm.friendly_error(error)
+            if isinstance(error, (ValueError, QuestionOutputError)):
+                return collected, NO_USABLE_CANDIDATES
+        if not collected:
+            raise error
     if allow_partial:
-        return collected
+        return collected, None
     raise ValueError(
         f"{type_label}生成数量或去重后不达标（要求 {tc.count} 道，实得 {len(collected)} 道），请重试"
     )
@@ -615,12 +648,14 @@ def generate_questions(
     directive: str = "",
     cancel_check: Callable[[], None] | None = None,
     allow_partial: bool = False,
+    on_failure: FailureCB | None = None,
 ) -> list[Question]:
     """按题型并行出题：每个题型一个独立 agent（线程），全部完成后汇总呈现。
 
     - 进度 = 各 agent 内部完成度（0~1）按题数加权的均值，映射到 5~95%
     - 去重集合每个 agent 独立副本：不同题型的题干天然不同，无需共享可变状态
-    - 任一 agent 失败（原题不足 / 检索为空 / 模型超时）整体抛出该异常
+    - 原题按题型汇总配额，进入生成前统一检查
+    - allow_partial 配合 on_failure 时，按请求顺序报告各组可恢复的生成失败
     - cancel_check 在工作边界检查取消，异常在已发起线程全部结束后向调用方传播
     - cancel_check 会被多个线程调用，调用方不得在回调中跨线程复用 SQL Session
     """
@@ -631,6 +666,17 @@ def generate_questions(
     if progress_cb:
         progress_cb(0, "准备生成题目")
     check_cancellation(cancel_check)
+    if params.source_mode == "original":
+        requested_by_type: Counter[QuestionType] = Counter()
+        for tc in params.types:
+            requested_by_type[tc.type] += tc.count
+        for kind, requested in requested_by_type.items():
+            available = run_checked(
+                cancel_check, count_available_originals, params.kb_id, params.doc_id, kind,
+            )
+            if available is not None and available < requested:
+                raise NeedConfirmError(TYPE_LABELS[kind], available, requested)
+
     avoid_base = {_norm_stem(s) for s in (existing_stems or []) if s}
     weights = [max(1, tc.count) for tc in params.types]
     total_weight = sum(weights)
@@ -653,9 +699,9 @@ def generate_questions(
 
         return report
 
-    def run_one(idx: int, tc) -> None:
+    def run_one(idx: int, tc: TypeCount) -> tuple[list[Question], str | None]:
         check_cancellation(cancel_check)
-        fresh = _gen_for_type(
+        result = _gen_for_type(
             tc,
             params,
             doc_name,
@@ -668,28 +714,29 @@ def generate_questions(
             report=make_report(idx),
             directive=directive,
             difficulty_note=difficulty_note,
-            **({"allow_partial": True} if allow_partial else {}),
+            allow_partial=allow_partial,
+            capture_failures=allow_partial and on_failure is not None,
             **cancellation_kwargs(cancel_check),
         )
         check_cancellation(cancel_check)
-        results[idx] = fresh
+        return result
 
-    results: list[list[Question] | None] = [None] * len(params.types)
     workers = max(1, min(len(params.types), 6))
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qgen-agent") as pool:
             futures = [pool.submit(run_one, idx, tc) for idx, tc in enumerate(params.types)]
-            for future in futures:
-                future.result()
-                check_cancellation(cancel_check)
+            results = [run_checked(cancel_check, future.result) for future in futures]
     else:
-        run_one(0, params.types[0])
+        results = [run_one(0, params.types[0])]
 
     check_cancellation(cancel_check)
     out: list[Question] = []
-    for fresh in results:
-        if fresh:
-            out.extend(fresh)
+    for tc, (fresh, failure) in zip(params.types, results):
+        out.extend(fresh)
+        if on_failure is not None and failure is not None:
+            run_checked(
+                cancel_check, on_failure, tc.type, tc.difficulty or params.difficulty, failure,
+            )
     if progress_cb:
         progress_cb(100, f"题目生成完成（共 {len(out)}/{sum(weights)} 题）")
     check_cancellation(cancel_check)

@@ -7,8 +7,9 @@ import pytest
 
 from app.services.rag import question_gen
 from app.services.generation_cancellation import GenerationCanceled
-from app.schemas.question import GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
 from app.services.rag.question_gen import (
+    NeedConfirmError,
     QuestionOutputError,
     _RollingParser,
     _schema_validate,
@@ -187,6 +188,125 @@ def test_generation_refills_through_fifth_round_and_reports_zero_to_hundred(monk
     assert len(result) == 1 and len(attempts) == 5
     assert progress[0] == 0 and progress[-1] == 100
     assert progress == sorted(progress)
+
+
+@pytest.mark.parametrize("kind", [QuestionType.single, QuestionType.multiple])
+def test_original_choice_keeps_material_options_in_order(monkeypatch, kind):
+    options = [{"label": "B", "text": "$x^2$"}, {"label": "A", "text": "$x$"}]
+    tc = TypeCount(type=kind, count=1)
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=[tc], source_mode="original",
+    )
+
+    def stream(messages, **_kwargs):
+        assert "原有标签、内容和顺序" in messages[0]["content"]
+        assert "options 一律输出空数组" not in messages[0]["content"]
+        yield json.dumps({"questions": [{
+            "type": kind.value, "stem": "材料原题", "options": options,
+            "answer": "A", "analysis": "材料答案",
+        }]})
+
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    question, = question_gen._gen_batch(
+        tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "材料原题"}], "",
+    )
+    assert [option.model_dump() for option in question.options] == options
+    assert question.answer == question.analysis == ""
+
+
+@pytest.mark.parametrize("all_fail", [False, True])
+def test_initial_partial_generation_reports_recoverable_group_failures(monkeypatch, all_fail):
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", difficulty=Difficulty.mid,
+        types=[
+            TypeCount(type=QuestionType.single, difficulty=Difficulty.low, count=1),
+            TypeCount(type=QuestionType.blank, count=1),
+            TypeCount(type=QuestionType.compute, count=1),
+        ],
+    )
+    events = []
+
+    def retrieve(query):
+        return [] if "填空题" in query else [{"text": "fixture context"}]
+
+    def stream(messages, **_kwargs):
+        prompt = messages[-1]["content"]
+        if "为 single" in prompt:
+            raise question_gen.llm.LLMError("synthetic model timeout")
+        if all_fail:
+            yield '{"questions": []}'
+        else:
+            yield '{"questions": [{"type": "compute", "stem": "合成计算题"}]}'
+
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    output = question_gen.generate_questions(
+        params, "fake.pdf", retrieve_fn=retrieve, allow_partial=True,
+        on_failure=lambda *event: events.append(event),
+    )
+    assert [question.type for question in output] == ([] if all_fail else [QuestionType.compute])
+    assert events[:2] == [
+        (QuestionType.single, Difficulty.low, "模型响应超时，请稍后重试"),
+        (QuestionType.blank, Difficulty.mid, "生成未返回可用候选题"),
+    ]
+    assert events[2:] == (
+        [(QuestionType.compute, Difficulty.mid, "生成未返回可用候选题")] if all_fail else []
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", [ValueError("index unavailable"), RuntimeError("index offline")],
+)
+def test_partial_first_round_propagates_retrieval_infrastructure_failure(failure):
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=[TypeCount(type=QuestionType.single, count=1)],
+    )
+    on_failure = Mock()
+    with pytest.raises(type(failure)) as caught:
+        question_gen.generate_questions(
+            params, "fake.pdf", retrieve_fn=Mock(side_effect=failure),
+            allow_partial=True, on_failure=on_failure,
+        )
+    assert caught.value is failure
+    on_failure.assert_not_called()
+
+
+def test_partial_single_group_without_callback_propagates_refill_failure():
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=[TypeCount(type=QuestionType.blank, count=1)],
+    )
+    with pytest.raises(ValueError, match="无结果"):
+        question_gen.generate_questions(
+            params, "fake.pdf", retrieve_fn=lambda _: [], allow_partial=True,
+        )
+
+
+@pytest.mark.parametrize("split_tiers", [False, True])
+def test_original_availability_is_checked_before_retrieval(monkeypatch, split_tiers):
+    groups = [TypeCount(type=QuestionType.single, count=2)]
+    if split_tiers:
+        groups = [
+            TypeCount(type=QuestionType.blank, count=1),
+            TypeCount(type=QuestionType.single, difficulty=Difficulty.low, count=1),
+            TypeCount(type=QuestionType.single, difficulty=Difficulty.high, count=1),
+        ]
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=groups, source_mode="original",
+    )
+    count = Mock(return_value=1)
+    retrieve = Mock(side_effect=ValueError("retrieval must follow precheck"))
+    on_failure = Mock()
+    monkeypatch.setattr(question_gen, "count_available_originals", count)
+    with pytest.raises(NeedConfirmError) as caught:
+        question_gen.generate_questions(
+            params, "fake.pdf", retrieve_fn=retrieve, allow_partial=True,
+            on_failure=on_failure,
+        )
+    assert (caught.value.available, caught.value.requested) == (1, 2)
+    assert [call.args[-1] for call in count.call_args_list] == (
+        [QuestionType.blank, QuestionType.single] if split_tiers else [QuestionType.single]
+    )
+    retrieve.assert_not_called()
+    on_failure.assert_not_called()
 
 
 def test_high_pressure_planning_budget_and_scoped_fallback(monkeypatch):

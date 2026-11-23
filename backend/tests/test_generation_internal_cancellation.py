@@ -302,7 +302,8 @@ def test_direct_cancellation_exception_is_never_downgraded(monkeypatch, phase):
         elif phase == "judge":
             question_review._judge_once(_question(), Difficulty.mid, "", None, cancel_check=check)
         elif phase == "repair":
-            question_review._repair(_question(), {}, Difficulty.mid, None, cancel_check=check)
+            finding = question_review._Finding("题设不足", "缺少函数定义域")
+            question_review._repair(_question(), finding, Difficulty.mid, None, cancel_check=check)
         else:
             question_review._solve_all(
                 [_question()], None, question_review.ReviewStats(), cancel_check=check,

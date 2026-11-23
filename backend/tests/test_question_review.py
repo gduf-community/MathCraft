@@ -2,7 +2,9 @@
 import hashlib
 import json
 import threading
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.db import SessionLocal, Base, engine
@@ -11,6 +13,8 @@ from app.services.generation_cancellation import GenerationCanceled
 from app.services import latex_utils, question_review
 from app.services.rag import question_gen
 from app.services.question_review import review_questions as real_review
+
+_REAL_EMBED_TEXTS = question_review.embeddings.embed_texts
 
 
 def _vec(text: str) -> list[float]:
@@ -185,14 +189,23 @@ def test_repair_then_accept(db, monkeypatch):
         }],
     )
     monkeypatch.setattr(question_review.llm, "chat_text", fake)
-    monkeypatch.setattr(question_review.llm, "chat_json", fake)
+
+    def solve(messages, **kwargs):
+        result = fake(messages, **kwargs)
+        answer = "3" if "修补后的题干" in messages[-1]["content"] else "2"
+        return {**result, "answer": answer, "evidence": f"求导后代入得 {answer}。"}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
 
     params = GenerateParams(
         kb_id="bank_test", doc_id="doc_test",
         types=[TypeCount(type=QuestionType.single, count=1)],
         difficulty=Difficulty.high, scope="导数",
     )
-    result, stats = real_review(db, "u_test", [_q("原题：求 $y=x^2$ 的导数。")], params, "doc.md", "sk-test")
+    original = _q("原题：求 $y=x^2$ 在 $x=1$ 处的导数。")
+    original.answer = "B"
+    original.analysis = "求导得 $2x$，代入得 2。"
+    result, stats = real_review(db, "u_test", [original], params, "doc.md", "sk-test")
 
     assert stats.repaired == 1
     assert len(result) == 1
@@ -206,7 +219,10 @@ def test_repair_then_accept(db, monkeypatch):
 
 
 def test_duplicate_shortfall_is_left_for_caller(db, monkeypatch):
-    fake = FakeLLM(reviews=[_review_json(GOOD_SCORES)])
+    fake = FakeLLM(
+        reviews=[_review_json(GOOD_SCORES)],
+        solve_payload={"status": "solved", "answer": "3", "evidence": "在 $x=1$ 代入得 3。"},
+    )
     monkeypatch.setattr(question_review.llm, "chat_text", fake)
     monkeypatch.setattr(question_review.llm, "chat_json", fake)
     monkeypatch.setattr(question_review, "load_corpus", lambda *_a, **_k: ["求 $y=x^2$ 的导数。"])
@@ -221,8 +237,11 @@ def test_duplicate_shortfall_is_left_for_caller(db, monkeypatch):
         types=[TypeCount(type=QuestionType.single, count=2)],
         difficulty=Difficulty.high, scope="导数",
     )
+    candidate = _q("求 $y=x^3$ 在 $x=1$ 处的导数。")
+    candidate.options[0].text = "3"
+    candidate.analysis = "求导得 $3x^2$，代入得 3。"
     result, stats = real_review(
-        db, "u_test", [_q("求 $y=x^2$ 的导数。"), _q("求 $y=x^3$ 的导数。")], params, "doc.md", "sk-test",
+        db, "u_test", [_q("求 $y=x^2$ 的导数。"), candidate], params, "doc.md", "sk-test",
     )
 
     assert stats.duplicates == 1
@@ -859,3 +878,122 @@ def test_false_judgment_is_a_valid_solution(db, monkeypatch):
     )
     assert result[0].answer == "B"
     assert stats.solved == 1 and not stats.rejections
+
+
+@pytest.mark.parametrize("qtype, solved, texts, answer, accepted", [
+    (QuestionType.single, "12", ["12", "2"], "B", False),
+    (QuestionType.multiple, ["2", "3"], ["2", "3", "13", "5"], "AC", False),
+    (QuestionType.multiple, ["3", "$2$"], ["2", "3", "13", "5"], "BA", True),
+    (QuestionType.judge, "错误", ["正确", "错误"], "A", False),
+    (QuestionType.judge, "错误", ["错误", "正确"], "B", False),
+])
+def test_candidate_requires_exact_selected_answer_texts(
+    db, monkeypatch, qtype, solved, texts, answer, accepted,
+):
+    question = Question(
+        type=qtype, difficulty=Difficulty.low, stem="按条件选出成立的结论。",
+        options=[OptionItem(label=label, text=item) for label, item in zip("ABCD", texts)],
+        answer=answer, analysis="根据条件逐项判断。",
+    )
+    monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: {
+        "status": "solved", "answer": solved, "evidence": "计算得到独立结果。",
+    })
+    repair_prompts = []
+    scores = {**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}
+
+    def judge_or_repair(messages, **_):
+        prompt = messages[-1]["content"]
+        if prompt.startswith("下面这道题没有通过"):
+            repair_prompts.append(prompt)
+            return question.model_dump_json()
+        return _review_json(scores)
+
+    monkeypatch.setattr(question_review.llm, "chat_text", judge_or_repair)
+    result, stats = real_review(
+        db, "u", [question], _candidate_params((qtype, Difficulty.low)), "doc.md", None,
+    )
+    assert bool(result) is accepted
+    if accepted:
+        assert not repair_prompts and not stats.rejections
+    else:
+        assert len(repair_prompts) == 1 and "独立求解" in repair_prompts[0]
+        assert stats.rejections == {(qtype, Difficulty.low): {"答案不成立": 1}}
+
+
+@pytest.mark.parametrize("has_defect", [True, False])
+def test_candidate_keeps_verified_defect_when_peer_judge_is_unavailable(db, monkeypatch, has_defect):
+    qtype = QuestionType.essay
+    question = Question(
+        type=qtype, difficulty=Difficulty.low, stem="证明实数平方非负。",
+        answer="成立", analysis="依定理可知。",
+    )
+    repaired = question.model_copy(update={"analysis": "由实数乘法符号规则，平方非负。"})
+    monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: {
+        "status": "solved", "answer": "成立", "evidence": "同号实数相乘非负。",
+    })
+    lock = threading.Lock()
+    completed = False
+    repairs = []
+    evidence = "解析未给出证明依据。"
+    scores = {**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}
+
+    def judge_or_repair(messages, **_):
+        nonlocal completed
+        prompt = messages[-1]["content"]
+        if prompt.startswith("下面这道题没有通过"):
+            repairs.append(prompt)
+            return repaired.model_dump_json()
+        if repaired.analysis in prompt:
+            return _review_json(scores)
+        with lock:
+            if completed:
+                raise RuntimeError("fake judge unavailable")
+            completed = True
+        report = json.loads(_review_json(scores))
+        if has_defect:
+            report.update(analysisValid=False, passed=False, evidence=evidence)
+        return json.dumps(report)
+
+    monkeypatch.setattr(question_review.llm, "chat_text", judge_or_repair)
+    result, stats = real_review(
+        db, "u", [question], _candidate_params((qtype, Difficulty.low)), "doc.md", None,
+    )
+    if has_defect:
+        assert len(repairs) == 1 and evidence in repairs[0]
+        assert result[0].analysis == repaired.analysis and not stats.rejections
+    else:
+        assert not repairs and not result
+        assert stats.rejections == {(qtype, Difficulty.low): {"无法验证": 1}}
+
+
+def test_candidate_duplicate_check_cancels_between_embedding_sub_batches(monkeypatch):
+    embeddings = question_review.embeddings
+    requests = []
+    config = SimpleNamespace(
+        embedding_api_key="fake-key", embedding_base_url="https://embed.invalid",
+        embedding_model="fake-model",
+    )
+
+    def respond(request):
+        batch = json.loads(request.content)["input"]
+        requests.append(batch)
+        return httpx.Response(200, json={"data": [
+            {"index": index, "embedding": [1.0]} for index in range(len(batch))
+        ]})
+
+    def cancel():
+        if requests:
+            raise GenerationCanceled("fixture canceled")
+
+    client_class = httpx.Client
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(embeddings, "current_snapshot", lambda: SimpleNamespace(config=config))
+    monkeypatch.setattr(embeddings, "embed_texts", _REAL_EMBED_TEXTS)
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client_class(
+        transport=transport, **kwargs,
+    ))
+    corpus = [f"语料题 {index}" for index in range(65)]
+
+    with pytest.raises(GenerationCanceled):
+        question_review._drop_duplicates([_q("待判重题")], corpus, cancel_check=cancel)
+    assert requests == [corpus[:32]]

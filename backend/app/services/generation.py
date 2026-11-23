@@ -1,4 +1,5 @@
 """持久出题任务：无写锁调用模型，SQL 原子发布批次与终态，Redis 仅作缓存。"""
+from collections import Counter
 from datetime import datetime
 from collections.abc import Callable
 import json
@@ -439,6 +440,14 @@ def build_params_from_slots(slot_state: dict, bank_id: str, document_id: str) ->
     return params
 
 
+class GenerationEvents(dict[tuple[QuestionType, Difficulty], Counter[str]]):
+    """Record recoverable first-round failures by delivery group."""
+
+    def record(self, kind: QuestionType, difficulty: Difficulty, reason: str) -> None:
+        """Count a sanitized generation event."""
+        self.setdefault((kind, difficulty), Counter())[reason] += 1
+
+
 def review_generated_questions(
     db: Session,
     user_id: str,
@@ -449,6 +458,7 @@ def review_generated_questions(
     hyde_text: str | None,
     progress: Callable[[int, str], None] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    initial_events: GenerationEvents | None = None,
 ) -> tuple[list[GeneratedQuestion], GenerationReviewStats]:
     """Apply the shared delivery workflow to parameterized generation."""
     kwargs = cancellation_kwargs(cancel_check)
@@ -477,7 +487,7 @@ def review_generated_questions(
 
     accepted, stats, groups = review_with_refill(
         questions, params, sum(item.count for item in params.types),
-        params.existing_stems, review, refill, report, cancel_check,
+        params.existing_stems, review, refill, report, cancel_check, initial_events=initial_events,
     )
     return accepted, GenerationReviewStats(
         duplicates=stats.duplicates, repaired=stats.repaired,
@@ -545,17 +555,18 @@ def run_generation_task(
         def progress(percent: int, stage: str) -> None:
             check_canceled()
             _write_progress(task_id, percent, stage, run_id=run_id)
+        initial_events = GenerationEvents()
         questions = question_gen.generate_questions(
             params, doc_name, scope=body.scope or None, existing_stems=body.existing_stems,
             progress_cb=lambda percent, stage: progress(6 + percent * 69 // 100, stage),
             api_key=api_key, hyde_text=hyde_text,
-            cancel_check=check_canceled, allow_partial=True,
+            cancel_check=check_canceled, allow_partial=True, on_failure=initial_events.record,
         )
         check_canceled()
         with SessionLocal() as db:
             questions, stats = review_generated_questions(
                 db, user_id, questions, params, doc_name, api_key, hyde_text, progress=progress,
-                cancel_check=check_canceled,
+                cancel_check=check_canceled, initial_events=initial_events,
             )
             # 审核仅作读操作；结束旧快照后再进入短写事务。
             db.rollback()

@@ -8,7 +8,7 @@ from app.services.generation_cancellation import GenerationCanceled, cancellatio
 from app.services.question_delivery import review_with_refill as review_with_refill
 from app.services.rag.llm import friendly_error
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
-from app.services.rag.question_gen import NeedConfirmError, generate_questions
+from app.services.rag.question_gen import FailureCB, NeedConfirmError, generate_questions
 from app.services.rag.slots import (
     build_followup, build_natural_followup, build_params, extract_slots, merge_slots,
     missing_keys,
@@ -107,6 +107,7 @@ def handle_chat(
     progress_cb: ProgressCB | None = None,
     cancel_check: CancelCheck | None = None,
     on_generate: Callable[[GenerateParams], None] | None = None,
+    on_generation_failure: FailureCB | None = None,
 ) -> dict:
     def report(percent: int, stage: str) -> None:
         if progress_cb:
@@ -149,6 +150,7 @@ def handle_chat(
             retrieve_fn=retrieve_fn,
             progress_cb=gen_progress,
             allow_partial=True,
+            on_failure=on_generation_failure,
             **cancellation_kwargs((lambda: _guard(cancel_check)) if cancel_check else None),
         )
     except NeedConfirmError as exc:
@@ -214,6 +216,7 @@ def handle_creative(
     progress_cb: ProgressCB | None = None,
     cancel_check: CancelCheck | None = None,
     on_generate: Callable[[GenerateParams], None] | None = None,
+    on_generation_failure: FailureCB | None = None,
 ) -> dict:
     """创新命题：固定单题，题干追求新颖；查重与难度评估复用快速出题中间件。"""
 
@@ -254,6 +257,7 @@ def handle_creative(
         api_key=api_key, hyde_text=hyde_text, directive=directive,
         progress_cb=gen_progress,
         allow_partial=True,
+        on_failure=on_generation_failure,
         **cancellation_kwargs((lambda: _guard(cancel_check)) if cancel_check else None),
     )
     _guard(cancel_check)

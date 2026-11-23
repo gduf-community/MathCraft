@@ -15,6 +15,7 @@ from app.schemas.question import GenerateParams
 from app.services.generation_cancellation import GenerationCanceled, run_checked
 from app.services.rag.chat_flow import ChatCanceled
 from app.services.rag.modes import MODES, mode_label
+from app.services.rag.question_gen import FailureCB
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class ChatContext:
     progress_cb: Callable[[int, str], None]
     cancel_check: Callable[[], bool]
     on_generate: Callable[[GenerateParams], None] | None = None
+    on_generation_failure: FailureCB | None = None
 
 
 def run_generate(ctx: ChatContext) -> dict:
@@ -55,6 +57,7 @@ def run_generate(ctx: ChatContext) -> dict:
         progress_cb=ctx.progress_cb,
         cancel_check=ctx.cancel_check,
         on_generate=ctx.on_generate,
+        on_generation_failure=ctx.on_generation_failure,
     )
 
 
@@ -76,6 +79,7 @@ def run_creative(ctx: ChatContext) -> dict:
         progress_cb=ctx.progress_cb,
         cancel_check=ctx.cancel_check,
         on_generate=ctx.on_generate,
+        on_generation_failure=ctx.on_generation_failure,
     )
 
 

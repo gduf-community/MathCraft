@@ -567,6 +567,7 @@ def _run_message(
         _write_progress(session_id, run_id, last_progress, stage)
 
     generation_params: GenerateParams | None = None
+    initial_events = generation.GenerationEvents()
 
     def begin_generation(params: GenerateParams) -> None:
         nonlocal generation_params
@@ -580,6 +581,7 @@ def _run_message(
         api_key=api_key, hyde_text=hyde_text, images=body.images,
         progress_cb=progress, cancel_check=lambda: _is_canceled(session_id, run_id),
         on_generate=begin_generation,
+        on_generation_failure=initial_events.record,
     )
     failure_code = None
     try:
@@ -630,7 +632,7 @@ def _run_message(
         try:
             questions, stats, groups = chat_flow.review_with_refill(
                 questions, params, requested, body.existing_stems, review_fn, gen_fn,
-                progress_cb=progress, cancel_check=check_canceled,
+                progress_cb=progress, cancel_check=check_canceled, initial_events=initial_events,
             )
         except (chat_flow.NeedConfirmError, LLMError, ValueError) as exc:
             check_canceled()

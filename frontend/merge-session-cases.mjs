@@ -400,20 +400,25 @@ export async function runGenerationTaskCases({providerCase, settleRender}) {
     finished:false, rejected:false, clearing:true, questionIds:[], sessionId:null, body, ...overrides})
   const taskCase = (name, run) => providerCase(name, run, 'task')
 
-  await providerCase('teacher sees zero-delivery reasons for a recovered parameterized task', async page => {
+  await providerCase('teacher sees zero-delivery reasons after finished-task restore retries a 503', async page => {
     await page.evaluate(operation => {
       const h = window.mergeHarness
       localStorage.setItem('mathcraft-generation:A', JSON.stringify(operation))
-      h.backend.getGenerationProgress = () => ({
-        status: 'done', done: true, execution_finished: true, progress: 100,
-        stage: '生成完成', batch_id: null, questions: [], error: null,
-        review: {
-          groups: [{
-            type: 'single', difficulty: '中', requested: 1, delivered: 0, missing: 1,
-            rejections: {'题设不足': 3}, generation_events: {'模型超时': 1},
-          }],
-        },
-      })
+      h.backend.getGenerationProgress = () => {
+        if (h.restoreAttempts !== undefined && ++h.restoreAttempts === 1) {
+          throw new window.mergeApiError('temporarily unavailable', 'UNAVAILABLE', 503)
+        }
+        return {
+          status: 'done', done: true, execution_finished: true, progress: 100,
+          stage: '生成完成', batch_id: null, questions: [], error: null,
+          review: {
+            groups: [{
+              type: 'single', difficulty: '中', requested: 1, delivered: 0, missing: 1,
+              rejections: {'题设不足': 3}, generation_events: {'模型超时': 1},
+            }],
+          },
+        }
+      }
       h.generation++
       window.remountMerge()
     }, persisted({clearing:false}))
@@ -426,11 +431,64 @@ export async function runGenerationTaskCases({providerCase, settleRender}) {
     assert.equal(await summary.isVisible(), true)
 
     await page.evaluate(() => {
-      window.mergeHarness.generation++
+      const h = window.mergeHarness
+      h.restoreAttempts = 0
+      h.generation++
       window.remountMerge()
     })
     await summary.getByText('请求 1 道 · 交付 0 道 · 缺额 1 道').waitFor()
+    assert.equal(await page.evaluate(() => window.mergeHarness.restoreAttempts), 2)
   })
+
+  for (const action of ['session end', 'clear', 'replacement']) {
+    await taskCase(`finished-task restore stops retrying after ${action}`, async page => {
+      await page.evaluate(operation => {
+        const h = window.mergeHarness
+        localStorage.setItem('mathcraft-generation:A', JSON.stringify(operation))
+        h.held.getGenerationProgress = true
+        h.generation++
+        window.remountMerge()
+      }, persisted({finished:true, clearing:false, body:undefined}))
+      await page.waitForFunction(() => window.mergeHarness.pending.getGenerationProgress?.length === 1)
+
+      const now = Date.now()
+      await page.clock.install({time:now})
+      await page.clock.pauseAt(now + 1000)
+      await page.evaluate(() => {
+        const h = window.mergeHarness
+        h.pending.getGenerationProgress.shift().reject(new window.mergeApiError('temporarily unavailable', 'UNAVAILABLE', 503))
+      })
+      await page.evaluate(async ({action, body, done}) => {
+        const h = window.mergeHarness
+        if (action === 'session end') h.invalidate()
+        if (action === 'clear') {
+          h.held.cancelGeneration = true
+          h.clearPromise = window.generationTask.clear([], null)
+        }
+        if (action === 'replacement') {
+          h.held.getGenerationProgress = false
+          h.backend.getGenerationProgress = () => ({...done, status:'done'})
+          h.replacement = await window.generationTask.start(body)
+        }
+      }, {action, body, done})
+
+      await page.clock.runFor(1000)
+      const calls = await page.evaluate(() => window.mergeHarness.calls
+        .filter(call => call.name === 'getGenerationProgress').map(call => call.args[0]))
+      assert.deepEqual(calls, action === 'replacement' ? ['persisted-task', 'fake-task'] : ['persisted-task'])
+      if (action === 'clear') {
+        await page.evaluate(async done => {
+          const h = window.mergeHarness
+          h.finish('cancelGeneration', done)
+          await h.clearPromise
+        }, done)
+      }
+      if (action === 'replacement') {
+        assert.equal(await page.evaluate(() => window.mergeHarness.replacement?.status), 'done')
+      }
+      assert.deepEqual(await page.evaluate(() => window.generationTask.generationSummary), [])
+    })
+  }
 
   await taskCase('task identity: delayed POST cannot unlock next operation; cleanup waits for execution_finished', async page => {
     await page.evaluate(body => {

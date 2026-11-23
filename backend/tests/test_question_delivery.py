@@ -115,3 +115,36 @@ def _accept(
     pool: list[Question], params: GenerateParams, stems: list[str],
 ) -> tuple[list[Question], ReviewStats]:
     return pool, ReviewStats()
+
+
+def test_empty_first_round_enters_refill_and_retains_initial_events():
+    single = (QuestionType.single, Difficulty.low)
+    blank = (QuestionType.blank, Difficulty.mid)
+    failure = "生成未返回可用候选题"
+    initial_events = {single: Counter({failure: 1}), blank: Counter({failure: 1})}
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc",
+        types=[TypeCount(type=kind, difficulty=tier, count=1) for kind, tier in initial_events],
+    )
+    candidate = _candidate("补回的单选题", *single)
+    refill_requests = []
+
+    def generate(refill_params, stems, progress):
+        group, = refill_params.types
+        key = (group.type, group.difficulty)
+        refill_requests.append(key)
+        if key == single:
+            return [candidate]
+        raise ValueError("synthetic refill output failure")
+
+    accepted, _, groups = review_with_refill(
+        [], params, 2, [], _accept, generate, initial_events=initial_events,
+    )
+
+    assert accepted == [candidate]
+    assert refill_requests == [single, blank, blank, blank]
+    assert [(group.delivered, group.missing, group.generation_events) for group in groups] == [
+        (1, 0, {"首轮候选产出不足": 1, failure: 1}),
+        (0, 1, {"首轮候选产出不足": 1, failure: 4}),
+    ]
+    assert initial_events == {single: Counter({failure: 1}), blank: Counter({failure: 1})}
