@@ -32,8 +32,7 @@ def stub_review_models(monkeypatch):
     monkeypatch.setattr(
         question_review, "_drop_duplicates", lambda questions, corpus, **kwargs: (questions, []),
     )
-    monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"passed": True, "total": 2.5})
-    monkeypatch.setattr(question_review, "_solve_all", lambda *a, **k: None)
+    monkeypatch.setattr(question_review, "_check_candidate", lambda *a, **k: None)
 
 
 def test_fifteen_reviews_leave_pool_connections_for_progress(tmp_path, monkeypatch):

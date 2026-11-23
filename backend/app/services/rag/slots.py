@@ -150,19 +150,26 @@ def merge_slots(state: dict, extracted: dict) -> dict:
     new = dict(state)
     types = _norm_types(extracted.get("types"))
     if types:
-        existing = {t["type"]: dict(t) for t in new.get("types", [])
-                    if isinstance(t, dict) and t.get("type") in TYPE_LABELS}
+        existing = [dict(t) for t in new.get("types", [])
+                    if isinstance(t, dict) and t.get("type") in TYPE_LABELS]
+        multi = {t["type"] for t in types if len({
+            row["difficulty"] for row in types
+            if row["type"] == t["type"] and row["difficulty"]
+        }) > 1}
+        existing = [row for row in existing if row["type"] not in multi]
         for t in types:
-            old = existing.get(t["type"])
+            peers = [row for row in existing if row["type"] == t["type"]]
+            old = next((row for row in peers if row.get("difficulty") == t["difficulty"]), None)
+            if old is None and len(peers) == 1 and t["type"] not in multi:
+                old = peers[0]
             if old:
                 if t["count"]:
                     old["count"] = t["count"]
                 if t["difficulty"]:
                     old["difficulty"] = t["difficulty"]
             else:
-                existing[t["type"]] = {"type": t["type"], "count": t["count"],
-                                       "difficulty": t["difficulty"]}
-        new["types"] = list(existing.values())
+                existing.append(t)
+        new["types"] = existing
     if v := _norm_source(extracted.get("source_mode")):
         new["source_mode"] = v
     raw_diff = str(extracted.get("difficulty") or "").strip()
@@ -354,10 +361,24 @@ def build_params(
             raise ValueError("每个题型的数量必须是 1–100 的整数")
         tc_diff = _norm_difficulty(item.get("difficulty"))
         type_diffs.append(tc_diff)
-        types.append(TypeCount(
-            type=QuestionType(item["type"]), count=count,
-            difficulty=Difficulty(tc_diff) if tc_diff else None,
-        ))
+        kind = QuestionType(item["type"])
+        if state.get("mixed_difficulty") and not tc_diff:
+            levels = _levels_in(str(state.get("difficulty_note") or ""))
+            if len(levels) >= 2:
+                share, extra = divmod(count, len(levels))
+                types.extend(
+                    TypeCount(type=kind, count=share + (i < extra), difficulty=Difficulty(level))
+                    for i, level in enumerate(levels) if share or i < extra
+                )
+            else:
+                high = count // 3
+                types.append(TypeCount(type=kind, count=count - high, difficulty=Difficulty.mid))
+                if high:
+                    types.append(TypeCount(type=kind, count=high, difficulty=Difficulty.high))
+        else:
+            types.append(TypeCount(
+                type=kind, count=count, difficulty=Difficulty(tc_diff) if tc_diff else None,
+            ))
 
     global_diff = _norm_difficulty(state.get("difficulty")) or next(
         (d for d in type_diffs if d), None,

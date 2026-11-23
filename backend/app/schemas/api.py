@@ -40,6 +40,18 @@ class GenerateTaskResponse(BaseModel):
     task_id: str
 
 
+class GenerationReviewGroup(BaseModel):
+    """Delivery and rejection counts for one requested type and tier."""
+
+    type: QuestionType
+    difficulty: Difficulty
+    requested: int
+    delivered: int
+    missing: int
+    rejections: dict[str, int]
+    generation_events: dict[str, int]
+
+
 class GenerationReviewStats(BaseModel):
     """生成审核的计数摘要。"""
 
@@ -47,6 +59,14 @@ class GenerationReviewStats(BaseModel):
     repaired: int
     regenerated: int
     solved: int
+    groups: list[GenerationReviewGroup] | None = None
+
+
+class GenerateSyncResult(BaseModel):
+    """Opt-in audited result for the legacy synchronous endpoint."""
+
+    questions: list[Question]
+    review: GenerationReviewStats
 
 
 class GenerationError(BaseModel):

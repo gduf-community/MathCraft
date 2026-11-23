@@ -18,7 +18,7 @@ from app.models.chat import ChatRequest, ChatSession
 from app.models.base import new_id, utcnow
 from app.models.generation_task import GenerationTask
 from app.models.ops_run import RunEntrypoint, RunErrorCode, RunStatus
-from app.schemas.api import GenerateStartBody
+from app.schemas.api import GenerateStartBody, GenerationReviewStats
 from app.schemas.question import Difficulty, GenerateParams, QuestionType, TypeCount
 from app.schemas.question import Question as GeneratedQuestion
 from app.services import auth, cache, question_review, rag_settings
@@ -26,6 +26,7 @@ from app.services.generation_lifecycle import GenerationRun, error_code, rollbac
 from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
 from app.services.ops_runs import RunLedger
 from app.services.phoenix_tracing import trace_run
+from app.services.question_delivery import review_with_refill
 from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import NeedConfirmError
 
@@ -438,6 +439,52 @@ def build_params_from_slots(slot_state: dict, bank_id: str, document_id: str) ->
     return params
 
 
+def review_generated_questions(
+    db: Session,
+    user_id: str,
+    questions: list[GeneratedQuestion],
+    params: GenerateParams,
+    doc_name: str,
+    api_key: str | None,
+    hyde_text: str | None,
+    progress: Callable[[int, str], None] | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> tuple[list[GeneratedQuestion], GenerationReviewStats]:
+    """Apply the shared delivery workflow to parameterized generation."""
+    kwargs = cancellation_kwargs(cancel_check)
+
+    def review(pool: list[GeneratedQuestion], pending: GenerateParams, _stems: list[str]):
+        return question_review.review_questions(
+            db, user_id, pool, pending, doc_name, api_key, hyde_text,
+            progress=(lambda _percent, stage: report(last_percent, stage)) if progress else None,
+            **kwargs,
+        )
+
+    def refill(pending: GenerateParams, stems: list[str], report: Callable[[int, str], None]):
+        return question_gen.generate_questions(
+            pending, doc_name, scope=pending.scope, existing_stems=stems,
+            progress_cb=report, api_key=api_key, hyde_text=hyde_text,
+            allow_partial=True, **kwargs,
+        )
+
+    last_percent = 78
+
+    def report(percent: int, stage: str) -> None:
+        nonlocal last_percent
+        last_percent = max(last_percent, percent)
+        if progress:
+            progress(last_percent, stage)
+
+    accepted, stats, groups = review_with_refill(
+        questions, params, sum(item.count for item in params.types),
+        params.existing_stems, review, refill, report, cancel_check,
+    )
+    return accepted, GenerationReviewStats(
+        duplicates=stats.duplicates, repaired=stats.repaired,
+        regenerated=stats.regenerated, solved=stats.solved, groups=groups,
+    )
+
+
 @trace_run("parameterized", run_id_kwarg="run_id", force_new=True)
 def run_generation_task(
     task_id: str, user_id: str, api_key: str, body: GenerateStartBody,
@@ -500,12 +547,13 @@ def run_generation_task(
             _write_progress(task_id, percent, stage, run_id=run_id)
         questions = question_gen.generate_questions(
             params, doc_name, scope=body.scope or None, existing_stems=body.existing_stems,
-            progress_cb=progress, api_key=api_key, hyde_text=hyde_text,
-            cancel_check=check_canceled,
+            progress_cb=lambda percent, stage: progress(6 + percent * 69 // 100, stage),
+            api_key=api_key, hyde_text=hyde_text,
+            cancel_check=check_canceled, allow_partial=True,
         )
         check_canceled()
         with SessionLocal() as db:
-            questions, stats = question_review.review_questions(
+            questions, stats = review_generated_questions(
                 db, user_id, questions, params, doc_name, api_key, hyde_text, progress=progress,
                 cancel_check=check_canceled,
             )
@@ -533,10 +581,7 @@ def run_generation_task(
             task.stage = "生成完成"
             task.batch_id = batch.id
             task.result_json = json.dumps([q.model_dump() for q in questions], ensure_ascii=False)
-            task.review_json = json.dumps({
-                "duplicates": stats.duplicates, "repaired": stats.repaired,
-                "regenerated": stats.regenerated, "solved": stats.solved,
-            }, ensure_ascii=False)
+            task.review_json = stats.model_dump_json()
             task.error_json = None
             committing = True
             db.commit()

@@ -596,7 +596,7 @@ def _run_message(
         result["reply"] = switch_prefix + (result["reply"] or "")
     questions: list[Question] = []
     params = None
-    if result["questions"]:
+    if result["questions"] or (generation_params is not None and not failure_code):
         questions = [Question.model_validate(q) for q in result["questions"]]
         params = generation_params or generation.build_params_from_slots(
             result["slot_state"], bank_id, document_id,
@@ -621,14 +621,16 @@ def _run_message(
             return question_gen.generate_questions(
                 refill_params, doc_name, scope=refill_params.scope,
                 mixed_difficulty=bool(result["slot_state"].get("mixed_difficulty")),
-                existing_stems=stems, api_key=api_key, hyde_text=None,
+                difficulty_note=str(result["slot_state"].get("difficulty_note") or ""),
+                existing_stems=stems, api_key=api_key, hyde_text=hyde_text,
                 directive=directive, progress_cb=report, cancel_check=check_canceled,
+                allow_partial=True,
             )
 
         try:
-            questions, stats, _ = chat_flow.review_with_refill(
+            questions, stats, groups = chat_flow.review_with_refill(
                 questions, params, requested, body.existing_stems, review_fn, gen_fn,
-                progress_cb=progress, cancel_check=lambda: _is_canceled(session_id, run_id),
+                progress_cb=progress, cancel_check=check_canceled,
             )
         except (chat_flow.NeedConfirmError, LLMError, ValueError) as exc:
             check_canceled()
@@ -647,7 +649,7 @@ def _run_message(
         else:
             result["questions"] = [q.model_dump() for q in questions]
             result["reply"] = switch_prefix + build_result_reply(
-                len(questions), requested, stats, scope=params.scope or None,
+                len(questions), requested, stats, scope=params.scope or None, groups=groups,
                 type_label=(TYPE_LABELS[params.types[0].type] if len(params.types) == 1
                             else f"{len(params.types)} 类题型组合"),
             )

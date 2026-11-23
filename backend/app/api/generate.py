@@ -14,9 +14,11 @@ from app.schemas.api import (
     GenerateCancellationResponse,
     GenerateProgressResponse,
     GenerateStartBody,
+    GenerateSyncResult,
     GenerateTaskResponse,
 )
 from app.schemas.auth import ErrorResponse
+from app.schemas.question import Question as GeneratedQuestion
 from app.services import auth, generation, rag_settings
 from app.services.generation_lifecycle import GenerationRun, rollback_business
 from app.services.phoenix_tracing import trace_run
@@ -114,7 +116,7 @@ def get_progress(task_id: str, user: User = Depends(get_current_user)):
     return data
 
 
-@router.post("", responses={
+@router.post("", response_model=list[GeneratedQuestion] | GenerateSyncResult, responses={
     503: {"model": ErrorResponse, "description": "向量存储或嵌入服务暂不可用"},
 })
 @trace_run("parameterized", force_new=True)
@@ -122,6 +124,7 @@ def generate_sync(
     body: GenerateStartBody,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    include_review: bool = False,
 ):
     """同步出题（脚本与旧前端回退用）。原题数量不足时返回 422 need_confirm。"""
     from app.services.rag import question_gen
@@ -145,6 +148,7 @@ def generate_sync(
                 existing_stems=body.existing_stems,
                 api_key=api_key,
                 hyde_text=hyde_text,
+                allow_partial=True,
             )
         except question_gen.NeedConfirmError as exc:
             run.fail(RunErrorCode.NEED_CONFIRM)
@@ -156,9 +160,7 @@ def generate_sync(
                 available=exc.available,
                 requested=exc.requested,
             ) from exc
-        from app.services import question_review
-
-        questions, _stats = question_review.review_questions(
+        questions, review = generation.review_generated_questions(
             db, user_id, questions, params, doc_name, api_key, hyde_text
         )
         db.rollback()
@@ -176,7 +178,7 @@ def generate_sync(
             run.unknown()
             raise
         run.committed()
-        return [q.model_dump() for q in questions]
+        return GenerateSyncResult(questions=questions, review=review) if include_review else questions
 
 
 @router.get("/batches/latest")

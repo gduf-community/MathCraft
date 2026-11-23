@@ -400,6 +400,38 @@ export async function runGenerationTaskCases({providerCase, settleRender}) {
     finished:false, rejected:false, clearing:true, questionIds:[], sessionId:null, body, ...overrides})
   const taskCase = (name, run) => providerCase(name, run, 'task')
 
+  await providerCase('teacher sees zero-delivery reasons for a recovered parameterized task', async page => {
+    await page.evaluate(operation => {
+      const h = window.mergeHarness
+      localStorage.setItem('mathcraft-generation:A', JSON.stringify(operation))
+      h.backend.getGenerationProgress = () => ({
+        status: 'done', done: true, execution_finished: true, progress: 100,
+        stage: '生成完成', batch_id: null, questions: [], error: null,
+        review: {
+          groups: [{
+            type: 'single', difficulty: '中', requested: 1, delivered: 0, missing: 1,
+            rejections: {'题设不足': 3}, generation_events: {'模型超时': 1},
+          }],
+        },
+      })
+      h.generation++
+      window.remountMerge()
+    }, persisted({clearing:false}))
+    const summary = page.getByRole('region', {name:'参数化出题结果'})
+    await summary.getByText('请求 1 道 · 交付 0 道 · 缺额 1 道').waitFor()
+    assert.equal(await summary.getByRole('heading', {name:'选择题 · 中档'}).isVisible(), true)
+    assert.equal(await summary.getByText('题设不足 3 道', {exact:false}).isVisible(), true)
+    assert.equal(await summary.getByText('模型超时 1 次', {exact:false}).isVisible(), true)
+    await page.getByRole('button', {name:'题目预览', exact:true}).click()
+    assert.equal(await summary.isVisible(), true)
+
+    await page.evaluate(() => {
+      window.mergeHarness.generation++
+      window.remountMerge()
+    })
+    await summary.getByText('请求 1 道 · 交付 0 道 · 缺额 1 道').waitFor()
+  })
+
   await taskCase('task identity: delayed POST cannot unlock next operation; cleanup waits for execution_finished', async page => {
     await page.evaluate(body => {
       const h = window.mergeHarness

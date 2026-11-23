@@ -450,6 +450,16 @@ export async function startGeneration(body: GenerateBody): Promise<{ task_id: st
   })
 }
 
+export interface GenerationReviewGroup {
+  type: QuestionType
+  difficulty: Difficulty
+  requested: number
+  delivered: number
+  missing: number
+  rejections: Record<string, number>
+  generation_events: Record<string, number>
+}
+
 export interface GenerateProgress {
   status: 'queued' | 'running' | 'canceling' | 'canceled' | 'done' | 'failed' | 'interrupted'
   execution_finished: boolean
@@ -459,8 +469,13 @@ export interface GenerateProgress {
   done: boolean
   batch_id: string | null
   questions: ApiQuestion[]
-  /** 出题中间件的处理统计：去重、重出、补解析的题数 */
-  review?: { duplicates: number; repaired?: number; regenerated: number; solved: number } | null
+  review?: {
+    duplicates?: number
+    repaired?: number
+    regenerated?: number
+    solved?: number
+    groups?: GenerationReviewGroup[] | null
+  } | null
   error: { message?: string; kind?: string; available?: number; requested?: number } | null
 }
 

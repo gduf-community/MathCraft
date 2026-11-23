@@ -89,6 +89,7 @@ export function useGenerationTask(
   const [generationClearing, setGenerationClearing] = useState(false)
   const [generationRecoveryError, setRecoveryError] = useState<string | null>(null)
   const [genProgress, setProgress] = useState<{ percent: number; stage: string } | null>(null)
+  const [generationSummary, setGenerationSummary] = useState<api.GenerationReviewGroup[]>([])
   const assertActive = useCallback(() => {
     if (!sessionIsCurrent()) throw new Error('会话已结束，请重新登录后恢复任务')
   }, [sessionIsCurrent])
@@ -156,6 +157,9 @@ export function useGenerationTask(
       if (state?.done && state.execution_finished) {
         operation.finished = true
         save(operation)
+        if (!cancel && state.status !== 'canceled') {
+          setGenerationSummary(state.review?.groups ?? [])
+        }
         return state
       }
       if (state) {
@@ -191,6 +195,7 @@ export function useGenerationTask(
       save(operation)
       setGenerating(true)
       setGenerationClearing(true)
+      setGenerationSummary([])
       setProgress({ percent: 0, stage: '正在取消，等待后台退出…' })
       try {
         if (!operation.rejected && !operation.cleanupCaptured) {
@@ -255,6 +260,7 @@ export function useGenerationTask(
       body: persistedBody, cleanupCaptured: false }
     save(operation)
     setGenerating(true)
+    setGenerationSummary([])
     setProgress({ percent: 0, stage: '准备生成' })
     try {
       try {
@@ -309,7 +315,22 @@ export function useGenerationTask(
         const operation = readPending(userId)
         pending.current = operation
         loaded.current = true
-        if (!operation || (operation.finished && !operation.clearing)) return
+        if (!operation) return
+        if (operation.finished && !operation.clearing) {
+          if (!operation.taskId || operation.rejected) return
+          try {
+            const state = await api.getGenerationProgress(operation.taskId)
+            if (sessionIsCurrent() && pending.current === operation && !operation.clearing
+              && state.done && state.execution_finished && state.status !== 'canceled') {
+              setGenerationSummary(state.review?.groups ?? [])
+            }
+          } catch (error) {
+            if (sessionIsCurrent() && pending.current === operation) {
+              console.error('读取上次出题摘要失败', error)
+            }
+          }
+          return
+        }
         setGenerating(true)
         setProgress({ percent: 0, stage: '正在恢复上次任务…' })
         if (operation.clearing) await clear([], null)
@@ -333,5 +354,5 @@ export function useGenerationTask(
 
   const isClearing = useCallback(() => pending.current?.clearing ?? false, [])
   return { generating, generationClearing, generationRecoveryError, resetGenerationRecovery,
-    genProgress, start, clear, isClearing }
+    genProgress, generationSummary, start, clear, isClearing }
 }

@@ -4050,6 +4050,16 @@
         "operationId": "generate_sync_api_generate_post",
         "parameters": [
           {
+            "name": "include_review",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Review"
+            }
+          },
+          {
             "name": "Authorization",
             "in": "header",
             "required": false,
@@ -4081,7 +4091,20 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Question"
+                      }
+                    },
+                    {
+                      "$ref": "#/components/schemas/GenerateSyncResult"
+                    }
+                  ],
+                  "title": "Response Generate Sync Api Generate Post"
+                }
               }
             }
           },
@@ -10144,6 +10167,27 @@
         ],
         "title": "GenerateStartBody"
       },
+      "GenerateSyncResult": {
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "review": {
+            "$ref": "#/components/schemas/GenerationReviewStats"
+          }
+        },
+        "type": "object",
+        "required": [
+          "questions",
+          "review"
+        ],
+        "title": "GenerateSyncResult",
+        "description": "Opt-in audited result for the legacy synchronous endpoint."
+      },
       "GenerateTaskResponse": {
         "properties": {
           "task_id": {
@@ -10201,6 +10245,54 @@
         "title": "GenerationError",
         "description": "脱敏任务错误及原题不足提示。"
       },
+      "GenerationReviewGroup": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/QuestionType"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty"
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested"
+          },
+          "delivered": {
+            "type": "integer",
+            "title": "Delivered"
+          },
+          "missing": {
+            "type": "integer",
+            "title": "Missing"
+          },
+          "rejections": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Rejections"
+          },
+          "generation_events": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Generation Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "difficulty",
+          "requested",
+          "delivered",
+          "missing",
+          "rejections",
+          "generation_events"
+        ],
+        "title": "GenerationReviewGroup",
+        "description": "Delivery and rejection counts for one requested type and tier."
+      },
       "GenerationReviewStats": {
         "properties": {
           "duplicates": {
@@ -10218,6 +10310,20 @@
           "solved": {
             "type": "integer",
             "title": "Solved"
+          },
+          "groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/GenerationReviewGroup"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Groups"
           }
         },
         "type": "object",

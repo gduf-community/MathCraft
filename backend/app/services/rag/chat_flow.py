@@ -2,8 +2,10 @@
 from typing import Callable
 
 from app.models.ops_run import RunErrorCode
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.api import GenerationReviewGroup
+from app.schemas.question import GenerateParams
 from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
+from app.services.question_delivery import review_with_refill as review_with_refill
 from app.services.rag.llm import friendly_error
 from app.services.rag.prompts import CREATIVE_SYSTEM_EXTRA
 from app.services.rag.question_gen import NeedConfirmError, generate_questions
@@ -37,8 +39,30 @@ class ChatCanceled(GenerationCanceled):
 def build_result_reply(
     actual: int, requested: int, stats=None, type_label: str | None = None,
     scope: str | None = None,
+    groups: list[GenerationReviewGroup] | None = None,
 ) -> str:
     """按审核后的真实结果写回复，数量对不上时说明原因。"""
+    if groups is not None:
+        from app.services.rag.question_gen import TYPE_LABELS
+
+        title = (
+            f"出题完成，共 {actual} 道（请求 {requested} 道，缺额 {requested - actual} 道）。"
+            if actual else f"没有可入库的题（请求 {requested} 道，缺额 {requested} 道）。"
+        )
+        lines = [title]
+        for group in groups:
+            line = (
+                f"- {TYPE_LABELS[group.type]}（{group.difficulty.value}档）"
+                f" 请求 {group.requested} 道，交付 {group.delivered} 道，缺额 {group.missing} 道"
+            )
+            if group.rejections:
+                reasons = "、".join(f"{name} {n} 道" for name, n in group.rejections.items())
+                line += f"。候选题拦截 {reasons}"
+            if group.generation_events:
+                events = "、".join(f"{name} {n} 次" for name, n in group.generation_events.items())
+                line += f"。补题情况 {events}"
+            lines.append(line)
+        return "\n".join(lines)
     if actual <= 0:
         return EMPTY_REPLY
     if actual >= requested:
@@ -124,6 +148,7 @@ def handle_chat(
             hyde_text=hyde_text,
             retrieve_fn=retrieve_fn,
             progress_cb=gen_progress,
+            allow_partial=True,
             **cancellation_kwargs((lambda: _guard(cancel_check)) if cancel_check else None),
         )
     except NeedConfirmError as exc:
@@ -228,89 +253,10 @@ def handle_creative(
         params, doc_name, scope=scope, existing_stems=existing_stems,
         api_key=api_key, hyde_text=hyde_text, directive=directive,
         progress_cb=gen_progress,
+        allow_partial=True,
         **cancellation_kwargs((lambda: _guard(cancel_check)) if cancel_check else None),
     )
     _guard(cancel_check)
     report(78, "正在查重与评估难度")
     return {"reply": DONE_REPLY.format(n=len(questions)), "slot_state": state,
             "questions": [q.model_dump() for q in questions], "done": True}
-
-
-MAX_REFILL_ROUNDS = 2
-
-
-def review_with_refill(
-    first_pool: list[Question], params: GenerateParams, requested: int,
-    existing_stems: list[str] | None,
-    review_fn: Callable[[list[Question], GenerateParams, list[str]], tuple[list[Question], object]],
-    gen_fn: Callable[[GenerateParams, list[str], ProgressCB], list[Question]],
-    progress_cb: ProgressCB | None = None, cancel_check: CancelCheck | None = None,
-) -> tuple[list[Question], object, bool]:
-    """按各题型实际缺口补齐，累计审核统计与所有已见题干；取消向调用方传播。"""
-    from app.services.question_review import ReviewStats, _norm as normalize
-
-    quota: dict[QuestionType, int] = {}
-    type_difficulty: dict[QuestionType, Difficulty] = {}
-    for item in params.types:
-        quota[item.type] = quota.get(item.type, 0) + item.count
-        if item.difficulty:
-            type_difficulty[item.type] = item.difficulty
-    counts = dict.fromkeys(quota, 0)
-    accepted: list[Question] = []
-    avoid = list(dict[str, None].fromkeys((existing_stems or []) + params.existing_stems))
-
-    seen = {normalize(stem) for stem in avoid if stem}
-    stats = ReviewStats()
-    pool = list(first_pool)
-    last_percent = 78
-
-    def report(percent: int, stage: str) -> None:
-        nonlocal last_percent
-        _guard(cancel_check)
-        last_percent = max(last_percent, min(98, max(0, percent)))
-        if progress_cb:
-            progress_cb(last_percent, stage)
-
-    for round_no in range(MAX_REFILL_ROUNDS + 1):
-        _guard(cancel_check)
-        report(78 + round_no * 8, "正在审核题目" if not round_no else "正在审核补齐题目")
-        review_params = params.model_copy(update={
-            "existing_stems": list(avoid),
-            "types": [TypeCount(type=kind, count=target - counts[kind],
-                                difficulty=type_difficulty.get(kind))
-                      for kind, target in quota.items() if counts[kind] < target],
-        })
-        passed, current_stats = review_fn(pool, review_params, list(avoid))
-        _guard(cancel_check)
-        for field in ("duplicates", "repaired", "regenerated", "solved"):
-            setattr(stats, field, getattr(stats, field) + getattr(current_stats, field, 0))
-        for question in passed:
-            stem = normalize(question.stem)
-            if stem in seen:
-                stats.duplicates += 1
-                continue
-            seen.add(stem)
-            avoid.append(question.stem)
-            if (question.type in quota and counts[question.type] < quota[question.type]
-                    and len(accepted) < requested):
-                accepted.append(question)
-                counts[question.type] += 1
-        for question in pool:
-            if normalize(question.stem) not in seen:
-                seen.add(normalize(question.stem))
-                avoid.append(question.stem)
-        deficits = [TypeCount(type=kind, count=target - counts[kind],
-                              difficulty=type_difficulty.get(kind))
-                    for kind, target in quota.items() if counts[kind] < target]
-        if not deficits or len(accepted) >= requested or round_no == MAX_REFILL_ROUNDS:
-            break
-        refill_params = params.model_copy(update={"types": deficits, "existing_stems": list(avoid)})
-        start = 80 + round_no * 8
-
-        def refill_progress(percent: int, stage: str) -> None:
-            report(start + int(min(100, max(0, percent)) * 0.05), stage)
-
-        pool = gen_fn(refill_params, list(avoid), refill_progress)
-        _guard(cancel_check)
-    report(98, "正在写入题目")
-    return accepted, stats, False

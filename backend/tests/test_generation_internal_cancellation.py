@@ -99,7 +99,7 @@ def test_review_json_cancellation_prevents_retry(monkeypatch):
     assert calls == ["model"]
 
 
-@pytest.mark.parametrize("phase", ["evaluate", "repair", "regenerate", "solve"])
+@pytest.mark.parametrize("phase", ["evaluate", "repair", "solve"])
 @pytest.mark.parametrize("raise_directly", [False, True])
 def test_review_cancellation_propagates_across_fallbacks(monkeypatch, phase, raise_directly):
     canceled = Event()
@@ -118,22 +118,18 @@ def test_review_cancellation_propagates_across_fallbacks(monkeypatch, phase, rai
         if kind == "evaluate":
             return json.dumps({
                 "scores": dict.fromkeys(question_review._SCORE_KEYS, 3),
-                "passed": phase == "solve",
+                "passed": True,
+                "checks": {},
             })
         if kind == "repair":
             return json.dumps(_question().model_dump(mode="json"))
-        return json.dumps({"answer": "1", "analysis": "fake analysis"})
-
-    def regenerate(*args, **kwargs):
-        calls.append("regenerate")
-        assert kwargs["cancel_check"] is not None
-        raise GenerationCanceled("regeneration canceled")
+        status = "false_proposition" if phase == "repair" else "solved"
+        return json.dumps({"status": status, "evidence": "检查导数定义", "answer": "1"})
 
     monkeypatch.setattr(question_review, "load_corpus", lambda *a: [])
     monkeypatch.setattr(question_review, "_drop_duplicates", lambda qs, *a, **k: (qs, []))
     monkeypatch.setattr(question_review.llm, "chat_text", chat)
     monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: json.loads(chat(*a, **k)))
-    monkeypatch.setattr(question_gen, "generate_questions", regenerate)
     monkeypatch.setattr(question_review, "_THINK_WORKERS", 1)
     with SessionLocal() as db, pytest.raises(GenerationCanceled):
         real_review(
@@ -142,7 +138,7 @@ def test_review_cancellation_propagates_across_fallbacks(monkeypatch, phase, rai
         )
     assert phase in calls
     last = calls.index(phase)
-    assert calls[last:] == [phase]
+    assert set(calls[last:]) == {phase}
 
 
 def test_solve_cancellation_joins_active_worker_and_skips_queued_models(monkeypatch):

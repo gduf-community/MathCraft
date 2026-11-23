@@ -492,6 +492,7 @@ def _gen_for_type(
     directive: str = "",
     difficulty_note: str = "",
     cancel_check: Callable[[], None] | None = None,
+    allow_partial: bool = False,
 ) -> list[Question]:
     """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。
 
@@ -536,7 +537,7 @@ def _gen_for_type(
     collected: list[Question] = []
     taken = set(avoid_norm)
     errors: list[Exception] = []
-    for round_no in range(MAX_FILL_ROUNDS):
+    for round_no in range(1 if allow_partial else MAX_FILL_ROUNDS):
         check_cancellation(cancel_check)
         need = tc.count - len(collected)
         if need <= 0:
@@ -593,6 +594,8 @@ def _gen_for_type(
         return collected[: tc.count]
     if not collected and errors:
         raise errors[0]  # 一道都没出：把超时、限流、密钥失效的真实原因带出去
+    if allow_partial:
+        return collected
     raise ValueError(
         f"{type_label}生成数量或去重后不达标（要求 {tc.count} 道，实得 {len(collected)} 道），请重试"
     )
@@ -611,6 +614,7 @@ def generate_questions(
     retrieve_fn: RetrieveFn | None = None,
     directive: str = "",
     cancel_check: Callable[[], None] | None = None,
+    allow_partial: bool = False,
 ) -> list[Question]:
     """按题型并行出题：每个题型一个独立 agent（线程），全部完成后汇总呈现。
 
@@ -664,6 +668,7 @@ def generate_questions(
             report=make_report(idx),
             directive=directive,
             difficulty_note=difficulty_note,
+            **({"allow_partial": True} if allow_partial else {}),
             **cancellation_kwargs(cancel_check),
         )
         check_cancellation(cancel_check)

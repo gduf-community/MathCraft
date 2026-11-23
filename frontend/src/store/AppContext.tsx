@@ -116,6 +116,7 @@ interface AppState {
   retryGenerationCleanup: () => Promise<void>
   generating: boolean
   generationClearing: boolean
+  generationSummary: api.GenerationReviewGroup[]
   questionsClearing: boolean
   questions: Question[]
   favorites: Question[]
@@ -401,7 +402,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
   const {
     generating, generationClearing, isClearing, generationRecoveryError, resetGenerationRecovery,
-    clear: clearRecoveredGeneration,
+    generationSummary, clear: clearRecoveredGeneration,
   } = useGenerationTask(user?.userId, sessionIsCurrent, removeClearedFavorites)
   const retryGenerationCleanup = useCallback(
     () => clearRecoveredGeneration([], null),
@@ -1782,6 +1783,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closeApiConfigModal,
     generating,
     generationClearing,
+    generationSummary,
     generationRecoveryError,
     resetGenerationRecovery,
     retryGenerationCleanup,

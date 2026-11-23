@@ -1,38 +1,28 @@
-"""出题中间件：查重 → 盲评难度与质量 → 缺陷修复 → 生成解析，全部通过后才交给题目预览。
-
-调用顺序固定：
-1. 查重：与「题目收藏」「组卷记录」「同题库历史题目」做语义比对，相似度超阈值的丢弃；
-2. 盲评：不告知命题时标注的难度，只给题目、知识点范围与目标档。评估模型先独立解题，
-   再按六个维度打分并加权；可解性一票否决，高与地狱题要求给出两种解法或数值验证；
-   两次评分差超过 0.7 时分派第三位评审仲裁；
-3. 反哺：未通过只做一轮最小修补；仍不过就换难度模板重出，不再微调同一题；
-4. 解题：独立解出答案、生成选择题选项与精简解析，完整验证后更新；失败保留已有答案。
-
-服务异常降级并写日志；显式取消异常穿透，等待已启动工作结束后交给调用方。
-"""
+"""独立求解、定向修补与成品验收。补题由调用方统一调度。"""
 from __future__ import annotations
 
 import json
 import logging
 import math
 import re
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 
-import json_repair
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
-from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType
 from app.services.generation_cancellation import (
     GenerationCanceled,
     cancellation_kwargs,
     check_cancellation,
     run_checked,
 )
-from app.services.rag import embeddings, llm, question_gen
+from app.services.rag import embeddings, llm
 from app.services.rag.prompts import DRAFT_TRACES, SOLVE_ANSWER_SYSTEM, SOLVE_EXPLAIN_SYSTEM
 from app.services import latex_utils
 from app.services.rag_runtime import with_snapshot
@@ -47,9 +37,7 @@ TIER_RANGES: dict[Difficulty, tuple[float, float]] = {
     Difficulty.high: (3.0, 4.0),
     Difficulty.hell: (4.0, 5.0),
 }
-# 边界允许 ±0.5 档容差（0.5 分等于半档）
-TIER_TOLERANCE = 0.5
-# 目标档的参数模板，用于换模板重出时给出明确指令
+# 定向修补的目标档参数
 TIER_PARAMS: dict[Difficulty, str] = {
     Difficulty.low: "步骤 1—2 步、只考 1 个知识点、计算量小、不设陷阱",
     Difficulty.mid: "步骤 2—3 步、综合 2 个知识点、计算量中等、至多 1 个常见易错点",
@@ -70,10 +58,10 @@ EVAL_PROMPT = """你是独立数学审题人。给定一道题、它所属的知
 
 加权总分 = 0.20×knowledge + 0.20×steps + 0.20×abstraction + 0.15×computation + 0.15×trap + 0.10×unique
 判定档：1—2 低，2—3 中，3—4 高，4—5 地狱。
-一票否决：不可解、多解、超纲、题干歧义，此时 passed 必须为 false。
-目标档为「高」或「地狱」时，methods 至少给出两种解法或一种数值验证。
+一票否决：不可解、答案不确定、超纲、题干歧义，此时 passed 必须为 false。
+methods 写出关键解法。目标档为「高」或「地狱」时，提供两种解法或一种数值验证。
 
-只输出 JSON（字段名照抄，不要增删）：
+只输出 JSON，包含以下评分字段：
 {"independentAnswer": "独立解出的答案",
  "scores": {"knowledge": 1, "steps": 1, "abstraction": 1,
             "computation": 1, "trap": 1, "unique": 1},
@@ -93,19 +81,95 @@ __STEM__
 """
 
 REPAIR_PROMPT = """下面这道题没有通过难度与质量审查。请只做最小修补，不要整题重写，保持题型与考点不变。
-缺陷码：__CODES__
-首要建议：__SUGGESTION__
+拦截依据：__EVIDENCE__
+知识点范围：__SCOPE__
+原题限制：__ORIGINAL__
 目标难度档：__TARGET__（__PARAMS__）
 
 要求：
 1 保留题干主体结构与已知条件，只调整必要部分（增删步骤、换数值、去或加陷阱、修正答案）。
-2 修改后必须自洽：选项、答案、解析同步更新，答案唯一且可验证。
+2 修补后选项、答案、解析必须自洽。若仅解析方法越界，保留题面与答案，改用范围内的方法。
 3 只输出一个 JSON 对象，字段与出题时相同：type、score、difficulty、knowledgePoint、blueprint、
   stem、options、answer、analysis、scoringPoints、selfCheck。不要包在 questions 数组里。
 
 原题：
 __QUESTION__
 """
+
+JOINT_PROMPT = """
+以上是完整题面，下面还给出成品选项、答案、解析与独立求解证据。逐项核验成品，
+不能仅根据独立解题结果判断成品合格。输出的 JSON 须额外包含以下布尔字段：
+- stemValid：题面完整、条件相容、问题明确。没有具体数学命题或必需数据时不能通过。
+  判断题的命题可以为假，要求证明的命题若为假则题干有缺陷。
+- scopeValid：实际考点和成品解析使用的方法均在指定范围。
+- optionsValid：逐项核验定义域、真假、正确项数量与答案标签。单选恰好一项正确，
+  多选至少两项正确。无定义的选项不能当作普通错误干扰项。非客观题无选项时填 true。
+- answerValid：成品答案回应所有小问且与独立求解相符，包括判断题正误与选项标签。
+- analysisValid：成品推导和结论成立，证明完成题目要求，选择题说明各项正误，
+  判断为错须给反例或反证。
+额外输出 evidence 字符串。通过时简述支持验收的关键依据，失败时给出具体反例、
+缺失条件、越界定理或不成立的步骤。仅解析越界时说明可用的范围内方法。
+另输出 verifiable 布尔字段。证据不足时 verifiable 为 false。
+任一字段无法验证或不成立时，passed 必须为 false。五项均通过时 passed 为 true，
+难度只用评分表达，按成品的最短合理解法评分。
+"""
+
+_JOINT_FIELDS = {
+    "stemValid": "题面缺陷",
+    "scopeValid": "超出范围",
+    "optionsValid": "选项不合格",
+    "answerValid": "答案不成立",
+    "analysisValid": "解析不成立",
+}
+
+
+class SolveStatus(StrEnum):
+    """独立求解的结构化结论。"""
+
+    SOLVED = "solved"
+    INSUFFICIENT = "insufficient_conditions"
+    FALSE_PROPOSITION = "false_proposition"
+    CONTRADICTION = "contradictory_conditions"
+    UNVERIFIABLE = "unverifiable"
+
+
+_SOLVE_REASONS = {
+    SolveStatus.INSUFFICIENT: "题设不足",
+    SolveStatus.FALSE_PROPOSITION: "命题为假",
+    SolveStatus.CONTRADICTION: "条件矛盾",
+    SolveStatus.UNVERIFIABLE: "无法验证",
+}
+
+_STRUCTURED_SOLVE_PROMPT = """
+本次必须额外输出 status 和 evidence。status 取 solved、insufficient_conditions、
+false_proposition、contradictory_conditions 或 unverifiable。solved 表示正常作答，
+evidence 给出关键依据或验算。其他状态的 answer 留空，evidence 给出缺失条件、
+反例、矛盾条件或无法验证的原因。不能猜测题意或擅自补足题设。
+判断题命题为假且可以反驳时为 solved，answer 填错误并在 evidence 中给出反例。
+要求证明的命题被反例推翻时填 false_proposition。
+"""
+
+
+@dataclass(frozen=True)
+class _SolveResult:
+    status: SolveStatus
+    evidence: str = ""
+    answer: str = ""
+    confidence: str = "mid"
+
+
+@dataclass(frozen=True)
+class _Finding:
+    reason: str
+    evidence: str = ""
+
+
+@dataclass(frozen=True)
+class _CandidateResult:
+    question: Question | None = None
+    reason: str = ""
+    repaired: bool = False
+
 
 # 评估与解析的并发数
 _THINK_WORKERS = 6
@@ -128,6 +192,7 @@ class ReviewStats:
     repaired: int = 0
     regenerated: int = 0
     solved: int = 0
+    rejections: dict[tuple[QuestionType, Difficulty], Counter[str]] = field(default_factory=dict)
 
     def summary(self) -> str:
         parts = []
@@ -201,52 +266,47 @@ def load_corpus(db: Session, user_id: str, bank_id: str) -> list[str]:
     return out[: limit * 2]
 
 
+class _DuplicateCheckError(ValueError):
+    """缺少完成语义查重所需的有效向量。"""
+
+
 @with_snapshot
 def _drop_duplicates(
     questions: list[Question], corpus: list[str],
     cancel_check: Callable[[], None] | None = None,
 ) -> tuple[list[Question], list[Question]]:
-    """语义查重：与语料或批内已保留题目相似度过阈值的丢弃。"""
+    """与语料或批内已保留题目相似度过阈值的候选题判重。"""
     check_cancellation(cancel_check)
-    if not questions:
-        return [], []
-    threshold = settings.review_similarity_threshold
-    if corpus:
-        try:
-            corpus_vecs = run_checked(cancel_check, embeddings.embed_texts, corpus)
-        except GenerationCanceled:
-            raise
-        except Exception as exc:  # 向量服务不可用时跳过查重，不阻断出题
-            logger.warning("查重跳过（向量服务不可用）：%s", exc)
-            corpus_vecs = []
-    else:
-        corpus_vecs = []
+    norm_corpus = {_norm(stem) for stem in corpus}
+    pending = [q for q in questions if _norm(q.stem) not in norm_corpus]
+    dropped = [q for q in questions if _norm(q.stem) in norm_corpus]
+    if not pending:
+        return [], dropped
+    if not corpus and len(pending) == 1:
+        return pending, dropped
     try:
-        fresh_vecs = run_checked(cancel_check, embeddings.embed_texts, [q.stem for q in questions])
+        vectors = run_checked(
+            cancel_check, embeddings.embed_texts, corpus + [q.stem for q in pending],
+        )
     except GenerationCanceled:
         raise
     except Exception as exc:
-        logger.warning("查重跳过（题目向量化失败）：%s", exc)
-        return questions, []
-
-    norm_corpus = {_norm(s) for s in corpus}
+        raise _DuplicateCheckError("题目向量化失败") from exc
+    if (len(vectors) != len(corpus) + len(pending)
+            or any(len(vec) != len(vectors[0]) or not any(vec)
+                   or not all(math.isfinite(x) for x in vec) for vec in vectors)):
+        raise _DuplicateCheckError("题目向量不完整")
+    threshold = settings.review_similarity_threshold
+    seen = vectors[:len(corpus)]
     kept: list[Question] = []
-    kept_vecs: list[list[float]] = []
-    dropped: list[Question] = []
-    for question, vec in zip(questions, fresh_vecs):
-        if _norm(question.stem) in norm_corpus:
-            dropped.append(question)
-            continue
-        duplicate = any(_cosine(vec, other) >= threshold for other in corpus_vecs)
-        if not duplicate:
-            duplicate = any(_cosine(vec, other) >= threshold for other in kept_vecs)
-        if duplicate:
+    for question, vec in zip(pending, vectors[len(corpus):]):
+        key = _norm(question.stem)
+        if key in norm_corpus or any(_cosine(vec, other) >= threshold for other in seen):
             dropped.append(question)
         else:
             kept.append(question)
-            kept_vecs.append(vec)
-    if dropped:
-        logger.info("查重丢弃 %d 题（阈值 %.2f）", len(dropped), threshold)
+            norm_corpus.add(key)
+            seen.append(vec)
     return kept, dropped
 
 
@@ -265,9 +325,8 @@ def tier_of(total: float) -> Difficulty:
 
 
 def in_target(total: float, target: Difficulty) -> bool:
-    """判定是否落在目标档区间，允许 ±0.5 档容差。"""
-    lo, hi = TIER_RANGES[target]
-    return lo - TIER_TOLERANCE <= total <= hi + TIER_TOLERANCE
+    """判断评分是否落在唯一的目标档。"""
+    return 1.0 <= total <= 5.0 and tier_of(total) == target
 
 
 def _strip_json(text: str) -> str:
@@ -295,103 +354,90 @@ def _chat_json_low(
     messages: list[dict], api_key: str | None, max_tokens: int = 4800,
     cancel_check: Callable[[], None] | None = None,
 ) -> dict:
-    """低温 JSON 调用：先给足预算，被截断再放大一次。
-
-    修补要整题重写 JSON，实测单次输出三千多字；预算给小了会截断成非法 JSON，
-    再重来一次等于白等半分钟。
-    """
-    last: Exception | None = None
-    for budget in (max_tokens, int(max_tokens * 1.4)):
-        check_cancellation(cancel_check)
-        text = ""
-        try:
-            text = run_checked(
-                cancel_check, _chat_text_with_fallback, messages, api_key, budget, json_mode=True,
-                **cancellation_kwargs(cancel_check),
-            )
-            payload = latex_utils.escape_bare_commands_in_json(_strip_json(text))
-            data = json.loads(payload)
-            if isinstance(data, dict):
-                return data
-            last = ValueError("返回不是 JSON 对象")
-        except GenerationCanceled:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            check_cancellation(cancel_check)
-            # JSON Repair 兜底：截断或非法结构先修复再校验，修复失败才进入下一轮
-            try:
-                repaired = json_repair.loads(
-                    latex_utils.escape_bare_commands_in_json(_strip_json(text))
-                )
-                if isinstance(repaired, dict) and repaired:
-                    return repaired
-            except GenerationCanceled:
-                raise
-            except Exception:  # noqa: BLE001
-                pass
-            last = exc
-    raise ValueError(f"JSON 解析失败：{last}")
-
-
-def _score_int(value) -> int:
-    try:
-        num = int(round(float(value)))
-    except (TypeError, ValueError):
-        return 3
-    return max(1, min(5, num))
+    """请求严格 JSON 对象，失败由当前验收环节处理。"""
+    text = run_checked(
+        cancel_check, _chat_text_with_fallback, messages, api_key, max_tokens, json_mode=True,
+        **cancellation_kwargs(cancel_check),
+    )
+    data = json.loads(latex_utils.escape_bare_commands_in_json(_strip_json(text)))
+    if not isinstance(data, dict):
+        raise ValueError("返回不是 JSON 对象")
+    return data
 
 
 def parse_review(data: dict, target: Difficulty) -> dict:
-    """把评估模型的输出收敛成内部结构，加权总分由本地重算，不信任模型算术。"""
-    raw_scores = data.get("scores") or {}
-    scores = {key: _score_int(raw_scores.get(key)) for key in _SCORE_KEYS}
+    """验证盲评契约，用各维分重算总分与档位。"""
+    scores = data.get("scores")
+    passed_flag = data.get("passed")
+    if (
+        not isinstance(scores, dict)
+        or any(type(scores.get(key)) is not int or not 1 <= scores[key] <= 5
+               for key in _SCORE_KEYS)
+        or type(passed_flag) is not bool
+    ):
+        raise ValueError("缺少有效评分或判定")
     total = round(sum(scores[k] * _SCORE_WEIGHTS[k] for k in _SCORE_KEYS), 2)
-    tier = tier_of(total)
-    defects = [
-        code for code in (str(c).strip().upper() for c in (data.get("defectCodes") or []))
-        if code and code[0] in "KSCTAO"
-    ]
-    unique = scores["unique"]
-    raw_passed = data.get("passed", True)
-    passed_flag = raw_passed is True or str(raw_passed).strip().lower() in ("true", "1", "是", "通过")
-    # 可解性一票否决：答案问题、超纲、可解唯一性过低
-    veto = unique <= 2 or "O" in defects or ("A" in defects and not passed_flag)
-    passed = passed_flag and not veto and in_target(total, target)
+    codes = data.get("defectCodes", [])
+    methods = data.get("methods", [])
+    if not isinstance(codes, list) or not isinstance(methods, list):
+        raise ValueError("盲评字段格式无效")
+    defects = [code for code in codes if isinstance(code, str) and code in tuple("KSCTAO")]
+    veto = scores["unique"] <= 2 or "O" in defects or "A" in defects
     return {
         "scores": scores,
         "total": total,
-        "tier": tier.value,
+        "tier": tier_of(total).value,
         "defectCodes": defects,
         "suggestion": str(data.get("primarySuggestion") or "").strip(),
-        "independentAnswer": str(data.get("independentAnswer") or "").strip(),
-        "methods": [str(m).strip() for m in (data.get("methods") or []) if str(m).strip()],
+        "methods": [m.strip() for m in methods if isinstance(m, str) and m.strip()],
         "veto": veto,
-        "passed": passed,
+        "passed": passed_flag and not veto and in_target(total, target),
+        "qualityPassed": passed_flag and not veto,
     }
 
 
 def _judge_once(
     question: Question, target: Difficulty, scope: str, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
+    *, independent: _SolveResult | None = None,
 ) -> dict | None:
     prompt = (
         EVAL_PROMPT.replace("__TARGET__", target.value)
         .replace("__SCOPE__", scope or "未限定")
         .replace("__STEM__", question.stem)
     )
+    if independent is not None:
+        prompt += "\n" + JOINT_PROMPT + json.dumps({
+            **question.model_dump(include={"type", "stem", "options", "answer", "analysis"}),
+            "independentAnswer": independent.answer.replace(_MULTI_SEP, "；"),
+            "independentEvidence": independent.evidence,
+        }, ensure_ascii=False)
     try:
         data = _chat_json_low(
             [{"role": "user", "content": prompt}], api_key,
             **cancellation_kwargs(cancel_check),
         )
         review = parse_review(data, target)
-        if target in (Difficulty.high, Difficulty.hell) and len(review["methods"]) < 2:
-            logger.info("高难题目评审未给出两种解法，按分数继续判定")
+        if independent is not None:
+            evidence = data.get("evidence")
+            if (data.get("verifiable") is not True
+                    or not isinstance(evidence, str) or not evidence.strip()
+                    or any(type(data.get(key)) is not bool for key in _JOINT_FIELDS)):
+                return None
+            finding = next(
+                (_Finding(reason, evidence) for key, reason in _JOINT_FIELDS.items()
+                 if data[key] is False),
+                None,
+            )
+            if finding is None and (not review["qualityPassed"] or not review["methods"]):
+                return None
+            review["finding"] = finding
+            review["evidence"] = evidence
         return review
     except GenerationCanceled:
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("盲评失败：%s", exc)
+        logger.warning("盲评失败：%s", type(exc).__name__)
         return None
 
 
@@ -399,7 +445,7 @@ def _merge_reviews(reviews: list[dict]) -> dict:
     """合并多次盲评：总分取均值，任一否决即否决，缺陷码取并集。"""
     valid = [r for r in reviews if r]
     if not valid:
-        return {"total": 0.0, "tier": "", "passed": True, "veto": False, "unknown": True,
+        return {"total": 0.0, "tier": "", "passed": False, "veto": False, "unknown": True,
                 "scores": {}, "defectCodes": [], "suggestion": "", "methods": []}
     total = round(sum(r["total"] for r in valid) / len(valid), 2)
     scores = {
@@ -418,7 +464,7 @@ def _merge_reviews(reviews: list[dict]) -> dict:
         "defectCodes": defects,
         "suggestion": worst.get("suggestion", ""),
         "methods": max((r["methods"] for r in valid), key=len),
-        "independentAnswer": worst.get("independentAnswer", ""),
+        "evidence": worst.get("evidence", ""),
         "veto": any(r["veto"] for r in valid),
         "passed": all(r["passed"] for r in valid) and not any(r["veto"] for r in valid),
         "unknown": False,
@@ -428,6 +474,7 @@ def _merge_reviews(reviews: list[dict]) -> dict:
 def evaluate(
     question: Question, target: Difficulty, scope: str, api_key: str | None, judges: int = 2,
     cancel_check: Callable[[], None] | None = None,
+    *, independent: _SolveResult | None = None,
 ) -> dict:
     """双评 + 仲裁：两次总分差超过 0.7 时请第三位评审裁决。
 
@@ -435,26 +482,36 @@ def evaluate(
     """
     check_cancellation(cancel_check)
     cancel_kwargs = cancellation_kwargs(cancel_check)
+    judge_kwargs = {"independent": independent} if independent is not None else {}
     judges = max(1, judges)
     with ThreadPoolExecutor(max_workers=judges, thread_name_prefix="review-judge") as pool:
         futures = [
             pool.submit(
                 run_checked, cancel_check, _judge_once,
-                question, target, scope, api_key, **cancel_kwargs,
+                question, target, scope, api_key, **cancel_kwargs, **judge_kwargs,
             ) for _ in range(judges)
         ]
         first = [f.result() for f in futures]
     check_cancellation(cancel_check)
     valid = [r for r in first if r]
-    if len(valid) == 2 and abs(valid[0]["total"] - valid[1]["total"]) > 0.7:
+    if len(valid) != judges:
+        return _merge_reviews([])
+    for review in valid:
+        if review.get("finding") is not None:
+            return review
+    if (len(valid) == 2 and all(r["qualityPassed"] for r in valid)
+            and abs(valid[0]["total"] - valid[1]["total"]) > 0.7):
         logger.info("两次盲评差 %.2f，启动仲裁", abs(valid[0]["total"] - valid[1]["total"]))
         arbiter = run_checked(
-            cancel_check, _judge_once, question, target, scope, api_key, **cancel_kwargs,
+            cancel_check, _judge_once, question, target, scope, api_key, **cancel_kwargs, **judge_kwargs,
         )
-        if arbiter:
-            merged = _merge_reviews([arbiter])
-            merged["arbitrated"] = True
-            return merged
+        if arbiter is None:
+            return _merge_reviews([])
+        if arbiter.get("finding") is not None:
+            return arbiter
+        merged = _merge_reviews([arbiter])
+        merged["arbitrated"] = True
+        return merged
     merged = _merge_reviews(valid)
     merged["arbitrated"] = False
     if len(valid) == 2:
@@ -472,31 +529,23 @@ def _apply_review(question: Question, review: dict) -> None:
     question.difficultyReview["methodCount"] = len(review.get("methods") or [])
 
 
-# ---------------- 缺陷修复与换模板重出 ----------------
-
-
 def _repair(
-    question: Question, review: dict, target: Difficulty, api_key: str | None,
+    question: Question, finding: _Finding, target: Difficulty, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
+    *, scope: str = "", original: bool = False,
 ) -> Question | None:
-    """按缺陷码做最小修补，保持题型与考点不变。"""
-    payload = {
-        "type": question.type.value,
-        "score": question.score,
-        "difficulty": target.value,
-        "knowledgePoint": question.knowledgePoint,
-        "blueprint": question.blueprint,
-        "stem": question.stem,
-        "options": [o.model_dump() for o in question.options],
-        "answer": question.answer,
-        "analysis": question.analysis,
-        "scoringPoints": question.scoringPoints,
-    }
+    """依据具体缺陷修订一次，保留候选身份与交付档位。"""
+    payload = question.model_dump(exclude={"difficultyReview", "difficultyScore"})
+    restriction = (
+        "原题模式须逐字保留题干及成品已有的选项，只可修正答案、解析及评分点。"
+        if original else "保留题型与核心考点，只修正必要内容。"
+    )
     prompt = (
-        REPAIR_PROMPT.replace("__CODES__", "、".join(review.get("defectCodes") or []) or "未标注")
-        .replace("__SUGGESTION__", review.get("suggestion") or "按目标档参数微调")
-        .replace("__TARGET__", target.value)
+        REPAIR_PROMPT.replace("__TARGET__", target.value)
         .replace("__PARAMS__", TIER_PARAMS[target])
+        .replace("__ORIGINAL__", restriction)
+        .replace("__SCOPE__", scope or "未限定")
+        .replace("__EVIDENCE__", f"{finding.reason}：{finding.evidence}")
         .replace("__QUESTION__", json.dumps(payload, ensure_ascii=False))
     )
     try:
@@ -504,55 +553,18 @@ def _repair(
             [{"role": "user", "content": prompt}], api_key,
             **cancellation_kwargs(cancel_check),
         )
-        item = data.get("question") if isinstance(data.get("question"), dict) else data
-        fixed = Question.model_validate(item)
+        fixed = Question.model_validate(data)
     except GenerationCanceled:
         raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("修补失败：%s", exc)
+    except (ValueError, llm.LLMError) as exc:
+        logger.warning("修补失败：%s", type(exc).__name__)
         return None
-    fixed.id = question.id
-    fixed.type = question.type
-    fixed.difficulty = target
-    fixed.knowledgePoint = fixed.knowledgePoint or question.knowledgePoint
-    if not fixed.options and question.options:
-        fixed.options = question.options
-    return fixed
-
-
-def _regen(
-    params: GenerateParams,
-    qtype: QuestionType,
-    count: int,
-    doc_name: str,
-    avoid: list[str],
-    api_key: str | None,
-    hyde_text: str | None,
-    directive: str = "",
-    cancel_check: Callable[[], None] | None = None,
-) -> list[Question]:
-    """按题型补出 count 道，避免与已保留题目重复。"""
-    check_cancellation(cancel_check)
-    sub_diff = next(
-        (tc.difficulty for tc in params.types if tc.type == qtype and tc.difficulty), None,
-    )
-    sub = params.model_copy(update={"types": [TypeCount(type=qtype, count=count, difficulty=sub_diff)]})
-    return question_gen.generate_questions(
-        sub,
-        doc_name,
-        scope=params.scope or None,
-        existing_stems=avoid,
-        api_key=api_key,
-        hyde_text=hyde_text,
-        directive=directive,
-        **cancellation_kwargs(cancel_check),
-    )
-
-
-def _delta(total: float, target: Difficulty) -> float:
-    lo, hi = TIER_RANGES[target]
-    center = (lo + hi) / 2
-    return abs(total - center)
+    if fixed.type != question.type:
+        return None
+    return fixed.model_copy(update={
+        "id": question.id, "difficulty": target, "score": question.score,
+        "docName": question.docName, "starred": question.starred,
+    })
 
 
 def _normalize_math(text: str) -> str:
@@ -582,12 +594,6 @@ def _normalize_answer(question: Question, raw: str) -> str:
 
 _TYPE_CN = {"single": "单选题", "multiple": "多选题", "judge": "判断题",
             "blank": "填空题", "compute": "计算题", "essay": "简答题"}
-
-# 需要解题模型产出答案的题型：出题模型只命制题干，答案为空即解题失败
-_NEED_ANSWER_TYPES = {QuestionType.single, QuestionType.multiple,
-                      QuestionType.judge, QuestionType.blank,
-                      QuestionType.compute, QuestionType.essay}
-
 
 def _latex_issue(text: str) -> str | None:
     """题干与解析共用的 LaTeX 定界校验（统一实现见 latex_utils）。"""
@@ -669,7 +675,8 @@ def _prepare_answer(question: Question, answer_raw: str) -> tuple[list[str], str
 def _ask_answer(
     question: Question, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
-) -> tuple[str, str] | None:
+    *, structured: bool = False,
+) -> _SolveResult:
     """独立求解并验证答案协议，失败重试；每次调用前后检查取消。"""
     prompt = (
         f"【题干】\n{question.stem}\n\n"
@@ -684,13 +691,19 @@ def _ask_answer(
         prompt += "单选题 answer 为唯一正确选项文本的字符串，不要输出字母或数组。"
     elif question.type == QuestionType.judge:
         prompt += "判断题 answer 只填 正确 或 错误。"
+    if structured and question.options:
+        prompt += "\n【固定选项】" + json.dumps(
+            [option.model_dump() for option in question.options], ensure_ascii=False,
+        )
+        prompt += "\n选择题只从给定选项中选取，按题型返回对应的选项文本。"
+    system = SOLVE_ANSWER_SYSTEM + (_STRUCTURED_SOLVE_PROMPT if structured else "")
     for attempt in range(_SOLVE_ATTEMPTS):
         check_cancellation(cancel_check)
         retry = "\n上次答案不合格，请重新求解并遵守字段类型与题型约束。" if attempt else ""
         try:
             data = run_checked(
                 cancel_check, llm.chat_json,
-                [{"role": "system", "content": SOLVE_ANSWER_SYSTEM},
+                [{"role": "system", "content": system},
                  {"role": "user", "content": prompt + retry}],
                 api_key=api_key, max_tokens=_SOLVE_ANSWER_TOKENS, thinking=True,
                 **cancellation_kwargs(cancel_check),
@@ -698,10 +711,22 @@ def _ask_answer(
         except GenerationCanceled:
             raise
         except Exception as exc:
-            logger.warning("独立求解失败：%s", exc)
+            logger.warning("独立求解失败：%s", type(exc).__name__)
             continue
         if not isinstance(data, dict):
             continue
+        evidence = ""
+        if structured:
+            raw_evidence = data.get("evidence")
+            try:
+                status = SolveStatus(data.get("status"))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(raw_evidence, str) or not raw_evidence.strip():
+                continue
+            evidence = raw_evidence.strip()
+            if status != SolveStatus.SOLVED:
+                return _SolveResult(status, evidence)
         confidence = data.get("confidence", "mid")
         if not isinstance(confidence, str) or confidence not in ("high", "mid", "low"):
             continue
@@ -716,8 +741,8 @@ def _ask_answer(
         else:
             continue
         if _prepare_answer(question, answer) is not None:
-            return answer, confidence
-    return None
+            return _SolveResult(SolveStatus.SOLVED, evidence, answer, confidence)
+    return _SolveResult(SolveStatus.UNVERIFIABLE)
 
 
 def _has_draft_trace(analysis: str) -> bool:
@@ -729,6 +754,7 @@ def _ask_explain(
     question: Question, answer_text: str, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
     correct_texts: list[str] | None = None,
+    *, scope: str = "", fixed_options: bool = False,
 ) -> tuple[str, list[str], str] | None:
     """核验候选答案后写成品解析与干扰项，格式错误或草稿泄漏时重试。"""
     prompt = (
@@ -737,7 +763,15 @@ def _ask_explain(
         f"【待核验的候选答案】\n{answer_text}\n"
     )
     choice = question.type in (QuestionType.single, QuestionType.multiple)
-    if choice:
+    if scope:
+        prompt += f"\n【指定范围】{scope}。只使用范围内的定理和方法。"
+    system = SOLVE_EXPLAIN_SYSTEM
+    if fixed_options:
+        system += "\n本题选项已固定，逐项说明其正误，只输出 analysis 和 conclusion。"
+        prompt += "\n【固定选项】" + json.dumps(
+            [option.model_dump() for option in question.options], ensure_ascii=False,
+        )
+    if choice and not fixed_options:
         prompt += "输出 analysis、conclusion 与 distractors，正确项与干扰项合计恰好四项。"
         if question.type == QuestionType.multiple:
             prompt += "多选有 2~3 个正确项，配 1~2 个互异干扰项；conclusion 按候选项顺序用；连接。"
@@ -752,7 +786,7 @@ def _ask_explain(
         try:
             data = run_checked(
                 cancel_check, llm.chat_json,
-                [{"role": "system", "content": SOLVE_EXPLAIN_SYSTEM},
+                [{"role": "system", "content": system},
                  {"role": "user", "content": prompt + retry}],
                 api_key=api_key, max_tokens=_SOLVE_EXPLAIN_TOKENS,
                 **cancellation_kwargs(cancel_check),
@@ -760,7 +794,7 @@ def _ask_explain(
         except GenerationCanceled:
             raise
         except Exception as exc:
-            logger.warning("讲解生成失败：%s", exc)
+            logger.warning("讲解生成失败：%s", type(exc).__name__)
             continue
         if not isinstance(data, dict):
             continue
@@ -772,7 +806,7 @@ def _ask_explain(
         if not analysis or _has_draft_trace(analysis):
             continue
         distractors: list[str] = []
-        if choice:
+        if choice and not fixed_options:
             raw_distractors = data.get("distractors")
             if (not isinstance(raw_distractors, list)
                     or any(not isinstance(item, str) for item in raw_distractors)):
@@ -809,20 +843,26 @@ def _answers_agree(conclusion: str, answer_text: str) -> bool:
 def _solve_one(
     question: Question, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
+    *, independent: _SolveResult | None = None, scope: str = "",
 ) -> bool:
     """两步解题并核对结论，整题验证和取消检查通过后才回写。"""
     check_cancellation(cancel_check)
-    for _attempt in range(_SOLVE_ATTEMPTS):
-        solved = _ask_answer(question, api_key, **cancellation_kwargs(cancel_check))
-        if solved is None:
+    fixed_options = (
+        independent is not None and bool(question.options)
+        and question.type in (QuestionType.single, QuestionType.multiple)
+    )
+    attempts = 1 if independent is not None else _SOLVE_ATTEMPTS
+    for _attempt in range(attempts):
+        solved = independent or _ask_answer(question, api_key, **cancellation_kwargs(cancel_check))
+        if solved.status != SolveStatus.SOLVED:
             return False
-        answer_raw, confidence = solved
-        prepared = _prepare_answer(question, answer_raw)
+        prepared = _prepare_answer(question, solved.answer)
         if prepared is None:
             continue
         corrects, answer_text = prepared
         explained = _ask_explain(
             question, answer_text, api_key, correct_texts=corrects,
+            scope=scope, fixed_options=fixed_options,
             **cancellation_kwargs(cancel_check),
         )
         if explained is None:
@@ -832,15 +872,22 @@ def _solve_one(
             logger.warning("解析结论与候选答案不一致，重新独立求解")
             continue
         options = list(question.options)
-        if question.type in (QuestionType.single, QuestionType.multiple):
+        if fixed_options:
+            correct_keys = {_option_key(text) for text in corrects}
+            selected = [item.label for item in options if _option_key(item.text) in correct_keys]
+            if len(selected) != len(correct_keys):
+                return False
+            answer = "".join(sorted(selected))
+        elif question.type in (QuestionType.single, QuestionType.multiple):
             options, answer = _assign_options(corrects, distractors)
         elif question.type == QuestionType.judge:
             answer = "A" if answer_text == "正确" else "B"
-            options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
+            if independent is None or not options:
+                options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
         else:
             answer = answer_text
         self_check = dict(question.selfCheck)
-        if confidence == "low":
+        if solved.confidence == "low":
             note = str(self_check.get("note") or "")
             self_check["note"] = (
                 (note + "；" if note else "") + "独立解题置信度低，题目可能存在歧义"
@@ -897,6 +944,105 @@ def _solve_all(
     return solved
 
 
+def _check_candidate(
+    question: Question, scope: str, api_key: str | None,
+    cancel_check: Callable[[], None] | None, *, repaired: bool,
+) -> _Finding | None:
+    """独立求解完整题面，再验收实际交付字段与难度。"""
+    if not question.stem.strip() or _latex_issue(question.stem):
+        return _Finding("题面缺陷", "题干为空或数学公式定界有误")
+    independent = _ask_answer(
+        question, api_key, structured=True, **cancellation_kwargs(cancel_check),
+    )
+    if independent.status != SolveStatus.SOLVED:
+        reason = _SOLVE_REASONS[independent.status]
+        evidence = independent.evidence if independent.status != SolveStatus.UNVERIFIABLE else ""
+        return _Finding(reason, evidence)
+    if not repaired and (not question.answer.strip() or not question.analysis.strip()):
+        if not _solve_one(
+            question, api_key, independent=independent, scope=scope,
+            **cancellation_kwargs(cancel_check),
+        ):
+            return _Finding("无法验证")
+    if not question.answer.strip() or _latex_issue(question.answer):
+        return _Finding("答案不成立", "成品答案为空或数学公式定界有误")
+    if not _polish_analysis(question.analysis) or _has_draft_trace(question.analysis):
+        return _Finding("解析不成立", "成品解析为空、公式定界有误或含推导草稿")
+    if question.type in (QuestionType.single, QuestionType.multiple, QuestionType.judge):
+        labels = {item.label for item in question.options}
+        answer = set(question.answer)
+        min_correct = 2 if question.type == QuestionType.multiple else 1
+        option_keys = {_option_key(item.text) for item in question.options}
+        if (
+                len(labels) != len(question.options)
+                or any(not re.fullmatch("[A-H]", label) for label in labels)
+                or len(option_keys) != len(labels) or "" in option_keys
+                or any(_latex_issue(item.text) for item in question.options)
+                or not answer <= labels or len(answer) != len(question.answer)
+                or len(answer) < min_correct
+                or (question.type == QuestionType.multiple and len(answer) == len(labels))
+                or (question.type != QuestionType.multiple and len(answer) != 1)
+                or (question.type == QuestionType.judge and labels != {"A", "B"})
+                or len(labels) < 2):
+            return _Finding("选项不合格", "成品选项或正确项标签、内容、数量不符合题型")
+    elif question.options:
+        return _Finding("选项不合格", "该题型不应附带选项")
+    review = evaluate(
+        question, question.difficulty, scope, api_key, judges=1 if repaired else 2,
+        independent=independent, **cancellation_kwargs(cancel_check),
+    )
+    if review.get("finding") is not None:
+        return review["finding"]
+    if review.get("unknown") is not False:
+        return _Finding("无法验证")
+    total = review["total"]
+    if review["passed"] is not True or not in_target(total, question.difficulty):
+        evidence = (
+            f"成品评定为{tier_of(total).value}档（{total} 分），"
+            f"目标为{question.difficulty.value}档。"
+            f"{review.get('suggestion') or review.get('evidence', '')}"
+        )
+        return _Finding("难度不符", evidence)
+    _apply_review(question, review)
+    return None
+
+
+def _review_candidate(
+    question: Question, params: GenerateParams, api_key: str | None,
+    cancel_check: Callable[[], None] | None,
+) -> _CandidateResult:
+    """候选及其唯一一次修订共用验收链。"""
+    candidate = question.model_copy(deep=True)
+    scope = params.scope
+    original = params.source_mode == "original"
+    try:
+        finding = _check_candidate(candidate, scope, api_key, cancel_check, repaired=False)
+        if finding is None:
+            return _CandidateResult(candidate)
+        if original and finding.reason in {"题设不足", "命题为假", "条件矛盾", "题面缺陷", "难度不符"}:
+            return _CandidateResult(reason=finding.reason)
+        if not finding.evidence:
+            return _CandidateResult(reason=finding.reason)
+        fixed = _repair(
+            candidate, finding, question.difficulty, api_key, scope=scope, original=original,
+            **cancellation_kwargs(cancel_check),
+        )
+        if fixed is None:
+            return _CandidateResult(reason=finding.reason)
+        if original and (fixed.stem != question.stem or fixed.options != candidate.options):
+            return _CandidateResult(reason="原题被改动")
+        finding = _check_candidate(fixed, scope, api_key, cancel_check, repaired=True)
+        if finding is not None:
+            return _CandidateResult(reason=finding.reason, repaired=True)
+        return _CandidateResult(fixed, repaired=True)
+    except GenerationCanceled:
+        raise
+    except Exception as exc:
+        check_cancellation(cancel_check)
+        logger.warning("候选题校验失败：%s", type(exc).__name__)
+        return _CandidateResult(reason="无法验证")
+
+
 def review_questions(
     db: Session,
     user_id: str,
@@ -908,19 +1054,23 @@ def review_questions(
     progress=None,
     cancel_check: Callable[[], None] | None = None,
 ) -> tuple[list[Question], ReviewStats]:
-    """中间件主流程，返回通过校验的题目与统计。
+    """审核本批候选题，由调用方根据实际通过结果安排补题。
 
-    progress(percent, stage) 用于向出题任务写阶段进度；不传则静默执行。
-    db 必须没有活动事务和待写变更。语料在本函数拥有的短读事务内物化，
-    该事务在任何模型或 progress 调用前结束；不提交或回滚调用者的业务事务。
-    cancel_check 显式绑定当前任务；取消穿透降级，线程池退出时等待已发起工作结束。
+    语料在短读事务中读取，模型和进度回调均在事务结束后运行。
+    候选复制后独立验收，取消和拒绝均不会修改调用方传入的题目。
     """
     check_cancellation(cancel_check)
-    cancel_kwargs = cancellation_kwargs(cancel_check)
     stats = ReviewStats()
+    eligible = {(item.type, item.difficulty or params.difficulty) for item in params.types}
+    questions = [q for q in questions if (q.type, q.difficulty) in eligible]
     if not questions:
         return [], stats
-    existing_answered = {id(q) for q in questions if q.answer.strip()}
+    if db.in_transaction() or db.new or db.dirty or db.deleted:
+        raise InvalidRequestError(
+            "review_questions requires a clean Session without an active transaction"
+        )
+    with db.begin():
+        corpus = load_corpus(db, user_id, params.kb_id)
 
     def report(percent: int, stage: str) -> None:
         check_cancellation(cancel_check)
@@ -928,170 +1078,49 @@ def review_questions(
             progress(percent, stage)
         check_cancellation(cancel_check)
 
-    scope = params.scope or ""
-    # 题型级难度优先于整体难度档：同批不同题型可要求不同目标档
-    type_difficulty = {tc.type: tc.difficulty for tc in params.types if tc.difficulty}
-    if db.in_transaction() or db.new or db.dirty or db.deleted:
-        # 连已 flush 的变更也通过活动事务拒绝，不能只检查 new/dirty/deleted 后 rollback。
-        raise InvalidRequestError(
-            "review_questions requires a clean Session without an active transaction"
-        )
-    with db.begin():
-        corpus = load_corpus(db, user_id, params.kb_id)
-    check_cancellation(cancel_check)
-    seen_stems: set[str] = set()
-    combined_corpus: list[str] = []
-    for stem in corpus + (params.existing_stems or []):
-        key = _norm(stem)
-        if key and key not in seen_stems:
-            seen_stems.add(key)
-            combined_corpus.append(stem)
-    corpus = combined_corpus
-    groups: dict[QuestionType, list[Question]] = {}
+    corpus_by_norm: dict[str, str] = {}
+    for stem in corpus + params.existing_stems:
+        if key := _norm(stem):
+            corpus_by_norm.setdefault(key, stem)
+    corpus = list(corpus_by_norm.values())
+
+    def reject(question: Question, reason: str) -> None:
+        stats.rejections.setdefault((question.type, question.difficulty), Counter())[reason] += 1
+        if reason == "重复题目":
+            stats.duplicates += 1
+
+    report(78, "正在排查重复题目")
+    pending: list[Question] = []
     for question in questions:
-        groups.setdefault(question.type, []).append(question)
+        if _norm(question.stem) in corpus_by_norm:
+            reject(question, "重复题目")
+        else:
+            pending.append(question)
 
-    total = len(questions)
-    done = 0
-    final: list[Question] = []
-    requested = {tc.type: tc.count for tc in params.types}
-    ordered_types = list(requested) + [t for t in groups if t not in requested]
+    report(82, "正在独立求解与验收候选题")
+    with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-candidate") as pool:
+        results = list(pool.map(
+            lambda question: _review_candidate(question, params, api_key, cancel_check), pending,
+        ))
+    check_cancellation(cancel_check)
+    accepted: list[Question] = []
+    for question, result in zip(pending, results, strict=True):
+        stats.repaired += int(result.repaired)
+        if result.question is None:
+            reject(question, result.reason)
+        else:
+            accepted.append(result.question)
 
-    for qtype in ordered_types:
-        check_cancellation(cancel_check)
-        items = groups.get(qtype)
-        if not items:
-            continue
-        target_count = requested.get(qtype, len(items))
-        target = type_difficulty.get(qtype, params.difficulty)
-
-        report(78, f"正在排查重复题目（{done + 1}/{total}）")
-        kept, dropped = run_checked(
-            cancel_check, _drop_duplicates, items, corpus, **cancel_kwargs,
-        )
-        stats.duplicates += len(dropped)
-
-        report(82, f"正在盲评题目难度（{done + 1}/{total}）")
-        accepted: list[Question] = []
-        rejected: list[tuple[Question, dict]] = []
-        with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-eval") as pool:
-            reviewed = list(pool.map(
-                lambda q: (q, run_checked(
-                    cancel_check, evaluate, q, target, scope, api_key, **cancel_kwargs,
-                )), kept,
-            ))
-        check_cancellation(cancel_check)
-        for question, review in reviewed:
-            _apply_review(question, review)
-            if review.get("unknown"):
-                # 评审不可用时放行，避免整批出题失败
-                accepted.append(question)
-            elif review["passed"]:
-                accepted.append(question)
-            else:
-                rejected.append((question, review))
-
-        # 第一轮：按缺陷码做最小修补，不整题重写
-        need = target_count - len(accepted)
-        if rejected and need > 0:
-            report(86, f"难度不符，正在按缺陷修补（{len(rejected)} 题）")
-            batch = rejected[:need]
-            with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-fix") as pool:
-                fixed = list(pool.map(
-                    lambda item: run_checked(
-                        cancel_check, _repair, item[0], item[1], target, api_key, **cancel_kwargs,
-                    ), batch,
-                ))
-            check_cancellation(cancel_check)
-            still: list[tuple[Question, dict]] = []
-            with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval") as pool:
-                reeval = list(pool.map(
-                    lambda q: (q, run_checked(
-                        cancel_check, evaluate, q, target, scope, api_key,
-                        judges=1, **cancel_kwargs,
-                    )) if q else (None, None),
-                    fixed,
-                ))
-            for question, review in reeval:
-                if question is None or review is None:
-                    continue
-                _apply_review(question, review)
-                stats.repaired += 1
-                if review.get("unknown") or review["passed"]:
-                    accepted.append(question)
-                else:
-                    still.append((question, review))
-            rejected = still + rejected[len(batch):]
-
-        # 换模板重出：轮数由配置控制，默认一轮；再不够就按距离目标档最近的补齐，
-        # 避免同一批题反复重出把等待时间拖长
-        rounds = max(1, min(2, settings.review_max_regen_rounds))
-        for attempt in range(rounds):
-            check_cancellation(cancel_check)
-            need = target_count - len(accepted)
-            if need <= 0:
-                break
-            report(90, f"修补未通过，换模板重出（{need} 题，第 {attempt + 1} 次）")
-            avoid = corpus + [q.stem for q in accepted]
-            directive = (
-                f"- 这是第 {attempt + 1} 次重出：不要沿用之前的解法路径与结构。"
-                f"按目标档重设蓝图：{TIER_PARAMS[target]}。"
-            )
-            if rejected and rejected[0][1].get("suggestion"):
-                directive += f"\n- 评审建议：{rejected[0][1]['suggestion']}"
-            try:
-                fresh = run_checked(
-                    cancel_check, _regen,
-                    params, qtype, need, doc_name, avoid, api_key, hyde_text, directive,
-                    **cancel_kwargs,
-                )
-            except GenerationCanceled:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("换模板重出失败（%s）：%s", qtype.value, exc)
-                break
-            fresh, dup = run_checked(
-                cancel_check, _drop_duplicates, fresh, avoid, **cancel_kwargs,
-            )
-            stats.duplicates += len(dup)
-            stats.regenerated += len(fresh)
-            if not fresh:
-                # 整批被判重，换一轮再来
-                continue
-            with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-reeval2") as pool:
-                reviewed_fresh = list(pool.map(
-                    lambda q: (q, run_checked(
-                        cancel_check, evaluate, q, target, scope, api_key, **cancel_kwargs,
-                    )), fresh
-                ))
-            for question, review in reviewed_fresh:
-                _apply_review(question, review)
-                if review.get("unknown") or review["passed"]:
-                    accepted.append(question)
-                else:
-                    rejected.append((question, review))
-
-        # 两轮仍未达标：按距离目标档中心最近的补齐，保证题目数量
-        need = target_count - len(accepted)
-        if need > 0 and rejected:
-            rejected.sort(key=lambda item: _delta(item[0].difficultyScore or 0.0, target))
-            accepted.extend(question for question, _review in rejected[:need])
-
-        done += len(items)
-        final.extend(accepted[:target_count])
-
-    report(96, f"正在生成解析（共 {len(final)} 题）")
-    solved = run_checked(cancel_check, _solve_all, final, api_key, stats, **cancel_kwargs) or set()
-    unsolved = [
-        q for q in final if q.type in _NEED_ANSWER_TYPES
-        and (not q.answer.strip() or (id(q) not in existing_answered and id(q) not in solved))
-    ]
-    if unsolved:
-        logger.warning("剔除 %d 题（新题未通过独立求解或答案为空）", len(unsolved))
-        dropped_set = {id(q) for q in unsolved}
-        final = [q for q in final if id(q) not in dropped_set]
-
-    order = {t: i for i, t in enumerate(ordered_types)}
-    final.sort(key=lambda q: order.get(q.type, 99))
+    report(96, "正在对成品查重")
+    try:
+        final, duplicates = _drop_duplicates(accepted, corpus, **cancellation_kwargs(cancel_check))
+    except _DuplicateCheckError as exc:
+        logger.warning("成品查重失败：%s", exc)
+        final, duplicates = [], []
+        for question in accepted:
+            reject(question, "无法验证")
+    for question in duplicates:
+        reject(question, "重复题目")
+    stats.solved = len(final)
     report(100, "题目校验完成")
     return final, stats

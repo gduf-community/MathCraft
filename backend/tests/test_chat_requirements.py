@@ -235,3 +235,14 @@ def test_merge_slots_updates_type_difficulty_across_turns():
                                                  "difficulty": "简单"}]})
     assert state["types"] == [{"type": "single", "count": 5, "difficulty": "低"}]
     assert "difficulty" not in slots.missing_keys(state)
+
+
+def test_chat_preserves_separate_quotas_for_the_same_question_type(complete_state):
+    state = slots.merge_slots(complete_state, {"types": [
+        {"type": "single", "count": 2, "difficulty": "低"},
+        {"type": "single", "count": 1, "difficulty": "高"},
+    ]})
+    params, _ = slots.build_params(state, "bank-test", "doc-test")
+    assert [(item.difficulty, item.count) for item in params.types] == [
+        (Difficulty.low, 2), (Difficulty.high, 1),
+    ]

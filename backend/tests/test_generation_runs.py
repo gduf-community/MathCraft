@@ -190,13 +190,35 @@ def test_confirmed_execution_errors_use_safe_classification(
 def test_zero_review_result_keeps_existing_batch_behavior(
     client, teacher, resources, monkeypatch, path,
 ):
-    monkeypatch.setattr(generation.question_review, "review_questions", lambda *a, **k: (
-        [], generation.question_review.ReviewStats(),
-    ))
+    from collections import Counter
+
+    def reject(_db, _user, candidates, *_args, **_kwargs):
+        stats = generation.question_review.ReviewStats()
+        for question in candidates:
+            key = (question.type, question.difficulty)
+            stats.rejections.setdefault(key, Counter())["题设不足"] += 1
+        return [], stats
+
+    monkeypatch.setattr(generation.question_review, "review_questions", reject)
     if path == "chat":
-        assert post_chat(client, teacher, resources).status_code == 200
+        response = post_chat(client, teacher, resources)
+        assert response.status_code == 200
+        assert "缺额 2 道" in response.json()["reply"]
+        assert "题设不足" in response.json()["reply"]
     else:
-        assert client.post(path, headers=teacher, json=body(resources)).status_code in (200, 202)
+        response = client.post(
+            path, headers=teacher, json=body(resources),
+            params={"include_review": "true"} if path == "/api/generate" else {},
+        )
+        assert response.status_code in (200, 202)
+        if path == "/api/generate/start":
+            task_id = response.json()["task_id"]
+            response = client.get(f"/api/generate/progress/{task_id}", headers=teacher)
+        data = response.json()
+        assert data["questions"] == []
+        group, = data["review"]["groups"]
+        assert (group["requested"], group["delivered"], group["missing"]) == (2, 0, 2)
+        assert group["rejections"]["题设不足"] >= 2
     row, = records()
     assert row.requested_count == 2 and row.delivered_count == 0
     assert row.status == ("failed" if path == "chat" else "completed")

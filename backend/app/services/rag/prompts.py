@@ -216,9 +216,10 @@ SLOT_EXTRACT_SYSTEM = """你是出题助手的信息抽取模块。把用户消�
 3 用户按题型分别说明难度时（如 5 道低难度选择题、2 道高难度填空题、4 道中难度计算题），
   把每项写进 types 对应条目的 difficulty，此时整体 difficulty 填 null、mixed_difficulty 填 true。
 4 用户只给一个难度档时写入整体 difficulty，types 各条目 difficulty 填 null，mixed_difficulty 填 false。
-5 用户对同一题型给了多个难度档（如 3 道选择题、难度分别是简单中等高难）时，
-  types 该条目的 count 照填、difficulty 填 null，整体 difficulty 原样保留该多档描述，
-  mixed_difficulty 填 true。
+5 同一种题型有多个难度档且用户给出各档数量时，按档分别输出 types 元素。
+  如两道低难度选择题和一道高难度选择题，写成 single/低/2 和 single/高/1。
+  仅给出总题数与多档描述时，types 写总题数，条目 difficulty 填 null，
+  整体 difficulty 保留多档描述，mixed_difficulty 填 true。
 6 只说了题型没说数量时该题型 count 填 null，禁止猜测；用户未提及的字段一律 null，禁止编造。
 7 短期记忆是最近几轮对话原文：结合它理解指代（如"再来一批""换成难的""按刚才的数量"）；
   记忆中已确认的题型、数量、难度，除非本次明确更改，否则原样沿用；记忆中没有的信息不要编造。

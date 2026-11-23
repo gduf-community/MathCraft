@@ -10,8 +10,10 @@ from app.api import chat
 from app.db import SessionLocal
 from app.models import BankMember, ChatMessage, ChatSession, GenerationBatch, OpsRun, Paper, User
 from app.models import Question as SavedQuestion
-from app.schemas.question import GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.api import GenerationReviewGroup
+from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
 from app.services import cache, generation, question_review
+from app.services.question_delivery import review_with_refill
 from app.services.rag import chat_flow, data_agent, question_gen, slots
 from test_generation_runs import post_chat
 from test_generation_runs import resources as resources
@@ -39,21 +41,32 @@ def test_refill_uses_per_type_deficits_cumulative_stems_stats_and_percentages():
         for percent in (0, 50, 100):
             progress(percent, "补齐")
         if len(calls) == 1:
-            return [_question("首题"), _question("填空补题", "blank")]
+            return [_question("首题")]
+        if len(calls) == 2:
+            return [_question("填空补题", "blank")]
         return [_question("单选补题"), _question("多余单选")]
 
-    accepted, stats, canceled = chat_flow.review_with_refill(
+    accepted, stats, groups = review_with_refill(
         [_question("首题"), _question("多余填空", "blank")], params, 3, ["已有题"],
         lambda pool, p, stems: review(
             [q for q in pool if q.stem != "多余填空"], p, stems,
         ), generate, progress_cb=lambda percent, stage: percents.append(percent),
     )
-    assert not canceled
+    assert groups == [
+        GenerationReviewGroup(
+            type=kind, difficulty=Difficulty.mid, requested=count, delivered=count, missing=0,
+            rejections={"重复题目": 1} if kind == QuestionType.single else {},
+            generation_events={"首轮候选产出不足": 1} if kind == QuestionType.single else {},
+        )
+        for kind, count in [(QuestionType.single, 2), (QuestionType.blank, 1)]
+    ]
     assert [(q.type.value, q.stem) for q in accepted] == [
         ("single", "首题"), ("blank", "填空补题"), ("single", "单选补题"),
     ]
-    assert [{tc.type.value: tc.count for tc in call[0].types} for call in calls] == [
-        {"single": 1, "blank": 1}, {"single": 1},
+    assert [[(tc.type, tc.difficulty, tc.count) for tc in call[0].types] for call in calls] == [
+        [(QuestionType.single, Difficulty.mid, 1)],
+        [(QuestionType.blank, Difficulty.mid, 1)],
+        [(QuestionType.single, Difficulty.mid, 1)],
     ]
     assert all(call[0].source_mode == "original" for call in calls)
     assert {"已有题", "首题", "多余填空", "填空补题"} <= set(calls[-1][1])
@@ -76,7 +89,7 @@ def test_refill_propagates_cancellation_without_partial_delivery(phase):
         raise chat_flow.ChatCanceled
 
     with pytest.raises(chat_flow.ChatCanceled):
-        chat_flow.review_with_refill([_question("合成题")], params, 2, [], review, generate)
+        review_with_refill([_question("合成题")], params, 2, [], review, generate)
 
 
 def test_smalltalk_sql_failure_rolls_back_messages_and_slot_state(
@@ -252,17 +265,18 @@ def test_creative_refill_retains_source_scope_image_directive_and_run(
         assert db.scalar(select(func.count()).select_from(OpsRun)) == 1
 
 
-def test_original_refill_shortage_keeps_need_confirm_classification(
+def test_initial_original_shortage_keeps_need_confirm_classification(
     client, teacher, resources, monkeypatch,
 ):
-    monkeypatch.setattr(question_review, "review_questions", lambda *a, **k: (
-        [], question_review.ReviewStats(duplicates=2),
-    ))
+    monkeypatch.setattr(slots, "chat_json", lambda *a, **k: {
+        "types": [{"type": "single", "count": 2}], "scope": "导数",
+        "source_mode": "original", "difficulty": "中",
+    })
 
     def insufficient(*args, **kwargs):
         raise question_gen.NeedConfirmError("选择题", 0, 2)
 
-    monkeypatch.setattr(question_gen, "generate_questions", insufficient)
+    monkeypatch.setattr(chat_flow, "generate_questions", insufficient)
     response = post_chat(client, teacher, resources)
     assert response.status_code == 200, response.text
     assert response.json()["questions"] == [] and response.json()["batch_id"] is None
@@ -332,12 +346,18 @@ def test_chat_generation_value_error_is_safe_in_response_history_and_ledger(
         monkeypatch.setattr(question_gen, "generate_questions", reject)
     response = post_chat(client, teacher, resources)
     assert response.status_code == 200, response.text
-    assert response.json()["reply"] == "模型调用失败，请稍后重试"
+    if phase == "initial":
+        assert response.json()["reply"] == "模型调用失败，请稍后重试"
+    else:
+        assert response.json()["questions"] == [] and response.json()["batch_id"] is None
+        assert "请求 2 道，交付 0 道，缺额 2 道" in response.json()["reply"]
+        assert "生成未返回可用候选题 3 次" in response.json()["reply"]
     assert private_detail not in response.text
     detail = client.get(f"/api/chat/sessions/{resources['session_id']}", headers=teacher)
     assert detail.status_code == 200 and private_detail not in detail.text
     with SessionLocal() as db:
         ledger = db.scalar(select(OpsRun))
-        assert ledger.status == "failed" and ledger.error_code == "GENERATION_ERROR"
+        expected = "GENERATION_ERROR" if phase == "initial" else "NO_PERSISTABLE_QUESTIONS"
+        assert ledger.status == "failed" and ledger.error_code == expected
         assert ledger.delivered_count == 0 and ledger.batch_id is None
         assert db.scalar(select(func.count()).select_from(GenerationBatch)) == 0

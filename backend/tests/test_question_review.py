@@ -9,6 +9,7 @@ from app.db import SessionLocal, Base, engine
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services.generation_cancellation import GenerationCanceled
 from app.services import latex_utils, question_review
+from app.services.rag import question_gen
 from app.services.question_review import review_questions as real_review
 
 
@@ -40,6 +41,9 @@ def _review_json(scores: dict, passed: bool = True, defects=None, suggestion="")
         "primarySuggestion": suggestion,
         "methods": ["解法一", "解法二"],
         "passed": passed,
+        **dict.fromkeys(question_review._JOINT_FIELDS, True),
+        "verifiable": True,
+        "evidence": "对多项式直接求导并代入验证。",
     }, ensure_ascii=False)
 
 
@@ -79,7 +83,8 @@ class FakeLLM:
                 self.solve_calls += 1
                 if self.solve_payload is not None:
                     return self.solve_payload
-                return {"answer": "$18$", "confidence": "high"}
+                return {"answer": "$18$", "confidence": "high",
+                        "status": "solved", "evidence": "求导后代入得 18"}
             self.explain_calls += 1
             return {"analysis": "由定义可得 $y'=3x^2$。",
                     "distractors": ["$-18$", "$81$", "$8.1$"], "confidence": "high"}
@@ -102,15 +107,18 @@ def _stub_embeddings(monkeypatch):
     monkeypatch.setattr(question_review, "load_corpus", lambda *_a, **_k: [])
 
 
-def test_tier_mapping_and_tolerance():
-    assert question_review.tier_of(1.4) == Difficulty.low
-    assert question_review.tier_of(2.6) == Difficulty.mid
-    assert question_review.tier_of(3.4) == Difficulty.high
-    assert question_review.tier_of(4.2) == Difficulty.hell
-    # 高难度区间 3—4，允许 ±0.5
-    assert question_review.in_target(2.6, Difficulty.high)
-    assert question_review.in_target(4.4, Difficulty.high)
-    assert not question_review.in_target(2.4, Difficulty.high)
+def test_exact_tier_boundaries():
+    assert question_review.in_target(1.0, Difficulty.low)
+    for lower, higher, cutoff in [
+        (Difficulty.low, Difficulty.mid, 2.0),
+        (Difficulty.mid, Difficulty.high, 3.0),
+        (Difficulty.high, Difficulty.hell, 4.0),
+    ]:
+        assert question_review.in_target(cutoff - 0.01, lower)
+        assert not question_review.in_target(cutoff, lower)
+        assert question_review.in_target(cutoff, higher)
+        assert not question_review.in_target(cutoff - 0.01, higher)
+    assert question_review.in_target(5.0, Difficulty.hell)
 
 
 def test_parse_review_veto_on_unsolvable():
@@ -190,25 +198,23 @@ def test_repair_then_accept(db, monkeypatch):
     assert len(result) == 1
     assert result[0].stem.startswith("修补后的题干")
     assert result[0].difficultyScore > 3
-    # 解题模型负责答案与选项：正确答案文本随机分配到某个选项位，answer 为对应字母
-    assert result[0].answer in {"A", "B", "C", "D"}
-    assert len(result[0].options) == 4
-    correct_texts = [o.text for o in result[0].options if o.label == result[0].answer]
-    assert correct_texts == ["$18$"]
-    assert "y'=3x^2" in result[0].analysis
+    assert result[0].answer == "B"
+    assert "代入得 3" in result[0].analysis
     assert stats.solved == 1
-    assert fake.solve_calls == 1
+    assert not stats.rejections
+    assert fake.solve_calls == 2 and fake.repair_calls == 1
 
 
-def test_duplicate_shortfall_is_refilled(db, monkeypatch):
-    """查重丢掉一题后，按缺口重出，最终数量与请求一致。"""
+def test_duplicate_shortfall_is_left_for_caller(db, monkeypatch):
     fake = FakeLLM(reviews=[_review_json(GOOD_SCORES)])
     monkeypatch.setattr(question_review.llm, "chat_text", fake)
     monkeypatch.setattr(question_review.llm, "chat_json", fake)
     monkeypatch.setattr(question_review, "load_corpus", lambda *_a, **_k: ["求 $y=x^2$ 的导数。"])
 
-    fresh = _q("重出的新题：求 $y=x^3$ 在 $x=2$ 处的导数。")
-    monkeypatch.setattr(question_review.question_gen, "generate_questions", lambda *_a, **_k: [fresh])
+    def unexpected_regen(*args, **kwargs):
+        pytest.fail("候选审核不得生成补题")
+
+    monkeypatch.setattr(question_gen, "generate_questions", unexpected_regen)
 
     params = GenerateParams(
         kb_id="bank_test", doc_id="doc_test",
@@ -220,8 +226,9 @@ def test_duplicate_shortfall_is_refilled(db, monkeypatch):
     )
 
     assert stats.duplicates == 1
-    assert stats.regenerated == 1
-    assert len(result) == 2
+    assert stats.regenerated == 0
+    assert stats.rejections == {(QuestionType.single, Difficulty.high): {"重复题目": 1}}
+    assert len(result) == 1
 
 
 def test_solver_failure_drops_question(db, monkeypatch):
@@ -376,7 +383,7 @@ def test_invalid_solver_output_preserves_entire_existing_question(monkeypatch, q
     assert stats.solved == 0
 
 
-def test_solver_transport_failure_preserves_existing_question(db, monkeypatch):
+def test_solver_transport_failure_rejects_even_with_existing_answer(db, monkeypatch):
     question = _q("已有完整答案")
     before = question.model_dump()
 
@@ -387,38 +394,15 @@ def test_solver_transport_failure_preserves_existing_question(db, monkeypatch):
     monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
     params = GenerateParams(
         kb_id="fake-bank", doc_id="fake-document",
-        types=[TypeCount(type=QuestionType.single, count=1)],
+        types=[TypeCount(type=QuestionType.single, count=1)], difficulty=Difficulty.high,
     )
     result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None)
-    assert result == [question]
+    assert result == []
+    assert stats.rejections == {(QuestionType.single, Difficulty.high): {"无法验证": 1}}
     assert question.answer == before["answer"]
     assert question.options == [OptionItem.model_validate(item) for item in before["options"]]
     assert question.analysis == before["analysis"]
     assert stats.solved == 0
-
-
-@pytest.mark.parametrize("source", ["repair", "regenerate"])
-def test_fast_model_answer_cannot_replace_independent_solution(db, monkeypatch, source):
-    question = _q("无答案的新题：求函数在原点的导数。")
-    question.answer = ""
-    question.analysis = ""
-    replacement = _q("快速模型修改题干后的答案尚未独立验证。")
-    replacement.id = question.id
-    monkeypatch.setattr(question_review, "evaluate", lambda q, *a, **k: {
-        "passed": q is replacement, "total": 3.5,
-    })
-    monkeypatch.setattr(question_review, "_repair", lambda *a, **k: (
-        replacement if source == "repair" else None
-    ))
-    monkeypatch.setattr(question_review, "_regen", lambda *a, **k: [replacement])
-    monkeypatch.setattr(question_review, "_solve_one", lambda *a, **k: False)
-    params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc",
-                            types=[TypeCount(type=QuestionType.single, count=1)])
-    result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None)
-    assert result == []
-    assert stats.solved == 0
-    assert stats.repaired == (1 if source == "repair" else 0)
-    assert stats.regenerated == (1 if source == "regenerate" else 0)
 
 
 @pytest.mark.parametrize("source_mode", ["new", "variant_data", "variant_context", "original"])
@@ -443,13 +427,13 @@ def test_real_gen_batch_cannot_deliver_fast_model_answer_without_solving(
         solve_calls.append(1)
         return {}
 
-    monkeypatch.setattr(question_review.question_gen.llm, "chat_stream", stream)
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
     monkeypatch.setattr(question_review.llm, "chat_json", solve)
     monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
     tc = TypeCount(type=qtype, count=1)
     params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", types=[tc],
                             source_mode=source_mode)
-    generated = question_review.question_gen._gen_batch(
+    generated = question_gen._gen_batch(
         tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "fixture context"}], "",
     )
     result, stats = real_review(db, "fake-user", generated, params, "fake.pdf", None)
@@ -461,16 +445,18 @@ def test_real_gen_batch_cannot_deliver_fast_model_answer_without_solving(
     assert generated[0].options == (expected if qtype == QuestionType.judge else [])
 
 
-def test_original_existing_question_survives_failed_independent_solve(db, monkeypatch):
-    """已有有效原题直接送审，不经模型命题边界时继续保留原答案、解析与选项。"""
+def test_original_existing_question_is_rejected_after_failed_solve(db, monkeypatch):
+    """原题需要通过独立求解，审核失败时原始内容也不能被改写。"""
     question = _q("题库直接提取的有效原题：求函数的导数。")
     before = question.model_dump()
     monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: {})
     monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
     params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", source_mode="original",
-                            types=[TypeCount(type=QuestionType.single, count=1)])
+                            types=[TypeCount(type=QuestionType.single, count=1)],
+                            difficulty=Difficulty.high)
     result, stats = real_review(db, "fake-user", [question], params, "fake.pdf", None)
-    assert result == [question] and stats.solved == 0
+    assert result == [] and stats.solved == 0
+    assert stats.rejections == {(QuestionType.single, Difficulty.high): {"无法验证": 1}}
     assert question.answer == before["answer"]
     assert question.analysis == before["analysis"]
     assert [item.model_dump() for item in question.options] == before["options"]
@@ -480,19 +466,10 @@ def test_cross_round_stems_share_normalized_review_corpus(db, monkeypatch):
     stem = "求函数 $y=x^2$ 在原点的导数"
     monkeypatch.setattr(question_review, "load_corpus", lambda *a: [stem + "."])
     monkeypatch.setattr(question_review, "evaluate", lambda *a, **k: {"unknown": True})
-    monkeypatch.setattr(question_review, "_regen", lambda *a, **k: [])
-    monkeypatch.setattr(question_review, "_solve_one", lambda *a, **k: False)
-    seen = []
-    drop = question_review._drop_duplicates
-
-    def check_corpus(questions, corpus, **kwargs):
-        seen.append(list(corpus))
-        return drop(questions, corpus, **kwargs)
-
-    monkeypatch.setattr(question_review, "_drop_duplicates", check_corpus)
     params = GenerateParams(
         kb_id="fake-bank", doc_id="fake-doc",
         types=[TypeCount(type=QuestionType.single, count=1)],
+        difficulty=Difficulty.high,
         existing_stems=[stem + "?", "证明数列的极限等于给定常数."],
     )
     result, stats = real_review(
@@ -500,7 +477,7 @@ def test_cross_round_stems_share_normalized_review_corpus(db, monkeypatch):
     )
     assert result == []
     assert stats.duplicates == 1
-    assert seen[0] == [stem + ".", "证明数列的极限等于给定常数."]
+    assert stats.rejections == {(QuestionType.single, Difficulty.high): {"重复题目": 1}}
 
 
 def test_multiple_solver_maps_all_correct_answers_to_shuffled_labels(monkeypatch):
@@ -545,18 +522,21 @@ def test_review_releases_read_transaction_before_models_and_progress(db, monkeyp
 
     def model(messages, **kwargs):
         checks.append(not db.in_transaction())
-        return {"answer": "1", "analysis": "关键步骤得 1。"}
+        return {
+            "answer": "1", "analysis": "关键步骤得 1。",
+            "status": "solved", "evidence": "导数恒为 1。",
+        }
 
-    def evaluate(*args, **kwargs):
+    def judge(messages, **kwargs):
         checks.append(not db.in_transaction())
-        return {"unknown": True}
+        return _review_json({**dict.fromkeys(question_review._SCORE_KEYS, 2), "unique": 5})
 
     def progress(percent, stage):
         checks.append(not db.in_transaction())
         phases.append(percent)
 
     monkeypatch.setattr(question_review.llm, "chat_json", model)
-    monkeypatch.setattr(question_review, "evaluate", evaluate)
+    monkeypatch.setattr(question_review.llm, "chat_text", judge)
     question = Question(type=QuestionType.blank, stem="求导")
     params = GenerateParams(
         kb_id="fake-bank", doc_id="fake-document",
@@ -685,3 +665,197 @@ def test_two_step_solver_rejects_wrong_field_types_and_normalized_duplicates(
     before = question.model_dump()
     assert not question_review._solve_one(question, None)
     assert question.model_dump() == before
+
+
+def _candidate_params(*items, source_mode="new", existing_stems=None):
+    return GenerateParams(
+        kb_id="fake-bank",
+        doc_id="fake-doc",
+        scope="导数与初等代数",
+        source_mode=source_mode,
+        existing_stems=existing_stems or [],
+        types=[TypeCount(type=qtype, difficulty=tier, count=1) for qtype, tier in items],
+    )
+
+
+@pytest.mark.parametrize("outcome", ["pass", "duplicate", "bad_analysis", "changed_original"])
+def test_counterexample_repair_restarts_complete_review(db, monkeypatch, outcome):
+    original = outcome == "changed_original"
+    question = Question(
+        type=QuestionType.essay, difficulty=Difficulty.low,
+        stem="证明对所有实数 $x$，都有 $x^2>x$。",
+    )
+    repaired = question.model_copy(update={
+        "stem": "证明对所有实数 $x$，都有 $x^2\u2265 0$。",
+        "answer": "成立",
+        "analysis": "实数的平方非负，因此不等式恒成立。",
+    })
+    counterexample = "$x=0$ 时两边相等，严格不等式不成立。"
+    repair_calls, solve_calls, joint_calls = [], [], []
+
+    def solve(messages, **_):
+        prompt = messages[-1]["content"]
+        solve_calls.append(prompt)
+        if original:
+            return {"status": "solved", "answer": "不成立", "evidence": counterexample}
+        if question.stem in prompt:
+            return {"status": "false_proposition", "evidence": counterexample}
+        assert repaired.stem in prompt
+        return {"status": "solved", "answer": "成立", "evidence": "实数平方非负。"}
+
+    def verify_or_repair(messages, **_):
+        prompt = messages[-1]["content"]
+        if prompt.startswith("下面这道题没有通过"):
+            repair_calls.append(prompt)
+            assert counterexample in prompt
+            return repaired.model_dump_json()
+        joint_calls.append(prompt)
+        report = json.loads(_review_json({**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}))
+        if original:
+            report.update(scopeValid=False, passed=False, evidence=counterexample)
+        else:
+            assert repaired.stem in prompt and repaired.analysis in prompt
+            if outcome == "bad_analysis":
+                report.update(analysisValid=False, passed=False, evidence="解析未覆盖小问。")
+        return json.dumps(report, ensure_ascii=False)
+
+    if original:
+        question.answer = "不成立"
+        question.analysis = "引用范围之外的定理判定。"
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    monkeypatch.setattr(question_review.llm, "chat_text", verify_or_repair)
+    params = _candidate_params(
+        (QuestionType.essay, Difficulty.low),
+        source_mode="original" if original else "new",
+        existing_stems=[repaired.stem] if outcome == "duplicate" else [],
+    )
+    result, stats = real_review(db, "u", [question], params, "doc.md", None)
+
+    assert len(repair_calls) == 1
+    assert len(solve_calls) == (1 if original else 2)
+    assert len(joint_calls) == (2 if original else 1)
+    assert question.stem != repaired.stem
+    if outcome == "pass":
+        assert result[0].stem == repaired.stem
+        assert stats.rejections == {}
+    else:
+        reason = {
+            "duplicate": "重复题目", "bad_analysis": "解析不成立",
+            "changed_original": "原题被改动",
+        }[outcome]
+        assert not result
+        assert stats.rejections == {(question.type, question.difficulty): {reason: 1}}
+
+
+@pytest.mark.parametrize("solve_status, reason", [
+    ("insufficient_conditions", "题设不足"),
+    ("contradictory_conditions", "条件矛盾"),
+    ("unverifiable", "无法验证"),
+    ("", "无法验证"),
+])
+def test_missing_or_invalid_multiple_choice_is_never_delivered(db, monkeypatch, solve_status, reason):
+    qtype = QuestionType.multiple
+    eligible = Question(type=qtype, difficulty=Difficulty.low, stem="以下正确的说法有哪些？")
+    other_tier = eligible.model_copy(update={"difficulty": Difficulty.hell, "stem": "不在本组配额"})
+    progress = []
+
+    def solve(messages, **_):
+        prompt = messages[-1]["content"]
+        assert eligible.stem in prompt and other_tier.stem not in prompt
+        progress.append("solve")
+        return {"status": solve_status, "evidence": "缺少供判断的数学命题。"}
+
+    def repair(messages, **_):
+        assert "缺少供判断的数学命题" in messages[-1]["content"]
+        progress.append("repair")
+        return "{}"
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    monkeypatch.setattr(question_review.llm, "chat_text", repair)
+    result, stats = real_review(
+        db, "u", [eligible, other_tier], _candidate_params((qtype, Difficulty.low)), "doc.md", None,
+    )
+    assert not result
+    assert stats.rejections == {(qtype, Difficulty.low): {reason: 1}}
+    assert progress == (["solve", "repair"] if reason != "无法验证" else
+                        ["solve"] if solve_status else ["solve", "solve"])
+
+
+@pytest.mark.parametrize("outcome", ["verified", "undefined_option", "missing_evidence", "wrong_tier"])
+def test_joint_gate_checks_original_choice_options(db, monkeypatch, outcome):
+    question = Question(
+        type=QuestionType.multiple, difficulty=Difficulty.mid,
+        stem="在实数范围内选出成立的陈述。",
+        options=[
+            OptionItem(label="A", text="$2^2=4$"), OptionItem(label="B", text="$3^2=9$"),
+            OptionItem(label="C", text="$4^2=8$"), OptionItem(label="D", text="$5^2=10$"),
+        ],
+        answer="AB",
+        analysis="逐项计算得 4、9、16、25，因此只有 A、B 成立。",
+    )
+    if outcome == "undefined_option":
+        question.options[2].text = r"$\sqrt{-1}=0$"
+    monkeypatch.setattr(
+        question_review.llm, "chat_json",
+        lambda *a, **k: {"status": "solved", "answer": ["$2^2=4$", "$3^2=9$"],
+                         "evidence": "直接计算前两项等式成立。"},
+    )
+
+    def judge_or_repair(messages, **_):
+        prompt = messages[-1]["content"]
+        if prompt.startswith("下面这道题没有通过"):
+            assert outcome == "undefined_option" and "实数域无定义" in prompt
+            return "{}"
+        for value in [question.stem, question.answer, question.analysis]:
+            assert value in prompt
+        for option in question.options:
+            assert json.dumps(option.text, ensure_ascii=False) in prompt
+        score = 3 if outcome == "wrong_tier" else 2
+        report = json.loads(_review_json({**dict.fromkeys(question_review._SCORE_KEYS, score), "unique": 5}))
+        if outcome == "undefined_option":
+            report.update(optionsValid=False, passed=False, evidence="选项 C 在实数域无定义。")
+        elif outcome == "missing_evidence":
+            report["evidence"] = ""
+        return json.dumps(report, ensure_ascii=False)
+
+    monkeypatch.setattr(question_review.llm, "chat_text", judge_or_repair)
+    result, stats = real_review(
+        db, "u", [question], _candidate_params((question.type, question.difficulty),
+                                              source_mode="original"), "doc.md", None,
+    )
+    if outcome == "verified":
+        assert result[0].options == question.options
+        assert stats.rejections == {}
+    else:
+        reason = {
+            "undefined_option": "选项不合格", "missing_evidence": "无法验证",
+            "wrong_tier": "难度不符",
+        }[outcome]
+        assert not result
+        assert stats.rejections == {(question.type, question.difficulty): {reason: 1}}
+
+
+def test_false_judgment_is_a_valid_solution(db, monkeypatch):
+    question = Question(
+        type=QuestionType.judge, difficulty=Difficulty.low,
+        stem="判断命题：所有实数的平方都严格大于零。",
+    )
+
+    def solve(messages, **_):
+        if messages[0]["content"].startswith(question_review.SOLVE_ANSWER_SYSTEM):
+            return {"status": "solved", "answer": "错误", "evidence": "$0^2=0$。"}
+        return {"analysis": "取 $x=0$，平方等于零。", "conclusion": "错误"}
+
+    def verify(messages, **_):
+        payload = messages[-1]["content"]
+        assert '"answer": "B"' in payload
+        assert '平方等于零' in payload
+        return _review_json({**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5})
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    monkeypatch.setattr(question_review.llm, "chat_text", verify)
+    result, stats = real_review(
+        db, "u", [question], _candidate_params((question.type, question.difficulty)), "doc.md", None,
+    )
+    assert result[0].answer == "B"
+    assert stats.solved == 1 and not stats.rejections
