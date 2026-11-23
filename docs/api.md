@@ -4,7 +4,7 @@
 
 后端入口为 `app.main:app`，示例地址 `http://127.0.0.1:8000`。除健康检查及公开认证流程外，受保护 HTTP 接口使用 `Authorization: Bearer <access_token>`；刷新要求 HttpOnly Cookie、可信 Origin 和 `X-CSRF-Token`；退出另外要求本标签的 `Authorization`，仅撤销该访问令牌绑定的会话，不清除其他会话的共享 Cookie。
 
-认证、资料字段、错误响应以 OpenAPI schema 为准，不再使用历史单用户设置接口。完整认证与迁移约定见 [用户系统实施规格](design/用户系统实施规格.md) 和[认证设计](design/用户系统功能规格.md)。
+认证、资料字段、错误响应以 OpenAPI schema 为准，不再使用历史单用户设置接口。完整认证与迁移约定见 [用户系统实施规格](implementation/用户系统实施规格.md) 和[认证设计](requirements/用户系统功能规格.md)。
 
 模型凭据使用 `/api/users/me/model-settings`，知识库资料使用 `/api/banks`；旧 `/api/settings` 与 `/api/knowledge-bases` 不属于当前后端契约。平台模型与检索通过管理员专用 `/api/admin/rag-settings` 维护；嵌入模型或地址变更先保存待应用值，另行提交重建后才切换，使用方法见 [设置拆分与保存反馈设计](design/设置拆分与保存反馈设计.md)。配置优先级、保存与测试规则见 [模型配置与入库流程](design/模型配置来源与普通知识库流程.md)，权限、完成情况及验收边界见 [知识库模块说明](design/知识库模块说明.md) 和[扫描 PDF 策略](design/扫描PDF云端OCR策略.md)。
 

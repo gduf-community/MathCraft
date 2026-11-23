@@ -36,7 +36,7 @@ MathCraft/
 │   ├── api.md                # API 索引
 │   ├── 测试与持续集成.md     # 测试范围与 CI 维护说明
 │   ├── design/               # 功能与架构设计
-│   ├── requirements/         # 产品需求与待定讨论
+│   ├── requirements/         # 产品需求、功能规格与待定讨论
 │   ├── implementation/       # 实施、交接与历史验收
 │   ├── research/             # 调查与评估
 │   ├── reference/            # 参考清单
@@ -206,7 +206,7 @@ docker compose down             # 移除容器，保留数据卷
 
 默认配置：`PHOENIX_ENABLED=false`、`PHOENIX_PROJECT=mathcraft`、`PHOENIX_API_KEY=`（`SecretStr`）、`PHOENIX_QUEUE_SIZE=128`、`PHOENIX_TIMEOUT_SECONDS=0.5`。根与后端 extra 均固定 `opentelemetry-sdk==1.45.2`、`opentelemetry-exporter-otlp-proto-http==1.45.2`，仅追踪元数据。停用时关闭开关并重启后端；容器可独立 `docker compose -f compose.phoenix.yaml stop phoenix`，保留数据卷。
 
-详细配置与排错见 [Phoenix 可选扩展](docs/design/Phoenix可选扩展.md)。
+详细配置与排错见 [运维后台运行手册](docs/operations/运维后台运行手册.md#phoenix-启停)。
 
 ## 开发检查
 
@@ -234,7 +234,7 @@ npm run build
 - [数据一致性与故障恢复设计](docs/design/数据一致性与故障恢复设计.md)：关闭与历史作答、任务持久化、删除恢复及缓存完整性。
 - [账号与权限](docs/implementation/账号系统整合与审查修复.md)、[认证与账号安全](docs/implementation/登录视觉恢复与历史前端对照.md)。
 - [模型配置](docs/design/模型配置来源与普通知识库流程.md)、[知识库](docs/design/知识库模块说明.md)。
-- [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计与实施记录.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
+- [四模式对话](docs/design/对话四模式与主线整合.md)、[出题审核](docs/design/出题审核中间件设计.md)、[Word 导出](docs/design/题目Word导出与公式呈现.md)。
 - [出题链路优化设计](docs/design/出题质量与取材链路优化设计.md)、[需求讨论](docs/requirements/出题逻辑优化需求与设计讨论.md)、[本地问题核查](docs/research/出题与知识库问题核查-2026-11-15.md)：已确认范围、检查证据与待实现方案。
 - [运维后台](docs/design/运维后台模块说明.md)、[运行手册](docs/operations/运维后台运行手册.md)、[台账基础](docs/design/运维后台运行台账基础.md)、[入口接入](docs/design/运维后台出题入口接入.md)、[前端 V2](docs/implementation/运维后台前端V2适配与联调.md)和[可选追踪](docs/design/Phoenix可选扩展.md)。
 - [协作约定](AGENTS.md)。

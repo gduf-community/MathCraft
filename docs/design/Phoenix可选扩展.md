@@ -28,37 +28,11 @@ HTTP 流在完整读至 EOF 时结束；读取异常记录安全错误类别。S
 
 本地验收可用 `MATHCRAFT_PHOENIX_ACCEPTANCE=1` 运行 `backend/tests/test_phoenix_question_acceptance.py`，从固定镜像对应的本机 Phoenix 查询已持久化的 span。
 
-## 依赖与配置
+## 配置与降级
 
-仓库根和 `backend/pyproject.toml` 均提供 `phoenix` 可选 extra，固定 `opentelemetry-sdk==1.45.2` 和 `opentelemetry-exporter-otlp-proto-http==1.45.2`。在所使用的环境目录执行 `uv sync --extra phoenix`；不启用时无需安装。
-
-配置沿用 `backend/app/config.py` 和 `backend/.env.example`：
-
-| 字段 | 默认值 |
-| --- | --- |
-| `PHOENIX_ENABLED` | `false` |
-| `PHOENIX_ENDPOINT` | `http://127.0.0.1:6017/v1/traces` |
-| `PHOENIX_PROJECT` | `mathcraft` |
-| `PHOENIX_API_KEY` | 空；配置类型为 `SecretStr` |
-| `PHOENIX_QUEUE_SIZE` | `128` |
-| `PHOENIX_TIMEOUT_SECONDS` | `0.5` |
+安装、配置和部署见 [运维后台运行手册](../operations/运维后台运行手册.md#phoenix-启停)。
 
 开关关闭、可选依赖缺失或扩展配置无效时，业务仍可启动。导出超时、队列满或 Phoenix 不可用时丢弃对应元数据并记录安全日志；队列不持久化，不承诺补发。追踪故障不改变模型请求结果，也不决定后台状态。
-
-## 独立 Docker 部署
-
-根 `compose.phoenix.yaml` 固定 `arizephoenix/phoenix:version-21.0.0` 与 digest `sha256:b5bcec3455bd5c431f52737fc62046c081752b483e3fff40c63f40783736bcad`，仅发布 `127.0.0.1:6017:6006`，使用 `phoenix_data` 持久命名卷。
-
-在仓库根执行：
-
-```powershell
-docker compose -f compose.phoenix.yaml up -d --wait phoenix
-docker compose -f compose.phoenix.yaml stop phoenix
-```
-
-访问入口为 `http://127.0.0.1:6017`。Compose 显式设置 `PHOENIX_ENABLE_AUTH=false`，仅用于单机可信访问；远程部署须使用 HTTPS、独立认证和 API key，不可直接把无认证端口公开。停止容器保留卷，不使用 `down -v` 清除追踪数据。
-
-启用时先启动独立容器，在后端环境安装 extra，再将 `PHOENIX_ENABLED` 改为 `true` 并重启后端。停用时改回 `false` 并重启；Phoenix 服务与 MathCraft 可独立运行。
 
 ## 验收边界
 

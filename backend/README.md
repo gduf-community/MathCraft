@@ -159,7 +159,7 @@ ACID 迁移 `j5e6f7a8b901` 增加试卷关闭与历史快照字段、持久出�
 
 迁移链保留正文证据版本 `j5e6f7a89012` 和出题运行版本 `k6f7a8b90123`，通过 `m8f9a0b12345` 与 ACID 分支汇合，再应用台账迁移 `n9a0b1c23456`。旧 V2 曾用与 ACID 相同的 `j5e6f7a8b901` 创建台账；已使用旧迁移或来源不明的数据库不得直接升级或仅覆盖版本标记，须先按[台账兼容性说明](../docs/design/运维后台运行台账基础.md#旧-v2-同号迁移的部署兼容性)核对结构与数据并制定修复方案。
 
-`agent` 分支当前唯一迁移头为 `q2d3e4f56789`，用于持久化聊天请求状态。其父版本 `p1c2d3e45678` 汇合 main 的生成取消迁移 `o0b1c2d34567` 与 agent 的平台模型迁移 `j5f6g7h8i900`。空库及来自任一分支的现有数据库均使用 `uv run alembic upgrade head` 升级。
+当前唯一迁移头 `s4f5a6b78901` 汇合聊天请求状态迁移 `q2d3e4f56789` 与个人 DeepSeek Base URL 迁移 `r3e4f5a67890`。后者为 `user_model_settings` 增加可选字段 `deepseek_base_url`，已有设置行的该字段初始为 `NULL`。两条迁移均从 `p1c2d3e45678` 分出，该版本汇合 main 的生成取消迁移 `o0b1c2d34567` 与 agent 的平台模型迁移 `j5f6g7h8i900`。空库及来自上述任一分支的数据库均使用 `uv run alembic upgrade head` 升级。
 
 在 `backend/` 目录执行以下命令。`heads` 列出当前检出代码的迁移头，`current` 显示配置所指数据库已应用的迁移版本。升级完成后，两者应显示同一个版本。
 
@@ -217,7 +217,7 @@ uv run ruff check app tests
 - [根 README](../README.md)、[前端说明](../frontend/README.md)：项目介绍与前后端启动。
 - [API 文档](../docs/api.md)、[OpenAPI 契约](../openapi.json)：完整接口。
 - [四模式对话与主线整合](../docs/design/对话四模式与主线整合.md)：消息模式、图片校验、数据操作确认及会话权限边界。
-- [出题审核](../docs/design/出题审核中间件设计与实施记录.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
+- [出题审核](../docs/design/出题审核中间件设计.md)、[Word 导出与公式呈现](../docs/design/题目Word导出与公式呈现.md)：流式解析、JSON 修复、DOCX 契约与公式降级。
 - [账号与权限](../docs/implementation/账号系统整合与审查修复.md)、[知识库说明](../docs/design/知识库模块说明.md)、[模型配置](../docs/design/模型配置来源与普通知识库流程.md)：功能与配置边界。
 - 后台方案：[系统方案说明](../docs/design/运维后台系统方案说明.md)、[模块说明](../docs/design/运维后台模块说明.md)、[运行台账基础](../docs/design/运维后台运行台账基础.md)、[入口接入](../docs/design/运维后台出题入口接入.md)和[查询 V2](../docs/design/运维查询V2接口与查询设计.md)。台账、两类入口、管理员查询与 V2 前端已接通并完成隔离联调，部署待验收。
 - [Phoenix 可选扩展](../docs/design/Phoenix可选扩展.md)、[运行手册](../docs/operations/运维后台运行手册.md)：普通 OpenAI 客户端手工 OTLP 元数据追踪，默认关闭，不引入 Agent SDK。
