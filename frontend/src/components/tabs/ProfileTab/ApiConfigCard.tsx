@@ -287,7 +287,7 @@ export function ApiConfigCard() {
                 className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a5fe6] disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {busy === 'base-url-save' ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-                保存
+                保存地址
               </button>
             </div>
             <p className="mb-1 mt-1.5 pl-[172px] text-xs text-ink-3">
