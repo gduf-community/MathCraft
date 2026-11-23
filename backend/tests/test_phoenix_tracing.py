@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 pytest.importorskip("opentelemetry.sdk")
 pytest.importorskip("opentelemetry.exporter.otlp.proto.common.trace_encoder")
+from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
 from app.config import Settings, settings
@@ -31,8 +32,8 @@ class CaptureSender:
     def __init__(self, *args):
         self.payloads: list[bytes] = []
 
-    def submit(self, payload: bytes) -> bool:
-        self.payloads.append(payload)
+    def submit(self, span_batch) -> bool:
+        self.payloads.append(encode_spans(span_batch).SerializeToString())
         return True
 
     def close(self) -> None:
@@ -416,11 +417,11 @@ def test_invalid_endpoint_disables_extension(endpoint):
 def test_queue_is_bounded_and_never_waits(monkeypatch):
     monkeypatch.setattr(tracing._Sender, "_work", lambda self: None)
     sender = tracing._Sender("http://127.0.0.1:6017/v1/traces", "", 1, 0.1)
-    assert sender.submit(b"first")
-    assert not sender.submit(b"second")
+    assert sender.submit(())
+    assert not sender.submit(())
     assert sender.queue.qsize() == 1
     sender.close()
-    assert not sender.submit(b"after-close")
+    assert not sender.submit(())
 
 
 @pytest.mark.parametrize("outcome", ["down", "redirect", "rejected", "partial", "bad"])

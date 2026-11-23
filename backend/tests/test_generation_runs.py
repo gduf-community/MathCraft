@@ -136,10 +136,13 @@ def test_async_accepted_precedes_execution_and_phoenix_reuses_id(
         function, args, kwargs = queued[0]
         assert kwargs["run_id"] == accepted.run_id
         function(*args, **kwargs)
-        root, = spans(sender)
+        root, = (span for span in spans(sender) if not span.parent_span_id)
+        summary, = (span for span in spans(sender) if span.name == "mathcraft.question.summary")
+        assert summary.parent_span_id == root.span_id
         assert attrs(root)["mathcraft.run_id"] == accepted.run_id
         completed, = records()
         assert completed.run_id == accepted.run_id and completed.status == "completed"
+        assert attrs(summary)["mathcraft.delivered"] == completed.delivered_count == 2
     finally:
         phoenix_tracing.shutdown()
 

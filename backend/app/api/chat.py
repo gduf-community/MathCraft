@@ -18,6 +18,7 @@ from app.models.question import Question as SavedQuestion
 from app.schemas.api import (
     ChatConfirmBody, ChatMessageBody, ChatMessageResponse, ChatRequestResponse,
     ChatSavedQuestion, ChatSessionCreateBody, ChatSessionDetailResponse, ChatSessionListResponse,
+    GenerationReviewGroup,
 )
 from app.schemas.auth import ErrorResponse
 from app.schemas.question import GenerateParams, Question
@@ -29,7 +30,7 @@ from app.services.generation_lifecycle import (
 )
 from app.services.model_settings import get_effective_deepseek_key
 from app.services.ops_runs import RunConflictError
-from app.services.phoenix_tracing import current_run_id, trace_run
+from app.services.phoenix_tracing import current_run_id, record_question_delivery, trace_run
 from app.services.rag import chat_flow, question_gen
 from app.services.rag.chat_flow import ChatCanceled, build_result_reply
 from app.services.rag.data_agent import execute_confirmed
@@ -598,6 +599,7 @@ def _run_message(
         result["reply"] = switch_prefix + (result["reply"] or "")
     questions: list[Question] = []
     params = None
+    groups: list[GenerationReviewGroup] = []
     if result["questions"] or (generation_params is not None and not failure_code):
         questions = [Question.model_validate(q) for q in result["questions"]]
         params = generation_params or generation.build_params_from_slots(
@@ -660,6 +662,7 @@ def _run_message(
     response = _commit_turn(db, session_id, user_id, bank_id, document_id, run_id, body,
                             state, result, params=params, hyde_text=hyde_text, questions=questions,
                             run=run, failure_code=failure_code)
+    record_question_delivery(groups)
     return response
 
 

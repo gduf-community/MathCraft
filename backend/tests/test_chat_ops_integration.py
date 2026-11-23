@@ -150,7 +150,10 @@ def test_chat_session_ledger_and_phoenix_share_run_id(client, teacher, resources
         assert response.status_code == 200
         row, = records()
         assert seen == [row.run_id] and row.status == "completed"
-        root, = spans(sender)
+        root, = (span for span in spans(sender) if not span.parent_span_id)
+        summary, = (span for span in spans(sender) if span.name == "mathcraft.question.summary")
+        assert summary.parent_span_id == root.span_id
+        assert attrs(summary)["mathcraft.delivered"] == row.delivered_count == 2
         assert attrs(root)["mathcraft.run_id"] == row.run_id
     finally:
         phoenix_tracing.shutdown()

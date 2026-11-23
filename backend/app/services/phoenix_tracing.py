@@ -3,8 +3,10 @@
 The provider is private: no global instrumentation, request bodies, exception
 messages or user attributes are collected. Export is bounded and best effort.
 """
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from functools import wraps
@@ -26,6 +28,7 @@ if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
     from app.config import Settings
+    from app.schemas.api import GenerationReviewGroup
 
 logger = logging.getLogger(__name__)
 P = ParamSpec("P")
@@ -43,11 +46,187 @@ class _RunContext:
 _run: ContextVar[_RunContext | None] = ContextVar("phoenix_run", default=None)
 
 
+_QUESTION_STAGES = frozenset({
+    "planning", "nomination", "generation", "refill", "candidate_review", "independent_solve",
+    "solution_completion", "repair", "re_review", "final_acceptance", "corpus_dedup",
+    "finished_dedup", "delivery", "summary",
+})
+_QUESTION_DECISIONS = frozenset({
+    "formed", "passed", "rejected", "repaired", "failed", "selected", "skipped", "committed",
+})
+_REASON_CODES = {
+    "题面缺陷": "invalid_stem",
+    "题设不足": "insufficient_conditions",
+    "命题为假": "false_proposition",
+    "条件矛盾": "contradictory_conditions",
+    "无法验证": "unverifiable",
+    "答案不成立": "invalid_answer",
+    "解析不成立": "invalid_explanation",
+    "选项不合格": "invalid_options",
+    "超出范围": "out_of_scope",
+    "难度不符": "difficulty_mismatch",
+    "原题选项缺失": "original_options_missing",
+    "原题被改动": "original_changed",
+    "重复题目": "duplicate",
+    "原题选项缺失或无法与材料核对": "original_options_unverified",
+    "生成未返回可用候选题": "no_usable_candidates",
+    "生成未返回候选题": "refill_underproduced",
+    "首轮候选产出不足": "initial_underproduced",
+    "可用原题不足": "original_shortage",
+}
+_SAFE_REASON_CODES = frozenset(_REASON_CODES.values()) | {
+    "wrong_type", "quota_filled", "invalid_output", "generation_underproduced",
+}
+_QUESTION_TYPES = frozenset({"single", "multiple", "judge", "blank", "compute", "essay"})
+_DIFFICULTIES = frozenset({"低", "中", "高", "地狱"})
+_CANDIDATE_ID = re.compile(r"q-[a-f0-9]{10}\Z")
+_question_parent: ContextVar["Span | None"] = ContextVar("phoenix_question_parent", default=None)
+_refill_round: ContextVar[int] = ContextVar("phoenix_refill_round", default=0)
+
+
+def _reason_code(reason: str) -> str:
+    if reason in _SAFE_REASON_CODES:
+        return reason
+    if reason in _REASON_CODES:
+        return _REASON_CODES[reason]
+    from app.services.rag.llm import model_error_trace_code
+
+    return model_error_trace_code(reason)
+
+
+@dataclass(frozen=True)
+class QuestionStage:
+    """Write a sanitized business decision independently of the span status."""
+
+    span: "Span | None"
+
+    def decision(self, outcome: str, reason: str | None = None) -> None:
+        """Record a known decision with an optional allowlisted reason."""
+        if self.span is None or outcome not in _QUESTION_DECISIONS:
+            return
+        try:
+            self.span.set_attribute("mathcraft.decision", outcome)
+            if reason is not None:
+                self.span.set_attribute("mathcraft.reason_code", _reason_code(reason))
+        except Exception:
+            logger.warning("Phoenix question decision unavailable")
+
+
+_NOOP_STAGE = QuestionStage(None)
+
+
+@contextmanager
+def question_round(round_number: int) -> Iterator[None]:
+    """Bind one delivery round to the current execution and its workers."""
+    token = _refill_round.set(round_number)
+    try:
+        yield
+    finally:
+        _refill_round.reset(token)
+
+
+@contextmanager
+def question_stage(
+    stage: str, *, candidate_id: str | None = None, kind: str | None = None,
+    difficulty: str | None = None, revision: int | None = None,
+) -> Iterator[QuestionStage]:
+    """Parent model calls and record a metadata-only generation or review stage."""
+    runtime, context = _runtime, _run.get()
+    if runtime is None or context is None or stage not in _QUESTION_STAGES:
+        yield _NOOP_STAGE
+        return
+    attributes: dict[str, str | int] = {
+        "openinference.span.kind": "CHAIN",
+        "mathcraft.run_id": context.run_id,
+        "mathcraft.stage": stage,
+    }
+    if stage != "summary":
+        attributes["mathcraft.refill_round"] = _refill_round.get()
+    if candidate_id is not None and _CANDIDATE_ID.fullmatch(candidate_id):
+        attributes["mathcraft.candidate_id"] = candidate_id
+    if kind is not None and kind in _QUESTION_TYPES:
+        attributes["mathcraft.question_type"] = kind
+    if difficulty is not None and difficulty in _DIFFICULTIES:
+        attributes["mathcraft.target_difficulty"] = difficulty
+    if revision in (0, 1):
+        attributes["mathcraft.revision"] = revision
+    try:
+        from opentelemetry.trace import set_span_in_context
+
+        span = runtime.provider.get_tracer("mathcraft.phoenix").start_span(
+            "mathcraft.question." + stage,
+            context=set_span_in_context(_question_parent.get() or context.span),
+            attributes=attributes,
+        )
+    except Exception:
+        logger.warning("Phoenix question stage unavailable")
+        yield _NOOP_STAGE
+        return
+
+    token = _question_parent.set(span)
+    error = None
+    try:
+        yield QuestionStage(span)
+    except BaseException as exc:
+        from app.services.generation_cancellation import GenerationCanceled
+
+        error = "CANCELED" if isinstance(exc, GenerationCanceled) else "EXECUTION_ERROR"
+        raise
+    finally:
+        _question_parent.reset(token)
+        _end(span, error)
+
+
+def question_decision(
+    stage: str, outcome: str, reason: str | None = None, *,
+    candidate_id: str | None = None, kind: str | None = None, difficulty: str | None = None,
+    revision: int | None = None,
+) -> None:
+    """Emit a completed stage for a decision without a model call."""
+    with question_stage(
+        stage, candidate_id=candidate_id, kind=kind, difficulty=difficulty, revision=revision,
+    ) as observation:
+        observation.decision(outcome, reason)
+
+
+def record_question_delivery(groups: "Sequence[GenerationReviewGroup]") -> None:
+    """Emit the teacher's group totals after the business result commits."""
+    if _runtime is None or _run.get() is None:
+        return
+    for group in groups:
+        with question_stage(
+            "summary", kind=group.type.value, difficulty=group.difficulty.value,
+        ) as observation:
+            span = observation.span
+            if span is None:
+                continue
+            observation.decision("committed")
+            try:
+                span.set_attribute("mathcraft.requested", group.requested)
+                span.set_attribute("mathcraft.delivered", group.delivered)
+                span.set_attribute("mathcraft.missing", group.missing)
+                for category, counts in (
+                    ("rejections", group.rejections), ("generation_events", group.generation_events),
+                ):
+                    for code, count in _reason_counts(counts).items():
+                        span.set_attribute(f"mathcraft.{category}.{code}", count)
+            except Exception:
+                logger.warning("Phoenix question summary unavailable")
+
+
+def _reason_counts(counts: dict[str, int]) -> dict[str, int]:
+    merged: Counter[str] = Counter()
+    for reason, count in counts.items():
+        merged[_reason_code(reason)] += count
+    return dict(merged)
+
+
 class _Sender:
     """Own one finite export queue and a daemon that never blocks model calls."""
 
     def __init__(self, endpoint: str, key: str, capacity: int, timeout: float) -> None:
-        self.queue: Queue[bytes] = Queue(capacity)
+        self.queue: Queue[Sequence["ReadableSpan"]] = Queue(capacity)
+        self.dropped = Event()
         self.endpoint = endpoint
         self.key = key
         self.timeout = timeout
@@ -55,15 +234,15 @@ class _Sender:
         self.thread = Thread(target=self._work, name="phoenix-export", daemon=True)
         self.thread.start()
 
-    def submit(self, payload: bytes) -> bool:
+    def submit(self, spans: Sequence["ReadableSpan"]) -> bool:
         """Drop rather than wait when export is unavailable or backlogged."""
-        if self.stop.is_set() or len(payload) > 64 * 1024:
+        if self.stop.is_set():
             return False
         try:
-            self.queue.put_nowait(payload)
+            self.queue.put_nowait(spans)
             return True
         except Full:
-            logger.warning("Phoenix export queue full; metadata dropped")
+            self.dropped.set()
             return False
 
     def _work(self) -> None:
@@ -71,6 +250,7 @@ class _Sender:
             ExportTraceServiceResponse,
         )
         from google.protobuf.message import DecodeError
+        from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
 
         headers = {"Content-Type": "application/x-protobuf"}
         if self.key:
@@ -78,11 +258,22 @@ class _Sender:
         # Never use deployment proxy variables or follow redirects with the key.
         with httpx.Client(timeout=self.timeout, trust_env=False, follow_redirects=False) as client:
             while not self.stop.is_set():
+                if self.dropped.is_set():
+                    self.dropped.clear()
+                    logger.warning("Phoenix export queue full; metadata dropped")
                 try:
-                    payload = self.queue.get(timeout=0.1)
+                    spans = self.queue.get(timeout=0.1)
                 except Empty:
                     continue
                 try:
+                    try:
+                        payload = encode_spans(spans).SerializeToString()
+                    except Exception:
+                        logger.warning("Phoenix metadata encoding unavailable")
+                        continue
+                    if len(payload) > 64 * 1024:
+                        logger.warning("Phoenix export payload limit exceeded; metadata dropped")
+                        continue
                     with client.stream(
                         "POST", self.endpoint, content=payload, headers=headers,
                     ) as res:
@@ -141,7 +332,7 @@ def configure(config: "Settings") -> bool:
         return False
     sender: _Sender | None = None
     try:
-        from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
+        from opentelemetry.exporter.otlp.proto.common import trace_encoder  # noqa: F401
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import (
@@ -157,12 +348,11 @@ def configure(config: "Settings") -> bool:
         class MetadataExporter(SpanExporter):
             def export(self, spans: Sequence["ReadableSpan"]) -> SpanExportResult:
                 try:
-                    payload = encode_spans(spans).SerializeToString()
-                    return (SpanExportResult.SUCCESS if export_sender.submit(payload)
+                    return (SpanExportResult.SUCCESS if export_sender.submit(spans)
                             else SpanExportResult.FAILURE)
                 except Exception:
                     # The optional instrumentation boundary must never affect execution.
-                    logger.warning("Phoenix metadata encoding unavailable")
+                    logger.warning("Phoenix export queue unavailable")
                     return SpanExportResult.FAILURE
 
             def shutdown(self) -> None:
@@ -245,6 +435,8 @@ def trace_run(
                     logger.warning("Phoenix run tracing unavailable")
             # A forced business run must not inherit its parent when tracing is unavailable.
             token = _run.set(context)
+            parent_token = _question_parent.set(None)
+            round_token = _refill_round.set(0)
             error = None
             try:
                 return function(*args, **kwargs)
@@ -252,6 +444,8 @@ def trace_run(
                 error = "EXECUTION_ERROR"
                 raise
             finally:
+                _refill_round.reset(round_token)
+                _question_parent.reset(parent_token)
                 _run.reset(token)
                 _end(span, error)
         return wrapped
@@ -273,7 +467,7 @@ def _model_span(model: str) -> "Span | None":
         from opentelemetry.trace import set_span_in_context
 
         return runtime.provider.get_tracer("mathcraft.phoenix").start_span(
-            "openai.chat.completions", context=set_span_in_context(context.span),
+            "openai.chat.completions", context=set_span_in_context(_question_parent.get() or context.span),
             attributes={"openinference.span.kind": "LLM", "mathcraft.run_id": context.run_id,
                         "llm.model_name": model if _IDENTIFIER.fullmatch(model) else "unknown"},
         )

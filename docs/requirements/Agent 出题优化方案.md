@@ -1,6 +1,6 @@
 # Agent 出题优化方案
 
-第一阶段代码已接入。目标分支为 `codex/agent-question-quality`，基于 `agent`。第二至第四阶段待推进，依次为 Phoenix 本地追踪、教师标定样题验证和 SDK 重构评估。
+第一阶段代码已接入，第二阶段的 Phoenix 阶段追踪已实现。目标分支为 `codex/agent-question-quality`，基于 `agent`。后续推进教师标定样题验证和 SDK 重构评估。
 
 2026 年 11 月 22 日的数学分析实测中，六种题型各请求四档各一题，首轮交付 18/24 道，补跑后交付 23/24 道。低档多选缺少可作答的数学命题却被交付，高档简答要求证明的结论被解析中的反例推翻，地狱档简答多次缺额。部分高档和地狱档题目用常规解法即可完成。这四类现象分别作为交付、纠错、缺额排查和难度评估的验收依据。
 
@@ -23,7 +23,7 @@
 
 **由 MathCraft 判定每道候选题为何被拦下，Phoenix 展示这次判定发生在哪一轮、哪个环节，以及关联模型调用的状态。**
 
-- 当前分支只上报运行和模型调用元数据，逐题审核结果与缺额原因仍待接入。沿用 `run_id` 关联业务运行，补充候选标识、题型、目标档位、补题轮次、阶段、审核结论和原因码。命题、求解、修题、复审、成品验收及补题阶段应能与对应模型调用关联。运行结束时记录按题型和档位汇总的缺额。保持现有元数据采集边界，题目正文、反例、提示词及答案正文留在 MathCraft 的业务流程。 [当前 Phoenix 接入说明](../design/Phoenix可选扩展.md)
+- 在已有运行和模型调用元数据上接入逐题审核结果与缺额原因。沿用 `run_id` 关联业务运行，补充候选标识、题型、目标档位、补题轮次、阶段、审核结论和原因码。命题、求解、修题、复审、成品验收及补题阶段应能与对应模型调用关联。运行结束时记录按题型和档位汇总的缺额。保持现有元数据采集边界，题目正文、反例、提示词及答案正文留在 MathCraft 的业务流程。 [当前 Phoenix 接入说明](../design/Phoenix可选扩展.md)
 - 按 Arize Phoenix 官方文档，使用自托管 Docker 和 OpenTelemetry 自定义 span、属性与筛选能力。沿用现有 Compose 的固定镜像和本机端口 `127.0.0.1:6017`，通过 `/v1/traces` 接收追踪。教师反馈与运行台账以 MathCraft 的实际交付结果为准。追踪导出可能缺失，验收时应从 Phoenix 实际读回记录。 [仓库部署配置](../../compose.phoenix.yaml) · [Phoenix Docker 部署](https://arize.com/docs/phoenix/self-hosting/deployment-options/docker) · [自定义埋点](https://arize.com/docs/phoenix/tracing/how-to-tracing/setup-tracing/instrument) · [按属性筛选](https://arize.com/docs/phoenix/tracing/how-to-tracing/filter-expressions)
 
 **验收**。在本机启动 Phoenix，跑通正常交付和触发缺额的出题任务。按同一 `run_id` 核对 Phoenix 逐题记录与 MathCraft 的教师输出。用模型超时和 HTTP 200 但发现反例这两种情况，验证能够区分调用故障与业务验收失败。优先复测此前多次缺额的地狱档简答，核对求解、修题和补题的实际结果。

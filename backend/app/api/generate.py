@@ -21,7 +21,7 @@ from app.schemas.auth import ErrorResponse
 from app.schemas.question import Question as GeneratedQuestion
 from app.services import auth, generation, rag_settings
 from app.services.generation_lifecycle import GenerationRun, rollback_business
-from app.services.phoenix_tracing import trace_run
+from app.services.phoenix_tracing import record_question_delivery, trace_run
 from app.services.model_settings import require_deepseek_key
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
@@ -181,6 +181,7 @@ def generate_sync(
             run.unknown()
             raise
         run.committed()
+        record_question_delivery(review.groups or ())
         return GenerateSyncResult(questions=questions, review=review) if include_review else questions
 
 

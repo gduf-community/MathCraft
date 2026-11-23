@@ -28,6 +28,7 @@ from app.schemas.question import (
     normalize_latex,
 )
 from app.services import latex_utils
+from app.services import phoenix_tracing as trace
 from app.services.generation_cancellation import (
     GenerationCanceled,
     cancellation_kwargs,
@@ -443,7 +444,6 @@ def _gen_batch(
 
     last_error: QuestionOutputError | None = None
     last_raw = ""
-    questions: list[Question] = []
     for attempt in range(2):
         check_cancellation(cancel_check)
         msgs = base_messages
@@ -456,45 +456,65 @@ def _gen_batch(
                     "字段名与类型严格与 Schema 一致，公式只用 $...$ 与 $$...$$ 定界。"
                 )},
             ]
-        try:
-            questions = run_checked(
-                cancel_check, _stream_questions, msgs, budget, api_key,
-                **cancellation_kwargs(cancel_check),
-            )
-            break
-        except QuestionOutputError as exc:
-            last_error = exc
-            last_raw = exc.raw_excerpt
-            questions = []
-
-    out: list[Question] = []
-    unverified_options = False
-    for q in questions:
-        if q.type != tc.type:
-            continue  # 题型不符直接丢弃
-        if preserve_options:
-            proposed = tuple(
-                (option.label.translate(_FULLWIDTH_LABELS), _source_text(option.text))
-                for option in q.options
-            )
-            if source_choices.get(_source_text(q.stem)) != {proposed}:
-                unverified_options = True
+        with trace.question_stage(
+            "nomination", kind=tc.type.value, difficulty=difficulty.value,
+        ) as observation:
+            try:
+                questions = run_checked(
+                    cancel_check, _stream_questions, msgs, budget, api_key,
+                    **cancellation_kwargs(cancel_check),
+                )
+            except QuestionOutputError as exc:
+                last_error = exc
+                last_raw = exc.raw_excerpt
+                observation.decision("failed", "invalid_output")
                 continue
-        q.id = f"q-{uuid.uuid4().hex[:10]}"
-        q.score = DEFAULT_SCORES.get(tc.type, 5)
-        q.difficulty = difficulty
-        q.docName = doc_name
-        q.answer = ""
-        q.analysis = ""
-        if tc.type == QuestionType.judge:
-            q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
-        elif not preserve_options:
-            q.options = []
-        out.append(q)
-    if out:
-        return out
-    if unverified_options:
-        raise OriginalOptionsUnverified(ORIGINAL_OPTIONS_UNVERIFIED)
+
+            out: list[Question] = []
+            unverified_options = False
+            for q in questions:
+                trace_id = f"q-{uuid.uuid4().hex[:10]}"
+                if q.type != tc.type:
+                    trace.question_decision(
+                        "nomination", "skipped", "wrong_type", candidate_id=trace_id,
+                        kind=tc.type.value, difficulty=difficulty.value,
+                    )
+                    continue
+                if preserve_options:
+                    proposed = tuple(
+                        (option.label.translate(_FULLWIDTH_LABELS), _source_text(option.text))
+                        for option in q.options
+                    )
+                    if source_choices.get(_source_text(q.stem)) != {proposed}:
+                        unverified_options = True
+                        trace.question_decision(
+                            "nomination", "skipped", ORIGINAL_OPTIONS_UNVERIFIED, candidate_id=trace_id,
+                            kind=tc.type.value, difficulty=difficulty.value,
+                        )
+                        continue
+                q.id = trace_id
+                trace.question_decision(
+                    "nomination", "formed", candidate_id=q.id,
+                    kind=tc.type.value, difficulty=difficulty.value,
+                )
+                q.score = DEFAULT_SCORES.get(tc.type, 5)
+                q.difficulty = difficulty
+                q.docName = doc_name
+                q.answer = ""
+                q.analysis = ""
+                if tc.type == QuestionType.judge:
+                    q.options = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
+                elif not preserve_options:
+                    q.options = []
+                out.append(q)
+            if out:
+                observation.decision("passed")
+                return out
+            if unverified_options:
+                observation.decision("failed", ORIGINAL_OPTIONS_UNVERIFIED)
+                raise OriginalOptionsUnverified(ORIGINAL_OPTIONS_UNVERIFIED)
+            observation.decision("failed", "invalid_output")
+            break
     summary = last_error.summary if last_error else f"输出中不含任何 {type_label} 对象"
     raise ValueError(
         f"{type_label}生成输出不符合 Schema（{summary}），已带错误重试仍未通过"
@@ -623,10 +643,12 @@ def _gen_for_type(
     # 先分摊考点，再并发命题：十道题各自撞同一个考点是去重与重出的主要来源
     if report:
         report(0.06, f"正在规划「{type_label}」的考点分布")
-    points = _plan_points(
-        scope, type_label, (tc.difficulty or params.difficulty).value, tc.count, hits, api_key,
-        **cancellation_kwargs(cancel_check),
-    )
+    difficulty = (tc.difficulty or params.difficulty).value
+    with trace.question_stage("planning", kind=tc.type.value, difficulty=difficulty):
+        points = _plan_points(
+            scope, type_label, difficulty, tc.count, hits, api_key,
+            **cancellation_kwargs(cancel_check),
+        )
 
     collected: list[Question] = []
     taken = set(avoid_norm)
@@ -675,7 +697,11 @@ def _gen_for_type(
                 for q in batch:
                     norm = _norm_stem(q.stem)
                     if norm in taken:
-                        continue  # 跨批或与历史题目重复，丢弃
+                        trace.question_decision(
+                            "generation", "skipped", "duplicate", candidate_id=q.id,
+                            kind=tc.type.value, difficulty=difficulty,
+                        )
+                        continue
                     taken.add(norm)
                     collected.append(q)
                     if report:
@@ -687,6 +713,11 @@ def _gen_for_type(
     if len(collected) >= tc.count:
         if report:
             report(1.0, f"「{type_label}」已完成（{tc.count} 题）")
+        for question in collected[tc.count:]:
+            trace.question_decision(
+                "generation", "skipped", "quota_filled", candidate_id=question.id,
+                kind=tc.type.value, difficulty=difficulty,
+            )
         return collected[: tc.count], None
     if errors and (capture_failures or not collected):
         error = errors[0]
@@ -776,23 +807,37 @@ def generate_questions(
 
     def run_one(idx: int, tc: TypeCount) -> tuple[list[Question], str | llm.LLMError | None]:
         check_cancellation(cancel_check)
-        result = _gen_for_type(
-            tc,
-            params,
-            doc_name,
-            scope,
-            set(avoid_base),
-            mixed_difficulty,
-            api_key,
-            hyde_text,
-            retrieve_fn=retrieve_fn,
-            report=make_report(idx),
-            directive=directive,
-            difficulty_note=difficulty_note,
-            allow_partial=allow_partial,
-            capture_failures=allow_partial and on_failure is not None,
-            **cancellation_kwargs(cancel_check),
-        )
+        difficulty = (tc.difficulty or params.difficulty).value
+        with trace.question_stage(
+            "generation", kind=tc.type.value, difficulty=difficulty,
+        ) as observation:
+            result = _gen_for_type(
+                tc,
+                params,
+                doc_name,
+                scope,
+                set(avoid_base),
+                mixed_difficulty,
+                api_key,
+                hyde_text,
+                retrieve_fn=retrieve_fn,
+                report=make_report(idx),
+                directive=directive,
+                difficulty_note=difficulty_note,
+                allow_partial=allow_partial,
+                capture_failures=allow_partial and on_failure is not None,
+                **cancellation_kwargs(cancel_check),
+            )
+            candidates, failure = result
+            if failure is not None:
+                observation.decision(
+                    "failed", llm.friendly_error(failure)
+                    if isinstance(failure, llm.LLMError) else failure,
+                )
+            elif len(candidates) < tc.count:
+                observation.decision("failed", "generation_underproduced")
+            else:
+                observation.decision("passed")
         check_cancellation(cancel_check)
         return result
 

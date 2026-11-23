@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TypedDict
 
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Favorite, Paper, PaperQuestion, Question as QuestionRow
 from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType
+from app.services import phoenix_tracing as trace
 from app.services.generation_cancellation import (
     GenerationCanceled,
     cancellation_kwargs,
@@ -169,6 +171,22 @@ class _CandidateResult:
     question: Question | None = None
     reason: str = ""
     repaired: bool = False
+
+
+class _QuestionTraceFields(TypedDict):
+    candidate_id: str | None
+    kind: str
+    difficulty: str
+    revision: int
+
+
+def _trace_fields(question: Question, revision: int) -> _QuestionTraceFields:
+    return {
+        "candidate_id": question.id or None,
+        "kind": question.type.value,
+        "difficulty": question.difficulty.value,
+        "revision": revision,
+    }
 
 
 # 评估与解析的并发数
@@ -954,21 +972,44 @@ def _check_candidate(
     cancel_check: Callable[[], None] | None, *, repaired: bool,
 ) -> _Finding | None:
     """独立求解完整题面，再验收实际交付字段与难度。"""
-    if not question.stem.strip() or _latex_issue(question.stem):
-        return _Finding("题面缺陷", "题干为空或数学公式定界有误")
-    independent = _ask_answer(
-        question, api_key, structured=True, **cancellation_kwargs(cancel_check),
-    )
-    if independent.status != SolveStatus.SOLVED:
-        reason = _SOLVE_REASONS[independent.status]
-        evidence = independent.evidence if independent.status != SolveStatus.UNVERIFIABLE else ""
-        return _Finding(reason, evidence)
+    fields = _trace_fields(question, int(repaired))
+    with trace.question_stage("independent_solve", **fields) as stage:
+        if not question.stem.strip() or _latex_issue(question.stem):
+            stage.decision("rejected", "题面缺陷")
+            return _Finding("题面缺陷", "题干为空或数学公式定界有误")
+        independent = _ask_answer(
+            question, api_key, structured=True, **cancellation_kwargs(cancel_check),
+        )
+        if independent.status != SolveStatus.SOLVED:
+            stage.decision("rejected", independent.status.value)
+            reason = _SOLVE_REASONS[independent.status]
+            evidence = independent.evidence if independent.status != SolveStatus.UNVERIFIABLE else ""
+            return _Finding(reason, evidence)
+        stage.decision("passed")
     if not repaired and (not question.answer.strip() or not question.analysis.strip()):
-        if not _solve_one(
-            question, api_key, independent=independent, scope=scope,
-            **cancellation_kwargs(cancel_check),
-        ):
-            return _Finding("无法验证")
+        with trace.question_stage("solution_completion", **fields) as stage:
+            if not _solve_one(
+                question, api_key, independent=independent, scope=scope,
+                **cancellation_kwargs(cancel_check),
+            ):
+                stage.decision("rejected", "无法验证")
+                return _Finding("无法验证")
+            stage.decision("passed")
+    with trace.question_stage("final_acceptance", **fields) as stage:
+        finding = _accept_candidate(question, independent, scope, api_key, cancel_check,
+                                    repaired=repaired)
+        if finding is None:
+            stage.decision("passed")
+        else:
+            stage.decision("rejected", finding.reason)
+        return finding
+
+
+def _accept_candidate(
+    question: Question, independent: _SolveResult, scope: str, api_key: str | None,
+    cancel_check: Callable[[], None] | None, *, repaired: bool,
+) -> _Finding | None:
+    """验收成品的答案、解析、选项和难度。"""
     if not question.answer.strip() or _latex_issue(question.answer):
         return _Finding("答案不成立", "成品答案为空或数学公式定界有误")
     if not _polish_analysis(question.analysis) or _has_draft_trace(question.analysis):
@@ -1039,22 +1080,32 @@ def _review_candidate(
         finding = _check_candidate(candidate, scope, api_key, cancel_check, repaired=False)
         if finding is None:
             return _CandidateResult(candidate)
+        fields = _trace_fields(candidate, 1)
         if original and finding.reason in {"题设不足", "命题为假", "条件矛盾", "题面缺陷", "难度不符"}:
+            trace.question_decision("repair", "skipped", finding.reason, **fields)
             return _CandidateResult(reason=finding.reason)
         if not finding.evidence:
+            trace.question_decision("repair", "skipped", finding.reason, **fields)
             return _CandidateResult(reason=finding.reason)
-        fixed = _repair(
-            candidate, finding, question.difficulty, api_key, scope=scope, original=original,
-            **cancellation_kwargs(cancel_check),
-        )
-        if fixed is None:
-            return _CandidateResult(reason=finding.reason)
-        if original and (fixed.stem != question.stem or fixed.options != candidate.options):
-            return _CandidateResult(reason="原题被改动")
-        finding = _check_candidate(fixed, scope, api_key, cancel_check, repaired=True)
-        if finding is not None:
-            return _CandidateResult(reason=finding.reason, repaired=True)
-        return _CandidateResult(fixed, repaired=True)
+        with trace.question_stage("repair", **fields) as stage:
+            fixed = _repair(
+                candidate, finding, question.difficulty, api_key, scope=scope, original=original,
+                **cancellation_kwargs(cancel_check),
+            )
+            if fixed is None:
+                stage.decision("rejected", finding.reason)
+                return _CandidateResult(reason=finding.reason)
+            if original and (fixed.stem != question.stem or fixed.options != candidate.options):
+                stage.decision("rejected", "原题被改动")
+                return _CandidateResult(reason="原题被改动")
+            stage.decision("passed", finding.reason)
+        with trace.question_stage("re_review", **fields) as stage:
+            finding = _check_candidate(fixed, scope, api_key, cancel_check, repaired=True)
+            if finding is not None:
+                stage.decision("rejected", finding.reason)
+                return _CandidateResult(reason=finding.reason, repaired=True)
+            stage.decision("passed")
+            return _CandidateResult(fixed, repaired=True)
     except GenerationCanceled:
         raise
     except Exception as exc:
@@ -1104,16 +1155,17 @@ def review_questions(
             corpus_by_norm.setdefault(key, stem)
     corpus = list(corpus_by_norm.values())
 
-    def reject(question: Question, reason: str) -> None:
+    def reject(question: Question, reason: str, *, stage: str, revision: int = 0) -> None:
         stats.rejections.setdefault((question.type, question.difficulty), Counter())[reason] += 1
         if reason == "重复题目":
             stats.duplicates += 1
+        trace.question_decision(stage, "rejected", reason, **_trace_fields(question, revision))
 
     report(78, "正在排查重复题目")
     pending: list[Question] = []
     for question in questions:
         if _norm(question.stem) in corpus_by_norm:
-            reject(question, "重复题目")
+            reject(question, "重复题目", stage="corpus_dedup")
         else:
             pending.append(question)
 
@@ -1124,12 +1176,15 @@ def review_questions(
         ))
     check_cancellation(cancel_check)
     accepted: list[Question] = []
+    repaired_candidates: set[int] = set()
     for question, result in zip(pending, results, strict=True):
         stats.repaired += int(result.repaired)
         if result.question is None:
-            reject(question, result.reason)
+            reject(question, result.reason, stage="candidate_review", revision=int(result.repaired))
         else:
             accepted.append(result.question)
+            if result.repaired:
+                repaired_candidates.add(id(result.question))
 
     report(96, "正在对成品查重")
     try:
@@ -1138,9 +1193,11 @@ def review_questions(
         logger.warning("成品查重失败：%s", exc)
         final, duplicates = [], []
         for question in accepted:
-            reject(question, "无法验证")
+            reject(question, "无法验证", stage="finished_dedup",
+                   revision=int(id(question) in repaired_candidates))
     for question in duplicates:
-        reject(question, "重复题目")
+        reject(question, "重复题目", stage="finished_dedup",
+               revision=int(id(question) in repaired_candidates))
     stats.solved = len(final)
     report(100, "题目校验完成")
     return final, stats

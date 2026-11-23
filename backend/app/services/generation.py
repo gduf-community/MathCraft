@@ -26,7 +26,7 @@ from app.services import auth, cache, question_review, rag_settings
 from app.services.generation_lifecycle import GenerationRun, error_code, rollback_business
 from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
 from app.services.ops_runs import RunLedger
-from app.services.phoenix_tracing import trace_run
+from app.services.phoenix_tracing import record_question_delivery, trace_run
 from app.services.question_delivery import review_with_refill
 from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import FailureCB, NeedConfirmError
@@ -601,6 +601,7 @@ def run_generation_task(
             db.commit()
             committing = False
             run.committed()
+            record_question_delivery(stats.groups or ())
             _cache_task(task)
     except GenerationCanceled:
         pass

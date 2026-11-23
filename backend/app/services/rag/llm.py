@@ -90,6 +90,20 @@ def friendly_error(exc: Exception) -> str:
     return _GENERIC_ERROR
 
 
+_MODEL_ERROR_TRACE_CODES = {
+    _TIMEOUT_ERROR: "model_timeout",
+    _RATE_ERROR: "model_rate_limit",
+    _GENERIC_ERROR: "model_error",
+    _BALANCE_ERROR: "model_balance",
+    _AUTH_ERROR: "model_auth",
+}
+
+
+def model_error_trace_code(safe_message: str) -> str:
+    """Map an exact model error message to an allowlisted trace value."""
+    return _MODEL_ERROR_TRACE_CODES.get(safe_message, "other")
+
+
 _clients: dict[tuple[str, str, str], OpenAI] = {}
 _platform_cache: tuple[str, str, str] | None = None
 _platform_cached_at = 0.0

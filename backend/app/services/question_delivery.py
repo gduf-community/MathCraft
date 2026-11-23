@@ -5,6 +5,7 @@ from typing import Protocol
 
 from app.schemas.api import GenerationReviewGroup
 from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.services import phoenix_tracing as trace
 from app.services.generation_cancellation import check_cancellation
 from app.services.question_review import ReviewStats, _norm
 from app.services.rag import llm
@@ -86,13 +87,23 @@ def review_with_refill(
             for offset in range(0, count, 100)
         ]
 
+    def record_selection(
+        question: Question, round_number: int, outcome: str, reason: str | None = None,
+    ) -> None:
+        with trace.question_round(round_number):
+            trace.question_decision(
+                "delivery", outcome, reason, candidate_id=question.id,
+                kind=question.type.value, difficulty=question.difficulty.value,
+            )
+
     for round_no in range(MAX_REFILL_ROUNDS + 1):
         percent = 78 + round_no * 5
         report(percent, "正在审核题目" if not round_no else f"正在审核第 {round_no} 轮补题")
         deficits = remaining()
         types = [item for key, count in deficits.items() for item in type_counts(key, count)]
         if pool:
-            passed, current = review_fn(pool, round_params(types), list(avoid))
+            with trace.question_round(round_no):
+                passed, current = review_fn(pool, round_params(types), list(avoid))
             check_cancellation(cancel_check)
             stats.duplicates += current.duplicates
             stats.repaired += current.repaired
@@ -103,11 +114,14 @@ def review_with_refill(
             for question in passed:
                 key = (question.type, question.difficulty)
                 if delivered[key] >= quota[key] or len(accepted) >= requested:
+                    record_selection(question, round_no, "skipped", "quota_filled")
                     continue
                 if _norm(question.stem) in seen:
+                    record_selection(question, round_no, "rejected", "duplicate")
                     stats.duplicates += 1
                     stats.rejections.setdefault(key, Counter())["重复题目"] += 1
                     continue
+                record_selection(question, round_no, "selected")
                 delivered[key] += 1
                 accepted.append(question)
                 remember([question])
@@ -125,22 +139,32 @@ def review_with_refill(
 
             for item in type_counts(key, count):
                 check_cancellation(cancel_check)
-                try:
-                    fresh = gen_fn(round_params([item]), list(avoid), refill_progress, record_failure)
-                except NeedConfirmError:
-                    events[key]["可用原题不足"] += 1
-                    continue
-                except llm.LLMError as exc:
-                    events[key][llm.friendly_error(exc)] += 1
-                    continue
-                except (ValueError, QuestionOutputError):
-                    events[key][NO_USABLE_CANDIDATES] += 1
-                    continue
-                check_cancellation(cancel_check)
-                if len(fresh) < item.count:
-                    events[key]["生成未返回候选题"] += 1
-                pool.extend(fresh)
-                stats.regenerated += len(fresh)
+                with trace.question_round(round_number), trace.question_stage(
+                    "refill", kind=key[0].value, difficulty=key[1].value,
+                ) as observation:
+                    try:
+                        fresh = gen_fn(
+                            round_params([item]), list(avoid), refill_progress, record_failure,
+                        )
+                    except NeedConfirmError:
+                        reason = "可用原题不足"
+                    except llm.LLMError as exc:
+                        reason = llm.friendly_error(exc)
+                    except (ValueError, QuestionOutputError):
+                        reason = NO_USABLE_CANDIDATES
+                    else:
+                        check_cancellation(cancel_check)
+                        if len(fresh) < item.count:
+                            reason = "生成未返回候选题"
+                            events[key][reason] += 1
+                            observation.decision("failed", reason)
+                        else:
+                            observation.decision("passed")
+                        pool.extend(fresh)
+                        stats.regenerated += len(fresh)
+                        continue
+                    events[key][reason] += 1
+                    observation.decision("failed", reason)
 
     report(98, "题目审核结束")
     groups = [
