@@ -82,7 +82,9 @@ chore(deps): 升级 fastapi 至 0.115
 
 ## 4. 代码与测试
   - 测试要求:需要减少一次性的重复的测试,尽量保留可重复使用的测试,如果需要临时编写测试脚本测试,请在测试完成后清理.
-- 当前 Python 后端位于 `backend/app/`，import 名为 `app`；ASGI 入口是 `app.main:app`。从 `backend/` 执行 `uv sync` 安装依赖，执行 `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1` 启动。仓库根 `.venv` 的测试与静态检查配置由根 `pyproject.toml` 管理；
+- 当前 Python 后端位于 `backend/app/`，import 名为 `app`，ASGI 入口是 `app.main:app`。仓库根 `.venv` 的测试与静态检查配置由根 `pyproject.toml` 管理。
+- **启动或重启本地后端时，必须在 `backend/` 通过 `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers` 启动**，由 `uv` 选择后端项目的 Python 环境。首次安装或依赖变更后，在同一目录执行 `uv sync`。Windows 临时目录配置见 [README 的启动方法](README.md#5-启动后端)。
+- 后端 Python 解释器启动失败时（例如 Windows 报 `0xc0000142`），检查 `backend/.venv`。确认环境损坏后，重建该环境并在 `backend/` 执行 `uv sync`，再用上述命令启动。以 `http://127.0.0.1:8000/api/health` 返回 HTTP 200 确认启动成功。
 - 数据库使用 SQLAlchemy + Alembic，登录与任务缓存依赖 Redis；账号已按教师、学生区分，不再遵循历史单租户替身约束。保护现有登录、角色校验和资源归属校验；新增注册、管理员、组织或角色能力前先确认需求与设计。
 - 后端路由放 `backend/app/api/`，业务服务放 `backend/app/services/`，模型与请求契约分别放 `backend/app/models/`、`backend/app/schemas/`；在既有领域边界内扩展，不复制整段模块。
 - 可选依赖保持惰性导入；缺少可选能力时报告 unavailable，不因引入新可选依赖导致应用启动失败。
