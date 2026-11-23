@@ -829,6 +829,7 @@ def generate_questions(
                 **cancellation_kwargs(cancel_check),
             )
             candidates, failure = result
+            observation.generation_counts(tc.count, len(candidates))
             if failure is not None:
                 observation.decision(
                     "failed", llm.friendly_error(failure)

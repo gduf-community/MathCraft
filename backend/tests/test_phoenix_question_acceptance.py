@@ -251,6 +251,19 @@ def test_teacher_question_trace(client, teacher, phoenix, monkeypatch, scenario)
             ("question_type", "target_difficulty", "decision", "requested", "delivered",
              "missing")] == ["essay", "地狱", "committed", 1, delivered, 1 - delivered]
 
+    generated = [span for span in stage("generation")
+                 if _attr(span, "mathcraft.candidates.requested") is not None]
+    candidate_counts = {_attr(span, "mathcraft.refill_round"): (
+        _attr(span, "mathcraft.candidates.requested"), _attr(span, "mathcraft.candidates.produced"),
+    ) for span in generated}
+    assert candidate_counts == (
+        {0: (1, 1), 1: (1, 1), 2: (1, 1), 3: (1, 0)}
+        if scenario == "shortfall" else {0: (1, 1)}
+    )
+    if scenario == "shortfall":
+        last_generation, = (span for span in generated if _attr(span, "mathcraft.refill_round") == 3)
+        assert _attr(last_generation, "mathcraft.reason_code") == "model_timeout"
+
     rejected = [span for span in stage("independent_solve")
                 if _attr(span, "mathcraft.reason_code") == "false_proposition"]
     assert len(rejected) == {"normal": 0, "repair": 1, "shortfall": 6}[scenario]

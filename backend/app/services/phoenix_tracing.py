@@ -111,6 +111,15 @@ class QuestionStage:
         except Exception:
             logger.warning("Phoenix question decision unavailable")
 
+    def generation_counts(self, requested: int, produced: int) -> None:
+        """Record candidate counts even when a recoverable model error occurs."""
+        if self.span is None:
+            return
+        try:
+            self.span.set_attribute("mathcraft.candidates.requested", requested)
+            self.span.set_attribute("mathcraft.candidates.produced", produced)
+        except Exception:
+            logger.warning("Phoenix generation counts unavailable")
 
 _NOOP_STAGE = QuestionStage(None)
 

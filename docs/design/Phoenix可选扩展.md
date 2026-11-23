@@ -20,11 +20,11 @@ HTTP 流在完整读至 EOF 时结束；读取异常记录安全错误类别。S
 
 对话、同步参数化与后台参数化出题共用命题、审核和补题追踪。按 `mathcraft.run_id` 筛选同一次运行，按 `mathcraft.candidate_id` 查找候选的判定历史。命题每次尝试独立建 span，产出的候选和本次模型调用共享父节点。后续模型调用挂到求解、解析补全、修题或成品验收阶段下。修订沿用候选 ID，`mathcraft.revision` 为 0 或 1。首轮 `mathcraft.refill_round` 为 0，缺额补题为 1 至 3。
 
-阶段通过 `mathcraft.stage`、`mathcraft.decision` 和可选的 `mathcraft.reason_code` 表示业务判定。HTTP 200 也可能产生 `false_proposition`，模型传输超时则在模型 span 标记 `error.type=TIMEOUT`。命题阶段因题型、原题选项、重复或配额跳过的候选显示为 `skipped`，教师的候选拦截计数从审核开始累计。进入修题或复审的中间判定用于追踪过程，最终拦截以审核或交付阶段的决策为准。
+生成分组用 `mathcraft.candidates.requested` 和 `mathcraft.candidates.produced` 记录本轮要求和返回的候选数，局部失败时同时保留模型错误原因。阶段通过 `mathcraft.stage`、`mathcraft.decision` 和可选的 `mathcraft.reason_code` 表示业务判定。HTTP 200 也可能产生 `false_proposition`，模型传输超时则在模型 span 标记 `error.type=TIMEOUT`。命题阶段因题型、原题选项、重复或配额跳过的候选显示为 `skipped`，教师的候选拦截计数从审核开始累计。进入修题或复审的中间判定用于追踪过程，最终拦截以审核或交付阶段的决策为准。
 
 业务结果提交后才为各题型和目标档位生成 `mathcraft.question.summary`，复用教师端请求数、交付数、缺额、审核拦截和生成事件计数。零交付但教师结果已提交时也记录缺额。运行取消、需要来源确认、事务失败或提交结果未知时，没有已提交的交付汇总。追踪网络故障仍由有界队列隔离，教师结果与台账保留各自的业务语义。
 
-2026 年 11 月 23 日使用本机 Phoenix 21.0.0 和假模型完成三入口回读，合计 82 条 span。同步参数化足量交付为 `run_45e57bf6034547d190d90936fdadfef8`，后台参数化修题后交付为 `run_a79a5dbc97c5babd`，对话地狱档简答缺额为 `run_4dede2983b6649c694acfe81be419b49`。缺额场景核对了三道命题为假及第三轮一次模型超时。
+2026 年 11 月 23 日使用本机 Phoenix 21.0.0 和假模型完成三入口回读，合计 82 条 span。同步参数化足量交付为 `run_d8c441e48c8b4c4c88f2cebbf4c2ed30`，后台参数化修题后交付为 `run_48767330079b5305`，对话地狱档简答缺额为 `run_2e7bc216d82547968f74f46ca4657fe4`。缺额场景核对了三道命题为假及第三轮一次模型超时。
 
 本地验收可用 `MATHCRAFT_PHOENIX_ACCEPTANCE=1` 运行 `backend/tests/test_phoenix_question_acceptance.py`，从固定镜像对应的本机 Phoenix 查询已持久化的 span。
 
