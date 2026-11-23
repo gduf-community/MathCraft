@@ -452,8 +452,10 @@ def test_real_gen_batch_cannot_deliver_fast_model_answer_without_solving(
     tc = TypeCount(type=qtype, count=1)
     params = GenerateParams(kb_id="fake-bank", doc_id="fake-doc", types=[tc],
                             source_mode=source_mode)
+    source = f"1. {payload['stem']}\nA. 快速模型选项一\nB. 快速模型选项二"
     generated = question_gen._gen_batch(
-        tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "fixture context"}], "",
+        tc, params, "fake.pdf", None, 1, [], False, None,
+        [{"text": source, "chunk_type": "question"}], "",
     )
     result, stats = real_review(db, "fake-user", generated, params, "fake.pdf", None)
     assert result == []

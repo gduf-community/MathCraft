@@ -202,16 +202,59 @@ def test_original_choice_keeps_material_options_in_order(monkeypatch, kind):
         assert "原有标签、内容和顺序" in messages[0]["content"]
         assert "options 一律输出空数组" not in messages[0]["content"]
         yield json.dumps({"questions": [{
-            "type": kind.value, "stem": "材料原题", "options": options,
+            "type": kind.value, "stem": "以下哪些式子含有 x？", "options": options,
             "answer": "A", "analysis": "材料答案",
         }]})
 
     monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
     question, = question_gen._gen_batch(
-        tc, params, "fake.pdf", None, 1, [], False, None, [{"text": "材料原题"}], "",
+        tc, params, "fake.pdf", None, 1, [], False, None,
+        [{"chunk_type": "question", "text": "1. 以下哪些式子含有 x？\nB. $x^2$\nA. $x$"}],
+        "",
     )
     assert [option.model_dump() for option in question.options] == options
     assert question.answer == question.analysis == ""
+
+
+@pytest.mark.parametrize("source_kind", ["question", "general"])
+@pytest.mark.parametrize("change", ["omit", "replace", "reorder", "complete"])
+def test_original_choice_requires_complete_matching_material(monkeypatch, source_kind, change):
+    tc = TypeCount(type=QuestionType.single, count=1)
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=[tc], source_mode="original",
+    )
+    stem = "求 x+1=2 的解"
+    original = [{"label": label, "text": str(i)} for i, label in enumerate("ABCD", 1)]
+    options = {
+        "omit": original[:2],
+        "replace": [*original[:3], {"label": "D", "text": "5"}],
+        "reorder": original[::-1],
+        "complete": original,
+    }[change]
+
+    def stream(*_args, **_kwargs):
+        yield json.dumps({"questions": [{"type": "single", "stem": stem, "options": options}]})
+
+    source = f"1. {stem}\nA. 1 B. 2 C. 3 D. 4"
+    if source_kind == "general":
+        source += "\n2. 求另一个方程的解"
+    hits = [{"text": source, "chunk_type": source_kind}]
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    monkeypatch.setattr(question_gen, "count_available_originals", lambda *_args: None)
+    events = []
+    result = question_gen.generate_questions(
+        params, "fake.pdf", retrieve_fn=lambda _: hits, allow_partial=True,
+        on_failure=lambda *event: events.append(event),
+    )
+    if change == "complete":
+        assert len(result) == 1
+        assert [option.model_dump() for option in result[0].options] == original
+        assert events == []
+    else:
+        assert result == []
+        assert events == [
+            (QuestionType.single, params.difficulty, question_gen.ORIGINAL_OPTIONS_UNVERIFIED),
+        ]
 
 
 @pytest.mark.parametrize("all_fail", [False, True])

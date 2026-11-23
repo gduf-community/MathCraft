@@ -18,6 +18,7 @@ from collections.abc import Callable
 import json_repair
 from pydantic import ValidationError
 
+from app.config import settings
 from app.schemas.question import (
     Difficulty,
     GenerateParams,
@@ -35,12 +36,23 @@ from app.services.generation_cancellation import (
 )
 from app.services.rag import retrieval, vectorstore
 from app.services.rag import llm
+from app.services.rag.chunking import ANSWER_START, QUESTION_NO, SECTION_NO
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 ProgressCB = Callable[[int, str], None]
 FailureCB = Callable[[QuestionType, Difficulty, str], None]
 RetrieveFn = Callable[[str], list[dict]]
 NO_USABLE_CANDIDATES = "生成未返回可用候选题"
+ORIGINAL_OPTIONS_UNVERIFIED = "原题选项缺失或无法与材料核对"
+
+_QUESTION_PREFIX = re.compile(r"^\d{1,3}\s*[.、．]\s*")
+_OPTION_LABEL = re.compile(r"(?<!\S)([A-ZＡ-Ｚ])\s*[.．、:：)）]\s*")
+_FULLWIDTH_LABELS = str.maketrans("ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ",
+                                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+class OriginalOptionsUnverified(ValueError):
+    """材料片段无法证明候选选择题保留了全部原选项。"""
 
 _ORIGINAL_CHOICE_SYSTEM = (
     QUESTION_SYSTEM.replace(
@@ -300,6 +312,44 @@ def _build_context(hits: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _source_choices(hits: list[dict]) -> dict[str, set[tuple[tuple[str, str], ...]]]:
+    choices: dict[str, set[tuple[tuple[str, str], ...]]] = {}
+    for hit in hits:
+        text = hit["text"]
+        blocks: list[list[str]] = []
+        for line in map(str.strip, text.splitlines()):
+            if ANSWER_START.match(line):
+                blocks.append([])
+                break
+            if QUESTION_NO.match(line):
+                blocks.append([_QUESTION_PREFIX.sub("", line, count=1)])
+            elif SECTION_NO.match(line) or line.startswith("#"):
+                blocks.append([])
+            elif blocks and blocks[-1]:
+                blocks[-1].append(line)
+        if hit.get("chunk_type") != "question" or len(text) >= settings.chunk_size:
+            blocks = blocks[:-1]
+        for lines in blocks:
+            block = "\n".join(lines)
+            labels = list(_OPTION_LABEL.finditer(block))
+            if len(labels) < 2:
+                continue
+            stem = _source_text(block[:labels[0].start()])
+            options = tuple(
+                (label[1].translate(_FULLWIDTH_LABELS),
+                 _source_text(block[label.end():next_label.start() if next_label else len(block)]))
+                for label, next_label in zip(labels, [*labels[1:], None])
+            )
+            if stem and all(value for _, value in options):
+                if len({label for label, _ in options}) == len(options):
+                    choices.setdefault(stem, set()).add(options)
+    return choices
+
+
+def _source_text(text: str) -> str:
+    return " ".join(text.split())
+
+
 def _split_counts(total: int, size: int) -> list[int]:
     """把总题数拆成不超过 size 的小批。"""
     out: list[int] = []
@@ -371,6 +421,7 @@ def _gen_batch(
     preserve_options = params.source_mode == "original" and tc.type in (
         QuestionType.single, QuestionType.multiple,
     )
+    source_choices = _source_choices(hits) if preserve_options else {}
     system_prompt = _ORIGINAL_CHOICE_SYSTEM if preserve_options else QUESTION_SYSTEM
     base_messages = [
         {"role": "system", "content": system_prompt},
@@ -379,6 +430,8 @@ def _gen_batch(
             "content": user_prompt
             + f"\n\n【重要】本次生成的每一道题 type 字段必须严格为 {tc.type.value}（{type_label}），不得混入其他题型。"
             + f"\n本次请恰好生成 {count} 道。"
+            + ("\n逐字保留材料题干（去掉题号）和全部选项，以便与原文核对。"
+               if preserve_options else "")
             # 长任务里模型会逐渐忘掉 system 里的格式要求，逐题重申一次最有效
             + "\n【公式格式复述】行内 $...$ 的两个 $ 之间不得换行；"
             "多行推导用 \\begin{aligned}...\\end{aligned} 并以 \\\\ 换行、& 对齐；"
@@ -415,9 +468,18 @@ def _gen_batch(
             questions = []
 
     out: list[Question] = []
+    unverified_options = False
     for q in questions:
         if q.type != tc.type:
             continue  # 题型不符直接丢弃
+        if preserve_options:
+            proposed = tuple(
+                (option.label.translate(_FULLWIDTH_LABELS), _source_text(option.text))
+                for option in q.options
+            )
+            if source_choices.get(_source_text(q.stem)) != {proposed}:
+                unverified_options = True
+                continue
         q.id = f"q-{uuid.uuid4().hex[:10]}"
         q.score = DEFAULT_SCORES.get(tc.type, 5)
         q.difficulty = difficulty
@@ -431,6 +493,8 @@ def _gen_batch(
         out.append(q)
     if out:
         return out
+    if unverified_options:
+        raise OriginalOptionsUnverified(ORIGINAL_OPTIONS_UNVERIFIED)
     summary = last_error.summary if last_error else f"输出中不含任何 {type_label} 对象"
     raise ValueError(
         f"{type_label}生成输出不符合 Schema（{summary}），已带错误重试仍未通过"
@@ -623,6 +687,8 @@ def _gen_for_type(
         if capture_failures:
             if isinstance(error, llm.LLMError):
                 return collected, llm.friendly_error(error)
+            if isinstance(error, OriginalOptionsUnverified):
+                return collected, ORIGINAL_OPTIONS_UNVERIFIED
             if isinstance(error, (ValueError, QuestionOutputError)):
                 return collected, NO_USABLE_CANDIDATES
         if not collected:
