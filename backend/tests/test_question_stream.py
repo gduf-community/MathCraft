@@ -317,6 +317,31 @@ def test_initial_partial_generation_reports_recoverable_group_failures(monkeypat
     )
 
 
+def test_all_model_failed_groups_raise_first_safe_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc",
+        types=[
+            TypeCount(type=QuestionType.blank, count=1),
+            TypeCount(type=QuestionType.single, count=1),
+        ],
+    )
+    on_failure = Mock()
+
+    def stream(messages, **_kwargs):
+        if "为 blank" in messages[-1]["content"]:
+            raise question_gen.llm.LLMError("synthetic timeout with private diagnostic")
+        raise question_gen.llm.LLMError("synthetic rate limit")
+
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    with pytest.raises(question_gen.llm.LLMError, match="^模型响应超时，请稍后重试$"):
+        question_gen.generate_questions(
+            params, "fake.pdf", retrieve_fn=lambda _: [{"text": "fixture context"}],
+            allow_partial=True, on_failure=on_failure,
+        )
+
+    on_failure.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "failure", [ValueError("index unavailable"), RuntimeError("index offline")],
 )

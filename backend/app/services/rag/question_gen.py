@@ -589,7 +589,7 @@ def _gen_for_type(
     cancel_check: Callable[[], None] | None = None,
     allow_partial: bool = False,
     capture_failures: bool = False,
-) -> tuple[list[Question], str | None]:
+) -> tuple[list[Question], str | llm.LLMError | None]:
     """生成单个题型的题目。report(frac, stage) 上报该 agent 的内部完成度（0~1）与阶段文案。
 
     单次模型调用只生成 GEN_BATCH_SIZE 道，多批并发。一次要十道题的输出量会超过模型
@@ -631,6 +631,7 @@ def _gen_for_type(
     collected: list[Question] = []
     taken = set(avoid_norm)
     errors: list[Exception] = []
+    batch_completed = False
     for round_no in range(1 if allow_partial else MAX_FILL_ROUNDS):
         check_cancellation(cancel_check)
         need = tc.count - len(collected)
@@ -670,6 +671,7 @@ def _gen_for_type(
                     check_cancellation(cancel_check)
                     errors.append(exc)
                     continue
+                batch_completed = True
                 for q in batch:
                     norm = _norm_stem(q.stem)
                     if norm in taken:
@@ -690,6 +692,8 @@ def _gen_for_type(
         error = errors[0]
         if capture_failures:
             if isinstance(error, llm.LLMError):
+                if not batch_completed and all(isinstance(exc, llm.LLMError) for exc in errors):
+                    return collected, error
                 return collected, llm.friendly_error(error)
             if isinstance(error, OriginalOptionsUnverified):
                 return collected, ORIGINAL_OPTIONS_UNVERIFIED
@@ -726,6 +730,7 @@ def generate_questions(
     - 去重集合每个 agent 独立副本：不同题型的题干天然不同，无需共享可变状态
     - 原题按题型汇总配额，进入生成前统一检查
     - allow_partial 配合 on_failure 时，按请求顺序报告各组可恢复的生成失败
+    - 所有组的生成调用均因模型错误失败时，抛出首组的安全模型提示
     - cancel_check 在工作边界检查取消，异常在已发起线程全部结束后向调用方传播
     - cancel_check 会被多个线程调用，调用方不得在回调中跨线程复用 SQL Session
     """
@@ -769,7 +774,7 @@ def generate_questions(
 
         return report
 
-    def run_one(idx: int, tc: TypeCount) -> tuple[list[Question], str | None]:
+    def run_one(idx: int, tc: TypeCount) -> tuple[list[Question], str | llm.LLMError | None]:
         check_cancellation(cancel_check)
         result = _gen_for_type(
             tc,
@@ -800,12 +805,17 @@ def generate_questions(
         results = [run_one(0, params.types[0])]
 
     check_cancellation(cancel_check)
+    model_errors = [failure for _, failure in results if isinstance(failure, llm.LLMError)]
+    if len(model_errors) == len(results):
+        raise llm.LLMError(llm.friendly_error(model_errors[0])) from None
+
     out: list[Question] = []
     for tc, (fresh, failure) in zip(params.types, results):
         out.extend(fresh)
         if on_failure is not None and failure is not None:
+            reason = llm.friendly_error(failure) if isinstance(failure, llm.LLMError) else failure
             run_checked(
-                cancel_check, on_failure, tc.type, tc.difficulty or params.difficulty, failure,
+                cancel_check, on_failure, tc.type, tc.difficulty or params.difficulty, reason,
             )
     if progress_cb:
         progress_cb(100, f"题目生成完成（共 {len(out)}/{sum(weights)} 题）")
