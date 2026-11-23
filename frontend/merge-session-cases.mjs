@@ -436,6 +436,7 @@ export async function runGenerationTaskCases({providerCase, settleRender}) {
       h.generation++
       window.remountMerge()
     })
+    await page.waitForFunction(() => window.mergeHarness.restoreAttempts >= 2)
     await summary.getByText('请求 1 道 · 交付 0 道 · 缺额 1 道').waitFor()
     assert.equal(await page.evaluate(() => window.mergeHarness.restoreAttempts), 2)
   })
