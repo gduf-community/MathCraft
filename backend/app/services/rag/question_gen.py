@@ -18,7 +18,6 @@ from collections.abc import Callable
 import json_repair
 from pydantic import ValidationError
 
-from app.config import settings
 from app.schemas.question import (
     Difficulty,
     GenerateParams,
@@ -26,6 +25,7 @@ from app.schemas.question import (
     Question,
     QuestionType,
     TypeCount,
+    normalize_latex,
 )
 from app.services import latex_utils
 from app.services.generation_cancellation import (
@@ -327,7 +327,7 @@ def _source_choices(hits: list[dict]) -> dict[str, set[tuple[tuple[str, str], ..
                 blocks.append([])
             elif blocks and blocks[-1]:
                 blocks[-1].append(line)
-        if hit.get("chunk_type") != "question" or len(text) >= settings.chunk_size:
+        if hit.get("source_boundary") is not True:
             blocks = blocks[:-1]
         for lines in blocks:
             block = "\n".join(lines)
@@ -347,7 +347,7 @@ def _source_choices(hits: list[dict]) -> dict[str, set[tuple[tuple[str, str], ..
 
 
 def _source_text(text: str) -> str:
-    return " ".join(text.split())
+    return " ".join(normalize_latex(text).split())
 
 
 def _split_counts(total: int, size: int) -> list[int]:
@@ -615,6 +615,10 @@ def _gen_for_type(
         if capture_failures:
             return [], NO_USABLE_CANDIDATES
         raise ValueError(f"知识库中没有可参考的内容，请先上传文档（检索「{type_label}」无结果）")
+    if retrieve_fn is None and params.source_mode == "original" and tc.type in (
+        QuestionType.single, QuestionType.multiple,
+    ):
+        hits = run_checked(cancel_check, retrieval.annotate_source_boundaries, hits, params.kb_id)
 
     # 先分摊考点，再并发命题：十道题各自撞同一个考点是去重与重出的主要来源
     if report:

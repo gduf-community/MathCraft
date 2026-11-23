@@ -455,7 +455,7 @@ def test_real_gen_batch_cannot_deliver_fast_model_answer_without_solving(
     source = f"1. {payload['stem']}\nA. 快速模型选项一\nB. 快速模型选项二"
     generated = question_gen._gen_batch(
         tc, params, "fake.pdf", None, 1, [], False, None,
-        [{"text": source, "chunk_type": "question"}], "",
+        [{"text": source, "source_boundary": True}], "",
     )
     result, stats = real_review(db, "fake-user", generated, params, "fake.pdf", None)
     assert result == []

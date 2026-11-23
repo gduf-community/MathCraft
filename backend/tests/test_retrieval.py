@@ -8,9 +8,70 @@ from chromadb.config import Settings
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Document, DocumentChunk
+from app.models import Bank, Document, DocumentChunk
 from app.services.rag import embeddings, fts, rerank, retrieval, vectorstore
 from conftest import create_bank, upload_markdown
+
+
+def test_annotate_source_boundaries_uses_stored_chunk_order_and_scope(
+    client, teacher, db,
+) -> None:
+    bank_id = create_bank(client, teacher)["id"]
+    other_bank_id = create_bank(client, teacher, "其他题库")["id"]
+    uploader_id = db.query(Bank.creator_id).filter_by(id=bank_id).scalar()
+    question = "1. 求导数\nA. 2x\nB. x"
+    cases = [
+        ("options_continue", bank_id, "ready", "question", question, "C. 0\nD. 1", False),
+        ("next_question", bank_id, "ready", "question", question, "2. 求极限", True),
+        ("answer_section", bank_id, "ready", "question", question, "参考答案\n1. A", True),
+        ("overlap", bank_id, "ready", "question", question + "\n2. 求",
+         "2.  求极限\nA. 0", False),
+        ("generic_eof", bank_id, "ready", None, question, None, True),
+        ("generic_continues", bank_id, "ready", "general", question, "2. 求极限", False),
+        ("generic_heading", bank_id, "ready", "general", question, "\n### 极限", True),
+        ("generic_section", bank_id, "ready", "general", question, "二、填空题", True),
+        ("wrong_bank", other_bank_id, "ready", "question", question, None, False),
+        ("unready", bank_id, "embedding", "question", question, None, False),
+        ("invalid_successor", bank_id, "ready", "question", question, "2. 求极限", False),
+    ]
+    hits = []
+    expected = []
+    for document_id, owner_bank, status, chunk_type, content, successor, boundary in cases:
+        db.add(Document(
+            id=document_id, bank_id=owner_bank, name=f"{document_id}.md", format="MD",
+            size_bytes=1, storage_path="unused-test-path", uploader_id=uploader_id,
+            status=status,
+        ))
+        db.flush()
+        chunk_id = f"{document_id}_first"
+        db.add(DocumentChunk(
+            id=chunk_id, bank_id=owner_bank, document_id=document_id, chunk_index=0,
+            chunk_type=chunk_type, text=content, tokens="", char_count=len(content),
+        ))
+        if successor is not None:
+            db.add(DocumentChunk(
+                id=f"{document_id}_next", document_id=document_id, chunk_index=1,
+                bank_id=other_bank_id if document_id == "invalid_successor" else owner_bank,
+                text=successor, tokens="", char_count=len(successor),
+            ))
+        hits.append({"chunk_id": chunk_id, "document_id": document_id, "text": content})
+        expected.append(boundary)
+    db.commit()
+
+    hits += [
+        {"chunk_id": "missing", "source_boundary": True},
+        {**hits[1], "text": "过期索引内容"},
+    ]
+    expected += [False, False]
+    original = [dict(hit) for hit in hits]
+
+    annotated = retrieval.annotate_source_boundaries(hits, bank_id)
+
+    assert annotated == [
+        dict(hit, source_boundary=boundary) for hit, boundary in zip(hits, expected, strict=True)
+    ]
+    assert all(type(hit["source_boundary"]) is bool for hit in annotated)
+    assert hits == original
 
 
 @pytest.fixture()

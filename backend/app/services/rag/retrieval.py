@@ -4,14 +4,18 @@
   dense_top_k=20, sparse_top_k=20, fused_top_k=12, rerank_top_k=6, rrf_k=60
 重排失败降级为融合顺序；稀疏为空只走向量；稠密为空只走稀疏；双空返回空。
 """
-from sqlalchemy import text as sql_text
+import re
+
+from sqlalchemy import bindparam, text as sql_text
 
 from app.config import settings
 from app.db import SessionLocal
 from app.services.rag_runtime import with_snapshot
 from app.services.rag import embeddings, fts, rerank, vectorstore
+from app.services.rag.chunking import ANSWER_START, QUESTION_NO, SECTION_NO
 
 _CHUNK_LOOKUP_BATCH_SIZE = 500
+_MARKDOWN_HEADING = re.compile(r"^#{1,6}[ \t]+\S")
 
 
 def _rrf_fuse(dense_hits: list[dict], sparse_hits: list[tuple[str, float]]) -> list[dict]:
@@ -73,6 +77,75 @@ def _fetch_chunks(
         return chunks
     finally:
         db.close()
+
+
+def _has_source_overlap(current_text: str, next_text: str) -> bool:
+    """检查切片时保留的重叠文本，兼容历史切片长度和边缘空白差异。"""
+    tail = " ".join(current_text.split())
+    head = " ".join(next_text.split())
+    prefix = head[:2]
+    # 单个共同字符不足以区分重叠和相邻题目的正常文本。
+    if len(prefix) < 2:
+        return False
+    start = tail.rfind(prefix)
+    while start != -1:
+        if head.startswith(tail[start:]):
+            return True
+        start = tail.rfind(prefix, 0, start + 1)
+    return False
+
+
+def annotate_source_boundaries(hits: list[dict], bank_id: str) -> list[dict]:
+    """按已发布的同库切片顺序，为每条召回结果标注末题边界。"""
+    annotated = [dict(hit, source_boundary=False) for hit in hits]
+    chunk_ids = list(dict.fromkeys(
+        chunk_id for hit in hits if isinstance(chunk_id := hit.get("chunk_id"), str)
+    ))
+    if not chunk_ids:
+        return annotated
+
+    query = sql_text(
+        "SELECT c.id, c.document_id, c.text, c.chunk_type, n.chunk_index AS next_index, "
+        "CASE WHEN n.bank_id = c.bank_id THEN n.text END AS next_text "
+        "FROM document_chunks c JOIN documents d ON d.id = c.document_id "
+        "AND d.bank_id = c.bank_id "
+        "LEFT JOIN document_chunks n ON n.document_id = c.document_id "
+        "AND n.chunk_index = ("
+        "    SELECT MIN(s.chunk_index) FROM document_chunks s "
+        "    WHERE s.document_id = c.document_id AND s.chunk_index > c.chunk_index"
+        ") "
+        "WHERE c.id IN :chunk_ids AND c.bank_id = :bank_id AND d.status = 'ready'"
+    ).bindparams(bindparam("chunk_ids", expanding=True))
+
+    boundaries: dict[str, tuple[str, str]] = {}
+    with SessionLocal() as db:
+        for start in range(0, len(chunk_ids), _CHUNK_LOOKUP_BATCH_SIZE):
+            batch = chunk_ids[start:start + _CHUNK_LOOKUP_BATCH_SIZE]
+            rows = db.execute(query, {"chunk_ids": batch, "bank_id": bank_id})
+            for chunk_id, document_id, text, chunk_type, next_index, next_text in rows:
+                if next_index is None:
+                    boundaries[chunk_id] = (document_id, text)
+                elif next_text and next_text.strip():
+                    head = next_text.lstrip().splitlines()[0]
+                    section_start = (
+                        SECTION_NO.match(head) or ANSWER_START.match(head)
+                        or _MARKDOWN_HEADING.match(head)
+                    )
+                    question_start = chunk_type == "question" and QUESTION_NO.match(head)
+                    if (section_start or question_start) and not _has_source_overlap(
+                        text, next_text,
+                    ):
+                        boundaries[chunk_id] = (document_id, text)
+
+    for hit in annotated:
+        chunk_id = hit.get("chunk_id")
+        if isinstance(chunk_id, str) and chunk_id in boundaries:
+            document_id, text = boundaries[chunk_id]
+            hit["source_boundary"] = (
+                hit.get("document_id", document_id) == document_id
+                and hit.get("text", text) == text
+            )
+    return annotated
 
 
 def dense_search(

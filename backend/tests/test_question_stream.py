@@ -209,22 +209,23 @@ def test_original_choice_keeps_material_options_in_order(monkeypatch, kind):
     monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
     question, = question_gen._gen_batch(
         tc, params, "fake.pdf", None, 1, [], False, None,
-        [{"chunk_type": "question", "text": "1. 以下哪些式子含有 x？\nB. $x^2$\nA. $x$"}],
+        [{"source_boundary": True, "text": "1. 以下哪些式子含有 x？\nB. $x^2$\nA. $x$"}],
         "",
     )
     assert [option.model_dump() for option in question.options] == options
     assert question.answer == question.analysis == ""
 
 
-@pytest.mark.parametrize("source_kind", ["question", "general"])
+@pytest.mark.parametrize("boundary", ["chunk_end", "next_question"])
 @pytest.mark.parametrize("change", ["omit", "replace", "reorder", "complete"])
-def test_original_choice_requires_complete_matching_material(monkeypatch, source_kind, change):
+def test_original_choice_requires_complete_matching_material(monkeypatch, boundary, change):
     tc = TypeCount(type=QuestionType.single, count=1)
     params = GenerateParams(
         kb_id="fake-bank", doc_id="fake-doc", types=[tc], source_mode="original",
     )
     stem = "求 x+1=2 的解"
     original = [{"label": label, "text": str(i)} for i, label in enumerate("ABCD", 1)]
+    original[0]["text"] = "$1$"
     options = {
         "omit": original[:2],
         "replace": [*original[:3], {"label": "D", "text": "5"}],
@@ -235,10 +236,10 @@ def test_original_choice_requires_complete_matching_material(monkeypatch, source
     def stream(*_args, **_kwargs):
         yield json.dumps({"questions": [{"type": "single", "stem": stem, "options": options}]})
 
-    source = f"1. {stem}\nA. 1 B. 2 C. 3 D. 4"
-    if source_kind == "general":
+    source = f"1. {stem}\n" + r"A. \(1\) B. 2 C. 3 D. 4"
+    if boundary == "next_question":
         source += "\n2. 求另一个方程的解"
-    hits = [{"text": source, "chunk_type": source_kind}]
+    hits = [{"text": source, "source_boundary": boundary == "chunk_end"}]
     monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
     monkeypatch.setattr(question_gen, "count_available_originals", lambda *_args: None)
     events = []
@@ -255,6 +256,26 @@ def test_original_choice_requires_complete_matching_material(monkeypatch, source
         assert events == [
             (QuestionType.single, params.difficulty, question_gen.ORIGINAL_OPTIONS_UNVERIFIED),
         ]
+
+
+def test_truncated_original_choice_does_not_certify_its_last_question(monkeypatch):
+    stem = "求 x+1=2 的解"
+    tc = TypeCount(type=QuestionType.single, count=1)
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=[tc], source_mode="original",
+    )
+
+    def stream(*_args, **_kwargs):
+        yield json.dumps({"questions": [{"type": "single", "stem": stem, "options": [
+            {"label": "A", "text": "1"}, {"label": "B", "text": "2"},
+        ]}]})
+
+    monkeypatch.setattr(question_gen.llm, "chat_stream", stream)
+    with pytest.raises(question_gen.OriginalOptionsUnverified):
+        question_gen._gen_batch(
+            tc, params, "fake.pdf", None, 1, [], False, None,
+            [{"text": f"1. {stem}\nA. 1 B. 2", "chunk_type": "question"}], "",
+        )
 
 
 @pytest.mark.parametrize("all_fail", [False, True])
