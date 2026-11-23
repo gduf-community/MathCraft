@@ -36,7 +36,7 @@ from app.services.generation_cancellation import (
 )
 from app.services.rag import retrieval, vectorstore
 from app.services.rag import llm
-from app.services.rag.chunking import ANSWER_START, QUESTION_NO, SECTION_NO
+from app.services.rag.chunking import ANSWER_START, SECTION_NO, SOURCE_QUESTION_NO
 from app.services.rag.prompts import QUESTION_SYSTEM, QUESTION_USER_TEMPLATE
 
 ProgressCB = Callable[[int, str], None]
@@ -321,7 +321,7 @@ def _source_choices(hits: list[dict]) -> dict[str, set[tuple[tuple[str, str], ..
             if ANSWER_START.match(line):
                 blocks.append([])
                 break
-            if QUESTION_NO.match(line):
+            if SOURCE_QUESTION_NO.match(line):
                 blocks.append([_QUESTION_PREFIX.sub("", line, count=1)])
             elif SECTION_NO.match(line) or line.startswith("#"):
                 blocks.append([])

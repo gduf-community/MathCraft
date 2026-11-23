@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.services.rag_runtime import with_snapshot
 from app.services.rag import embeddings, fts, rerank, vectorstore
-from app.services.rag.chunking import ANSWER_START, QUESTION_NO, SECTION_NO
+from app.services.rag.chunking import ANSWER_START, SECTION_NO, SOURCE_QUESTION_NO
 
 _CHUNK_LOOKUP_BATCH_SIZE = 500
 _MARKDOWN_HEADING = re.compile(r"^#{1,6}[ \t]+\S")
@@ -83,9 +83,9 @@ def _has_source_overlap(current_text: str, next_text: str) -> bool:
     """检查切片时保留的重叠文本，兼容历史切片长度和边缘空白差异。"""
     tail = " ".join(current_text.split())
     head = " ".join(next_text.split())
-    prefix = head[:2]
-    # 单个共同字符不足以区分重叠和相邻题目的正常文本。
-    if len(prefix) < 2:
+    prefix = head[:3]
+    # 两个字符可能只是上一题末尾恰好出现了下一题的题号。
+    if len(prefix) < 3:
         return False
     start = tail.rfind(prefix)
     while start != -1:
@@ -131,7 +131,7 @@ def annotate_source_boundaries(hits: list[dict], bank_id: str) -> list[dict]:
                         SECTION_NO.match(head) or ANSWER_START.match(head)
                         or _MARKDOWN_HEADING.match(head)
                     )
-                    question_start = chunk_type == "question" and QUESTION_NO.match(head)
+                    question_start = chunk_type == "question" and SOURCE_QUESTION_NO.match(head)
                     if (section_start or question_start) and not _has_source_overlap(
                         text, next_text,
                     ):

@@ -22,7 +22,10 @@ def test_annotate_source_boundaries_uses_stored_chunk_order_and_scope(
     question = "1. 求导数\nA. 2x\nB. x"
     cases = [
         ("options_continue", bank_id, "ready", "question", question, "C. 0\nD. 1", False),
+        ("decimal_continues", bank_id, "ready", "question", question, "2.5\nC. 0\nD. 1", False),
         ("next_question", bank_id, "ready", "question", question, "2. 求极限", True),
+        ("repeated_number", bank_id, "ready", "question", question + "\nD. 2.",
+         "2. 求极限", True),
         ("answer_section", bank_id, "ready", "question", question, "参考答案\n1. A", True),
         ("overlap", bank_id, "ready", "question", question + "\n2. 求",
          "2.  求极限\nA. 0", False),

@@ -20,6 +20,7 @@ from app.services.parsing.base import ParsedBlock
 
 # 匹配 1. 2、3．4， 这类题号行首
 QUESTION_NO = re.compile(r"^\s{0,4}\d{1,3}\s*[\.、．]\s*\S")
+SOURCE_QUESTION_NO = re.compile(r"^\s{0,4}\d{1,3}\s*(?:[.．](?!\d)|、)\s*\S")
 # 大题标题：一、单项选择题（共 15 题）
 SECTION_NO = re.compile(r"^\s{0,4}[一二三四五六七八九十]{1,3}\s*[、.．]\s*\S")
 ANSWER_START = re.compile(r"^\s*参考答案")
