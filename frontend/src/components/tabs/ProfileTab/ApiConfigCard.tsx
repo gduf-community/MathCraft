@@ -3,13 +3,13 @@
  * 供眼睛图标在本机回显；服务端接口只返回掩码，不回传完整凭据。 */
 import { Eraser, HelpCircle, Info, Loader2, Save } from 'lucide-react'
 import { Eye, EyeOff } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { saveModelSettings, testDeepSeek, testMinerU } from '../../../api/backend'
 import { useAuth } from '../../../store/AuthContext'
 import { useApp } from '../../../store/AppContext'
 
 type Service = 'deepseek' | 'mineru'
-type Busy = `${Service}-save` | `${Service}-test` | null
+type Busy = `${Service}-save` | 'base-url-save' | `${Service}-test` | null
 
 const KEY_STORE = 'mathcraft-personal-keys'
 
@@ -192,12 +192,16 @@ function ApiKeyRow({ label, placeholder, hint, service, configured, masked, savi
 export function ApiConfigCard() {
   const { modelSettings, refreshModelSettings, showToast } = useApp()
   const [busy, setBusy] = useState<Busy>(null)
+  const [baseUrl, setBaseUrl] = useState('')
+  const [baseUrlDraft, setBaseUrlDraft] = useState('')
 
   const save = async (service: Service, value: string) => {
     if (busy) return
     setBusy(`${service}-save`)
     try {
-      await saveModelSettings(service === 'deepseek' ? { deepseek_api_key: value } : { mineru_token: value })
+      await saveModelSettings(service === 'deepseek'
+        ? { deepseek_api_key: value, ...(baseUrlDraft.trim() ? { deepseek_base_url: baseUrlDraft.trim() } : {}) }
+        : { mineru_token: value })
       await refreshModelSettings()
       showToast(service === 'deepseek' ? '校内 DeepSeek Key 已保存' : 'OCR-MinerU Key 已保存', 'success')
     } catch (error) {
@@ -211,7 +215,7 @@ export function ApiConfigCard() {
     if (busy) return
     setBusy(`${service}-test`)
     try {
-      if (service === 'deepseek') await testDeepSeek(value)
+      if (service === 'deepseek') await testDeepSeek(value, baseUrlDraft.trim() || baseUrl || undefined)
       else await testMinerU(value)
       showToast(service === 'deepseek'
         ? '校内 DeepSeek 连接成功'
@@ -224,6 +228,29 @@ export function ApiConfigCard() {
   }
 
   const loading = modelSettings === null
+
+  useEffect(() => {
+    if (modelSettings) {
+      const savedBaseUrl = modelSettings.deepseek_base_url ?? ''
+      setBaseUrl(savedBaseUrl)
+      setBaseUrlDraft(savedBaseUrl)
+    }
+  }, [modelSettings])
+
+  const saveBaseUrl = async () => {
+    if (busy) return
+    setBusy('base-url-save')
+    try {
+      await saveModelSettings({ deepseek_base_url: baseUrlDraft.trim() })
+      setBaseUrl(baseUrlDraft.trim())
+      await refreshModelSettings()
+      showToast('DeepSeek Base URL 已保存', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Base URL 保存失败，请检查地址', 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
 
   return (
     <div className="mb-4 rounded-xl border border-line/70 bg-white p-5 shadow-[0_4px_16px_rgba(30,90,180,0.05)]">
@@ -238,11 +265,40 @@ export function ApiConfigCard() {
         </p>
       ) : (
         <div className="space-y-5">
+          <div>
+            <div className="flex items-center gap-3">
+              <label htmlFor="deepseek-base-url" className="flex w-40 shrink-0 items-center gap-1 whitespace-nowrap text-sm font-medium text-ink">
+                DeepSeek Base URL
+                <HelpCircle size={13} className="shrink-0 text-ink-3" />
+              </label>
+              <input
+                id="deepseek-base-url"
+                value={baseUrlDraft}
+                onChange={(event) => setBaseUrlDraft(event.target.value)}
+                placeholder="https://api.deepseek.com/v1"
+                autoComplete="url"
+                className="block min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-primary"
+                disabled={busy !== null}
+              />
+              <button
+                type="button"
+                onClick={() => void saveBaseUrl()}
+                disabled={busy !== null || baseUrlDraft.trim() === baseUrl}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#1a5fe6] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {busy === 'base-url-save' ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                保存
+              </button>
+            </div>
+            <p className="mb-1 mt-1.5 pl-[172px] text-xs text-ink-3">
+              留空沿用平台默认地址。自部署服务请填写 OpenAI 兼容接口的 Base URL，例如 https://newapi.ai.gduf.top/v1。
+            </p>
+          </div>
           <ApiKeyRow
             label="校内 DeepSeek Key"
             service="deepseek"
             placeholder="请输入您的校内 DeepSeek Key"
-            hint="用于调用校内部署的 DeepSeek 服务（newapi.ai.gduf.top），请妥善保管您的 Key"
+            hint="用于调用您配置的 DeepSeek 服务，请确认 Base URL 与 Key 属于同一服务"
             configured={modelSettings.deepseek_key_configured}
             masked={modelSettings.deepseek_key_masked}
             saving={busy === 'deepseek-save'}

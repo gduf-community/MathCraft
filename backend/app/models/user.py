@@ -41,6 +41,7 @@ class UserModelSetting(Base):
         String(40), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     deepseek_api_key: Mapped[Optional[str]] = mapped_column(String(128))
+    deepseek_base_url: Mapped[Optional[str]] = mapped_column(String(512))
     mineru_token: Mapped[Optional[str]] = mapped_column(String(128))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),

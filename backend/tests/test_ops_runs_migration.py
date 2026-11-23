@@ -17,7 +17,7 @@ from app.models.ops_run import RunEntrypoint
 from app.services.ops_runs import RunLedger
 
 PREVIOUS = "m8f9a0b12345"
-HEAD = "n9a0b1c23456"
+OPS_REVISION = "n9a0b1c23456"
 NOW = datetime(2026, 11, 13, tzinfo=timezone.utc)
 
 
@@ -72,13 +72,14 @@ def test_upgrade_preserves_all_existing_tables_rows_and_does_not_backfill(histor
     config, engine, _sessions = historical_database
     before = historical_rows(engine)
     directory = ScriptDirectory.from_config(config)
-    assert directory.get_current_head() == "q2d3e4f56789"
-    assert directory.get_revision(HEAD).down_revision == PREVIOUS
-    command.upgrade(config, HEAD)
+    assert directory.get_revision(OPS_REVISION).down_revision == PREVIOUS
+    command.upgrade(config, OPS_REVISION)
     assert historical_rows(engine) == before
     with engine.connect() as connection:
         assert connection.execute(select(OpsRun)).all() == []
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == HEAD
+        assert connection.execute(text(
+            "SELECT version_num FROM alembic_version"
+        )).scalars().all() == [OPS_REVISION]
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     command.downgrade(config, PREVIOUS)
     assert "ops_runs" not in inspect(engine).get_table_names()
@@ -87,7 +88,7 @@ def test_upgrade_preserves_all_existing_tables_rows_and_does_not_backfill(histor
 
 def test_nonempty_ledger_downgrade_preserves_history_and_revision(historical_database):
     config, engine, sessions = historical_database
-    command.upgrade(config, HEAD)
+    command.upgrade(config, OPS_REVISION)
     run_id = RunLedger(sessions).accept(entrypoint=RunEntrypoint.PARAMETERIZED,
                                         owner_user_id="u_owner", bank_id="bank_old",
                                         document_id="doc_old", requested_count=1)
@@ -97,12 +98,12 @@ def test_nonempty_ledger_downgrade_preserves_history_and_revision(historical_dat
     assert historical_rows(engine) == before
     with sessions() as db:
         assert db.get(OpsRun, run_id).status == "accepted"
-        assert db.execute(text("SELECT version_num FROM alembic_version")).scalar() == HEAD
+        assert db.execute(text("SELECT version_num FROM alembic_version")).scalar() == OPS_REVISION
 
 
-def test_migration_and_orm_metadata_have_matching_storage_contract(historical_database):
+def test_head_and_orm_metadata_have_matching_storage_contract(historical_database):
     config, engine, _sessions = historical_database
-    command.upgrade(config, HEAD)
+    command.upgrade(config, "head")
     inspector = inspect(engine)
     actual_columns = inspector.get_columns("ops_runs")
     expected = OpsRun.__table__
@@ -127,7 +128,7 @@ def test_migration_and_orm_metadata_have_matching_storage_contract(historical_da
 
 def test_database_rejects_invalid_fields_and_state_shapes(historical_database):
     config, engine, _sessions = historical_database
-    command.upgrade(config, HEAD)
+    command.upgrade(config, OPS_REVISION)
     base = dict(run_id="run_invalid", entrypoint="parameterized", owner_user_id="u_owner",
                 bank_id="bank_old", document_id="doc_old", status="accepted", requested_count=2,
                 accepted_at=NOW, last_observed_at=NOW)

@@ -370,6 +370,39 @@ def test_test_deepseek_with_key(client, teacher):
     assert resp.json()["ok"] is True
 
 
+def test_personal_deepseek_url_probe_requires_personal_key(
+    client: TestClient, teacher: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人地址只能接收当前用户提供或保存的密钥。"""
+    monkeypatch.setattr(
+        llm, "get_platform_llm",
+        lambda: ("fake-platform-key", "https://platform.example.test/v1", "fake-model"),
+    )
+    requests: list[tuple[str, str, str]] = []
+
+    def fake_chat_text(messages, *, api_key, temperature, max_tokens):
+        requests.append(llm.resolve_runtime(api_key))
+        return "Pong"
+
+    monkeypatch.setattr(llm, "chat_text", fake_chat_text)
+    settings_path = "/api/users/me/model-settings"
+    probe_path = f"{settings_path}/test-deepseek"
+    base_url = "https://personal.example.test/v1"
+    denied = client.post(probe_path, headers=teacher, json={"deepseek_base_url": base_url})
+    assert denied.status_code == 400
+    assert denied.json()["detail"]["code"] == "DEEPSEEK_KEY_MISSING"
+    assert requests == []
+
+    saved = client.put(settings_path, headers=teacher, json={
+        "deepseek_api_key": "fake-personal-key",
+        "deepseek_base_url": f" {base_url}/ ",
+    })
+    assert saved.status_code == 200
+    assert client.get(settings_path, headers=teacher).json()["deepseek_base_url"] == base_url
+    assert client.post(probe_path, headers=teacher).status_code == 200
+    assert requests == [("fake-personal-key", base_url, "fake-model")]
+
+
 def test_test_deepseek_prefers_provided_key(client, teacher, monkeypatch):
     """body 提供输入值时连接测试优先使用该值，不落库。"""
     captured: dict[str, str] = {}

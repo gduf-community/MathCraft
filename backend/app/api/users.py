@@ -21,7 +21,8 @@ from app.services import auth as auth_service
 from app.services import auth_codes
 from app.schemas.user import EmailChangeResult, UserPayload, UserUpdateBody
 from app.services.model_settings import (
-    get_effective_mineru_token, get_setting, mask, require_deepseek_key, user_payload,
+    get_effective_mineru_token, get_setting, mask, require_deepseek_key,
+    user_payload, validate_deepseek_base_url,
 )
 from app.services.rag_runtime import current_snapshot
 
@@ -100,6 +101,7 @@ def read_model_settings(user: User = Depends(get_current_user), db: Session = De
         "deepseek_model_id": settings.deepseek_model,
         "deepseek_key_configured": bool(row.deepseek_api_key),
         "deepseek_key_masked": mask(row.deepseek_api_key),
+        "deepseek_base_url": row.deepseek_base_url or "",
         "mineru_token_configured": bool(row.mineru_token),
         "mineru_token_masked": mask(row.mineru_token),
         "mineru_using_default": not row.mineru_token and bool(get_effective_mineru_token(db, user.id)),
@@ -120,6 +122,11 @@ def save_model_settings(
     row = get_setting(db, user.id)
     if body.deepseek_api_key is not None:
         row.deepseek_api_key = body.deepseek_api_key.strip() or None
+    if body.deepseek_base_url is not None:
+        row.deepseek_base_url = (
+            validate_deepseek_base_url(body.deepseek_base_url)
+            if body.deepseek_base_url.strip() else None
+        )
     if body.mineru_token is not None:
         row.mineru_token = body.mineru_token.strip() or None
     db.commit()
@@ -137,6 +144,18 @@ def test_deepseek(
 
     provided = (body.deepseek_api_key or "").strip() if body else ""
     key = provided or require_deepseek_key(db, user.id)
+    if body and body.deepseek_base_url and body.deepseek_base_url.strip():
+        base_url = validate_deepseek_base_url(body.deepseek_base_url)
+        runtime = llm.resolve_llm_runtime(key)
+        if runtime.source != "personal":
+            raise AppError(
+                "DEEPSEEK_KEY_MISSING",
+                "测试个人 DeepSeek Base URL 需要提供或保存个人 API Key",
+                status_code=400,
+            )
+        key = llm.ResolvedApiKey(
+            llm.LlmRuntime(runtime.api_key, base_url, runtime.model, runtime.source)
+        )
     db.rollback()
     try:
         reply = llm.chat_text(

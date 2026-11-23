@@ -107,6 +107,7 @@ class UserNoBody(AuthBody):
 class ModelSettingsBody(BaseModel):
     # None = 不修改；空字符串 = 清除
     deepseek_api_key: str | None = Field(default=None, max_length=128)
+    deepseek_base_url: str | None = Field(default=None, max_length=512)
     mineru_token: str | None = Field(default=None, max_length=128)
 
 
@@ -114,6 +115,7 @@ class ModelTestBody(BaseModel):
     """连接测试的可选输入值；提供时优先测试该值，不落库。"""
 
     deepseek_api_key: str | None = Field(default=None, max_length=128)
+    deepseek_base_url: str | None = Field(default=None, max_length=512)
     mineru_token: str | None = Field(default=None, max_length=128)
 
 

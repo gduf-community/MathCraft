@@ -1,4 +1,6 @@
 """按用户的模型配置：DeepSeek 密钥与 MinerU Token 的读取、掩码与生效值。"""
+from urllib.parse import urlsplit
+
 from sqlalchemy.orm import Session
 
 from app import local_secrets
@@ -21,12 +23,39 @@ def get_setting(db: Session, user_id: str) -> UserModelSetting:
 def get_effective_llm_runtime(db: Session, user_id: str) -> LlmRuntime:
     """读取个人配置并一次解析完整运行快照，不提交或释放调用者事务。"""
     row = db.get(UserModelSetting, user_id)
-    return resolve_llm_runtime(row.deepseek_api_key if row else None)
+    if row and row.deepseek_api_key:
+        runtime = resolve_llm_runtime(row.deepseek_api_key)
+        base_url = getattr(row, "deepseek_base_url", None)
+        if base_url:
+            return LlmRuntime(
+                runtime.api_key, base_url, runtime.model, "personal",
+            )
+        return runtime
+    return resolve_llm_runtime(None)
 
 
 def get_effective_deepseek_key(db: Session, user_id: str) -> str:
     """兼容旧调用链的字符串参数，完整凭据及来源仅附于内存对象。"""
     return ResolvedApiKey(get_effective_llm_runtime(db, user_id))
+
+
+def validate_deepseek_base_url(value: str) -> str:
+    """校验个人模型服务地址，禁止把凭据放入 URL。"""
+    normalized = value.strip().rstrip("/")
+    try:
+        parts = urlsplit(normalized)
+        _ = parts.port
+    except ValueError as exc:
+        raise AppError("INVALID_MODEL_BASE_URL", "DeepSeek Base URL 的地址格式无效", 422) from exc
+    if (parts.scheme not in ("http", "https") or not parts.hostname
+            or parts.username is not None or parts.password is not None
+            or parts.query or parts.fragment or any(char.isspace() for char in normalized)):
+        raise AppError(
+            "INVALID_MODEL_BASE_URL",
+            "DeepSeek Base URL 必须是完整的 HTTP(S) 地址，不能包含账号、密码、查询参数或片段",
+            422,
+        )
+    return normalized
 
 
 def get_effective_mineru_token(db: Session, user_id: str) -> str:

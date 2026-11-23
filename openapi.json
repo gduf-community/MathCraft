@@ -10501,6 +10501,18 @@
             ],
             "title": "Deepseek Api Key"
           },
+          "deepseek_base_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deepseek Base Url"
+          },
           "mineru_token": {
             "anyOf": [
               {
@@ -10530,6 +10542,18 @@
               }
             ],
             "title": "Deepseek Api Key"
+          },
+          "deepseek_base_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deepseek Base Url"
           },
           "mineru_token": {
             "anyOf": [

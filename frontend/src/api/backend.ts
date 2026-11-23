@@ -1015,6 +1015,7 @@ export interface ModelSettings {
   deepseek_model_id: string
   deepseek_key_configured: boolean
   deepseek_key_masked: string | null
+  deepseek_base_url: string
   mineru_token_configured: boolean
   mineru_token_masked: string | null
   mineru_using_default: boolean
@@ -1031,6 +1032,7 @@ export async function getModelSettings(): Promise<ModelSettings> {
 
 export async function saveModelSettings(payload: {
   deepseek_api_key?: string
+  deepseek_base_url?: string
   mineru_token?: string
 }): Promise<void> {
   await request<void>('/api/users/me/model-settings', {
@@ -1039,10 +1041,13 @@ export async function saveModelSettings(payload: {
   })
 }
 
-export async function testDeepSeek(key?: string): Promise<void> {
+export async function testDeepSeek(key?: string, baseUrl?: string): Promise<void> {
   await request<void>('/api/users/me/model-settings/test-deepseek', {
     method: 'POST',
-    body: JSON.stringify(key ? { deepseek_api_key: key } : {}),
+    body: JSON.stringify({
+      ...(key ? { deepseek_api_key: key } : {}),
+      ...(baseUrl ? { deepseek_base_url: baseUrl } : {}),
+    }),
   })
 }
 
