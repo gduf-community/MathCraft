@@ -75,3 +75,6 @@ __pycache__/
 
 # 本地 skill 产物
 /GLOSSARY.md
+
+# Chroma 与 SQLite 使用的本地临时目录
+/data/tmp/
