@@ -83,9 +83,8 @@ def _has_source_overlap(current_text: str, next_text: str) -> bool:
     """检查切片时保留的重叠文本，兼容历史切片长度和边缘空白差异。"""
     tail = " ".join(current_text.split())
     head = " ".join(next_text.split())
-    prefix = head[:3]
-    # 两个字符可能只是上一题末尾恰好出现了下一题的题号。
-    if len(prefix) < 3:
+    prefix = head[:2]
+    if len(prefix) < 2:
         return False
     start = tail.rfind(prefix)
     while start != -1:
