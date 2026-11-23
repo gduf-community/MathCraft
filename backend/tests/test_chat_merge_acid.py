@@ -36,7 +36,7 @@ def test_refill_uses_per_type_deficits_cumulative_stems_stats_and_percentages():
         reviewed.append(({item.type: item.count for item in review_params.types}, list(stems)))
         return pool, question_review.ReviewStats(duplicates=1, repaired=2, solved=len(pool))
 
-    def generate(refill_params, stems, progress):
+    def generate(refill_params, stems, progress, on_failure):
         calls.append((refill_params, list(stems)))
         for percent in (0, 50, 100):
             progress(percent, "补齐")

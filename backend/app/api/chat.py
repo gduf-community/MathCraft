@@ -619,14 +619,14 @@ def _run_message(
             if result["slot_state"].get("image_note"):
                 directive += f"\n参考图片的题型说明：{result['slot_state']['image_note']}"
 
-        def gen_fn(refill_params, stems, report):
+        def gen_fn(refill_params, stems, report, on_failure):
             return question_gen.generate_questions(
                 refill_params, doc_name, scope=refill_params.scope,
                 mixed_difficulty=bool(result["slot_state"].get("mixed_difficulty")),
                 difficulty_note=str(result["slot_state"].get("difficulty_note") or ""),
                 existing_stems=stems, api_key=api_key, hyde_text=hyde_text,
                 directive=directive, progress_cb=report, cancel_check=check_canceled,
-                allow_partial=True,
+                allow_partial=True, on_failure=on_failure,
             )
 
         try:

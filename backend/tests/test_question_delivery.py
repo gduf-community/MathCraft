@@ -21,7 +21,7 @@ def test_three_refill_rounds_report_zero_delivery_and_all_candidate_rejections()
     )
     refill_requests = []
 
-    def generate(refill_params, stems, progress):
+    def generate(refill_params, stems, progress, on_failure):
         group, = refill_params.types
         refill_requests.append((group.type, group.difficulty, group.count))
         return [_candidate(f"补题 {len(refill_requests)}", kind, difficulty)]
@@ -58,7 +58,7 @@ def test_same_type_difficulty_tiers_have_independent_quotas():
     high = _candidate("高档补题", kind, Difficulty.high)
     refill_requests = []
 
-    def generate(refill_params, stems, progress):
+    def generate(refill_params, stems, progress, on_failure):
         group, = refill_params.types
         refill_requests.append((group.type, group.difficulty, group.count))
         return [high]
@@ -86,7 +86,7 @@ def test_original_shortage_during_refill_preserves_other_group_delivery():
     blank = _candidate("材料填空题", QuestionType.blank, difficulty)
     refill_requests = []
 
-    def generate(refill_params, stems, progress):
+    def generate(refill_params, stems, progress, on_failure):
         group, = refill_params.types
         refill_requests.append(group.type)
         if group.type == QuestionType.single:
@@ -129,7 +129,7 @@ def test_empty_first_round_enters_refill_and_retains_initial_events():
     candidate = _candidate("补回的单选题", *single)
     refill_requests = []
 
-    def generate(refill_params, stems, progress):
+    def generate(refill_params, stems, progress, on_failure):
         group, = refill_params.types
         key = (group.type, group.difficulty)
         refill_requests.append(key)
@@ -148,3 +148,22 @@ def test_empty_first_round_enters_refill_and_retains_initial_events():
         (0, 1, {"首轮候选产出不足": 1, failure: 4}),
     ]
     assert initial_events == {single: Counter({failure: 1}), blank: Counter({failure: 1})}
+
+
+def test_partial_refill_reports_failure_and_keeps_candidate():
+    kind, tier = QuestionType.single, Difficulty.mid
+    params = GenerateParams(
+        kb_id="fake-bank", doc_id="fake-doc", types=[TypeCount(type=kind, count=2)],
+    )
+    candidate = _candidate("保留下来的候选", kind, tier)
+    failure = "模型响应超时，请稍后重试"
+
+    def generate(_params, _stems, _progress, on_failure):
+        on_failure(kind, tier, failure)
+        return [candidate]
+
+    accepted, _, groups = review_with_refill([], params, 2, [], _accept, generate)
+    assert accepted == [candidate]
+    group, = groups
+    assert group.missing == 1
+    assert group.generation_events[failure] == 3

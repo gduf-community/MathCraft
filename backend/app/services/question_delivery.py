@@ -10,6 +10,7 @@ from app.services.question_review import ReviewStats, _norm
 from app.services.rag import llm
 from app.services.rag.question_gen import (
     NO_USABLE_CANDIDATES,
+    FailureCB,
     NeedConfirmError,
     QuestionOutputError,
 )
@@ -33,7 +34,7 @@ def review_with_refill(
     requested: int,
     existing_stems: list[str] | None,
     review_fn: Reviewer,
-    gen_fn: Callable[[GenerateParams, list[str], Progress], list[Question]],
+    gen_fn: Callable[[GenerateParams, list[str], Progress, FailureCB], list[Question]],
     progress_cb: Progress | None = None,
     cancel_check: Callable[[], None] | None = None,
     *,
@@ -74,6 +75,9 @@ def review_with_refill(
     def remaining() -> dict[GroupKey, int]:
         return {key: count - delivered[key] for key, count in quota.items()
                 if count > delivered[key]}
+
+    def record_failure(kind: QuestionType, difficulty: Difficulty, reason: str) -> None:
+        events[kind, difficulty][reason] += 1
 
     def type_counts(key: GroupKey, count: int) -> list[TypeCount]:
         kind, difficulty = key
@@ -122,7 +126,7 @@ def review_with_refill(
             for item in type_counts(key, count):
                 check_cancellation(cancel_check)
                 try:
-                    fresh = gen_fn(round_params([item]), list(avoid), refill_progress)
+                    fresh = gen_fn(round_params([item]), list(avoid), refill_progress, record_failure)
                 except NeedConfirmError:
                     events[key]["可用原题不足"] += 1
                     continue

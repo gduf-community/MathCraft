@@ -460,8 +460,12 @@ def test_real_gen_batch_cannot_deliver_fast_model_answer_without_solving(
     assert stats.solved == 0
     assert stream_calls == [1] and solve_calls == [1, 1]
     assert generated[0].answer == generated[0].analysis == ""
-    expected = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
-    assert generated[0].options == (expected if qtype == QuestionType.judge else [])
+    expected = []
+    if qtype == QuestionType.judge:
+        expected = [OptionItem(label="A", text="正确"), OptionItem(label="B", text="错误")]
+    elif source_mode == "original" and qtype in (QuestionType.single, QuestionType.multiple):
+        expected = [OptionItem.model_validate(option) for option in payload["options"]]
+    assert generated[0].options == expected
 
 
 def test_original_existing_question_is_rejected_after_failed_solve(db, monkeypatch):
@@ -882,6 +886,8 @@ def test_false_judgment_is_a_valid_solution(db, monkeypatch):
 
 @pytest.mark.parametrize("qtype, solved, texts, answer, accepted", [
     (QuestionType.single, "12", ["12", "2"], "B", False),
+    (QuestionType.single, r"P\leftarrow Q", [r"Q\rightarrow P", r"P\rightarrow Q"], "B", False),
+    (QuestionType.single, r"P\leftarrow Q", [r"P\leftarrow Q", r"P\rightarrow Q"], "A", True),
     (QuestionType.multiple, ["2", "3"], ["2", "3", "13", "5"], "AC", False),
     (QuestionType.multiple, ["3", "$2$"], ["2", "3", "13", "5"], "BA", True),
     (QuestionType.judge, "错误", ["正确", "错误"], "A", False),
@@ -918,6 +924,21 @@ def test_candidate_requires_exact_selected_answer_texts(
     else:
         assert len(repair_prompts) == 1 and "独立求解" in repair_prompts[0]
         assert stats.rejections == {(qtype, Difficulty.low): {"答案不成立": 1}}
+
+
+def test_original_choice_without_source_options_is_rejected_before_solving(db, monkeypatch):
+    question = Question(type=QuestionType.single, stem="求方程 $x+1=2$ 的解。")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("原题缺少选项时不应重新生成选项")
+
+    monkeypatch.setattr(question_review.llm, "chat_json", unexpected)
+    key = (question.type, question.difficulty)
+    result, stats = real_review(
+        db, "u", [question], _candidate_params(key, source_mode="original"), "doc.md", None,
+    )
+    assert not result
+    assert stats.rejections == {key: {"原题选项缺失": 1}}
 
 
 @pytest.mark.parametrize("has_defect", [True, False])

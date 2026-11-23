@@ -29,7 +29,7 @@ from app.services.ops_runs import RunLedger
 from app.services.phoenix_tracing import trace_run
 from app.services.question_delivery import review_with_refill
 from app.services.rag import hyde, llm, question_gen
-from app.services.rag.question_gen import NeedConfirmError
+from app.services.rag.question_gen import FailureCB, NeedConfirmError
 
 logger = logging.getLogger("app.generation")
 
@@ -470,11 +470,14 @@ def review_generated_questions(
             **kwargs,
         )
 
-    def refill(pending: GenerateParams, stems: list[str], report: Callable[[int, str], None]):
+    def refill(
+        pending: GenerateParams, stems: list[str], report: Callable[[int, str], None],
+        on_failure: FailureCB,
+    ) -> list[GeneratedQuestion]:
         return question_gen.generate_questions(
             pending, doc_name, scope=pending.scope, existing_stems=stems,
             progress_cb=report, api_key=api_key, hyde_text=hyde_text,
-            allow_partial=True, **kwargs,
+            allow_partial=True, on_failure=on_failure, **kwargs,
         )
 
     last_percent = 78

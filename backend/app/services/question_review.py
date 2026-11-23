@@ -650,7 +650,7 @@ def _clean_option_text(text: str) -> str:
 
 def _option_key(text: str) -> str:
     """选项唯一性忽略空白、公式定界及展示用伸缩括号指令。"""
-    return re.sub(r"[\s$]+|\\left|\\right", "", text)
+    return re.sub(r"[\s$]+|\\(?:left|right)(?![A-Za-z])", "", text)
 
 
 def _prepare_answer(question: Question, answer_raw: str) -> tuple[list[str], str] | None:
@@ -830,7 +830,7 @@ def _ask_explain(
 def _answers_agree(conclusion: str, answer_text: str) -> bool:
     """结论可省略；数值精确比较，其他结果沿用规范化后的包含比较。"""
     def normalize(text: str) -> str:
-        stripped = re.sub(r"\$|\\left|\\right|\\[,;!]|\s+", "", text or "")
+        stripped = re.sub(r"\$|\\(?:left|right)(?![A-Za-z])|\\[,;!]|\s+", "", text or "")
         stripped = stripped.replace("{", "").replace("}", "").replace("\\", "")
         return stripped.strip().lower()
 
@@ -1032,6 +1032,9 @@ def _review_candidate(
     candidate = question.model_copy(deep=True)
     scope = params.scope
     original = params.source_mode == "original"
+    if (original and question.type in (QuestionType.single, QuestionType.multiple)
+            and not question.options):
+        return _CandidateResult(reason="原题选项缺失")
     try:
         finding = _check_candidate(candidate, scope, api_key, cancel_check, repaired=False)
         if finding is None:
