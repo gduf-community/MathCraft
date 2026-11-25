@@ -82,6 +82,7 @@ def _candidate(stem):
 def _install_model(monkeypatch, scenario):
     nominations = count(1)
     solve_calls = count(1)
+    repaired_judge_calls = count(1)
     false_stems = iter(("偶函数的导数恒正", "可导函数必严格递增", "驻点必为极大值"))
     fixed_stem = f"用导数定义证明常值函数导数为零。{PRIVATE}"
     repaired_analysis = f"差商恒为零，其极限为零。{PRIVATE}"
@@ -90,6 +91,8 @@ def _install_model(monkeypatch, scenario):
         assert request.headers["authorization"] == f"Bearer {FAKE_KEY}"
         data = json.loads(request.content)
         prompt = data["messages"][-1]["content"]
+        if prompt.startswith("上次响应格式未通过校验"):
+            prompt = data["messages"][-2]["content"]
         if data.get("stream"):
             number = next(nominations)
             if scenario == "shortfall" and number >= 4:
@@ -141,6 +144,8 @@ def _install_model(monkeypatch, scenario):
                     scopeValid=False, analysisValid=False, explanationScopeOnly=True,
                     evidence=f"解析越界 {PRIVATE}", passed=False,
                 )
+            elif scenario == "explanation" and next(repaired_judge_calls) == 1:
+                del result["answerValid"]
         else:
             pytest.fail("unexpected model request")
 
@@ -351,6 +356,11 @@ def test_teacher_question_trace(client, teacher, phoenix, monkeypatch, scenario)
         assert _attr(repair, "mathcraft.reason_code") == "explanation_out_of_scope"
         assert _attr(repair, "mathcraft.decision") == "passed"
         assert len(models(repair)) == 1
+        accepted_final, = (span for span in stage("final_acceptance")
+                           if _attr(span, "mathcraft.revision") == 1)
+        assert _attr(accepted_final, "mathcraft.decision") == "passed"
+        assert _attr(accepted_final, "mathcraft.failure_codes") == ["invalid_output"]
+        assert len(models(accepted_final)) == 2
         assert result["questions"][0]["analysis"] == f"差商恒为零，其极限为零。{PRIVATE}"
     if delivered:
         final, = (span for span in stage("final_acceptance")

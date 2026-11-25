@@ -9,7 +9,9 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TypedDict
+from typing import TypedDict, TypeVar
+
+from pydantic import ValidationError
 
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
@@ -409,6 +411,38 @@ def _trace_model_failure(exc: Exception) -> None:
         trace.record_question_failure(code if code != "other" else "model_error")
 
 
+class _OutputFormatError(ValueError):
+    def __init__(self, instruction: str, code: str = "invalid_output") -> None:
+        super().__init__(instruction)
+        self.code = code
+
+
+_ParsedOutput = TypeVar("_ParsedOutput")
+
+
+def _request_validated_output(
+    prompt: str, api_key: str | None, parse: Callable[[dict], _ParsedOutput],
+    cancel_check: Callable[[], None] | None,
+) -> _ParsedOutput:
+    """Retry one invalid model response with the original input and a correction instruction."""
+    messages = [{"role": "user", "content": prompt}]
+    for attempt in range(2):
+        try:
+            return parse(_chat_json_low(messages, api_key, **cancellation_kwargs(cancel_check)))
+        except ValueError as exc:
+            if isinstance(exc, _OutputFormatError):
+                instruction, code = str(exc), exc.code
+            else:
+                instruction, code = "按原要求返回一个完整的合法 JSON 对象。", "invalid_output"
+            trace.record_question_failure(code)
+            if attempt:
+                raise _OutputFormatError(instruction, code) from None
+            messages = messages + [{"role": "user", "content": (
+                f"上次响应格式未通过校验。{instruction}请重新提交相同任务的结构化结果。"
+            )}]
+    raise AssertionError("模型输出校验循环未返回结果")
+
+
 def parse_review(data: dict, target: Difficulty) -> dict:
     """验证盲评契约，重算难度分和档位，并检查质量否决。"""
     scores = data.get("scores")
@@ -419,13 +453,15 @@ def parse_review(data: dict, target: Difficulty) -> dict:
                for key in _SCORE_KEYS)
         or type(passed_flag) is not bool
     ):
-        raise ValueError("缺少有效评分或判定")
+        raise _OutputFormatError(
+            "scores 必须包含所有评分项，分值为 1 到 5 的整数，passed 必须是布尔值。"
+        )
     weighted = sum(scores[key] * weight for key, weight in _DIFFICULTY_WEIGHTS.items())
     total = round(weighted / sum(_DIFFICULTY_WEIGHTS.values()), 2)
     codes = data.get("defectCodes", [])
     methods = data.get("methods", [])
     if not isinstance(codes, list) or not isinstance(methods, list):
-        raise ValueError("盲评字段格式无效")
+        raise _OutputFormatError("defectCodes 和 methods 必须是数组。")
     defects = [code for code in codes if isinstance(code, str) and code in tuple("KSCTAO")]
     veto = scores["unique"] <= 2 or "O" in defects or "A" in defects
     return {
@@ -457,24 +493,20 @@ def _judge_once(
             "independentAnswer": independent.answer.replace(_MULTI_SEP, "；"),
             "independentEvidence": independent.evidence,
         }, ensure_ascii=False)
-    try:
-        data = _chat_json_low(
-            [{"role": "user", "content": prompt}], api_key,
-            **cancellation_kwargs(cancel_check),
-        )
+    def parse(data: dict) -> dict | None:
         review = parse_review(data, target)
         if independent is not None:
             evidence = data.get("evidence")
-            if (type(data.get("verifiable")) is not bool
-                    or any(type(data.get(key)) is not bool for key in _JOINT_FIELDS)):
-                trace.record_question_failure("invalid_output")
-                return None
+            invalid_fields = [
+                key for key in ("verifiable", *_JOINT_FIELDS) if type(data.get(key)) is not bool
+            ]
+            if invalid_fields:
+                raise _OutputFormatError(f"这些字段必须是布尔值：{', '.join(invalid_fields)}。")
             if not data["verifiable"]:
                 trace.record_question_failure("unverifiable_output")
                 return None
             if not isinstance(evidence, str) or not evidence.strip():
-                trace.record_question_failure("missing_evidence")
-                return None
+                raise _OutputFormatError("evidence 必须是非空文本，写明审核依据。", "missing_evidence")
             finding = next(
                 (_Finding(reason, evidence) for key, reason in _JOINT_FIELDS.items()
                  if data[key] is False),
@@ -484,8 +516,7 @@ def _judge_once(
             if other_fields_valid and not data["scopeValid"]:
                 explanation_scope_only = data.get("explanationScopeOnly")
                 if type(explanation_scope_only) is not bool:
-                    trace.record_question_failure("invalid_output")
-                    return None
+                    raise _OutputFormatError("explanationScopeOnly 必须是布尔值。")
                 if explanation_scope_only:
                     finding = _Finding("解析方法超出范围", evidence, explanation_only=True)
             elif other_fields_valid and data["scopeValid"] and not data["analysisValid"]:
@@ -496,6 +527,11 @@ def _judge_once(
             review["finding"] = finding
             review["evidence"] = evidence
         return review
+
+    try:
+        return _request_validated_output(prompt, api_key, parse, cancel_check)
+    except _OutputFormatError:
+        return None
     except GenerationCanceled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -622,11 +658,7 @@ def _repair(
         .replace("__EVIDENCE__", f"{finding.reason}：{finding.evidence}")
         .replace("__QUESTION__", json.dumps(payload, ensure_ascii=False))
     )
-    try:
-        data = _chat_json_low(
-            [{"role": "user", "content": prompt}], api_key,
-            **cancellation_kwargs(cancel_check),
-        )
+    def parse(data: dict) -> Question | None:
         if finding.explanation_only:
             if any(
                 key != "analysis" and key in data and data[key] != value
@@ -636,17 +668,29 @@ def _repair(
                 return None
             raw = data.get("analysis")
             analysis = _polish_analysis(raw) if isinstance(raw, str) else None
+            if not analysis and (not isinstance(raw, str) or raw.strip()):
+                raise _OutputFormatError("analysis 必须是文本，且公式定界符必须配对。")
             if not analysis or _has_draft_trace(analysis):
                 trace.record_question_failure("invalid_output")
                 return None
             return question.model_copy(update={"analysis": analysis})
-        fixed = Question.model_validate(data)
+        try:
+            return Question.model_validate(data)
+        except ValidationError:
+            raise _OutputFormatError("按原要求提供完整的题目字段，并核对字段类型。") from None
+
+    try:
+        fixed = _request_validated_output(prompt, api_key, parse, cancel_check)
+    except _OutputFormatError:
+        return None
     except GenerationCanceled:
         raise
     except (ValueError, llm.LLMError) as exc:
         _trace_model_failure(exc)
         logger.warning("修补失败：%s", type(exc).__name__)
         return None
+    if fixed is None or finding.explanation_only:
+        return fixed
     if fixed.type != question.type:
         trace.record_question_failure("protected_fields_changed")
         return None
@@ -725,6 +769,11 @@ _SOLVE_ANSWER_TOKENS = 4000
 _SOLVE_EXPLAIN_TOKENS = 2400
 _SOLVE_ATTEMPTS = 2
 _EXPLAIN_ATTEMPTS = 2
+
+
+class _ExplainRetryOptions(TypedDict, total=False):
+    retries: int
+    budget_escalations: int
 
 
 def _clean_option_text(text: str) -> str:
@@ -879,9 +928,14 @@ def _ask_explain(
             f"\n【定向修订】{targeted_reason}。保留已确认的答案及现有选项，"
             "重新写出完整解析，并在 conclusion 原样填写待核验的候选答案。"
         )
-    for attempt in range(1 if targeted_reason else _EXPLAIN_ATTEMPTS):
+    json_kwargs: _ExplainRetryOptions = (
+        {"retries": 0, "budget_escalations": 0} if targeted_reason else {}
+    )
+    for attempt in range(_EXPLAIN_ATTEMPTS):
         check_cancellation(cancel_check)
         retry = (
+            "\n上次返回格式不合格。只返回合法 JSON，按要求填写所有字段并检查公式定界。"
+            if targeted_reason else
             "\n上次讲解不合格：请检查字段类型、公式、四项唯一性和草稿痕迹，"
             "只输出成立的推导与真实结论。"
         ) if attempt else ""
@@ -891,6 +945,7 @@ def _ask_explain(
                 [{"role": "system", "content": system},
                  {"role": "user", "content": prompt + retry}],
                 api_key=api_key, max_tokens=_SOLVE_EXPLAIN_TOKENS,
+                **json_kwargs,
                 **cancellation_kwargs(cancel_check),
             )
         except GenerationCanceled:
@@ -898,6 +953,10 @@ def _ask_explain(
         except Exception as exc:
             _trace_model_failure(exc)
             logger.warning("讲解生成失败：%s", type(exc).__name__)
+            if targeted_reason and not (
+                isinstance(exc, llm.LLMError) and str(exc) == llm._INVALID_JSON
+            ):
+                return None
             continue
         if not isinstance(data, dict):
             trace.record_question_failure("invalid_output")
@@ -913,6 +972,8 @@ def _ask_explain(
                 "empty_explanation" if not raw_analysis.strip() else
                 "explanation_formula" if not analysis else "explanation_draft"
             )
+            if targeted_reason and (not raw_analysis.strip() or analysis):
+                return None
             continue
         if targeted_reason and not conclusion:
             trace.record_question_failure("missing_conclusion")
@@ -932,6 +993,8 @@ def _ask_explain(
             keys = [_option_key(item) for item in corrects + distractors]
             if len(keys) != 4 or any(not key for key in keys) or len(set(keys)) != 4:
                 trace.record_question_failure("invalid_distractors")
+                if targeted_reason:
+                    return None
                 continue
         return analysis, distractors, conclusion
     return None

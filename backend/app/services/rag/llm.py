@@ -368,7 +368,7 @@ def chat_json(
     max_tokens: int | None = None,
     thinking_off: bool = False,
     cancel_check: Callable[[], None] | None = None,
-    *, thinking: bool | None = None, temperature: float = 0.7,
+    *, thinking: bool | None = None, temperature: float = 0.7, budget_escalations: int = 2,
 ) -> dict:
     """请求 JSON；仅解析错误重试，保留取消参数位置与思考模式关键字约定。"""
     msgs = list(messages)
@@ -398,7 +398,7 @@ def chat_json(
             except json.JSONDecodeError as exc:
                 check_cancellation(cancel_check)
                 temperature = 0.3
-                if budget and escalations < 2:
+                if budget and escalations < budget_escalations:
                     escalations += 1
                     budget = int(budget * 1.6)
                     continue

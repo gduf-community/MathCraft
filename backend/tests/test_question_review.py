@@ -801,7 +801,7 @@ def test_missing_or_invalid_multiple_choice_is_never_delivered(db, monkeypatch, 
         return {"status": solve_status, "evidence": "缺少供判断的数学命题。"}
 
     def repair(messages, **_):
-        assert "缺少供判断的数学命题" in messages[-1]["content"]
+        assert "缺少供判断的数学命题" in messages[0]["content"]
         progress.append("repair")
         return "{}"
 
@@ -812,7 +812,7 @@ def test_missing_or_invalid_multiple_choice_is_never_delivered(db, monkeypatch, 
     )
     assert not result
     assert stats.rejections == {(qtype, Difficulty.low): {reason: 1}}
-    assert progress == (["solve", "repair"] if reason != "无法验证" else
+    assert progress == (["solve", "repair", "repair"] if reason != "无法验证" else
                         ["solve"] if solve_status else ["solve", "solve"])
 
 
@@ -837,7 +837,7 @@ def test_joint_gate_checks_original_choice_options(db, monkeypatch, outcome):
     )
 
     def judge_or_repair(messages, **_):
-        prompt = messages[-1]["content"]
+        prompt = messages[0]["content"]
         if prompt.startswith("下面这道题没有通过"):
             assert outcome == "undefined_option" and "实数域无定义" in prompt
             return "{}"
@@ -1067,8 +1067,8 @@ def test_missing_answer_attempts_completion_before_acceptance(db, monkeypatch, c
         assert accepted.answer == "成立" and "乘积大于零" in accepted.analysis
 
 
-@pytest.mark.parametrize("repair_matches", [True, False])
-def test_empty_completion_targets_analysis_repair(db, monkeypatch, repair_matches):
+@pytest.mark.parametrize("outcome", ["accepted", "conflict", "invalid_review"])
+def test_empty_completion_targets_analysis_repair(db, monkeypatch, outcome):
     question = Question(
         type=QuestionType.essay, difficulty=Difficulty.low,
         stem=r"用分数除法法则说明 $1\div23$ 的结果。",
@@ -1087,29 +1087,42 @@ def test_empty_completion_targets_analysis_repair(db, monkeypatch, repair_matche
             events.append("repair")
             assert "补齐解析和必要步骤" in prompt
             assert f"【待核验的候选答案】\n{confirmed_answer}" in prompt
-            conclusion = confirmed_answer if repair_matches else r"$\frac{12}{3}$"
+            if outcome == "accepted":
+                assert _["retries"] == _["budget_escalations"] == 0
+                if events.count("repair") == 1:
+                    return {"analysis": revised_analysis, "conclusion": []}
+                assert "上次返回格式不合格" in prompt
+            conclusion = r"$\frac{12}{3}$" if outcome == "conflict" else confirmed_answer
             return {"analysis": revised_analysis, "conclusion": conclusion}
         events.append("empty_completion")
         return {"analysis": "", "conclusion": confirmed_answer}
 
     def judge(messages, **_):
         events.append("acceptance")
-        prompt = messages[-1]["content"]
+        prompt = messages[0]["content"]
         payload = json.loads(prompt[prompt.rfind('{"type":'):])
         assert payload["analysis"] == revised_analysis
         assert payload["answer"] == confirmed_answer
-        return _review_json(scores)
+        report = json.loads(_review_json(scores))
+        if events.count("acceptance") == 1 or outcome == "invalid_review":
+            del report["answerValid"]
+        if events.count("acceptance") == 2:
+            assert "answerValid" in messages[-1]["content"]
+        return json.dumps(report, ensure_ascii=False)
 
     monkeypatch.setattr(question_review.llm, "chat_json", solve_or_explain)
     monkeypatch.setattr(question_review.llm, "chat_text", judge)
     result, stats = real_review(db, "u", [question], _candidate_params(key), "doc.md", None)
 
-    assert events.count("repair") == 1
+    assert events.count("repair") == (2 if outcome == "accepted" else 1)
     assert events[0] == "empty_completion"
-    if not repair_matches:
+    if outcome == "conflict":
         assert not result and "acceptance" not in events
         return
-    assert events[-2:] == ["repair", "acceptance"]
+    assert events[-3:] == ["repair", "acceptance", "acceptance"]
+    if outcome == "invalid_review":
+        assert not result and stats.rejections == {key: {"无法验证": 1}}
+        return
     accepted, = result
     assert (accepted.stem, accepted.answer, accepted.analysis) == (
         question.stem, confirmed_answer, revised_analysis,
