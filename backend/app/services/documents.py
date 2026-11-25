@@ -337,7 +337,7 @@ def run_ingestion(
                 simplified_path = settings.upload_path() / doc.bank_id / f"{doc.id}_simplified.md"
                 manifest_name = simplified_path.with_suffix(".manifest.json").name
                 identity: dict[str, object] = {
-                    "version": 1, "kind": "knowledge_simplified",
+                    "version": 2, "kind": "knowledge_simplified",
                     "ocr_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
                 }
                 simplified = ""

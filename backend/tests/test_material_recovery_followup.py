@@ -1,5 +1,7 @@
 """资料删除、题目写入及派生 OCR 文件的真实故障恢复回归。"""
 import asyncio
+import hashlib
+import json
 from pathlib import Path
 from threading import Event
 
@@ -189,6 +191,68 @@ def test_ingestion_does_not_reuse_incomplete_simplified_file(
     documents.run_ingestion(doc_id)
     assert len(calls) == (1 if damage == "none" else 2)
     assert destination.read_text(encoding="utf-8") == complete
+
+
+def test_reprocess_regenerates_legacy_simplified_cache_once(
+    client, teacher, db, scanned_material, monkeypatch,
+):
+    from app.config import settings
+
+    bank_id, doc_id, source = scanned_material
+    destination = settings.upload_path() / bank_id / f"{doc_id}_simplified.md"
+    manifest = destination.with_suffix(".manifest.json")
+    ocr_markdown = "# complete OCR input"
+    legacy = "# 《教材》知识点简化版\n\n## 旧章节\n\n缺少前几节。\n"
+    regenerated = "# 《教材》知识点简化版\n\n## 恢复的章节\n\n完整数学讲解。\n"
+    mineru._publish_markdown(
+        destination.parent,
+        legacy,
+        {
+            "version": 1,
+            "kind": "knowledge_simplified",
+            "ocr_sha256": hashlib.sha256(ocr_markdown.encode("utf-8")).hexdigest(),
+        },
+        relative=Path(destination.name),
+        manifest_name=manifest.name,
+    )
+    pdf = destination.with_name(f"{doc_id}.pdf")
+    pdf.write_bytes(source.read_bytes())
+    doc = db.get(Document, doc_id)
+    doc.name = "textbook_知识点简化版.md"
+    doc.format = "MD"
+    doc.storage_path = destination.as_posix()
+    doc.size_bytes = destination.stat().st_size
+    db.commit()
+
+    ocr_reads: list[Path] = []
+    build_inputs: list[str] = []
+
+    def read_ocr(path: Path, _result_dir: Path) -> str:
+        ocr_reads.append(path)
+        return ocr_markdown
+
+    def build(markdown: str, *args, **kwargs) -> tuple[str, dict[str, int]]:
+        build_inputs.append(markdown)
+        return regenerated, {}
+
+    monkeypatch.setattr(mineru, "read_cached_markdown", read_ocr)
+    monkeypatch.setattr(
+        mineru, "extract_pdf", lambda *args, **kwargs: pytest.fail("unexpected cloud OCR"),
+    )
+    monkeypatch.setattr(documents.knowledge_simplify, "build_simplified_markdown", build)
+    url = f"/api/banks/{bank_id}/documents/{doc_id}/reprocess"
+
+    assert client.post(url, headers=teacher).status_code == 202
+    assert build_inputs == [ocr_markdown]
+    assert destination.read_text(encoding="utf-8") == regenerated
+    assert json.loads(manifest.read_bytes())["identity"]["version"] == 2
+
+    assert client.post(url, headers=teacher).status_code == 202
+    assert ocr_reads == [pdf, pdf]
+    assert build_inputs == [ocr_markdown]
+    assert destination.read_text(encoding="utf-8") == regenerated
+    db.expire_all()
+    assert db.get(Document, doc_id).status == "ready"
 
 
 def test_simplified_publish_failure_preserves_previous_complete_file(

@@ -10,9 +10,10 @@ import json
 import logging
 import re
 import time
+from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import openai
 from app.services.rag import llm
@@ -288,10 +289,128 @@ def sanitize_chapter(md: str) -> str:
 
 # ---------------- 按节标题定位正文 ----------------
 
-def _last_match(pattern: re.Pattern, corpus: str) -> int | None:
-    """标题在语料中的最后一次出现位置（目录页在前，正文在后，取正文处）。"""
-    positions = [m.start() for m in pattern.finditer(corpus)]
-    return positions[-1] if positions else None
+_MARKDOWN_HEADING = re.compile(r"^\s*#{1,6}\s*")
+_MARKDOWN_HEADING_END = re.compile(r"\s+#+$")
+_HEADING_DECORATION = re.compile(r"^(?:\\?[*＊_·]+\s*)+")
+_TOC_PAGE_LEADER = re.compile(r"[.．·…⋯。]{2,}\s*\d+\s*$")
+_PAGE_FOLIO = re.compile(r"[\s\d.．·…⋯。*_=—–－\-]+")
+_OCR_LINE = re.compile(r"[^\n]+")
+
+
+class _TitleSpan(NamedTuple):
+    start: int
+    end: int
+    markdown: bool
+    continued: bool = False
+
+
+def _heading_key(text: str) -> str:
+    return re.sub(r"\s+", "", _HEADING_DECORATION.sub("", text.strip()))
+
+
+def _find_title_spans(
+    corpus: str, keys: set[str],
+) -> dict[str, list[_TitleSpan]]:
+    """索引整行标题及其相邻行续写形式，保留原文范围。"""
+    spans: dict[str, list[_TitleSpan]] = {}
+    previous_line: tuple[str, int, bool] | None = None
+    for line in _OCR_LINE.finditer(corpus):
+        text = line[0].strip()
+        if not text:
+            continue
+        heading = _MARKDOWN_HEADING.match(text)
+        title = _MARKDOWN_HEADING_END.sub("", text[heading.end():]) if heading else text
+        key = _heading_key(title)
+        if key in keys:
+            spans.setdefault(key, []).append(_TitleSpan(line.start(), line.end(), bool(heading)))
+        if key and previous_line:
+            previous_key, previous_start, previous_markdown = previous_line
+            combined = previous_key + key
+            if combined in keys:
+                spans.setdefault(combined, []).append(
+                    _TitleSpan(previous_start, line.end(), previous_markdown, continued=True),
+                )
+        previous_line = (key, line.start(), bool(heading)) if key else None
+    return spans
+
+
+def _has_section_body(
+    corpus: str, span: _TitleSpan, end: int,
+    section_starts: list[int], chapter_starts: set[int],
+) -> bool:
+    """检查节标题之后是否有页眉和目录页码之外的内容。"""
+    following = bisect_right(section_starts, span.start)
+    if following < len(section_starts):
+        end = min(end, section_starts[following])
+    for line in _OCR_LINE.finditer(corpus, span.end, end):
+        text = line[0].strip()
+        if (text and line.start() not in chapter_starts and not text.startswith("#")
+                and not _TOC_PAGE_LEADER.search(text) and not _PAGE_FOLIO.fullmatch(text)):
+            return True
+    return False
+
+
+def _find_chapters(
+    corpus: str, chapter_keys: list[str], section_keys: list[list[str]],
+    spans: dict[str, list[_TitleSpan]], section_starts: list[int], chapter_starts: set[int],
+) -> dict[int, _TitleSpan]:
+    """用节标题和其后正文确认章首，允许正文证据跨过同章页眉。"""
+    candidates = sorted(
+        (span, ci) for ci, key in enumerate(chapter_keys) for span in spans.get(key, [])
+    )
+    later_body_sections: dict[int, set[str]] = {}
+    later_continued_sections: dict[int, set[str]] = {}
+    body_end = len(corpus)
+    found: dict[int, _TitleSpan] = {}
+    for index in reversed(range(len(candidates))):
+        chapter, ci = candidates[index]
+        anchor_end = len(corpus)
+        if index + 1 < len(candidates):
+            following, following_ci = candidates[index + 1]
+            anchor_end = following.start
+            if following_ci != ci:
+                body_end = anchor_end
+        anchored_sections = [
+            (key, section)
+            for key in section_keys[ci] for section in spans.get(key, [])
+            if chapter.end <= section.start < anchor_end
+        ]
+        supported_sections = {
+            key for key, section in anchored_sections
+            if _has_section_body(corpus, section, body_end, section_starts, chapter_starts)
+        }
+        if not supported_sections:
+            continue
+        if not chapter.continued:
+            # 目录通常会重列多节，页眉续接处至多重列正在阅读的一节。
+            repeated_sections = (
+                {key for key, _ in anchored_sections} & later_body_sections.get(ci, set())
+            )
+            if supported_sections & later_continued_sections.get(ci, set()):
+                continue
+            if repeated_sections and (
+                (len(repeated_sections) > 1 and anchored_sections[0][0] in repeated_sections)
+                or any(
+                    _TOC_PAGE_LEADER.search(line[0])
+                    for line in _OCR_LINE.finditer(corpus, chapter.end, anchor_end)
+                )
+            ):
+                continue
+        found[ci] = chapter
+        later_body_sections.setdefault(ci, set()).update(supported_sections)
+        if chapter.continued:
+            later_continued_sections.setdefault(ci, set()).update(supported_sections)
+
+    # 正文节标题全部丢失时，仍在已确定的相邻章之间寻找章首，供关键词兜底。
+    for ci, key in enumerate(chapter_keys):
+        if ci in found:
+            continue
+        start = max((span.end for index, span in found.items() if index < ci), default=0)
+        end = min((span.start for index, span in found.items() if index > ci), default=len(corpus))
+        matches = [span for span in spans.get(key, []) if start <= span.start < end]
+        if matches:
+            found[ci] = next((span for span in matches if span.markdown), matches[0])
+    return found
 
 
 def _keyword_fallback(corpus: str, start: int, end: int,
@@ -319,46 +438,53 @@ def _keyword_fallback(corpus: str, start: int, end: int,
 def _attach_section_slices(toc: dict, corpus: str) -> None:
     """按节标题定位正文：每节内容 = 标题位置到下一个节/章标题之间（有截取上限）。"""
     chapters = toc.get("chapters") or []
-    chapter_pos: list[tuple[int, int]] = []
-    for i, chapter in enumerate(chapters):
-        pos = _last_match(_ws_regex(chapter["title"]), corpus)
-        if pos is not None:
-            chapter_pos.append((pos, i))
-    chapter_pos.sort()
+    chapter_keys = [_heading_key(chapter["title"]) for chapter in chapters]
+    section_keys = [
+        [_heading_key(section["title"]) for section in chapter["sections"]]
+        for chapter in chapters
+    ]
+    all_sections = {key for keys in section_keys for key in keys}
+    spans = _find_title_spans(corpus, set(chapter_keys) | all_sections)
+    section_starts = sorted({span.start for key in all_sections for span in spans.get(key, [])})
+    chapter_starts = {span.start for key in chapter_keys for span in spans.get(key, [])}
+    chapter_spans = _find_chapters(
+        corpus, chapter_keys, section_keys, spans, section_starts, chapter_starts,
+    )
+    ordered_chapters = sorted((span, ci) for ci, span in chapter_spans.items())
 
-    bounds: list[tuple[int, str, int, int]] = []
-    sec_pos: dict[tuple[int, int], int] = {}
-    for cpos, ci in chapter_pos:
-        bounds.append((cpos, "chapter", ci, -1))
-        for si, section in enumerate(chapters[ci].get("sections") or []):
-            spos = _last_match(_ws_regex(section["title"]), corpus)
-            if spos is not None and spos > cpos:
-                bounds.append((spos, "section", ci, si))
-                sec_pos[(ci, si)] = spos
-    bounds.sort(key=lambda x: x[0])
+    for chapter in chapters:
+        for section in chapter["sections"]:
+            section["_slice"] = None
 
-    for idx, (pos, kind, ci, si) in enumerate(bounds):
-        if kind != "section":
-            continue
-        end = bounds[idx + 1][0] if idx + 1 < len(bounds) else len(corpus)
-        toc["chapters"][ci]["sections"][si]["_slice"] = [pos, min(end, pos + SECTION_SLICE_LIMIT)]
+    for index, (chapter_span, ci) in enumerate(ordered_chapters):
+        end = (ordered_chapters[index + 1][0].start
+               if index + 1 < len(ordered_chapters) else len(corpus))
+        sections = chapters[ci]["sections"]
+        located: list[tuple[int, _TitleSpan]] = []
+        start = chapter_span.end
+        for si, key in enumerate(section_keys[ci]):
+            matches = [span for span in spans.get(key, []) if start <= span.start < end]
+            if matches:
+                span = next(
+                    (match for match in matches
+                     if _has_section_body(corpus, match, end, section_starts, chapter_starts)),
+                    matches[0],
+                )
+                located.append((si, span))
+                start = span.end
+            else:
+                fused = _keyword_fallback(
+                    corpus, chapter_span.end, end, sections[si].get("points") or [],
+                )
+                sections[si]["_slice"] = fused[0] if fused else None
 
-    # 章未找到或节标题未定位到正文：在章范围内用知识点关键词开窗兜底
-    for ci, chapter in enumerate(chapters):
-        cpos = next((p for p, i in chapter_pos if i == ci), None)
-        cend = None
-        if cpos is not None:
-            later = [p for p, i in chapter_pos if p > cpos]
-            cend = min(later) if later else len(corpus)
-        for si, section in enumerate(chapter.get("sections") or []):
-            if (ci, si) in sec_pos:
-                continue
-            if cpos is None:
-                section["_slice"] = None
-                continue
-            fused = _keyword_fallback(corpus, cpos, cend or len(corpus),
-                                      section.get("points") or [])
-            section["_slice"] = fused[0] if fused else None
+        for index_in_chapter, (si, span) in enumerate(located):
+            next_index = index_in_chapter + 1
+            section_end = located[next_index][1].start if next_index < len(located) else end
+            if _has_section_body(corpus, span, section_end, section_starts, chapter_starts):
+                sections[si]["_slice"] = [
+                    span.start, min(section_end, span.start + SECTION_SLICE_LIMIT),
+                ]
 
     # 单章输入合计上限：超限时按节等比例截断
     for chapter in chapters:
@@ -369,7 +495,7 @@ def _attach_section_slices(toc: dict, corpus: str) -> None:
             scale = CHAPTER_INPUT_LIMIT / total
             for si, (a, b) in sized:
                 keep = max(2000, int((b - a) * scale))
-                sections[si]["_slice"] = [a, a + keep]
+                sections[si]["_slice"] = [a, min(b, a + keep)]
 
 
 # ---------------- 按章概括 ----------------

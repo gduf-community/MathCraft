@@ -276,6 +276,96 @@ def test_simplify_missing_section_retry_keeps_personal_key(simplify_probe):
     assert "本节内容未能生成" not in markdown
 
 
+@pytest.mark.parametrize(("contents_title", "chapter_start", "directory_note"), [
+    ("# 目录\n", "## 第 七 章\n\n# 微分方程", "···· 3\n同济大学高等数学"),
+    ("", "## 第 七 章\n\n# 微分方程", "同济大学高等数学。"),
+    ("# 目录\n", "第七章 微分方程", "同济大学高等数学。"),
+])
+def test_simplify_uses_body_after_chapter_heading(
+    monkeypatch, contents_title, chapter_start, directory_note,
+):
+    chapter = "第七章 微分方程"
+    next_chapter = "第八章 向量代数"
+    early = "第一节 基本概念"
+    interrupted = "第六节 线性方程"
+    later = "第七节 常系数方程"
+    missing = "第八节 缺失小节"
+    next_section = "第一节 向量运算"
+    source = fr"""{contents_title}## {chapter}
+### {early}
+{directory_note}
+### {interrupted}
+### {later}
+### {missing} …… 9
+## {next_chapter}
+### {next_section} …… 11
+
+{chapter_start}
+### {early} ###
+## {chapter}
+微分关系标记
+## {chapter}
+### {early}
+微分比率标记补充前文。
+### {interrupted}
+线性叠加标记说明原理。
+## {chapter}
+通解结构标记补充前文。
+### \* 第七节
+常系数方程
+特征方程标记说明计算。
+### {missing}
+{chapter}
+— 37 —
+
+## {next_chapter}
+### {next_section}
+向量运算标记说明原理。
+"""
+    toc = {"chapters": [
+        {"title": chapter, "sections": [{"title": title} for title in
+                                        (early, interrupted, later, missing)]},
+        {"title": next_chapter, "sections": [{"title": next_section}]},
+    ]}
+    expected = {
+        early: ("微分关系标记", "微分比率标记"),
+        interrupted: ("线性叠加标记", "通解结构标记"),
+        later: ("特征方程标记",),
+        missing: (),
+        next_section: ("向量运算标记",),
+    }
+    markers = tuple(marker for section_markers in expected.values() for marker in section_markers)
+    prompts: dict[str, str] = {}
+
+    def summarize(messages, **kwargs):
+        prompt = messages[-1]["content"].split("\n\n正文：\n", 1)[1]
+        blocks = re.split(r"^## 节：", prompt, flags=re.M)[1:]
+        result = []
+        for block in blocks:
+            title, _, body = block.partition("\n")
+            title = title.removesuffix("（本节未定位到正文）")
+            prompts[title] = block
+            matched = "、".join(marker for marker in markers if marker in body)
+            result.append(f"### {title}\n\n{matched or '（本节未检索到原文片段）'}")
+        return "\n\n".join(result), {}
+
+    monkeypatch.setattr(knowledge_simplify, "_chat_json", lambda *args, **kwargs: (toc, {}))
+    monkeypatch.setattr(knowledge_simplify, "_chat_text", summarize)
+    markdown, _ = knowledge_simplify.build_simplified_markdown(source)
+
+    assert {
+        title: tuple(marker for marker in markers if marker in block)
+        for title, block in prompts.items()
+    } == expected
+    assert all(
+        "····" not in block and "……" not in block and "同济大学高等数学" not in block
+        for block in prompts.values()
+    )
+    assert "本节未定位到正文" in prompts[missing]
+    assert markdown.count("（本节未检索到原文片段）") == 1
+    assert f"### {missing}\n\n（本节未检索到原文片段）" in markdown
+
+
 def test_upload_markdown_and_ready(client, teacher):
     bank = create_bank(client, teacher)
     doc = upload_markdown(client, teacher, bank["id"])
