@@ -27,6 +27,7 @@ from app.services.generation_lifecycle import GenerationRun, error_code, rollbac
 from app.services.generation_cancellation import GenerationCanceled, cancellation_kwargs
 from app.services.ops_runs import RunLedger
 from app.services.phoenix_tracing import record_question_delivery, trace_run
+from app.services.question_dedup import QuestionDeduper
 from app.services.question_delivery import review_with_refill
 from app.services.rag import hyde, llm, question_gen
 from app.services.rag.question_gen import FailureCB, NeedConfirmError
@@ -429,6 +430,7 @@ def build_params(body: GenerateStartBody) -> GenerateParams:
         source_mode=body.source_mode,
         scope=body.scope,
         existing_stems=body.existing_stems,
+        existing_questions=body.existing_questions,
     )
 
 
@@ -467,7 +469,7 @@ def review_generated_questions(
         return question_review.review_questions(
             db, user_id, pool, pending, doc_name, api_key, hyde_text,
             progress=(lambda _percent, stage: report(last_percent, stage)) if progress else None,
-            **kwargs,
+            deduplicate=False, **kwargs,
         )
 
     def refill(
@@ -490,7 +492,12 @@ def review_generated_questions(
 
     accepted, stats, groups = review_with_refill(
         questions, params, sum(item.count for item in params.types),
-        params.existing_stems, review, refill, report, cancel_check, initial_events=initial_events,
+        params.existing_stems, review, refill, report, cancel_check,
+        initial_events=initial_events,
+        deduper=QuestionDeduper(
+            db, user_id, params.kb_id, params.existing_stems, params.existing_questions,
+            api_key, cancel_check,
+        ),
     )
     return accepted, GenerationReviewStats(
         duplicates=stats.duplicates, repaired=stats.repaired,

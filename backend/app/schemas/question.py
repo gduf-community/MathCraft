@@ -69,6 +69,14 @@ class OptionItem(BaseModel):
     text: str
 
 
+class ExistingQuestion(BaseModel):
+    """Question fields needed to compare an existing preview or saved question."""
+
+    type: QuestionType
+    stem: str = Field(min_length=1, max_length=8192)
+    options: list[OptionItem] = Field(default_factory=list, max_length=8)
+
+
 class Question(BaseModel):
     id: str = ""
     type: QuestionType
@@ -145,8 +153,10 @@ class GenerateParams(BaseModel):
     source_mode: str = "variant_data"
     # 知识点或章节范围，用于检索与命题约束
     scope: str = ""
-    # 已有题干，用于跨请求去重
+    # 已有预览题和旧客户端明确排除的题干
     existing_stems: list[str] = []
+    existing_questions: list[ExistingQuestion] = Field(default_factory=list, exclude=True)
+    refill_reasons: tuple[str, ...] = Field(default=(), exclude=True)
 
 
 class ChatRequestBody(BaseModel):

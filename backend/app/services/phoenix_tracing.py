@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 import logging
 from queue import Empty, Full, Queue
@@ -49,7 +49,7 @@ _run: ContextVar[_RunContext | None] = ContextVar("phoenix_run", default=None)
 _QUESTION_STAGES = frozenset({
     "planning", "nomination", "generation", "refill", "candidate_review", "independent_solve",
     "solution_completion", "repair", "re_review", "final_acceptance", "corpus_dedup",
-    "finished_dedup", "delivery", "summary",
+    "finished_dedup", "delivery", "summary", "symbolic_solve",
 })
 _QUESTION_DECISIONS = frozenset({
     "formed", "passed", "rejected", "repaired", "failed", "selected", "skipped", "committed",
@@ -62,6 +62,12 @@ _REASON_CODES = {
     "无法验证": "unverifiable",
     "答案不成立": "invalid_answer",
     "解析不成立": "invalid_explanation",
+    "解析方法超出范围": "explanation_out_of_scope",
+    "解析补全失败": "solution_completion_failed",
+    "补全结论与答案冲突": "answer_conflict",
+    "解析为空": "empty_explanation",
+    "解析公式格式错误": "explanation_formula",
+    "解析含草稿": "explanation_draft",
     "选项不合格": "invalid_options",
     "超出范围": "out_of_scope",
     "难度不符": "difficulty_mismatch",
@@ -76,7 +82,20 @@ _REASON_CODES = {
 }
 _SAFE_REASON_CODES = frozenset(_REASON_CODES.values()) | {
     "wrong_type", "quota_filled", "invalid_output", "generation_underproduced",
+    "legacy_stem", "exact_duplicate", "semantic_duplicate",
+    "embedding_unavailable", "verdict_unavailable", "verdict_uncertain",
 }
+_QUESTION_FAILURE_PRIORITY = (
+    "protected_fields_changed", "independent_options_mismatch", "invalid_distractors",
+    "answer_conflict", "explanation_formula", "explanation_draft", "empty_explanation",
+    "missing_conclusion", "missing_evidence", "invalid_output",
+    "symbolic_unsupported", "symbolic_timeout", "symbolic_error",
+    "unverifiable_output", "model_timeout", "model_rate_limit", "model_auth", "model_balance",
+    "model_error", "duplicate_check_failed",
+)
+_QUESTION_FAILURE_CODES = frozenset(_QUESTION_FAILURE_PRIORITY)
+_SAFE_REASON_CODES |= _QUESTION_FAILURE_CODES
+_REPAIR_MODES = frozenset({"explanation_only", "full"})
 _QUESTION_TYPES = frozenset({"single", "multiple", "judge", "blank", "compute", "essay"})
 _DIFFICULTIES = frozenset({"低", "中", "高", "地狱"})
 _CANDIDATE_ID = re.compile(r"q-[a-f0-9]{10}\Z")
@@ -94,11 +113,24 @@ def _reason_code(reason: str) -> str:
     return model_error_trace_code(reason)
 
 
-@dataclass(frozen=True)
+@dataclass
 class QuestionStage:
     """Write a sanitized business decision independently of the span status."""
 
     span: "Span | None"
+    _failures: set[str] = field(default_factory=set)
+    _failure_lock: Lock = field(default_factory=Lock)
+
+    def failure(self, code: str) -> None:
+        """Collect a safe reason from a retry or one of the phase's parallel peers."""
+        if code in _QUESTION_FAILURE_CODES:
+            with self._failure_lock:
+                self._failures.add(code)
+
+    def failure_reason(self) -> str | None:
+        """Select the primary failure deterministically across parallel peers."""
+        with self._failure_lock:
+            return next((code for code in _QUESTION_FAILURE_PRIORITY if code in self._failures), None)
 
     def decision(self, outcome: str, reason: str | None = None) -> None:
         """Record a known decision with an optional allowlisted reason."""
@@ -106,8 +138,16 @@ class QuestionStage:
             return
         try:
             self.span.set_attribute("mathcraft.decision", outcome)
-            if reason is not None:
-                self.span.set_attribute("mathcraft.reason_code", _reason_code(reason))
+            reason_code = _reason_code(reason) if reason is not None else None
+            if outcome in {"failed", "rejected"} and reason_code in {
+                None, "unverifiable", "solution_completion_failed",
+            }:
+                reason_code = self.failure_reason() or reason_code
+            if reason_code is not None:
+                self.span.set_attribute("mathcraft.reason_code", reason_code)
+            with self._failure_lock:
+                if self._failures:
+                    self.span.set_attribute("mathcraft.failure_codes", sorted(self._failures))
         except Exception:
             logger.warning("Phoenix question decision unavailable")
 
@@ -122,6 +162,9 @@ class QuestionStage:
             logger.warning("Phoenix generation counts unavailable")
 
 _NOOP_STAGE = QuestionStage(None)
+_question_observation: ContextVar[QuestionStage | None] = ContextVar(
+    "phoenix_question_observation", default=None,
+)
 
 
 @contextmanager
@@ -137,12 +180,20 @@ def question_round(round_number: int) -> Iterator[None]:
 @contextmanager
 def question_stage(
     stage: str, *, candidate_id: str | None = None, kind: str | None = None,
-    difficulty: str | None = None, revision: int | None = None,
+    difficulty: str | None = None, revision: int | None = None, repair_mode: str | None = None,
 ) -> Iterator[QuestionStage]:
     """Parent model calls and record a metadata-only generation or review stage."""
     runtime, context = _runtime, _run.get()
     if runtime is None or context is None or stage not in _QUESTION_STAGES:
-        yield _NOOP_STAGE
+        if stage == "solution_completion":
+            observation = QuestionStage(None)
+            token = _question_observation.set(observation)
+            try:
+                yield observation
+            finally:
+                _question_observation.reset(token)
+        else:
+            yield _NOOP_STAGE
         return
     attributes: dict[str, str | int] = {
         "openinference.span.kind": "CHAIN",
@@ -159,6 +210,8 @@ def question_stage(
         attributes["mathcraft.target_difficulty"] = difficulty
     if revision in (0, 1):
         attributes["mathcraft.revision"] = revision
+    if stage == "repair" and repair_mode in _REPAIR_MODES:
+        attributes["mathcraft.repair_mode"] = repair_mode
     try:
         from opentelemetry.trace import set_span_in_context
 
@@ -169,21 +222,29 @@ def question_stage(
         )
     except Exception:
         logger.warning("Phoenix question stage unavailable")
-        yield _NOOP_STAGE
-        return
+        span = None
 
-    token = _question_parent.set(span)
+    token = _question_parent.set(span or _question_parent.get())
+    observation = QuestionStage(span)
+    observation_token = _question_observation.set(observation)
     error = None
     try:
-        yield QuestionStage(span)
+        yield observation
     except BaseException as exc:
         from app.services.generation_cancellation import GenerationCanceled
 
         error = "CANCELED" if isinstance(exc, GenerationCanceled) else "EXECUTION_ERROR"
         raise
     finally:
+        _question_observation.reset(observation_token)
         _question_parent.reset(token)
         _end(span, error)
+
+
+def record_question_failure(code: str) -> None:
+    """Record an allowlisted failure on the current phase, including failed retries."""
+    if observation := _question_observation.get():
+        observation.failure(code)
 
 
 def question_decision(

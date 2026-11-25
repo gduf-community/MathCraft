@@ -3,14 +3,20 @@
 from collections import Counter
 
 from app.schemas.api import GenerationReviewGroup
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services.question_delivery import review_with_refill
 from app.services.question_review import ReviewStats
 from app.services.rag.question_gen import NeedConfirmError
 
 
 def _candidate(stem: str, kind: QuestionType, difficulty: Difficulty) -> Question:
-    return Question(type=kind, difficulty=difficulty, stem=stem, answer="A", analysis="合成解析")
+    options = [
+        OptionItem(label="A", text="合成选项一"),
+        OptionItem(label="B", text="合成选项二"),
+    ] if kind == QuestionType.single else []
+    return Question(
+        type=kind, difficulty=difficulty, stem=stem, options=options, answer="A", analysis="合成解析",
+    )
 
 
 def test_three_refill_rounds_report_zero_delivery_and_all_candidate_rejections():
@@ -23,7 +29,7 @@ def test_three_refill_rounds_report_zero_delivery_and_all_candidate_rejections()
 
     def generate(refill_params, stems, progress, on_failure):
         group, = refill_params.types
-        refill_requests.append((group.type, group.difficulty, group.count))
+        refill_requests.append((group.type, group.difficulty, group.count, refill_params.refill_reasons))
         return [_candidate(f"补题 {len(refill_requests)}", kind, difficulty)]
 
     def reject(pool, review_params, stems):
@@ -36,7 +42,7 @@ def test_three_refill_rounds_report_zero_delivery_and_all_candidate_rejections()
     )
 
     assert accepted == []
-    assert refill_requests == [(kind, difficulty, 2)] * 3
+    assert refill_requests == [(kind, difficulty, 2, ("题设不足",))] * 3
     assert groups == [GenerationReviewGroup(
         type=kind, difficulty=difficulty, requested=2, delivered=0, missing=2,
         rejections={"题设不足": 4},

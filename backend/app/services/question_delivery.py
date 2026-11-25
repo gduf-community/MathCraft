@@ -4,13 +4,17 @@ from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from app.schemas.api import GenerationReviewGroup
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import (
+    Difficulty, ExistingQuestion, GenerateParams, Question, QuestionType, TypeCount,
+)
 from app.services import phoenix_tracing as trace
 from app.services.generation_cancellation import check_cancellation
-from app.services.question_review import ReviewStats, _norm
+from app.services.question_dedup import QuestionDeduper
+from app.services.question_review import ReviewStats
 from app.services.rag import llm
 from app.services.rag.question_gen import (
     NO_USABLE_CANDIDATES,
+    REFILL_GUIDANCE,
     FailureCB,
     NeedConfirmError,
     QuestionOutputError,
@@ -40,6 +44,7 @@ def review_with_refill(
     cancel_check: Callable[[], None] | None = None,
     *,
     initial_events: Mapping[GroupKey, Counter[str]] | None = None,
+    deduper: QuestionDeduper | None = None,
 ) -> tuple[list[Question], ReviewStats, list[GenerationReviewGroup]]:
     """Review the initial pool and at most three rounds of replacement candidates."""
     quota: Counter[GroupKey] = Counter()
@@ -48,8 +53,11 @@ def review_with_refill(
     delivered: Counter[GroupKey] = Counter()
     events = {key: Counter((initial_events or {}).get(key, {})) for key in quota}
     accepted: list[Question] = []
-    avoid = list(dict.fromkeys((existing_stems or []) + params.existing_stems))
-    seen = {_norm(stem) for stem in avoid}
+    exclusions = list(dict.fromkeys((existing_stems or []) + params.existing_stems))
+    if deduper is None:
+        deduper = QuestionDeduper(
+            None, "", params.kb_id, exclusions, params.existing_questions, None, cancel_check,
+        )
     stats = ReviewStats()
     pool = first_pool
     initial_counts = Counter((question.type, question.difficulty) for question in first_pool)
@@ -63,15 +71,16 @@ def review_with_refill(
             progress_cb(percent, stage)
         check_cancellation(cancel_check)
 
-    def remember(questions: list[Question]) -> None:
-        for question in questions:
-            stem = _norm(question.stem)
-            if stem not in seen:
-                seen.add(stem)
-                avoid.append(question.stem)
-
-    def round_params(types: list[TypeCount]) -> GenerateParams:
-        return params.model_copy(update={"types": types, "existing_stems": list(avoid)})
+    def round_params(
+        types: list[TypeCount], reasons: tuple[str, ...] = (),
+    ) -> GenerateParams:
+        return params.model_copy(update={
+            "types": types, "existing_stems": exclusions, "refill_reasons": reasons,
+            "existing_questions": params.existing_questions + [
+                ExistingQuestion.model_construct(type=q.type, stem=q.stem, options=q.options)
+                for q in accepted[-12:]
+            ],
+        })
 
     def remaining() -> dict[GroupKey, int]:
         return {key: count - delivered[key] for key, count in quota.items()
@@ -101,9 +110,27 @@ def review_with_refill(
         report(percent, "正在审核题目" if not round_no else f"正在审核第 {round_no} 轮补题")
         deficits = remaining()
         types = [item for key, count in deficits.items() for item in type_counts(key, count)]
+        previous_rejections: dict[GroupKey, Counter[str]] = {}
         if pool:
             with trace.question_round(round_no):
-                passed, current = review_fn(pool, round_params(types), list(avoid))
+                pending = []
+                for question in pool:
+                    exact = deduper.check_exact(question)
+                    if not exact.duplicate:
+                        pending.append(question)
+                        continue
+                    trace.question_decision(
+                        "corpus_dedup", "rejected", exact.code, candidate_id=question.id,
+                        kind=question.type.value, difficulty=question.difficulty.value, revision=0,
+                    )
+                    key = (question.type, question.difficulty)
+                    stats.duplicates += 1
+                    stats.rejections.setdefault(key, Counter())["重复题目"] += 1
+                    previous_rejections.setdefault(key, Counter())["重复题目"] += 1
+                passed, current = (
+                    review_fn(pending, round_params(types), list(exclusions))
+                    if pending else ([], ReviewStats())
+                )
             check_cancellation(cancel_check)
             stats.duplicates += current.duplicates
             stats.repaired += current.repaired
@@ -111,21 +138,34 @@ def review_with_refill(
             stats.solved += current.solved
             for key, reasons in current.rejections.items():
                 stats.rejections.setdefault(key, Counter()).update(reasons)
+                previous_rejections.setdefault(key, Counter()).update(reasons)
             for question in passed:
                 key = (question.type, question.difficulty)
                 if delivered[key] >= quota[key] or len(accepted) >= requested:
                     record_selection(question, round_no, "skipped", "quota_filled")
                     continue
-                if _norm(question.stem) in seen:
+                with trace.question_round(round_no), trace.question_stage(
+                    "finished_dedup", candidate_id=question.id, kind=question.type.value,
+                    difficulty=question.difficulty.value,
+                ) as observation:
+                    duplicate = deduper.check(question)
+                    if duplicate.duplicate:
+                        observation.decision("rejected", duplicate.code)
+                    else:
+                        observation.decision(
+                            "passed", duplicate.code if duplicate.code != "unique" else None,
+                        )
+                if duplicate.duplicate:
                     record_selection(question, round_no, "rejected", "duplicate")
                     stats.duplicates += 1
+                    stats.solved = max(0, stats.solved - 1)
                     stats.rejections.setdefault(key, Counter())["重复题目"] += 1
+                    previous_rejections.setdefault(key, Counter())["重复题目"] += 1
                     continue
                 record_selection(question, round_no, "selected")
                 delivered[key] += 1
                 accepted.append(question)
-                remember([question])
-        remember(pool)
+                deduper.remember(question)
         deficits = remaining()
         if not deficits or len(accepted) >= requested or round_no == MAX_REFILL_ROUNDS:
             break
@@ -143,8 +183,16 @@ def review_with_refill(
                     "refill", kind=key[0].value, difficulty=key[1].value,
                 ) as observation:
                     try:
+                        ranked = sorted(
+                            previous_rejections.get(key, {}).items(),
+                            key=lambda entry: (-entry[1], entry[0]),
+                        )
+                        reasons = tuple(
+                            name for name, _ in ranked if name in REFILL_GUIDANCE
+                        )[:2]
                         fresh = gen_fn(
-                            round_params([item]), list(avoid), refill_progress, record_failure,
+                            round_params([item], reasons), list(exclusions),
+                            refill_progress, record_failure,
                         )
                     except NeedConfirmError:
                         reason = "可用原题不足"

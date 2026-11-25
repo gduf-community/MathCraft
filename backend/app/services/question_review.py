@@ -27,6 +27,7 @@ from app.services.generation_cancellation import (
 from app.services.rag import embeddings, llm
 from app.services.rag.prompts import DRAFT_TRACES, SOLVE_ANSWER_SYSTEM, SOLVE_EXPLAIN_SYSTEM
 from app.services import latex_utils
+from app.services.question_symbolic import SymbolicResult, solve_symbolic, verify_symbolic
 from app.services.rag_runtime import with_snapshot
 from app.services.phoenix_tracing import TracingThreadPoolExecutor as ThreadPoolExecutor
 
@@ -101,6 +102,15 @@ REPAIR_PROMPT = """下面这道题没有通过难度与质量审查。请只做�
 __QUESTION__
 """
 
+EXPLANATION_REPAIR_PROMPT = """下面这道题没有通过解析验收。请只改写解析，逐字保留题干、选项和答案。
+使用指定范围内的定理和方法，使推导成立且结论与成品答案一致。选择题需说明各项正误。
+只输出一个 JSON 对象，唯一字段为 analysis，值为完整解析字符串。
+指定范围：__SCOPE__
+拦截依据：__EVIDENCE__
+原题：
+__QUESTION__
+"""
+
 JOINT_PROMPT = """
 以上是完整题面，下面还给出成品选项、答案、解析与独立求解证据。逐项核验成品，
 不能仅根据独立解题结果判断成品合格。输出的 JSON 须额外包含以下布尔字段：
@@ -114,6 +124,8 @@ JOINT_PROMPT = """
   判断为错须给反例或反证。
 额外输出 evidence 字符串。通过时简述支持验收的关键依据，失败时给出具体反例、
 缺失条件、越界定理或不成立的步骤。仅解析越界时说明可用的范围内方法。
+另输出 explanationScopeOnly 布尔字段。仅当题目本身可用指定范围内的方法作答，
+而成品解析的方法超出范围时填 true，否则填 false。
 另输出 verifiable 布尔字段。证据不足时 verifiable 为 false。
 任一字段无法验证或不成立时，passed 必须为 false。五项均通过时 passed 为 true，
 难度只用评分表达，按成品的最短合理解法评分。
@@ -161,12 +173,15 @@ class _SolveResult:
     evidence: str = ""
     answer: str = ""
     confidence: str = "mid"
+    symbolic: SymbolicResult | None = None
 
 
 @dataclass(frozen=True)
 class _Finding:
     reason: str
     evidence: str = ""
+    explanation_only: bool = False
+    completion_answer: _SolveResult | None = None
 
 
 @dataclass(frozen=True)
@@ -384,6 +399,16 @@ def _chat_json_low(
     return data
 
 
+def _trace_model_failure(exc: Exception) -> None:
+    if isinstance(exc, ValueError) or (
+        isinstance(exc, llm.LLMError) and str(exc) == llm._INVALID_JSON
+    ):
+        trace.record_question_failure("invalid_output")
+    else:
+        code = llm.model_error_trace_code(llm.friendly_error(exc))
+        trace.record_question_failure(code if code != "other" else "model_error")
+
+
 def parse_review(data: dict, target: Difficulty) -> dict:
     """验证盲评契约，重算难度分和档位，并检查质量否决。"""
     scores = data.get("scores")
@@ -440,16 +465,33 @@ def _judge_once(
         review = parse_review(data, target)
         if independent is not None:
             evidence = data.get("evidence")
-            if (data.get("verifiable") is not True
-                    or not isinstance(evidence, str) or not evidence.strip()
+            if (type(data.get("verifiable")) is not bool
                     or any(type(data.get(key)) is not bool for key in _JOINT_FIELDS)):
+                trace.record_question_failure("invalid_output")
+                return None
+            if not data["verifiable"]:
+                trace.record_question_failure("unverifiable_output")
+                return None
+            if not isinstance(evidence, str) or not evidence.strip():
+                trace.record_question_failure("missing_evidence")
                 return None
             finding = next(
                 (_Finding(reason, evidence) for key, reason in _JOINT_FIELDS.items()
                  if data[key] is False),
                 None,
             )
+            other_fields_valid = all(data[key] for key in ("stemValid", "optionsValid", "answerValid"))
+            if other_fields_valid and not data["scopeValid"]:
+                explanation_scope_only = data.get("explanationScopeOnly")
+                if type(explanation_scope_only) is not bool:
+                    trace.record_question_failure("invalid_output")
+                    return None
+                if explanation_scope_only:
+                    finding = _Finding("解析方法超出范围", evidence, explanation_only=True)
+            elif other_fields_valid and data["scopeValid"] and not data["analysisValid"]:
+                finding = _Finding("解析不成立", evidence, explanation_only=True)
             if finding is None and (not review["qualityPassed"] or not review["methods"]):
+                trace.record_question_failure("unverifiable_output")
                 return None
             review["finding"] = finding
             review["evidence"] = evidence
@@ -457,6 +499,7 @@ def _judge_once(
     except GenerationCanceled:
         raise
     except Exception as exc:  # noqa: BLE001
+        _trace_model_failure(exc)
         logger.warning("盲评失败：%s", type(exc).__name__)
         return None
 
@@ -514,9 +557,11 @@ def evaluate(
         first = [f.result() for f in futures]
     check_cancellation(cancel_check)
     valid = [r for r in first if r]
-    for review in valid:
-        if review.get("finding") is not None:
-            return review
+    findings = [review for review in valid if review.get("finding") is not None]
+    if findings:
+        return next(
+            (review for review in findings if not review["finding"].explanation_only), findings[0],
+        )
     if len(valid) != judges:
         return _merge_reviews([])
     if (len(valid) == 2 and all(r["qualityPassed"] for r in valid)
@@ -555,13 +600,22 @@ def _repair(
     *, scope: str = "", original: bool = False,
 ) -> Question | None:
     """依据具体缺陷修订一次，保留候选身份与交付档位。"""
+    if finding.completion_answer is not None:
+        fixed = question.model_copy(deep=True)
+        if _solve_one(
+            fixed, api_key, independent=finding.completion_answer, scope=scope,
+            targeted_reason=finding.evidence, **cancellation_kwargs(cancel_check),
+        ):
+            return fixed
+        return None
     payload = question.model_dump(exclude={"difficultyReview", "difficultyScore"})
     restriction = (
         "原题模式须逐字保留题干及成品已有的选项，只可修正答案、解析及评分点。"
         if original else "保留题型与核心考点，只修正必要内容。"
     )
+    template = EXPLANATION_REPAIR_PROMPT if finding.explanation_only else REPAIR_PROMPT
     prompt = (
-        REPAIR_PROMPT.replace("__TARGET__", target.value)
+        template.replace("__TARGET__", target.value)
         .replace("__PARAMS__", TIER_PARAMS[target])
         .replace("__ORIGINAL__", restriction)
         .replace("__SCOPE__", scope or "未限定")
@@ -573,13 +627,28 @@ def _repair(
             [{"role": "user", "content": prompt}], api_key,
             **cancellation_kwargs(cancel_check),
         )
+        if finding.explanation_only:
+            if any(
+                key != "analysis" and key in data and data[key] != value
+                for key, value in payload.items()
+            ):
+                trace.record_question_failure("protected_fields_changed")
+                return None
+            raw = data.get("analysis")
+            analysis = _polish_analysis(raw) if isinstance(raw, str) else None
+            if not analysis or _has_draft_trace(analysis):
+                trace.record_question_failure("invalid_output")
+                return None
+            return question.model_copy(update={"analysis": analysis})
         fixed = Question.model_validate(data)
     except GenerationCanceled:
         raise
     except (ValueError, llm.LLMError) as exc:
+        _trace_model_failure(exc)
         logger.warning("修补失败：%s", type(exc).__name__)
         return None
     if fixed.type != question.type:
+        trace.record_question_failure("protected_fields_changed")
         return None
     return fixed.model_copy(update={
         "id": question.id, "difficulty": target, "score": question.score,
@@ -731,9 +800,11 @@ def _ask_answer(
         except GenerationCanceled:
             raise
         except Exception as exc:
+            _trace_model_failure(exc)
             logger.warning("独立求解失败：%s", type(exc).__name__)
             continue
         if not isinstance(data, dict):
+            trace.record_question_failure("invalid_output")
             continue
         evidence = ""
         if structured:
@@ -741,27 +812,33 @@ def _ask_answer(
             try:
                 status = SolveStatus(data.get("status"))
             except (ValueError, TypeError):
+                trace.record_question_failure("invalid_output")
                 continue
             if not isinstance(raw_evidence, str) or not raw_evidence.strip():
+                trace.record_question_failure("missing_evidence")
                 continue
             evidence = raw_evidence.strip()
             if status != SolveStatus.SOLVED:
                 return _SolveResult(status, evidence)
         confidence = data.get("confidence", "mid")
         if not isinstance(confidence, str) or confidence not in ("high", "mid", "low"):
+            trace.record_question_failure("invalid_output")
             continue
         raw = data.get("answer")
         if question.type == QuestionType.multiple:
             if (not isinstance(raw, list) or not 2 <= len(raw) <= 3
                     or any(not isinstance(item, str) or _MULTI_SEP in item for item in raw)):
+                trace.record_question_failure("invalid_output")
                 continue
             answer = _MULTI_SEP.join(raw)
         elif isinstance(raw, str) and _MULTI_SEP not in raw:
             answer = raw
         else:
+            trace.record_question_failure("invalid_output")
             continue
         if _prepare_answer(question, answer) is not None:
             return _SolveResult(SolveStatus.SOLVED, evidence, answer, confidence)
+        trace.record_question_failure("invalid_output")
     return _SolveResult(SolveStatus.UNVERIFIABLE)
 
 
@@ -774,7 +851,7 @@ def _ask_explain(
     question: Question, answer_text: str, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
     correct_texts: list[str] | None = None,
-    *, scope: str = "", fixed_options: bool = False,
+    *, scope: str = "", fixed_options: bool = False, targeted_reason: str = "",
 ) -> tuple[str, list[str], str] | None:
     """核验候选答案后写成品解析与干扰项，格式错误或草稿泄漏时重试。"""
     prompt = (
@@ -797,7 +874,12 @@ def _ask_explain(
             prompt += "多选有 2~3 个正确项，配 1~2 个互异干扰项；conclusion 按候选项顺序用；连接。"
     else:
         prompt += "输出 analysis 与 conclusion。"
-    for attempt in range(_EXPLAIN_ATTEMPTS):
+    if targeted_reason:
+        prompt += (
+            f"\n【定向修订】{targeted_reason}。保留已确认的答案及现有选项，"
+            "重新写出完整解析，并在 conclusion 原样填写待核验的候选答案。"
+        )
+    for attempt in range(1 if targeted_reason else _EXPLAIN_ATTEMPTS):
         check_cancellation(cancel_check)
         retry = (
             "\n上次讲解不合格：请检查字段类型、公式、四项唯一性和草稿痕迹，"
@@ -814,36 +896,56 @@ def _ask_explain(
         except GenerationCanceled:
             raise
         except Exception as exc:
+            _trace_model_failure(exc)
             logger.warning("讲解生成失败：%s", type(exc).__name__)
             continue
         if not isinstance(data, dict):
+            trace.record_question_failure("invalid_output")
             continue
         raw_analysis, raw_conclusion = data.get("analysis"), data.get("conclusion", "")
         if not isinstance(raw_analysis, str) or not isinstance(raw_conclusion, str):
+            trace.record_question_failure("invalid_output")
             continue
         analysis = _polish_analysis(raw_analysis)
         conclusion = raw_conclusion.strip()
         if not analysis or _has_draft_trace(analysis):
+            trace.record_question_failure(
+                "empty_explanation" if not raw_analysis.strip() else
+                "explanation_formula" if not analysis else "explanation_draft"
+            )
+            continue
+        if targeted_reason and not conclusion:
+            trace.record_question_failure("missing_conclusion")
             continue
         distractors: list[str] = []
         if choice and not fixed_options:
             raw_distractors = data.get("distractors")
             if (not isinstance(raw_distractors, list)
                     or any(not isinstance(item, str) for item in raw_distractors)):
+                trace.record_question_failure("invalid_distractors")
                 continue
             distractors = [_clean_option_text(item) for item in raw_distractors]
             if any(_polish_analysis(item) is None for item in distractors):
+                trace.record_question_failure("invalid_distractors")
                 continue
             corrects = correct_texts or [answer_text]
             keys = [_option_key(item) for item in corrects + distractors]
             if len(keys) != 4 or any(not key for key in keys) or len(set(keys)) != 4:
+                trace.record_question_failure("invalid_distractors")
                 continue
         return analysis, distractors, conclusion
     return None
 
 
-def _answers_agree(conclusion: str, answer_text: str) -> bool:
-    """结论可省略；数值精确比较，其他结果沿用规范化后的包含比较。"""
+def _answers_agree(conclusion: str, answer_text: str, *, exact: bool = False) -> bool:
+    """比较规范化结论，定向修订要求与已确认的答案一致。"""
+    if exact:
+        left, right = (
+            re.sub(r"\s+", " ", latex_utils.fix_delimiters(text)).strip()
+            for text in (conclusion, answer_text)
+        )
+        return bool(left) and left == right
+
     def normalize(text: str) -> str:
         stripped = re.sub(r"\$|\\(?:left|right)(?![A-Za-z])|\\[,;!]|\s+", "", text or "")
         stripped = stripped.replace("{", "").replace("}", "").replace("\\", "")
@@ -863,7 +965,7 @@ def _answers_agree(conclusion: str, answer_text: str) -> bool:
 def _solve_one(
     question: Question, api_key: str | None,
     cancel_check: Callable[[], None] | None = None,
-    *, independent: _SolveResult | None = None, scope: str = "",
+    *, independent: _SolveResult | None = None, scope: str = "", targeted_reason: str = "",
 ) -> bool:
     """两步解题并核对结论，整题验证和取消检查通过后才回写。"""
     check_cancellation(cancel_check)
@@ -880,15 +982,30 @@ def _solve_one(
         if prepared is None:
             continue
         corrects, answer_text = prepared
+        if fixed_options and not (
+            {_option_key(text) for text in corrects}
+            <= {_option_key(option.text) for option in question.options}
+        ):
+            trace.record_question_failure("independent_options_mismatch")
+            return False
         explained = _ask_explain(
             question, answer_text, api_key, correct_texts=corrects,
             scope=scope, fixed_options=fixed_options,
+            **({"targeted_reason": targeted_reason} if targeted_reason else {}),
             **cancellation_kwargs(cancel_check),
         )
         if explained is None:
             return False
         analysis, distractors, conclusion = explained
-        if not _answers_agree(conclusion, answer_text):
+        agreement = None
+        if solved.symbolic is not None and conclusion and not corrects[1:]:
+            agreement = verify_symbolic(solved.symbolic, conclusion, (), cancel_check).answer_matches
+        if agreement is False or (
+            agreement is None and not _answers_agree(
+                conclusion, answer_text, exact=bool(targeted_reason),
+            )
+        ):
+            trace.record_question_failure("answer_conflict")
             logger.warning("解析结论与候选答案不一致，重新独立求解")
             continue
         options = list(question.options)
@@ -896,6 +1013,7 @@ def _solve_one(
             correct_keys = {_option_key(text) for text in corrects}
             selected = [item.label for item in options if _option_key(item.text) in correct_keys]
             if len(selected) != len(correct_keys):
+                trace.record_question_failure("answer_conflict")
                 return False
             answer = "".join(sorted(selected))
         elif question.type in (QuestionType.single, QuestionType.multiple):
@@ -964,6 +1082,50 @@ def _solve_all(
     return solved
 
 
+_COMPLETION_REASONS = {
+    "answer_conflict": ("补全结论与答案冲突", "修正解析结论，使其与已确认的答案一致"),
+    "empty_explanation": ("解析为空", "补齐解析和必要步骤"),
+    "explanation_formula": ("解析公式格式错误", "修复解析中的公式定界与转义"),
+    "explanation_draft": ("解析含草稿", "删去草稿与反复试算，给出完整推导"),
+    "missing_conclusion": ("解析补全失败", "给出明确的解析结论"),
+    "invalid_distractors": ("选项不合格", "保留正确项，并生成数量正确且互不等价的干扰项"),
+}
+
+
+def _symbolic_solve(
+    question: Question, fields: _QuestionTraceFields, cancel_check: Callable[[], None] | None,
+) -> tuple[_SolveResult | None, _Finding | None]:
+    with trace.question_stage("symbolic_solve", **fields) as stage:
+        symbolic = solve_symbolic(question.stem, question.type.value, cancel_check)
+        if symbolic.status != "solved":
+            stage.decision("skipped", f"symbolic_{symbolic.status}")
+            return None, None
+        options = tuple(option.text for option in question.options)
+        if options and question.type in (QuestionType.single, QuestionType.multiple):
+            verification = verify_symbolic(symbolic, symbolic.answer, options, cancel_check)
+            correct = verification.true_option_indices
+            if correct is None:
+                stage.decision("skipped", f"symbolic_{verification.status}")
+                return None, None
+            valid_count = (
+                len(correct) == 1 if question.type == QuestionType.single else
+                2 <= len(correct) <= 3 and len(correct) < len(options)
+            )
+            if not valid_count:
+                stage.decision("rejected", "invalid_options")
+                return None, _Finding(
+                    "选项不合格", f"符号验算得到 {len(correct)} 个正确项，与该题型要求不符。",
+                )
+            answer = _MULTI_SEP.join(options[index] for index in correct)
+        elif question.type == QuestionType.multiple:
+            stage.decision("skipped", "symbolic_unsupported")
+            return None, None
+        else:
+            answer = symbolic.answer
+        stage.decision("passed")
+        return _SolveResult(SolveStatus.SOLVED, "由 SymPy 独立验算。", answer, "high", symbolic), None
+
+
 def _check_candidate(
     question: Question, scope: str, api_key: str | None,
     cancel_check: Callable[[], None] | None, *, repaired: bool,
@@ -974,23 +1136,42 @@ def _check_candidate(
         if not question.stem.strip() or _latex_issue(question.stem):
             stage.decision("rejected", "题面缺陷")
             return _Finding("题面缺陷", "题干为空或数学公式定界有误")
-        independent = _ask_answer(
-            question, api_key, structured=True, **cancellation_kwargs(cancel_check),
-        )
+        independent, symbolic_finding = _symbolic_solve(question, fields, cancel_check)
+        if symbolic_finding is not None:
+            stage.decision("rejected", symbolic_finding.reason)
+            return symbolic_finding
+        if independent is None:
+            independent = _ask_answer(
+                question, api_key, structured=True, **cancellation_kwargs(cancel_check),
+            )
         if independent.status != SolveStatus.SOLVED:
             stage.decision("rejected", independent.status.value)
             reason = _SOLVE_REASONS[independent.status]
             evidence = independent.evidence if independent.status != SolveStatus.UNVERIFIABLE else ""
             return _Finding(reason, evidence)
         stage.decision("passed")
-    if not repaired and (not question.answer.strip() or not question.analysis.strip()):
+    if not question.answer.strip():
         with trace.question_stage("solution_completion", **fields) as stage:
             if not _solve_one(
                 question, api_key, independent=independent, scope=scope,
                 **cancellation_kwargs(cancel_check),
             ):
-                stage.decision("rejected", "无法验证")
-                return _Finding("无法验证")
+                code = stage.failure_reason()
+                if code == "independent_options_mismatch":
+                    stage.decision("rejected", code)
+                    return _Finding("选项不合格")
+                reason, instruction = _COMPLETION_REASONS.get(
+                    code or "", (
+                        "解析补全失败",
+                        "核对返回字段、公式定界和解析结论，重新完成解析",
+                    ),
+                )
+                if code and code.startswith("model_"):
+                    instruction = "上一轮模型调用失败，重新完成解析并核对输出字段"
+                stage.decision("rejected", code or reason)
+                return _Finding(
+                    reason, instruction, explanation_only=True, completion_answer=independent,
+                )
             stage.decision("passed")
     with trace.question_stage("final_acceptance", **fields) as stage:
         finding = _accept_candidate(question, independent, scope, api_key, cancel_check,
@@ -1002,6 +1183,35 @@ def _check_candidate(
         return finding
 
 
+def _check_symbolic_answer(
+    question: Question, symbolic: SymbolicResult, cancel_check: Callable[[], None] | None,
+) -> _Finding | None:
+    options = tuple(option.text for option in question.options)
+    choice = question.type in (QuestionType.single, QuestionType.multiple)
+    verification = verify_symbolic(
+        symbolic, symbolic.answer if choice else question.answer, options, cancel_check,
+    )
+    if choice:
+        indices = verification.true_option_indices
+        if indices is None:
+            trace.record_question_failure(f"symbolic_{verification.status}")
+            return None
+        valid_count = (
+            len(indices) == 1 if question.type == QuestionType.single
+            else 2 <= len(indices) <= 3 and len(indices) < len(options)
+        )
+        if not valid_count:
+            return _Finding("选项不合格", "符号验算发现实际正确选项数不符合题型。")
+        selected = {question.options[index].label for index in indices}
+        if selected != set(question.answer):
+            return _Finding("答案不成立", "成品所选标签与符号验算结果不一致。")
+    elif verification.answer_matches is False:
+        return _Finding("答案不成立", f"符号验算得到 {symbolic.answer}，与成品答案不一致。")
+    elif verification.answer_matches is None:
+        trace.record_question_failure(f"symbolic_{verification.status}")
+    return None
+
+
 def _accept_candidate(
     question: Question, independent: _SolveResult, scope: str, api_key: str | None,
     cancel_check: Callable[[], None] | None, *, repaired: bool,
@@ -1009,8 +1219,10 @@ def _accept_candidate(
     """验收成品的答案、解析、选项和难度。"""
     if not question.answer.strip() or _latex_issue(question.answer):
         return _Finding("答案不成立", "成品答案为空或数学公式定界有误")
-    if not _polish_analysis(question.analysis) or _has_draft_trace(question.analysis):
-        return _Finding("解析不成立", "成品解析为空、公式定界有误或含推导草稿")
+    if independent.symbolic is not None:
+        finding = _check_symbolic_answer(question, independent.symbolic, cancel_check)
+        if finding is not None:
+            return finding
     if question.type in (QuestionType.single, QuestionType.multiple, QuestionType.judge):
         labels = {item.label for item in question.options}
         answer = set(question.answer)
@@ -1042,6 +1254,10 @@ def _accept_candidate(
             )
     elif question.options:
         return _Finding("选项不合格", "该题型不应附带选项")
+    if not _polish_analysis(question.analysis) or _has_draft_trace(question.analysis):
+        return _Finding(
+            "解析不成立", "成品解析为空、公式定界有误或含推导草稿", explanation_only=True,
+        )
     review = evaluate(
         question, question.difficulty, scope, api_key, judges=1 if repaired else 2,
         independent=independent, **cancellation_kwargs(cancel_check),
@@ -1084,15 +1300,17 @@ def _review_candidate(
         if not finding.evidence:
             trace.question_decision("repair", "skipped", finding.reason, **fields)
             return _CandidateResult(reason=finding.reason)
-        with trace.question_stage("repair", **fields) as stage:
+        repair_mode = "explanation_only" if finding.explanation_only else "full"
+        with trace.question_stage("repair", repair_mode=repair_mode, **fields) as stage:
             fixed = _repair(
                 candidate, finding, question.difficulty, api_key, scope=scope, original=original,
                 **cancellation_kwargs(cancel_check),
             )
             if fixed is None:
-                stage.decision("rejected", finding.reason)
+                stage.decision("rejected", stage.failure_reason() or finding.reason)
                 return _CandidateResult(reason=finding.reason)
             if original and (fixed.stem != question.stem or fixed.options != candidate.options):
+                trace.record_question_failure("protected_fields_changed")
                 stage.decision("rejected", "原题被改动")
                 return _CandidateResult(reason="原题被改动")
             stage.decision("passed", finding.reason)
@@ -1121,10 +1339,12 @@ def review_questions(
     hyde_text: str | None = None,
     progress=None,
     cancel_check: Callable[[], None] | None = None,
+    *,
+    deduplicate: bool = True,
 ) -> tuple[list[Question], ReviewStats]:
     """审核本批候选题，由调用方根据实际通过结果安排补题。
 
-    语料在短读事务中读取，模型和进度回调均在事务结束后运行。
+    启用内置查重时，语料在短读事务中读取。共享交付可关闭内置查重。
     候选复制后独立验收，取消和拒绝均不会修改调用方传入的题目。
     """
     check_cancellation(cancel_check)
@@ -1133,38 +1353,45 @@ def review_questions(
     questions = [q for q in questions if (q.type, q.difficulty) in eligible]
     if not questions:
         return [], stats
-    if db.in_transaction() or db.new or db.dirty or db.deleted:
-        raise InvalidRequestError(
-            "review_questions requires a clean Session without an active transaction"
-        )
-    with db.begin():
-        corpus = load_corpus(db, user_id, params.kb_id)
-
     def report(percent: int, stage: str) -> None:
         check_cancellation(cancel_check)
         if progress:
             progress(percent, stage)
         check_cancellation(cancel_check)
 
-    corpus_by_norm: dict[str, str] = {}
-    for stem in corpus + params.existing_stems:
-        if key := _norm(stem):
-            corpus_by_norm.setdefault(key, stem)
-    corpus = list(corpus_by_norm.values())
-
-    def reject(question: Question, reason: str, *, stage: str, revision: int = 0) -> None:
+    def reject(
+        question: Question, reason: str, *, stage: str, revision: int = 0,
+        failure_code: str | None = None,
+    ) -> None:
         stats.rejections.setdefault((question.type, question.difficulty), Counter())[reason] += 1
         if reason == "重复题目":
             stats.duplicates += 1
-        trace.question_decision(stage, "rejected", reason, **_trace_fields(question, revision))
+        with trace.question_stage(stage, **_trace_fields(question, revision)) as observation:
+            if failure_code is not None:
+                trace.record_question_failure(failure_code)
+            observation.decision("rejected", reason)
 
-    report(78, "正在排查重复题目")
-    pending: list[Question] = []
-    for question in questions:
-        if _norm(question.stem) in corpus_by_norm:
-            reject(question, "重复题目", stage="corpus_dedup")
-        else:
-            pending.append(question)
+    pending = questions
+    corpus: list[str] = []
+    if deduplicate:
+        if db.in_transaction() or db.new or db.dirty or db.deleted:
+            raise InvalidRequestError(
+                "review_questions requires a clean Session without an active transaction"
+            )
+        with db.begin():
+            corpus = load_corpus(db, user_id, params.kb_id)
+        corpus_by_norm: dict[str, str] = {}
+        for stem in corpus + params.existing_stems:
+            if key := _norm(stem):
+                corpus_by_norm.setdefault(key, stem)
+        corpus = list(corpus_by_norm.values())
+        report(78, "正在排查重复题目")
+        pending = []
+        for question in questions:
+            if _norm(question.stem) in corpus_by_norm:
+                reject(question, "重复题目", stage="corpus_dedup")
+            else:
+                pending.append(question)
 
     report(82, "正在独立求解与验收候选题")
     with ThreadPoolExecutor(max_workers=_THINK_WORKERS, thread_name_prefix="review-candidate") as pool:
@@ -1180,8 +1407,13 @@ def review_questions(
             reject(question, result.reason, stage="candidate_review", revision=int(result.repaired))
         else:
             accepted.append(result.question)
-            if result.repaired:
+            if deduplicate and result.repaired:
                 repaired_candidates.add(id(result.question))
+
+    if not deduplicate:
+        stats.solved = len(accepted)
+        report(100, "题目校验完成")
+        return accepted, stats
 
     report(96, "正在对成品查重")
     try:
@@ -1190,8 +1422,10 @@ def review_questions(
         logger.warning("成品查重失败：%s", exc)
         final, duplicates = [], []
         for question in accepted:
-            reject(question, "无法验证", stage="finished_dedup",
-                   revision=int(id(question) in repaired_candidates))
+            reject(
+                question, "无法验证", stage="finished_dedup",
+                revision=int(id(question) in repaired_candidates), failure_code="duplicate_check_failed",
+            )
     for question in duplicates:
         reject(question, "重复题目", stage="finished_dedup",
                revision=int(id(question) in repaired_candidates))

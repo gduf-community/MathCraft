@@ -388,6 +388,7 @@ export interface GenerateBody {
   scope?: string
   source_mode?: string
   existing_stems?: string[]
+  existing_questions?: QuestionPreview[]
 }
 
 export interface ApiQuestion {
@@ -1118,10 +1119,12 @@ export interface ChatTurnStatus {
   result: ChatMessageResult | null
 }
 
+export type QuestionPreview = Pick<Question, 'type' | 'stem' | 'options'>
+
 export async function sendChatMessage(
   sessionId: string,
   message: string,
-  existingStems: string[],
+  existingQuestions: QuestionPreview[],
   signal?: AbortSignal,
   images: string[] = [],
   mode: ChatMode = 'generate',
@@ -1132,7 +1135,9 @@ export async function sendChatMessage(
     method: 'POST',
     body: JSON.stringify({
       message,
-      existing_stems: existingStems,
+      existing_questions: existingQuestions.slice(-200).map(({ type, stem, options }) => ({
+        type, stem, options,
+      })),
       mode,
       switch_only: switchOnly,
       request_id: requestId,

@@ -11,7 +11,7 @@ from app.db import SessionLocal
 from app.models import BankMember, ChatMessage, ChatSession, GenerationBatch, OpsRun, Paper, User
 from app.models import Question as SavedQuestion
 from app.schemas.api import GenerationReviewGroup
-from app.schemas.question import Difficulty, GenerateParams, Question, QuestionType, TypeCount
+from app.schemas.question import Difficulty, GenerateParams, OptionItem, Question, QuestionType, TypeCount
 from app.services import cache, generation, question_review
 from app.services.question_delivery import review_with_refill
 from app.services.rag import chat_flow, data_agent, question_gen, slots
@@ -20,10 +20,16 @@ from test_generation_runs import resources as resources
 
 
 def _question(stem: str, kind: str = "single") -> Question:
-    return Question(type=QuestionType(kind), stem=stem, answer="A", analysis="合成解析")
+    options = [
+        OptionItem(label="A", text="合成选项一"),
+        OptionItem(label="B", text="合成选项二"),
+    ] if kind == "single" else []
+    return Question(
+        type=QuestionType(kind), stem=stem, options=options, answer="A", analysis="合成解析",
+    )
 
 
-def test_refill_uses_per_type_deficits_cumulative_stems_stats_and_percentages():
+def test_refill_uses_per_type_deficits_and_only_selected_comparisons():
     params = GenerateParams(
         kb_id="fake-bank", doc_id="fake-doc", source_mode="original", scope="导数",
         types=[TypeCount(type=QuestionType.single, count=2),
@@ -69,9 +75,11 @@ def test_refill_uses_per_type_deficits_cumulative_stems_stats_and_percentages():
         [(QuestionType.single, Difficulty.mid, 1)],
     ]
     assert all(call[0].source_mode == "original" for call in calls)
-    assert {"已有题", "首题", "多余填空", "填空补题"} <= set(calls[-1][1])
+    assert calls[-1][1] == ["已有题"]
+    assert {question.stem for question in calls[-1][0].existing_questions} == {"首题", "填空补题"}
+    assert calls[-1][0].refill_reasons == ("重复题目",)
     assert reviewed[-1][0] == {QuestionType.single: 1}
-    assert stats.duplicates == 4 and stats.repaired == 6 and stats.solved == 5
+    assert stats.duplicates == 4 and stats.repaired == 6 and stats.solved == 4
     assert percents == sorted(percents) and min(percents) >= 0 and max(percents) <= 100
 
 
@@ -287,7 +295,7 @@ def test_initial_original_shortage_keeps_need_confirm_classification(
         assert db.scalar(select(func.count()).select_from(GenerationBatch)) == 0
 
 
-@pytest.mark.parametrize("punctuation", [".", "?", "，"])
+@pytest.mark.parametrize("punctuation", [".", "?", "。"])
 def test_chat_refill_rejects_punctuation_variants_before_delivery_and_persistence(
     client, teacher, resources, monkeypatch, punctuation,
 ):
@@ -306,7 +314,7 @@ def test_chat_refill_rejects_punctuation_variants_before_delivery_and_persistenc
 
     def generate(params, doc_name, **kwargs):
         kwargs["cancel_check"]()
-        refills.append(list(kwargs["existing_stems"]))
+        refills.append([question.stem for question in params.existing_questions])
         assert sum(item.count for item in params.types) == 1
         return [_question(stem[:-1] + punctuation), _question(unique_stem)]
 

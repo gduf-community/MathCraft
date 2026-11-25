@@ -894,7 +894,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }, 1500)
         chatPollRef.current = poll
         const res = await api.sendChatMessage(
-          sessionId, trimmed, questions.map((q) => q.stem), controller.signal,
+          sessionId, trimmed, questions, controller.signal,
           images, effectiveMode, opts?.switchOnly ?? false, requestId,
         )
         if (!isActive()) return

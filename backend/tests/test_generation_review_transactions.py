@@ -12,7 +12,7 @@ from app.db import Base, SessionLocal
 from app.models import Bank, ChatSession, User
 from app.models.base import new_id
 from app.schemas.question import GenerateParams, Question, TypeCount
-from app.services import question_review
+from app.services import question_dedup, question_review
 from app.services.question_review import review_questions as real_review
 from conftest import create_bank
 from test_generation_acid import fake_chat, fake_generation, resources, session_for
@@ -142,19 +142,21 @@ def test_generation_entrypoints_release_review_transaction_before_models(
 
     fake_chat(monkeypatch, check_chat_snapshots, questions=True)
     stub_review_models(monkeypatch)
-    original_load = question_review.load_corpus
+    original_load = question_dedup._load_corpus
     review_sessions = []
 
     def load(review_db, *args):
         review_sessions.append(review_db)
         return original_load(review_db, *args)
 
-    def duplicate_model(questions, corpus, **kwargs):
-        assert review_sessions and not review_sessions[-1].in_transaction()
-        return questions, []
+    original_check = question_dedup.QuestionDeduper._recall
 
-    monkeypatch.setattr(question_review, "load_corpus", load)
-    monkeypatch.setattr(question_review, "_drop_duplicates", duplicate_model)
+    def recall(deduper, *args):
+        assert review_sessions and not review_sessions[-1].in_transaction()
+        return original_check(deduper, *args)
+
+    monkeypatch.setattr(question_dedup, "_load_corpus", load)
+    monkeypatch.setattr(question_dedup.QuestionDeduper, "_recall", recall)
     monkeypatch.setattr(question_review, "review_questions", real_review)
     if route == "chat":
         response = client.post(f"/api/chat/sessions/{session_id}/messages", headers=teacher,

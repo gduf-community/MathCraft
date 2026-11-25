@@ -29,6 +29,7 @@ from app.schemas.question import (
 )
 from app.services import latex_utils
 from app.services import phoenix_tracing as trace
+from app.services.question_dedup import normalize_stem, question_key
 from app.services.generation_cancellation import (
     GenerationCanceled,
     cancellation_kwargs,
@@ -300,10 +301,6 @@ def count_available_originals(bank_id: str, doc_id: str, qtype: QuestionType) ->
     return len(matched)
 
 
-def _norm_stem(s: str) -> str:
-    return re.sub(r"\s+", "", s)
-
-
 def _build_context(hits: list[dict]) -> str:
     parts = []
     for i, h in enumerate(hits, 1):
@@ -362,6 +359,26 @@ def _split_counts(total: int, size: int) -> list[int]:
     return out
 
 
+REFILL_GUIDANCE = {
+    "题面缺陷": "核对题干是否包含全部已知量和明确的问题。",
+    "题设不足": "补齐推导所需的定义域、边界及命题前提。",
+    "条件矛盾": "逐项核对已知条件可以同时成立。",
+    "命题为假": "先核对结论成立，检查边界情况和反例。",
+    "超出范围": "选择能用指定知识点范围内的方法解决的题目。",
+    "选项不合格": "核对选项有定义、互异，且正确项数符合题型。",
+    "答案不成立": "独立复核题目各问的答案、定义域和方向。",
+    "解析不成立": "选择有清楚推导和明确结论的题目。",
+    "解析为空": "选择能写出完整、明确解析的题目。",
+    "解析公式格式错误": "选择解析公式易于明确表达的题目。",
+    "解析含草稿": "确保有可直接用于成品的完整数学推导。",
+    "补全结论与答案冲突": "核对推导结论、答案及各选项一致。",
+    "解析补全失败": "选择能写出完整解析并核对结论的题目。",
+    "解析方法超出范围": "优先选择可用指定范围内定理完整求解的题目。",
+    "难度不符": "按目标难度调整最短合理解法所需的实际推理步骤。",
+    "重复题目": "换用数学条件、所求结论或考查内容有实质差异的题。",
+}
+
+
 def _gen_batch(
     tc: TypeCount,
     params: GenerateParams,
@@ -405,6 +422,10 @@ def _gen_batch(
         extra += f"\n- 难度分布：{distribution}"
     if directive:
         extra += "\n" + directive
+    guidance = [REFILL_GUIDANCE[reason] for reason in params.refill_reasons
+                if reason in REFILL_GUIDANCE]
+    if guidance:
+        extra += "\n- 上一轮同题型和目标难度的审核反馈：" + " ".join(guidance)
     if avoid_snapshot:
         extra += (
             "\n- 以下题目已经出过，新题不得与它们重复（考点组合与题干结构都要避开）：\n"
@@ -598,7 +619,7 @@ def _gen_for_type(
     params: GenerateParams,
     doc_name: str,
     scope: str | None,
-    avoid_norm: set[str],
+    existing_stems: list[str],
     mixed_difficulty: bool,
     api_key: str | None,
     hyde_text: str | None,
@@ -651,7 +672,11 @@ def _gen_for_type(
         )
 
     collected: list[Question] = []
-    taken = set(avoid_norm)
+    blocked = {normalize_stem(stem) for stem in existing_stems}
+    seen_keys = set()
+    recent = existing_stems + [
+        question.stem for question in params.existing_questions if question.type == tc.type
+    ]
     errors: list[Exception] = []
     batch_completed = False
     for round_no in range(1 if allow_partial else MAX_FILL_ROUNDS):
@@ -666,7 +691,7 @@ def _gen_for_type(
                 f"「{type_label}」AI 生成中（{len(collected)}/{tc.count} 题）"
                 + ("，正在补齐" if round_no else ""),
             )
-        snapshot = list(taken)[-12:]
+        snapshot = recent[-12:]
         with ThreadPoolExecutor(max_workers=min(len(batch_sizes), GEN_BATCH_WORKERS),
                                 thread_name_prefix="qgen-batch") as pool:
             futures = [
@@ -695,14 +720,18 @@ def _gen_for_type(
                     continue
                 batch_completed = True
                 for q in batch:
-                    norm = _norm_stem(q.stem)
-                    if norm in taken:
+                    identity = question_key(q)
+                    if normalize_stem(q.stem) in blocked or (
+                        identity is not None and identity in seen_keys
+                    ):
                         trace.question_decision(
                             "generation", "skipped", "duplicate", candidate_id=q.id,
                             kind=tc.type.value, difficulty=difficulty,
                         )
                         continue
-                    taken.add(norm)
+                    if identity is not None:
+                        seen_keys.add(identity)
+                    recent.append(q.stem)
                     collected.append(q)
                     if report:
                         report(
@@ -783,7 +812,7 @@ def generate_questions(
             if available is not None and available < requested:
                 raise NeedConfirmError(TYPE_LABELS[kind], available, requested)
 
-    avoid_base = {_norm_stem(s) for s in (existing_stems or []) if s}
+    avoid_base = list(dict.fromkeys((existing_stems or []) + params.existing_stems))
     weights = [max(1, tc.count) for tc in params.types]
     total_weight = sum(weights)
     fracs = [0.0] * len(params.types)
@@ -816,7 +845,7 @@ def generate_questions(
                 params,
                 doc_name,
                 scope,
-                set(avoid_base),
+                avoid_base,
                 mixed_difficulty,
                 api_key,
                 hyde_text,

@@ -16,6 +16,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Document, OpsRun
 from app.models.base import new_id
+from app.schemas.question import GenerateParams, Question
 from app.services import phoenix_tracing, question_review
 from app.services.rag import llm, retrieval, slots
 from app.services.rag.prompts import HYDE_SYSTEM
@@ -80,8 +81,10 @@ def _candidate(stem):
 
 def _install_model(monkeypatch, scenario):
     nominations = count(1)
+    solve_calls = count(1)
     false_stems = iter(("偶函数的导数恒正", "可导函数必严格递增", "驻点必为极大值"))
     fixed_stem = f"用导数定义证明常值函数导数为零。{PRIVATE}"
+    repaired_analysis = f"差商恒为零，其极限为零。{PRIVATE}"
 
     def reply(request):
         assert request.headers["authorization"] == f"Bearer {FAKE_KEY}"
@@ -91,7 +94,7 @@ def _install_model(monkeypatch, scenario):
             number = next(nominations)
             if scenario == "shortfall" and number >= 4:
                 raise httpx.ReadTimeout(PRIVATE, request=request)
-            stem = fixed_stem if scenario == "normal" else (
+            stem = fixed_stem if scenario in {"normal", "explanation"} else (
                 f"证明{next(false_stems)}。{PRIVATE}"
             )
             content = json.dumps({"questions": [_candidate(stem)]}, ensure_ascii=False)
@@ -105,7 +108,10 @@ def _install_model(monkeypatch, scenario):
 
         if data["messages"][0]["content"] == HYDE_SYSTEM:
             return _completion(f"导数定义教材片段。{PRIVATE}")
-        if prompt.startswith("下面这道题没有通过"):
+        if prompt.startswith("下面这道题没有通过解析验收"):
+            assert scenario == "explanation" and f"解析越界 {PRIVATE}" in prompt
+            result = {"analysis": repaired_analysis}
+        elif prompt.startswith("下面这道题没有通过"):
             assert f"反例 {PRIVATE}" in prompt
             result = _candidate(fixed_stem if scenario == "repair" else (
                 f"证明可导函数的导数处处为正。{PRIVATE}"
@@ -113,6 +119,10 @@ def _install_model(monkeypatch, scenario):
         elif "【待核验的候选答案】" in prompt:
             result = {"analysis": _candidate(fixed_stem)["analysis"], "conclusion": "结论成立"}
         elif "【题干】" in prompt:
+            if scenario == "explanation" and next(solve_calls) == 1:
+                return _completion(json.dumps({
+                    "status": "solved", "answer": "结论成立",
+                }))
             result = (
                 {"status": "solved", "answer": "结论成立", "evidence": PRIVATE}
                 if fixed_stem in prompt else
@@ -126,6 +136,11 @@ def _install_model(monkeypatch, scenario):
                 "evidence": PRIVATE, "stemValid": True, "scopeValid": True,
                 "optionsValid": True, "answerValid": True, "analysisValid": True,
             }
+            if scenario == "explanation" and repaired_analysis not in prompt:
+                result.update(
+                    scopeValid=False, analysisValid=False, explanationScopeOnly=True,
+                    evidence=f"解析越界 {PRIVATE}", passed=False,
+                )
         else:
             pytest.fail("unexpected model request")
 
@@ -175,7 +190,46 @@ def _attr(span, name):
     return attrs
 
 
-@pytest.mark.parametrize("scenario", ["normal", "repair", "shortfall"])
+def test_review_failure_combines_parallel_judge_reasons(phoenix, monkeypatch):
+    judge_calls = count(1)
+    question = Question(
+        id="q-564162063b", type="essay", difficulty="低", stem="证明两正数的积为正。",
+        answer="成立", analysis="由乘法符号法则得证。",
+    )
+    params = GenerateParams(
+        kb_id="test-bank", doc_id="test-doc", difficulty="低", types=[{"type": "essay", "count": 1}],
+    )
+    monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: {
+        "status": "solved", "answer": "成立", "evidence": PRIVATE,
+    })
+
+    def judge(*args, **kwargs):
+        if next(judge_calls) == 1:
+            raise TimeoutError(PRIVATE)
+        return json.dumps({
+            "scores": dict.fromkeys(question_review._SCORE_KEYS, 5),
+            **dict.fromkeys(question_review._JOINT_FIELDS, True),
+            "passed": True, "verifiable": True,
+        })
+
+    monkeypatch.setattr(question_review.llm, "chat_text", judge)
+
+    @phoenix_tracing.trace_run("review_failure")
+    def review():
+        with SessionLocal() as db:
+            result, stats = _REAL_REVIEW(db, "test", [question], params, "", None, deduplicate=False)
+        assert not result and stats.rejections == {(question.type, question.difficulty): {"无法验证": 1}}
+        return phoenix_tracing.current_run_id()
+
+    spans = _read_trace(phoenix, review())
+    acceptance, = (span for span in spans if _attr(span, "mathcraft.stage") == "final_acceptance")
+    assert _attr(acceptance, "mathcraft.decision") == "rejected"
+    assert _attr(acceptance, "mathcraft.reason_code") == "missing_evidence"
+    assert _attr(acceptance, "mathcraft.failure_codes") == ["missing_evidence", "model_timeout"]
+    assert PRIVATE not in json.dumps(spans)
+
+
+@pytest.mark.parametrize("scenario", ["normal", "repair", "explanation", "shortfall"])
 def test_teacher_question_trace(client, teacher, phoenix, monkeypatch, scenario):
     _install_model(monkeypatch, scenario)
     bank = create_bank(client, teacher)
@@ -266,14 +320,14 @@ def test_teacher_question_trace(client, teacher, phoenix, monkeypatch, scenario)
 
     rejected = [span for span in stage("independent_solve")
                 if _attr(span, "mathcraft.reason_code") == "false_proposition"]
-    assert len(rejected) == {"normal": 0, "repair": 1, "shortfall": 6}[scenario]
+    assert len(rejected) == {"normal": 0, "explanation": 0, "repair": 1, "shortfall": 6}[scenario]
     for span in rejected:
         assert _attr(span, "mathcraft.decision") == "rejected"
         model, = models(span)
         assert model["status_code"] == "OK"
         assert _attr(model, "http.response.status_code") == 200
 
-    if scenario != "normal":
+    if scenario in {"repair", "shortfall"}:
         for repair in stage("repair"):
             candidate = _attr(repair, "mathcraft.candidate_id")
             same = [span for span in stage("independent_solve")
@@ -283,8 +337,24 @@ def test_teacher_question_trace(client, teacher, phoenix, monkeypatch, scenario)
             assert _attr(repair, "mathcraft.decision") == "passed"
             assert all(_attr(span, "http.response.status_code") == 200 for span in models(repair))
         assert stage("re_review")
+    if scenario == "explanation":
+        first, = (span for span in stage("independent_solve")
+                  if _attr(span, "mathcraft.revision") == 0)
+        assert _attr(first, "mathcraft.decision") == "passed"
+        assert _attr(first, "mathcraft.failure_codes") == ["missing_evidence"]
+        assert len(models(first)) == 2
+        failed_final, = (span for span in stage("final_acceptance")
+                         if _attr(span, "mathcraft.revision") == 0)
+        assert _attr(failed_final, "mathcraft.reason_code") == "explanation_out_of_scope"
+        repair, = stage("repair")
+        assert _attr(repair, "mathcraft.repair_mode") == "explanation_only"
+        assert _attr(repair, "mathcraft.reason_code") == "explanation_out_of_scope"
+        assert _attr(repair, "mathcraft.decision") == "passed"
+        assert len(models(repair)) == 1
+        assert result["questions"][0]["analysis"] == f"差商恒为零，其极限为零。{PRIVATE}"
     if delivered:
-        final, = stage("final_acceptance")
+        final, = (span for span in stage("final_acceptance")
+                  if _attr(span, "mathcraft.decision") == "passed")
         assert _attr(final, "mathcraft.decision") == "passed"
         assert models(final)
     else:

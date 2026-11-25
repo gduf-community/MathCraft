@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.question import Difficulty, Question, QuestionType
+from app.schemas.question import Difficulty, ExistingQuestion, Question, QuestionType
 
 
 class TypeCountBody(BaseModel):
@@ -28,6 +28,7 @@ class GenerateStartBody(BaseModel):
     scope: str = Field(default="", max_length=512)
     source_mode: str = Field(default="variant_data", pattern="^(original|variant_data|variant_context|new)$")
     existing_stems: list[str] = Field(default=[], max_length=200)
+    existing_questions: list[ExistingQuestion] = Field(default_factory=list, max_length=200)
     doc_name: str = Field(default="", max_length=255)
     # 兼容旧前端的字段名
     kb_id: str | None = None
@@ -187,6 +188,7 @@ class ChatMessageBody(BaseModel):
         max_length=2048, description="消息文本；仅发送图片时可为空，文本与图片不可同时为空",
     )
     existing_stems: list[str] = Field(default=[], max_length=200)
+    existing_questions: list[ExistingQuestion] = Field(default_factory=list, max_length=200)
     # base64 data URL 图片，随消息一起传给多模态模型
     images: list[str] = Field(default=[], max_length=4)
     # 分段控制器当前模式：generate/creative/qa/data

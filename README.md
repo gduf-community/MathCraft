@@ -98,7 +98,7 @@ if (-not (Test-Path app/local_secrets.py)) {
 }
 ```
 
-出题 JSON 修复依赖 `json-repair`，Word 导出依赖 `python-docx`、`latex2mathml` 和 `mathml2omml`，由上述 `uv sync` 安装。升级时需重新同步依赖；仓库根环境与后端独立环境分别由各自的 `pyproject.toml`、`uv.lock` 管理，使用哪个环境就同步哪个环境。导出在本地生成文档，无需模型调用或安装 Microsoft Word。
+出题中的符号计算与精确验算依赖 `SymPy`。出题 JSON 修复依赖 `json-repair`，Word 导出依赖 `python-docx`、`latex2mathml` 和 `mathml2omml`，由上述 `uv sync` 安装。升级时需重新同步依赖；仓库根环境与后端独立环境分别由各自的 `pyproject.toml`、`uv.lock` 管理，使用哪个环境就同步哪个环境。导出在本地生成文档，无需模型调用或安装 Microsoft Word。
 
 OpenAI 兼容客户端使用 `openai<3`：当前追踪适配基于 `httpx`，不兼容 OpenAI SDK 3.x 的 `httpx2`。已有环境更新后执行 `uv sync` 并重启后端，避免个人模型连接测试在请求发出前报客户端兼容错误。
 

@@ -24,6 +24,7 @@ from app.schemas.auth import ErrorResponse
 from app.schemas.question import GenerateParams, Question
 from app.services import auth, cache, generation, question_review, rag_settings
 from app.services.generation import persist_batch
+from app.services.question_dedup import QuestionDeduper
 from app.services.generation_cancellation import run_checked
 from app.services.generation_lifecycle import (
     GenerationRun, conversation_turn, error_code, rollback_business,
@@ -605,14 +606,19 @@ def _run_message(
         params = generation_params or generation.build_params_from_slots(
             result["slot_state"], bank_id, document_id,
         )
+        params = params.model_copy(update={"existing_questions": body.existing_questions})
         requested = sum(t.count for t in params.types)
+        deduper = QuestionDeduper(
+            db, user_id, bank_id, body.existing_stems, body.existing_questions,
+            api_key, check_canceled,
+        )
 
         def review_fn(candidates, review_params, stems):
             check_canceled()
             return question_review.review_questions(
                 db, user_id, candidates, review_params, doc_name, api_key, None,
                 progress=lambda percent, stage: progress(last_progress, stage),
-                cancel_check=check_canceled,
+                cancel_check=check_canceled, deduplicate=False,
             )
 
         directive = ""
@@ -634,7 +640,8 @@ def _run_message(
         try:
             questions, stats, groups = chat_flow.review_with_refill(
                 questions, params, requested, body.existing_stems, review_fn, gen_fn,
-                progress_cb=progress, cancel_check=check_canceled, initial_events=initial_events,
+                progress_cb=progress, cancel_check=check_canceled,
+                initial_events=initial_events, deduper=deduper,
             )
         except (chat_flow.NeedConfirmError, LLMError, ValueError) as exc:
             check_canceled()

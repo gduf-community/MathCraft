@@ -228,7 +228,7 @@ def fake_models(monkeypatch):
     monkeypatch.setattr(slots, "chat_json", fake_slot_chat_json)
     def review_with_fake_solver(
         db, user_id, questions, params, doc_name, api_key=None,
-        hyde_text=None, progress=None, cancel_check=None,
+        hyde_text=None, progress=None, cancel_check=None, *, deduplicate=True,
     ):
         """接口用例跳过质量评审，新命题仍由既有假 solver 补齐答案。"""
         stats = question_review.ReviewStats()

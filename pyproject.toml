@@ -73,6 +73,7 @@ dependencies = [
     "bcrypt>=4.2",
     "PyJWT>=2.10,<3",
     "cryptography>=50.0.2",
+    "sympy>=1.14,<2",
     "jieba>=0.42",
     "chromadb>=0.5.20",
 ]

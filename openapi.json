@@ -8881,6 +8881,14 @@
             "title": "Existing Stems",
             "default": []
           },
+          "existing_questions": {
+            "items": {
+              "$ref": "#/components/schemas/ExistingQuestion"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Existing Questions"
+          },
           "images": {
             "items": {
               "type": "string"
@@ -9786,6 +9794,34 @@
         "title": "ErrorResponse",
         "type": "object"
       },
+      "ExistingQuestion": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/QuestionType"
+          },
+          "stem": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Stem"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionItem"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Options"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "stem"
+        ],
+        "title": "ExistingQuestion",
+        "description": "Question fields needed to compare an existing preview or saved question."
+      },
       "ExportDocxBody": {
         "properties": {
           "title": {
@@ -10131,6 +10167,14 @@
             "maxItems": 200,
             "title": "Existing Stems",
             "default": []
+          },
+          "existing_questions": {
+            "items": {
+              "$ref": "#/components/schemas/ExistingQuestion"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Existing Questions"
           },
           "doc_name": {
             "type": "string",

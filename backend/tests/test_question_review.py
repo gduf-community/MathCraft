@@ -745,7 +745,9 @@ def test_counterexample_repair_restarts_complete_review(db, monkeypatch, outcome
         joint_calls.append(prompt)
         report = json.loads(_review_json({**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}))
         if original:
-            report.update(scopeValid=False, passed=False, evidence=counterexample)
+            report.update(
+                scopeValid=False, explanationScopeOnly=False, passed=False, evidence=counterexample,
+            )
         else:
             assert repaired.stem in prompt and repaired.analysis in prompt
             if outcome == "bad_analysis":
@@ -949,6 +951,216 @@ def test_original_choice_without_source_options_is_rejected_before_solving(db, m
     )
     assert not result
     assert stats.rejections == {key: {"原题选项缺失": 1}}
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "changed_answer", "still_out_of_scope"])
+def test_explanation_only_repair_keeps_original_content_and_rechecks(
+    db, monkeypatch, outcome,
+):
+    question = _q("用指定范围内的方法求此数列的首项。").model_copy(update={
+        "difficulty": Difficulty.low, "analysis": "用生成函数求得 1。",
+        "scoringPoints": ["代入首项"], "selfCheck": {"note": "候选自检"},
+    })
+    revised_analysis = "把首项下标代入递推式得 1。"
+    key = (question.type, question.difficulty)
+    repair_calls = []
+    solve_calls = []
+    revision_judgments = []
+
+    def solve(messages, **_):
+        solve_calls.append(messages[-1]["content"])
+        return {"status": "solved", "answer": "1", "evidence": "代入可得 1。"}
+
+    def judge_or_repair(messages, **_):
+        prompt = messages[-1]["content"]
+        if prompt.startswith("下面这道题没有通过解析验收"):
+            repair_calls.append(prompt)
+            assert "只使用递推式" in prompt and "生成函数越界" in prompt
+            update = {"analysis": revised_analysis}
+            if outcome == "changed_answer":
+                update["answer"] = "B"
+            return json.dumps(update, ensure_ascii=False)
+        report = json.loads(_review_json(dict.fromkeys(question_review._SCORE_KEYS, 1)))
+        report["scores"]["unique"] = 5
+        if revised_analysis in prompt:
+            revision_judgments.append(prompt)
+            assert '"answer": "A"' in prompt
+        if not revision_judgments or outcome == "still_out_of_scope":
+            report.update(
+                scopeValid=False, analysisValid=False, explanationScopeOnly=True,
+                passed=False, evidence="生成函数越界，可直接代入递推式。",
+            )
+        return json.dumps(report)
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve)
+    monkeypatch.setattr(question_review.llm, "chat_text", judge_or_repair)
+    params = _candidate_params(key, source_mode="original")
+    params.scope = "只使用递推式"
+    result, stats = real_review(db, "u", [question], params, "doc.md", None)
+
+    assert len(repair_calls) == 1
+    assert len(solve_calls) == (1 if outcome == "changed_answer" else 2)
+    assert len(revision_judgments) == (0 if outcome == "changed_answer" else 1)
+    assert question.analysis == "用生成函数求得 1。"
+    if outcome == "accepted":
+        fixed, = result
+        changed = {"analysis", "difficultyReview", "difficultyScore"}
+        assert fixed.model_dump(exclude=changed) == question.model_dump(exclude=changed)
+        assert fixed.analysis == revised_analysis and not stats.rejections
+    else:
+        assert not result and stats.rejections == {key: {"解析方法超出范围": 1}}
+
+
+def test_shared_review_bypasses_legacy_dedup_with_active_transaction(db, monkeypatch):
+    question = _q("求这道已存在于调用方语料中的题目的选项。")
+    key = (question.type, question.difficulty)
+
+    def unexpected_dedup(*_args, **_kwargs):
+        pytest.fail("shared review entered legacy dedup")
+
+    monkeypatch.setattr(question_review, "load_corpus", unexpected_dedup)
+    monkeypatch.setattr(question_review, "_drop_duplicates", unexpected_dedup)
+    monkeypatch.setattr(question_review.llm, "chat_json", lambda *a, **k: {
+        "status": "solved", "answer": "1", "evidence": "计算结果为 1。",
+    })
+    monkeypatch.setattr(question_review.llm, "chat_text", lambda *a, **k: _review_json(GOOD_SCORES))
+    with db.begin() as transaction:
+        result, stats = real_review(
+            db, "u", [question, question], _candidate_params(key, existing_stems=[question.stem]),
+            "doc.md", None, deduplicate=False,
+        )
+        assert db.get_transaction() is transaction
+    assert [item.stem for item in result] == [question.stem, question.stem]
+    assert stats.solved == 2 and stats.duplicates == 0 and not stats.rejections
+
+
+@pytest.mark.parametrize(("conclusion", "reason"), [
+    ("成立", None), ("不成立", "补全结论与答案冲突"), (None, "解析补全失败"),
+])
+def test_missing_answer_attempts_completion_before_acceptance(db, monkeypatch, conclusion, reason):
+    question = Question(
+        type="essay", difficulty="低", stem="证明两个正数的积为正数。", answer="",
+    )
+    key = (question.type, question.difficulty)
+    completions = []
+
+    def solve_or_explain(messages, **_):
+        prompt = messages[-1]["content"]
+        if "【待核验的候选答案】" in prompt:
+            completions.append(prompt)
+            if conclusion == "不成立":
+                return {"analysis": "乘积为零。", "conclusion": "0"}
+            return {"analysis": "根据乘法符号法则，乘积大于零。", "conclusion": conclusion}
+        return {"status": "solved", "answer": "成立", "evidence": "正数乘法符号法则。"}
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve_or_explain)
+    scores = {**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}
+    monkeypatch.setattr(question_review.llm, "chat_text", lambda *a, **k: _review_json(scores))
+    result, stats = real_review(
+        db, "u", [question], _candidate_params(key), "doc.md", None, deduplicate=False,
+    )
+    assert completions and question.answer == ""
+    if reason:
+        assert not result and stats.rejections == {key: {reason: 1}}
+    else:
+        accepted, = result
+        assert accepted.answer == "成立" and "乘积大于零" in accepted.analysis
+
+
+@pytest.mark.parametrize("repair_matches", [True, False])
+def test_empty_completion_targets_analysis_repair(db, monkeypatch, repair_matches):
+    question = Question(
+        type=QuestionType.essay, difficulty=Difficulty.low,
+        stem=r"用分数除法法则说明 $1\div23$ 的结果。",
+    )
+    key = (question.type, question.difficulty)
+    confirmed_answer = r"$\frac{1}{23}$"
+    revised_analysis = r"除以 $23$ 等于乘它的倒数，所以结果为 $\frac{1}{23}$。"
+    events = []
+    scores = {**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}
+
+    def solve_or_explain(messages, **_):
+        prompt = messages[-1]["content"]
+        if "【待核验的候选答案】" not in prompt:
+            return {"status": "solved", "answer": confirmed_answer, "evidence": "分数除法法则。"}
+        if "【定向修订】" in prompt:
+            events.append("repair")
+            assert "补齐解析和必要步骤" in prompt
+            assert f"【待核验的候选答案】\n{confirmed_answer}" in prompt
+            conclusion = confirmed_answer if repair_matches else r"$\frac{12}{3}$"
+            return {"analysis": revised_analysis, "conclusion": conclusion}
+        events.append("empty_completion")
+        return {"analysis": "", "conclusion": confirmed_answer}
+
+    def judge(messages, **_):
+        events.append("acceptance")
+        prompt = messages[-1]["content"]
+        payload = json.loads(prompt[prompt.rfind('{"type":'):])
+        assert payload["analysis"] == revised_analysis
+        assert payload["answer"] == confirmed_answer
+        return _review_json(scores)
+
+    monkeypatch.setattr(question_review.llm, "chat_json", solve_or_explain)
+    monkeypatch.setattr(question_review.llm, "chat_text", judge)
+    result, stats = real_review(db, "u", [question], _candidate_params(key), "doc.md", None)
+
+    assert events.count("repair") == 1
+    assert events[0] == "empty_completion"
+    if not repair_matches:
+        assert not result and "acceptance" not in events
+        return
+    assert events[-2:] == ["repair", "acceptance"]
+    accepted, = result
+    assert (accepted.stem, accepted.answer, accepted.analysis) == (
+        question.stem, confirmed_answer, revised_analysis,
+    )
+    assert question.answer == question.analysis == ""
+    assert stats.solved == stats.repaired == 1
+    assert not stats.rejections
+
+
+def test_symbolic_review_bypasses_llm_solve_and_rejects_equivalent_single_options(db, monkeypatch):
+    computation = Question(
+        type=QuestionType.compute, difficulty=Difficulty.low, stem="计算 $0.1+0.2$ 的值。",
+    )
+    ambiguous = Question(
+        type=QuestionType.single, difficulty=Difficulty.low, stem="计算 $0.25+0.25$ 的值。",
+        options=[
+            OptionItem(label="A", text="1/2"),
+            OptionItem(label="B", text="0.5"),
+            OptionItem(label="C", text="1/4"),
+            OptionItem(label="D", text="1"),
+        ],
+        answer="A", analysis="两个 $0.25$ 相加得 $0.5$。",
+    )
+    compute_key = (computation.type, computation.difficulty)
+    choice_key = (ambiguous.type, ambiguous.difficulty)
+    analysis = "将 $0.1$ 与 $0.2$ 相加，得 $0.3$。"
+    scores = {**dict.fromkeys(question_review._SCORE_KEYS, 1), "unique": 5}
+
+    def explain(messages, **_):
+        if "【待核验的候选答案】" not in messages[-1]["content"]:
+            pytest.fail("支持符号验算的题目不应调用 LLM 独立求解")
+        return {"analysis": analysis, "conclusion": "0.3"}
+
+    def judge_or_repair(messages, **_):
+        if messages[-1]["content"].startswith("下面这道题没有通过"):
+            return ambiguous.model_dump_json()
+        return _review_json(scores)
+
+    monkeypatch.setattr(question_review.llm, "chat_json", explain)
+    monkeypatch.setattr(question_review.llm, "chat_text", judge_or_repair)
+    result, stats = real_review(
+        db, "u", [computation, ambiguous], _candidate_params(compute_key, choice_key),
+        "doc.md", None,
+    )
+
+    accepted, = result
+    assert (accepted.stem, accepted.answer, accepted.analysis) == (
+        computation.stem, "3/10", analysis,
+    )
+    assert stats.solved == 1
+    assert stats.rejections == {choice_key: {"选项不合格": 1}}
 
 
 @pytest.mark.parametrize("has_defect", [True, False])

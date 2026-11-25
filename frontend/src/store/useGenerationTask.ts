@@ -44,8 +44,25 @@ function requestBody(value: unknown): api.GenerateBody | null {
   if (value.source_mode !== undefined && typeof value.source_mode !== 'string') return null
   if (value.existing_stems !== undefined && (!Array.isArray(value.existing_stems)
     || !value.existing_stems.every((stem: unknown) => typeof stem === 'string'))) return null
+  const existingQuestions: api.QuestionPreview[] = []
+  if (value.existing_questions !== undefined) {
+    if (!Array.isArray(value.existing_questions) || value.existing_questions.length > 200) return null
+    for (const question of value.existing_questions) {
+      if (!isRecord(question) || typeof question.stem !== 'string'
+        || !Array.isArray(question.options)) return null
+      const type = TYPE_ORDER.find(type => type === question.type)
+      if (!type) return null
+      const options: api.QuestionPreview['options'] = []
+      for (const option of question.options) {
+        if (!isRecord(option) || typeof option.label !== 'string' || typeof option.text !== 'string') return null
+        options.push({ label: option.label, text: option.text })
+      }
+      existingQuestions.push({ type, stem: question.stem, options })
+    }
+  }
   return { bank_id: value.bank_id, document_id: value.document_id, types, difficulty,
-    scope: value.scope, source_mode: value.source_mode, existing_stems: value.existing_stems }
+    scope: value.scope, source_mode: value.source_mode, existing_stems: value.existing_stems,
+    existing_questions: value.existing_questions === undefined ? undefined : existingQuestions }
 }
 
 function readPending(userId: string): PendingGeneration | null {
