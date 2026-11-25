@@ -50,16 +50,19 @@ TIER_PARAMS: dict[Difficulty, str] = {
 EVAL_PROMPT = """你是独立数学审题人。给定一道题、它所属的知识点范围和目标难度档，请先独立解题，再评分。
 不要参考任何出题方给出的难度标注，只按题目本身判断。
 
-评分维度，每项 1—5 分（5 分最高）：
-- knowledge 知识点匹配：与给定知识点范围的吻合程度
+难度维度按指定范围内的最短合理解法评分，每项 1—5 分（5 分最高）：
 - steps 步骤综合：需要的推理步骤数与综合程度
 - abstraction 概念抽象：概念层面的抽象与转化要求
 - computation 计算复杂度：计算量与计算技巧
 - trap 陷阱非常规：陷阱设置与非标准思路
+
+质量维度，每项 1—5 分（5 分最高）：
+- knowledge 知识点匹配：与给定知识点范围的吻合程度
 - unique 可解唯一：可解、答案唯一、无歧义（5 表示完全满足）
 
-加权总分 = 0.20×knowledge + 0.20×steps + 0.20×abstraction + 0.15×computation + 0.15×trap + 0.10×unique
-判定档：1—2 低，2—3 中，3—4 高，4—5 地狱。
+难度总分 = (20×steps + 20×abstraction + 15×computation + 15×trap) / 70。
+knowledge 和 unique 用于质量审核。
+判定档：[1, 2) 低，[2, 3) 中，[3, 4) 高，[4, 5] 地狱。
 一票否决：不可解、答案不确定、超纲、题干歧义，此时 passed 必须为 false。
 methods 写出关键解法。目标档为「高」或「地狱」时，提供两种解法或一种数值验证。
 
@@ -67,7 +70,7 @@ methods 写出关键解法。目标档为「高」或「地狱」时，提供两
 {"independentAnswer": "独立解出的答案",
  "scores": {"knowledge": 1, "steps": 1, "abstraction": 1,
             "computation": 1, "trap": 1, "unique": 1},
- "total": 加权总分（保留一位小数）,
+ "total": 难度总分（保留两位小数）,
  "tier": "低|中|高|地狱",
  "defectCodes": ["K|S|C|T|A|O"],
  "primarySuggestion": "参数级修改建议",
@@ -192,14 +195,7 @@ def _trace_fields(question: Question, revision: int) -> _QuestionTraceFields:
 # 评估与解析的并发数
 _THINK_WORKERS = 6
 _SCORE_KEYS = ("knowledge", "steps", "abstraction", "computation", "trap", "unique")
-_SCORE_WEIGHTS = {
-    "knowledge": 0.20,
-    "steps": 0.20,
-    "abstraction": 0.20,
-    "computation": 0.15,
-    "trap": 0.15,
-    "unique": 0.10,
-}
+_DIFFICULTY_WEIGHTS = {"steps": 20, "abstraction": 20, "computation": 15, "trap": 15}
 
 
 @dataclass
@@ -389,7 +385,7 @@ def _chat_json_low(
 
 
 def parse_review(data: dict, target: Difficulty) -> dict:
-    """验证盲评契约，用各维分重算总分与档位。"""
+    """验证盲评契约，重算难度分和档位，并检查质量否决。"""
     scores = data.get("scores")
     passed_flag = data.get("passed")
     if (
@@ -399,7 +395,8 @@ def parse_review(data: dict, target: Difficulty) -> dict:
         or type(passed_flag) is not bool
     ):
         raise ValueError("缺少有效评分或判定")
-    total = round(sum(scores[k] * _SCORE_WEIGHTS[k] for k in _SCORE_KEYS), 2)
+    weighted = sum(scores[key] * weight for key, weight in _DIFFICULTY_WEIGHTS.items())
+    total = round(weighted / sum(_DIFFICULTY_WEIGHTS.values()), 2)
     codes = data.get("defectCodes", [])
     methods = data.get("methods", [])
     if not isinstance(codes, list) or not isinstance(methods, list):

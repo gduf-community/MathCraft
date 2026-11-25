@@ -129,19 +129,27 @@ def test_parse_review_veto_on_unsolvable():
     data = {
         "scores": {**GOOD_SCORES, "unique": 1},
         "passed": True,
-        "defectCodes": ["A"],
         "primarySuggestion": "答案不唯一",
     }
     review = question_review.parse_review(data, Difficulty.high)
     assert review["veto"] is True
+    assert review["qualityPassed"] is False
+    assert review["tier"] == Difficulty.high.value
     assert review["passed"] is False
 
 
 def test_parse_review_recomputes_total():
     data = {"scores": GOOD_SCORES, "total": 5.0, "passed": True}
     review = question_review.parse_review(data, Difficulty.high)
-    expected = round(0.2 * 4 + 0.2 * 4 + 0.2 * 4 + 0.15 * 3 + 0.15 * 3 + 0.10 * 5, 2)
-    assert review["total"] == expected
+    assert review["total"] == 3.57
+    assert review["passed"] is True
+
+
+def test_direct_low_difficulty_question_with_full_quality_scores_passes():
+    scores = dict.fromkeys(GOOD_SCORES, 1) | {"knowledge": 5, "unique": 5}
+    review = question_review.parse_review({"scores": scores, "passed": True}, Difficulty.low)
+
+    assert review["total"] == 1.0
     assert review["passed"] is True
 
 
